@@ -17,11 +17,15 @@ interface SearchResult {
 	snippet: string;
 }
 
+const searchCache = new Map<string, { at: number; results: SearchResult[] }>();
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
 async function duckDuckGoSearch(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]> {
 	try {
 		const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+		const timeoutSignal = AbortSignal.timeout(15000);
 		const resp = await fetch(url, {
-			signal,
+			signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
 			headers: {
 				"User-Agent": "Mozilla/5.0 (compatible; pi-coding-agent/1.0)",
 			},
@@ -36,6 +40,15 @@ async function duckDuckGoSearch(query: string, count: number, signal?: AbortSign
 	}
 }
 
+function decodeEntities(text: string): string {
+	return text
+		.replace(/&amp;/g, "&")
+		.replace(/&quot;/g, '"')
+		.replace(/&#39;/g, "'")
+		.replace(/&lt;/g, "<")
+		.replace(/&gt;/g, ">");
+}
+
 function parseDDGResults(html: string, count: number): SearchResult[] {
 	const results: SearchResult[] = [];
 
@@ -44,9 +57,9 @@ function parseDDGResults(html: string, count: number): SearchResult[] {
 	let match;
 
 	while ((match = resultRegex.exec(html)) !== null && results.length < count) {
-		const url = decodeURIComponent(match[1].replace(/\/\/duckduckgo\.com\/l\/\?uddg=/, "").split("&")[0]);
-		const title = match[2].replace(/<[^>]*>/g, "").trim();
-		const snippet = match[3].replace(/<[^>]*>/g, "").trim();
+		const url = decodeEntities(decodeURIComponent(match[1].replace(/\/\/duckduckgo\.com\/l\/\?uddg=/, "").split("&")[0]));
+		const title = decodeEntities(match[2].replace(/<[^>]*>/g, "").trim());
+		const snippet = decodeEntities(match[3].replace(/<[^>]*>/g, "").trim());
 
 		if (title && url) {
 			results.push({ title, url, snippet });
@@ -56,11 +69,12 @@ function parseDDGResults(html: string, count: number): SearchResult[] {
 	return results;
 }
 
-async function ollamaWebSearch(query: string, signal?: AbortSignal): Promise<SearchResult[]> {
+async function ollamaWebSearch(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]> {
 	try {
+		const timeoutSignal = AbortSignal.timeout(10000);
 		const resp = await fetch("http://localhost:11434/api/web_search", {
 			method: "POST",
-			signal,
+			signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ query }),
 		});
@@ -80,7 +94,7 @@ async function ollamaWebSearch(query: string, signal?: AbortSignal): Promise<Sea
 			}
 		}
 
-		return results;
+		return results.slice(0, count);
 	} catch {
 		return [];
 	}
@@ -94,7 +108,7 @@ function formatResults(results: SearchResult[]): string {
 }
 
 export default function (pi: ExtensionAPI) {
-	pi.registerTool({
+	const searchTool = {
 		name: "ddg_search",
 		label: "DuckDuckGo Search",
 		description:
@@ -114,18 +128,27 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
 			const maxResults = params.max_results || 5;
+			const cacheKey = `${params.query}\0${maxResults}`;
+			const cached = searchCache.get(cacheKey);
+			if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+				return {
+					content: [{ type: "text", text: formatResults(cached.results) }],
+					details: { query: params.query, resultCount: cached.results.length, cached: true },
+				};
+			}
 
 			// Try Ollama first (local, no API key)
-			let results = await ollamaWebSearch(params.query, signal);
+			let results = await ollamaWebSearch(params.query, maxResults, signal);
 
 			// Fall back to DuckDuckGo
 			if (results.length === 0) {
 				results = await duckDuckGoSearch(params.query, maxResults, signal);
 			}
+			searchCache.set(cacheKey, { at: Date.now(), results });
 
 			return {
 				content: [{ type: "text", text: formatResults(results) }],
-				details: { query: params.query, resultCount: results.length },
+				details: { query: params.query, resultCount: results.length, cached: false },
 			};
 		},
 
@@ -143,5 +166,7 @@ export default function (pi: ExtensionAPI) {
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 			return new Text(text.slice(0, 500), 0, 0);
 		},
-	});
+	} as const;
+
+	pi.registerTool(searchTool);
 }

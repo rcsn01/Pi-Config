@@ -14,6 +14,8 @@
  *   /goal pause            - Pause the active goal
  *   /goal resume           - Resume a paused goal
  *   /goal clear            - Clear/remove the goal
+ *   /goal edit <objective> - Edit the active goal objective
+ *   /goal checkpoint <txt> - Add a manual checkpoint
  *
  * LLM Tool: `goal` - Let the agent check status, report progress, mark done
  */
@@ -392,6 +394,35 @@ export default function (pi: ExtensionAPI) {
 				goal.status = "active";
 				persistGoal("resume");
 				ctx.ui.notify(`Goal resumed: "${goal.objective}"`, "info");
+				return;
+			}
+
+			// /goal edit <objective>
+			if (trimmedArgs.startsWith("edit ")) {
+				if (!goal || goal.status === "cleared") {
+					ctx.ui.notify("No active goal to edit.", "warning");
+					return;
+				}
+				const nextObjective = trimmedArgs.slice(5).trim();
+				if (!nextObjective) {
+					ctx.ui.notify("Usage: /goal edit <new objective>", "warning");
+					return;
+				}
+				goal.objective = nextObjective;
+				persistGoal("set");
+				ctx.ui.notify(`Goal updated: ${nextObjective}`, "info");
+				return;
+			}
+
+			// /goal checkpoint <summary>
+			if (trimmedArgs.startsWith("checkpoint ")) {
+				if (!goal || goal.status !== "active") {
+					ctx.ui.notify("No active goal to checkpoint.", "warning");
+					return;
+				}
+				goal.checkpointProgress = trimmedArgs.slice("checkpoint ".length).trim();
+				persistGoal("checkpoint");
+				ctx.ui.notify(`Checkpoint saved: ${goal.checkpointProgress}`, "info");
 				return;
 			}
 

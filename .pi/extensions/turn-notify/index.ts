@@ -15,15 +15,16 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const NOTIFY_CUSTOM_TYPE = "turn-notify-state";
 
 async function sendDesktopNotification(title: string, message: string): Promise<void> {
-	const { execSync } = await import("node:child_process");
+	const { execFile } = await import("node:child_process");
+	const run = (cmd: string, args: string[]) =>
+		new Promise<void>((resolve) => {
+			execFile(cmd, args, { timeout: 5000 }, () => resolve());
+		});
 	try {
 		if (process.platform === "darwin") {
-			execSync(
-				`osascript -e 'display notification "${message.replace(/"/g, '\\"')}" with title "${title.replace(/"/g, '\\"')}"'`,
-				{ timeout: 5000 },
-			);
+			await run("osascript", ["-e", `display notification ${JSON.stringify(message)} with title ${JSON.stringify(title)}`]);
 		} else if (process.platform === "linux") {
-			execSync(`notify-send "${title}" "${message}"`, { timeout: 5000 });
+			await run("notify-send", [title, message]);
 		} else {
 			// Windows toast or fallback
 			console.log("\x07"); // terminal bell
@@ -86,9 +87,7 @@ export default function (pi: ExtensionAPI) {
 	// ── Notify Status Widget ──────────────────────────────────────────────
 
 	pi.on("turn_end", async (_event, ctx) => {
-		if (enabled) {
-			ctx.ui.setStatus("notify", "🔔 ON");
-		}
+		ctx.ui.setStatus("notify", enabled ? "🔔 ON" : undefined);
 	});
 
 	// ── Command: /notify ──────────────────────────────────────────────────

@@ -38,6 +38,8 @@ function execCommand(cmd: string, args: string[], timeout = 30000): Promise<{ st
 }
 
 async function generateWithPython(prompt: string, outputPath: string): Promise<boolean> {
+	const safePrompt = JSON.stringify(prompt.slice(0, 200));
+	const safeOutputPath = JSON.stringify(outputPath);
 	const script = `
 import sys, json, os
 try:
@@ -56,9 +58,9 @@ try:
     except:
         font = ImageFont.load_default()
     draw.text((20, 20), "Image Generation", fill='#e0e0e0', font=font)
-    words = "${prompt.replace(/"/g, '\\"').slice(0, 200)}"
+    words = ${safePrompt}
     draw.text((20, 60), words, fill='#888888', font=font)
-    img.save("${outputPath}")
+    img.save(${safeOutputPath})
     print("OK")
 except Exception as e:
     print(f"ERROR: {e}", file=sys.stderr)
@@ -254,11 +256,11 @@ export default function (pi: ExtensionAPI) {
 				const ext = path.extname(result.path).toLowerCase();
 				try {
 					if (process.platform === "darwin") {
-						cp.execSync(`open "${result.path}"`);
+						cp.spawn("open", [result.path], { detached: true, stdio: "ignore" }).unref();
 					} else if (process.platform === "linux") {
-						cp.execSync(`xdg-open "${result.path}"`);
+						cp.spawn("xdg-open", [result.path], { detached: true, stdio: "ignore" }).unref();
 					} else if (process.platform === "win32") {
-						cp.execSync(`start "" "${result.path}"`);
+						cp.spawn("cmd", ["/c", "start", "", result.path], { detached: true, stdio: "ignore" }).unref();
 					}
 				} catch {
 					// Best effort

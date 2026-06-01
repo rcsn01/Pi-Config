@@ -26,12 +26,58 @@ function fuzzyMatch(pattern: string, str: string): boolean {
 	return pi === p.length;
 }
 
+function scoreMatch(query: string, relPath: string): number {
+	const q = query.toLowerCase();
+	const p = relPath.toLowerCase();
+	const base = path.basename(p);
+	if (base === q) return 1000;
+	if (base.startsWith(q)) return 900 - base.length;
+	if (base.includes(q)) return 800 - base.indexOf(q);
+	if (p.startsWith(q)) return 700 - p.length;
+	if (p.includes(q)) return 600 - p.indexOf(q);
+	return fuzzyMatch(q, p) ? 300 - p.length : -1;
+}
+
+function loadGitignore(cwd: string): string[] {
+	const gitignorePath = path.join(cwd, ".gitignore");
+	try {
+		if (!fs.existsSync(gitignorePath)) return [];
+		return fs.readFileSync(gitignorePath, "utf-8")
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line && !line.startsWith("#") && !line.startsWith("!"));
+	} catch {
+		return [];
+	}
+}
+
+function isIgnored(relPath: string, patterns: string[]): boolean {
+	const normalized = relPath.split(path.sep).join("/");
+	for (const raw of patterns) {
+		const pattern = raw.replace(/^\//, "");
+		if (pattern.endsWith("/")) {
+			const dir = pattern.slice(0, -1);
+			if (normalized === dir || normalized.startsWith(dir + "/") || normalized.includes("/" + dir + "/")) return true;
+			continue;
+		}
+		if (pattern.includes("*")) {
+			const re = new RegExp("^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$" );
+			if (re.test(normalized) || re.test(path.basename(normalized))) return true;
+			continue;
+		}
+		if (normalized === pattern || normalized.startsWith(pattern + "/") || path.basename(normalized) === pattern) return true;
+	}
+	return false;
+}
+
 async function findFiles(
 	cwd: string,
 	query: string,
 	maxResults = 20,
+	options: { includeHidden?: boolean } = {},
 ): Promise<string[]> {
 	const results: string[] = [];
+	const ignorePatterns = loadGitignore(cwd);
 	const ignoreDirs = new Set([
 		"node_modules", ".git", "__pycache__", ".venv", "venv",
 		"dist", "build", ".next", ".cache", "target", ".idea", ".vscode",
@@ -48,16 +94,17 @@ async function findFiles(
 		}
 
 		for (const entry of entries) {
-			if (entry.name.startsWith(".") && entry.name !== ".") continue;
+			if (!options.includeHidden && entry.name.startsWith(".")) continue;
 			if (ignoreDirs.has(entry.name)) continue;
 
 			const fullPath = path.join(dir, entry.name);
 			const relPath = path.relative(cwd, fullPath);
+			if (isIgnored(relPath, ignorePatterns)) continue;
 
 			if (entry.isDirectory()) {
 				walk(fullPath, depth + 1);
 			} else if (entry.isFile()) {
-				if (fuzzyMatch(query, relPath)) {
+				if (scoreMatch(query, relPath) >= 0) {
 					results.push(relPath);
 				}
 			}
@@ -65,7 +112,9 @@ async function findFiles(
 	}
 
 	walk(cwd, 0);
-	return results.slice(0, maxResults);
+	return results
+		.sort((a, b) => scoreMatch(query, b) - scoreMatch(query, a) || a.localeCompare(b))
+		.slice(0, maxResults);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -124,6 +173,7 @@ export default function (pi: ExtensionAPI) {
 			max_results: Type.Optional(
 				Type.Number({ description: "Maximum results (default 20)" }),
 			),
+			include_hidden: Type.Optional(Type.Boolean({ description: "Include hidden dotfiles/directories" })),
 		}),
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -131,6 +181,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.cwd,
 				params.query,
 				params.max_results || 20,
+				{ includeHidden: params.include_hidden },
 			);
 
 			if (files.length === 0) {
@@ -158,13 +209,15 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("files", {
 		description: "Search workspace files (fuzzy match)",
 		handler: async (args, ctx) => {
-			const query = (args || "").trim();
+			const raw = (args || "").trim();
+			const includeHidden = raw.includes("--hidden") || raw.includes("--all");
+			const query = raw.replace(/--hidden|--all/g, "").trim();
 			if (!query) {
 				ctx.ui.notify("Usage: /files <search-query>", "info");
 				return;
 			}
 
-			const files = await findFiles(ctx.cwd, query);
+			const files = await findFiles(ctx.cwd, query, 20, { includeHidden });
 			if (files.length === 0) {
 				ctx.ui.notify(`No files matching "${query}".`, "info");
 				return;

@@ -14,6 +14,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { safeJoin } from "./_shared/security.ts";
 
 const AGENTS_TEMPLATE = `# Project Context
 
@@ -112,8 +113,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const targetDir = trimmed
-				? path.resolve(ctx.cwd, trimmed)
+				? safeJoin(ctx.cwd, trimmed)
 				: ctx.cwd;
+			if (!targetDir) {
+				ctx.ui.notify("/init only writes inside the current workspace. Use /init --global for global instructions.", "warning");
+				return;
+			}
 
 			const agentsPath = path.join(targetDir, "AGENTS.md");
 

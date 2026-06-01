@@ -2,8 +2,8 @@
  * Copy Output Extension - Recreates Codex's Ctrl+O copy last output
  *
  * Commands:
- *   /copy          - Copy the last assistant message to clipboard
- *   /copy <n>      - Copy the nth last assistant message
+ *   /copy-output       - Copy the last assistant message to clipboard
+ *   /copy-output <n>   - Copy the nth last assistant message
  *
  * Tool:
  *   copy_output    - LLM can copy its own output to clipboard
@@ -63,15 +63,15 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// ── Command: /copy ────────────────────────────────────────────────────
+	// ── Command: /copy-output ─────────────────────────────────────────────
 
-	pi.registerCommand("copy", {
-		description: "Copy last assistant message to clipboard (or /copy <n>)",
+	pi.registerCommand("copy-output", {
+		description: "Copy last assistant message to clipboard (or /copy-output <n>)",
 		handler: async (args, ctx) => {
 			const nStr = (args || "").trim();
 			const n = nStr ? parseInt(nStr, 10) : 1;
 			if (isNaN(n) || n < 1) {
-				ctx.ui.notify("Usage: /copy [n] (default: 1 for last message)", "warning");
+				ctx.ui.notify("Usage: /copy-output [n] (default: 1 for last message)", "warning");
 				return;
 			}
 
@@ -101,8 +101,10 @@ export default function (pi: ExtensionAPI) {
 				if (typeof msg.content === "string") {
 					text = msg.content;
 				} else if (Array.isArray(msg.content)) {
-					const textBlock = msg.content.find((b: any) => b.type === "text");
-					if (textBlock) text = textBlock.text;
+					text = msg.content
+						.filter((b: any) => b.type === "text" && b.text)
+						.map((b: any) => b.text)
+						.join("\n\n");
 				}
 			}
 
