@@ -6,6 +6,7 @@ import { dangerousCommandReason } from "./security.ts";
 
 export type ExecPolicyAction = "allow" | "prompt" | "block";
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+export type ApprovalMode = "read-only" | "default" | "auto-review" | "full-access";
 
 export interface ExecPolicyRule {
 	id: string;
@@ -26,7 +27,7 @@ export interface SandboxState {
 
 const RULES_FILE = path.join(os.homedir(), ".pi", "execpolicy.json");
 
-const READ_ONLY_COMMAND_RE = /^(ls|cat|head|tail|find|grep|rg|git\s+(log|status|diff|show|branch|tag|stash\s+list)|wc|sort|uniq|file|which|type|echo|pwd|whoami|date|env|printenv|du|df|ps|top|htop|tree|stat)\b/;
+const READ_ONLY_COMMAND_RE = /^(ls|cat|head|tail|find|grep|rg|git\s+(log|status|diff|show|branch|tag|stash\s+list)|wc|sort|uniq|file|which|type|echo|pwd|whoami|date|env|printenv|du|df|ps|top|htop|tree|stat|pnpm|npm|npx|node|python|python3|pip|pip3|make|cargo|go|rustc|cc|gcc|clang)\b/;
 
 const EXTERNAL_WRITE_PATH_PATTERNS = [
 	/^\/etc\//,
@@ -43,19 +44,130 @@ const EXTERNAL_WRITE_PATH_PATTERNS = [
 	/^~\/\.aws\//,
 ];
 
+const NETWORK_TOOL_NAMES = new Set([
+	"ddg_search",
+	"ddg_fetch",
+	"web_search",
+	"web_fetch",
+	"image_generate",
+]);
+
+const NETWORK_COMMAND_PATTERNS = [
+	/\bcurl\b/,
+	/\bwget\b/,
+	/\bssh\b/,
+	/\bscp\b/,
+	/\brsync\b/,
+	/\bnc\b/,
+	/\bnetcat\b/,
+	/\btelnet\b/,
+	/\bfetch\b/,
+	/\bgit\s+(fetch|pull|push|clone|remote|ls-remote)\b/,
+	/\bnpm\s+(install|publish|login|logout|whoami|access|deprecate|audit)\b/,
+	/\bpnpm\s+(install|publish|login|logout|add|update|audit)\b/,
+	/\byarn\s+(install|add|publish|login|logout|upgrade)\b/,
+	/\bpip\s+(install|download)\b/,
+	/\bpip3\s+(install|download)\b/,
+	/\bcargo\s+(install|build|publish)\b/,
+	/\bgo\s+(get|install|download)\b/,
+	/\bdocker\s+(pull|push|run|login)\b/,
+	/\bbrew\s+(install|update|upgrade)\b/,
+	/\bapt\b/,
+	/\byum\b/,
+	/\bzypper\b/,
+	/\bdnf\b/,
+	/\bgh\s+(pr|issue|repo|release)\b/,
+	/\bgcloud\b/,
+	/\baws\b/,
+	/\baz\b/,
+	/\bdig\b/,
+	/\bnslookup\b/,
+	/\bhost\b/,
+	/\bping\b/,
+	/\btraceroute\b/,
+	/\bnpx\s+(?!-).*\b/,
+	/\bopen\b/,
+	/\bxdg-open\b/,
+];
+
+// ── Path utilities ─────────────────────────────────────────────────────
+
+/**
+ * Resolve a tool input path against cwd. Handles ~, relative, and absolute.
+ * Returns the absolute resolved path.
+ */
+export function resolveToolPath(inputPath: string, cwd: string): string {
+	if (inputPath.startsWith("~")) {
+		inputPath = inputPath.replace(/^~/, process.env.HOME || os.homedir());
+	}
+	if (path.isAbsolute(inputPath)) return path.resolve(inputPath);
+	return path.resolve(cwd, inputPath);
+}
+
+/**
+ * Check whether a resolved absolute path is within (or equal to) the workspace root.
+ * Resolves symlinks for robust containment testing.
+ */
+export function isPathWithinCwd(targetPath: string, cwd: string): boolean {
+	const resolvedTarget = resolveToolPath(targetPath, cwd);
+	const resolvedCwd = path.resolve(cwd);
+
+	// Direct prefix check
+	if (resolvedTarget === resolvedCwd) return true;
+	if (resolvedTarget.startsWith(resolvedCwd + path.sep)) return true;
+
+	// Symlink-aware: resolve real paths
+	try {
+		const realTarget = fs.realpathSync(resolvedTarget);
+		const realCwd = fs.realpathSync(resolvedCwd);
+		if (realTarget === realCwd) return true;
+		if (realTarget.startsWith(realCwd + path.sep)) return true;
+	} catch {
+		// realpathSync fails if the path doesn't exist yet (new file write).
+		// Fall back to checking the parent directory.
+		try {
+			const parent = path.dirname(resolvedTarget);
+			const realParent = fs.realpathSync(parent);
+			const realCwd = fs.realpathSync(resolvedCwd);
+			if (realParent === realCwd) return true;
+			if (realParent.startsWith(realCwd + path.sep)) return true;
+		} catch {
+			// Can't resolve; fall back to prefix check.
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Check if a path is intended for writing outside the workspace.
+ */
+export function isExternalWritePath(inputPath: string): boolean {
+	const resolved = inputPath.startsWith("~")
+		? inputPath.replace(/^~/, process.env.HOME || "/Users")
+		: inputPath;
+	return EXTERNAL_WRITE_PATH_PATTERNS.some((pattern) => pattern.test(resolved));
+}
+
+// ── Network detection ──────────────────────────────────────────────────
+
+export function isNetworkToolName(toolName: string): boolean {
+	return NETWORK_TOOL_NAMES.has(toolName);
+}
+
+export function isNetworkCommand(command: string): boolean {
+	const normalized = command.replace(/\\\n/g, " ").trim();
+	return NETWORK_COMMAND_PATTERNS.some((re) => re.test(normalized));
+}
+
+// ── Existing exports (unchanged) ───────────────────────────────────────
+
 export function isReadOnlyShellCommand(command: string): boolean {
 	return READ_ONLY_COMMAND_RE.test(command.trim());
 }
 
 export function dangerousShellReason(command: string): string | undefined {
 	return dangerousCommandReason(command);
-}
-
-export function isExternalWritePath(inputPath: string): boolean {
-	const resolved = inputPath.startsWith("~")
-		? inputPath.replace(/^~/, process.env.HOME || "/Users")
-		: inputPath;
-	return EXTERNAL_WRITE_PATH_PATTERNS.some((pattern) => pattern.test(resolved));
 }
 
 export function loadExecPolicy(): ExecPolicyConfig {

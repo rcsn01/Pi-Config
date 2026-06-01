@@ -1,12 +1,11 @@
 /**
- * Plan Mode Extension - Recreates Codex's `/plan` command
+ * Plan Mode Extension — `/plan` command
  *
  * Puts the agent into plan mode where it proposes an execution plan
- * before making any changes. Optionally accepts an inline prompt.
+ * before making any changes.
  *
  * Commands:
- *   /plan                  - Enter plan mode
- *   /plan <prompt>         - Enter plan mode with inline prompt
+ *   /plan                  - Toggle plan mode
  *   /plan off              - Exit plan mode
  */
 
@@ -79,21 +78,18 @@ export default function (pi: ExtensionAPI) {
 	pi.registerShortcut("shift+tab", {
 		description: "Toggle plan mode",
 		handler: async (ctx) => {
-			// Toggle plan mode
-			if (planState.active) {
-				planState = { active: false, setAt: Date.now() };
-				persist();
-				ctx.ui.notify("Plan mode exited.", "info");
-			} else {
-				planState = { active: true, setAt: Date.now() };
-				persist();
-				ctx.ui.notify("📋 Plan mode active. The agent will propose before implementing.", "info");
-			}
+			planState.active = !planState.active;
+			planState.setAt = Date.now();
+			if (!planState.active) delete planState.prompt;
+			persist();
+			ctx.ui.notify(planState.active
+				? "📋 Plan mode active. The agent will propose before implementing."
+				: "Plan mode exited.", "info");
 		},
 	});
 
 	pi.registerCommand("plan", {
-		description: "Enter plan mode - propose before implementing",
+		description: "Toggle plan mode (propose before implementing)",
 		handler: async (args, ctx) => {
 			const trimmed = (args || "").trim();
 
@@ -108,43 +104,25 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Toggle or set
-			if (trimmed === "" && planState.active) {
-				// Turn off
-				planState = { active: false, setAt: Date.now() };
+			// Toggle: on → off, off → on
+			planState.active = !planState.active;
+			planState.setAt = Date.now();
+
+			if (!planState.active) {
+				delete planState.prompt;
 				persist();
 				ctx.ui.notify("Plan mode exited.", "info");
 				return;
 			}
 
-			if (!trimmed && !planState.active && ctx.hasUI) {
-				const choice = await ctx.ui.select("Plan Mode:", [
-					"Enter plan mode (propose before implementing)",
-					"Enter plan mode with inline prompt",
-				]);
-				if (!choice) return;
-
-				if (choice.includes("inline")) {
-					const prompt = await ctx.ui.input("What should be planned?");
-					if (!prompt) return;
-					planState = { active: true, prompt, setAt: Date.now() };
-					persist();
-					ctx.ui.notify("📋 Plan mode active", "info");
-					pi.sendUserMessage(`Plan mode is active. Plan this: ${prompt}`);
-				} else {
-					planState = { active: true, setAt: Date.now() };
-					persist();
-					ctx.ui.notify("📋 Plan mode active. The agent will propose before implementing.", "info");
-				}
-				return;
-			}
-
-			planState = { active: true, prompt: trimmed || undefined, setAt: Date.now() };
+			planState.prompt = trimmed || undefined;
 			persist();
-			ctx.ui.notify("📋 Plan mode active", "info");
 
 			if (trimmed) {
+				ctx.ui.notify("📋 Plan mode active", "info");
 				pi.sendUserMessage(`Plan mode is active. Plan this: ${trimmed}`);
+			} else {
+				ctx.ui.notify("📋 Plan mode active. The agent will propose before implementing.", "info");
 			}
 		},
 	});
