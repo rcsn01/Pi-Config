@@ -90,6 +90,19 @@ const NETWORK_COMMAND_PATTERNS = [
 	/\bxdg-open\b/,
 ];
 
+const SENSITIVE_PATH_PATTERNS = [
+	/(^|\/)\.env(?:\.|$)/,
+	/(^|\/)\.ssh(?:\/|$)/,
+	/(^|\/)\.gnupg(?:\/|$)/,
+	/(^|\/)\.aws(?:\/|$)/,
+	/(^|\/)\.config\/gh(?:\/|$)/,
+	/(^|\/)\.npmrc$/,
+	/(^|\/)\.pypirc$/,
+	/(^|\/)credentials$/,
+	/(^|\/)credentials\.json$/,
+	/(^|\/)token(?:s)?(?:\.json)?$/,
+];
+
 // ── Path utilities ─────────────────────────────────────────────────────
 
 /**
@@ -112,31 +125,29 @@ export function isPathWithinCwd(targetPath: string, cwd: string): boolean {
 	const resolvedTarget = resolveToolPath(targetPath, cwd);
 	const resolvedCwd = path.resolve(cwd);
 
-	// Direct prefix check
-	if (resolvedTarget === resolvedCwd) return true;
-	if (resolvedTarget.startsWith(resolvedCwd + path.sep)) return true;
-
-	// Symlink-aware: resolve real paths
+	// Symlink-aware: resolve real paths before accepting an existing path.
 	try {
-		const realTarget = fs.realpathSync(resolvedTarget);
 		const realCwd = fs.realpathSync(resolvedCwd);
+		const realTarget = fs.realpathSync(resolvedTarget);
 		if (realTarget === realCwd) return true;
 		if (realTarget.startsWith(realCwd + path.sep)) return true;
+		return false;
 	} catch {
-		// realpathSync fails if the path doesn't exist yet (new file write).
-		// Fall back to checking the parent directory.
+		// realpathSync can fail if the target does not exist yet (new file write).
+		// Resolve the parent directory so symlinks in the path are still caught.
 		try {
 			const parent = path.dirname(resolvedTarget);
 			const realParent = fs.realpathSync(parent);
 			const realCwd = fs.realpathSync(resolvedCwd);
 			if (realParent === realCwd) return true;
 			if (realParent.startsWith(realCwd + path.sep)) return true;
+			return false;
 		} catch {
-			// Can't resolve; fall back to prefix check.
+			// If neither target nor parent exists, fall back to lexical containment.
 		}
 	}
 
-	return false;
+	return resolvedTarget === resolvedCwd || resolvedTarget.startsWith(resolvedCwd + path.sep);
 }
 
 /**
@@ -147,6 +158,14 @@ export function isExternalWritePath(inputPath: string): boolean {
 		? inputPath.replace(/^~/, process.env.HOME || "/Users")
 		: inputPath;
 	return EXTERNAL_WRITE_PATH_PATTERNS.some((pattern) => pattern.test(resolved));
+}
+
+export function isSensitivePath(inputPath: string): boolean {
+	const normalized = inputPath
+		.replace(/^~/, process.env.HOME || os.homedir())
+		.split(path.sep)
+		.join("/");
+	return SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 // ── Network detection ──────────────────────────────────────────────────

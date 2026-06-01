@@ -83,16 +83,13 @@ function loadConfig(): ExtensionConfig {
 const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
 
 // Custom tools that require loading an extension into the subagent process.
-// This extension lives at .pi/extensions/subagents, so sibling extensions are one directory up.
+// This extension lives at .pi/extensions/tools-subagents, so sibling extensions are one directory up.
 const EXT_BASE = path.dirname(EXT_DIR);
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 	// Use local ddg_* tools to avoid conflicts with separately installed web_search/web_fetch packages.
-	ddg_search: path.join(EXT_BASE, "web-search", "index.ts"),
-	ddg_fetch: path.join(EXT_BASE, "web-fetch", "index.ts"),
+	ddg_search: path.join(EXT_BASE, "tools-web-search", "index.ts"),
+	ddg_fetch: path.join(EXT_BASE, "tools-web-fetch", "index.ts"),
 	safe_bash: path.join(TOOLS_DIR, "safe-bash.ts"),
-	video_extract: path.join(EXT_BASE, "video-extract", "index.ts"),
-	youtube_search: path.join(EXT_BASE, "youtube-search", "index.ts"),
-	google_image_search: path.join(EXT_BASE, "google-image-search", "index.ts"),
 };
 
 // ── Agent Discovery & Registration ────────────────────────────────────
