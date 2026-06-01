@@ -16,7 +16,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { isSafeName } from "./_shared/security.ts";
+import { isSafeName } from "../_shared/security.ts";
 
 const PROFILES_DIR = path.join(os.homedir(), ".pi", "profiles");
 const ACTIVE_PROFILE_FILE = path.join(os.homedir(), ".pi", "active-profile");
