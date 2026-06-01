@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { redactSecrets, containsLikelySecret } from "./_shared/security.ts";
+import { redactSecrets, containsLikelySecret } from "../_shared/security.ts";
 
 const HISTORY_FILE = path.join(os.homedir(), ".pi", "prompt-history.jsonl");
 const SETTINGS_FILE = path.join(os.homedir(), ".pi", "prompt-history-settings.json");
