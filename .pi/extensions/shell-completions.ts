@@ -139,10 +139,21 @@ export default function (pi: ExtensionAPI) {
 						return;
 				}
 
+				if (ctx.hasUI) {
+					const confirmed = await ctx.ui.confirm(
+						"Install shell completions?",
+						`This will update ${rcFile}. A .bak backup will be created when the file already exists. Continue?`,
+					);
+					if (!confirmed) return;
+				}
+
 				// Write to file
 				try {
 					const dir = path.dirname(rcFile);
 					if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+					if (fs.existsSync(rcFile)) {
+						fs.copyFileSync(rcFile, `${rcFile}.bak`);
+					}
 
 					if (detectedShell === "fish") {
 						fs.writeFileSync(rcFile, completion);

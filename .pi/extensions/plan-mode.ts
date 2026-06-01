@@ -64,9 +64,7 @@ export default function (pi: ExtensionAPI) {
 	// ── Status Widget ─────────────────────────────────────────────────────
 
 	pi.on("turn_end", async (_event, ctx) => {
-		if (planState.active) {
-			ctx.ui.setStatus("plan", "📋 PLAN MODE");
-		}
+		ctx.ui.setStatus("plan", planState.active ? "📋 PLAN MODE" : undefined);
 	});
 
 	// ── Inject plan mode into system prompt ───────────────────────────────
@@ -77,6 +75,22 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ── Command: /plan ────────────────────────────────────────────────────
+
+	pi.registerShortcut("shift+tab", {
+		description: "Toggle plan mode",
+		handler: async (ctx) => {
+			// Toggle plan mode
+			if (planState.active) {
+				planState = { active: false, setAt: Date.now() };
+				persist();
+				ctx.ui.notify("Plan mode exited.", "info");
+			} else {
+				planState = { active: true, setAt: Date.now() };
+				persist();
+				ctx.ui.notify("📋 Plan mode active. The agent will propose before implementing.", "info");
+			}
+		},
+	});
 
 	pi.registerCommand("plan", {
 		description: "Enter plan mode - propose before implementing",

@@ -5,7 +5,9 @@ A pi extension that registers a single `subagent` tool with three agents:
 | Agent | Tools | Model | Purpose |
 |-------|-------|-------|---------|
 | **scout** | read, grep, find, ls | claude-haiku-4-5 | Fast codebase recon |
-| **researcher** | web_search, web_fetch | claude-sonnet-4-6 | Web research |
+| **researcher** | ddg_search, ddg_fetch | claude-sonnet-4-6 | Web research |
+
+The researcher uses the local `ddg_search` and `ddg_fetch` tools to avoid conflicts with other installed web-search packages.
 | **worker** | read, write, edit, safe_bash | claude-sonnet-4-6 | Code changes |
 
 ## Usage
@@ -24,6 +26,8 @@ A pi extension that registers a single `subagent` tool with three agents:
 ```
 
 Max 4 concurrent subagents (configurable). Each runs as an isolated `pi` process with no inherited context — all context must be in the task description.
+
+Use `/subagents status` to verify discovered agents, configured tools, extension paths, and missing dependencies.
 
 ## Config
 
@@ -49,7 +53,7 @@ Create markdown files with YAML frontmatter in your extension's directory (e.g. 
 ---
 name: my-agent
 description: Does a specific thing
-tools: web_search, video_extract
+tools: ddg_search, video_extract
 model: claude-sonnet-4-20250514
 ---
 
@@ -122,8 +126,8 @@ If your agents need tools beyond the built-in set, those tools must be mapped in
 
 ```typescript
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
-  web_search: path.join(EXT_BASE, "web-search", "index.ts"),
-  web_fetch: path.join(EXT_BASE, "web-fetch", "index.ts"),
+  ddg_search: path.join(EXT_BASE, "web-search", "index.ts"),
+  ddg_fetch: path.join(EXT_BASE, "web-fetch", "index.ts"),
   safe_bash: path.join(TOOLS_DIR, "safe-bash.ts"),
   video_extract: path.join(EXT_BASE, "video-extract", "index.ts"),
   youtube_search: path.join(EXT_BASE, "youtube-search", "index.ts"),

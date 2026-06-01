@@ -82,11 +82,13 @@ function loadConfig(): ExtensionConfig {
 // Built-in tools that pi provides natively (no extension needed)
 const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
 
-// Custom tools that require loading an extension into the subagent process
-const EXT_BASE = path.join(process.env.HOME || "~", ".pi", "agent", "extensions");
+// Custom tools that require loading an extension into the subagent process.
+// This extension lives at .pi/extensions/subagents, so sibling extensions are one directory up.
+const EXT_BASE = path.dirname(EXT_DIR);
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
-	web_search: path.join(EXT_BASE, "web-search", "index.ts"),
-	web_fetch: path.join(EXT_BASE, "web-fetch", "index.ts"),
+	// Use local ddg_* tools to avoid conflicts with separately installed web_search/web_fetch packages.
+	ddg_search: path.join(EXT_BASE, "web-search", "index.ts"),
+	ddg_fetch: path.join(EXT_BASE, "web-fetch", "index.ts"),
 	safe_bash: path.join(TOOLS_DIR, "safe-bash.ts"),
 	video_extract: path.join(EXT_BASE, "video-extract", "index.ts"),
 	youtube_search: path.join(EXT_BASE, "youtube-search", "index.ts"),
@@ -182,9 +184,9 @@ function formatToolPreview(name: string, args: Record<string, unknown>): string 
 			return `find ${(args.pattern as string) || ""}`;
 		case "ls":
 			return `ls ${(args.path as string) || "."}`;
-		case "web_search":
+		case "ddg_search":
 			return `search "${(args.query as string) || ""}"`;
-		case "web_fetch":
+		case "ddg_fetch":
 			return `fetch ${(args.url as string) || ""}`;
 		default: {
 			const s = JSON.stringify(args);
@@ -643,6 +645,28 @@ export default function (pi: ExtensionAPI) {
 	const config = loadConfig();
 	const maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 	agents = loadAgents();
+
+	pi.registerCommand("subagents", {
+		description: "Show subagent status and available agents",
+		handler: async (_args, ctx) => {
+			const lines = [
+				"Subagents status:",
+				`Extensions dir: ${EXT_BASE}`,
+				`Max concurrency: ${maxConcurrency}`,
+				"",
+				"Agents:",
+			];
+			for (const agent of agents) {
+				const missing = agent.tools
+					.filter((tool) => !BUILTIN_TOOLS.has(tool) && (!CUSTOM_TOOL_EXTENSIONS[tool] || !fs.existsSync(CUSTOM_TOOL_EXTENSIONS[tool])))
+					.map((tool) => `${tool}${CUSTOM_TOOL_EXTENSIONS[tool] ? ` (${CUSTOM_TOOL_EXTENSIONS[tool]})` : " (unmapped)"}`);
+				lines.push(`- ${agent.name}: ${agent.description || "(no description)"}`);
+				lines.push(`  tools: ${agent.tools.join(", ") || "none"}`);
+				if (missing.length) lines.push(`  missing: ${missing.join(", ")}`);
+			}
+			ctx.ui.notify(lines.join("\n"), "info");
+		},
+	});
 
 	pi.registerTool({
 		name: "subagent",

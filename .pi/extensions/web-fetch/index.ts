@@ -28,6 +28,9 @@ interface FetchResult {
 	error: string | null;
 }
 
+const fetchCache = new Map<string, { at: number; result: FetchResult }>();
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
 // ── PDF Extraction ───────────────────────────────────────────────────
 
 function isPDF(url: string, contentType?: string): boolean {
@@ -512,6 +515,10 @@ async function fetchAndExtract(
 	if (signal?.aborted) {
 		return { url, title: "", content: "", error: "Aborted" };
 	}
+	const cached = fetchCache.get(url);
+	if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+		return cached.result;
+	}
 
 	try {
 		new URL(url);
@@ -522,7 +529,10 @@ async function fetchAndExtract(
 	const httpResult = await extractViaHttp(url, signal);
 	if (signal?.aborted)
 		return { url, title: "", content: "", error: "Aborted" };
-	if (!httpResult.error) return httpResult;
+	if (!httpResult.error) {
+		fetchCache.set(url, { at: Date.now(), result: httpResult });
+		return httpResult;
+	}
 
 	if (
 		httpResult.error.startsWith("Unsupported content type") ||
@@ -532,7 +542,10 @@ async function fetchAndExtract(
 	}
 
 	const jinaResult = await extractWithJinaReader(url, signal);
-	if (jinaResult) return jinaResult;
+	if (jinaResult) {
+		fetchCache.set(url, { at: Date.now(), result: jinaResult });
+		return jinaResult;
+	}
 	if (signal?.aborted)
 		return { url, title: "", content: "", error: "Aborted" };
 
@@ -545,7 +558,7 @@ async function fetchAndExtract(
 // ── Extension Registration ───────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-	pi.registerTool({
+	const fetchTool = {
 		name: "ddg_fetch",
 		label: "Web Fetch",
 		description:
@@ -555,6 +568,7 @@ export default function (pi: ExtensionAPI) {
 
 		parameters: Type.Object({
 			url: Type.String({ description: "URL to fetch" }),
+			max_chars: Type.Optional(Type.Number({ description: "Maximum characters to return (default: no extra truncation)", minimum: 1000 })),
 		}),
 
 		async execute(_toolCallId, params, signal) {
@@ -567,17 +581,24 @@ export default function (pi: ExtensionAPI) {
 			const header = result.title
 				? `# ${result.title}\n\nSource: ${result.url}\n\n---\n\n`
 				: "";
+			const fullText = header + result.content;
+			const maxChars = typeof params.max_chars === "number" ? params.max_chars : undefined;
+			const text = maxChars && fullText.length > maxChars
+				? fullText.slice(0, maxChars) + `\n\n... [truncated ${fullText.length - maxChars} chars]`
+				: fullText;
 			return {
 				content: [
 					{
 						type: "text" as const,
-						text: header + result.content,
+						text,
 					},
 				],
 				details: {
 					url: result.url,
 					title: result.title,
 					chars: result.content.length,
+					returnedChars: text.length,
+					truncated: text.length < fullText.length,
 				},
 			};
 		},
@@ -646,5 +667,7 @@ export default function (pi: ExtensionAPI) {
 			text.setText(status + "\n" + theme.fg("dim", preview));
 			return text;
 		},
-	});
+	} as const;
+
+	pi.registerTool(fetchTool);
 }

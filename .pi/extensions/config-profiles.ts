@@ -16,6 +16,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { isSafeName } from "./_shared/security.ts";
 
 const PROFILES_DIR = path.join(os.homedir(), ".pi", "profiles");
 const ACTIVE_PROFILE_FILE = path.join(os.homedir(), ".pi", "active-profile");
@@ -73,9 +74,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
-		if (activeProfile !== DEFAULT_PROFILE) {
-			ctx.ui.setStatus("profile", `👤 ${activeProfile}`);
-		}
+		ctx.ui.setStatus("profile", activeProfile !== DEFAULT_PROFILE ? `👤 ${activeProfile}` : undefined);
 	});
 
 	// ── Command: /profile ─────────────────────────────────────────────────
@@ -87,6 +86,10 @@ export default function (pi: ExtensionAPI) {
 			const parts = trimmed.split(/\s+/);
 			const subcmd = parts[0];
 			const profileName = parts.slice(1).join(" ");
+			if (profileName && !isSafeName(profileName)) {
+				ctx.ui.notify("Profile names may only contain letters, numbers, dots, underscores, and dashes.", "warning");
+				return;
+			}
 
 			const profiles = listProfiles();
 

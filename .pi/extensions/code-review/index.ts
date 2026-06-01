@@ -14,6 +14,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { collectWorkingTreeDiff, truncateText } from "../_shared/git.ts";
 
 const REVIEW_CUSTOM_TYPE = "code-review";
 
@@ -45,20 +46,7 @@ async function getGitDiff(
 				return { diff };
 			}
 			case "uncommitted": {
-				const { stdout: staged } = await exec("git", ["diff", "--cached"]);
-				const { stdout: unstaged } = await exec("git", ["diff"]);
-				const { stdout: untrackedFiles } = await exec("git", [
-					"ls-files", "--others", "--exclude-standard",
-				]);
-				let untrackedContent = "";
-				if (untrackedFiles.trim()) {
-					const { stdout: content } = await exec("bash", [
-						"-c",
-						`git ls-files --others --exclude-standard | head -20 | while read f; do echo "--- $f ---"; cat "$f" 2>/dev/null || echo "(binary)"; done`,
-					]);
-					untrackedContent = content;
-				}
-				return { diff: [staged, unstaged, untrackedContent].filter(Boolean).join("\n") || "(no changes)" };
+				return { diff: await collectWorkingTreeDiff(exec, "uncommitted", { includeUntrackedContent: true }) };
 			}
 			case "commit": {
 				const sha = target || "HEAD";
@@ -66,9 +54,7 @@ async function getGitDiff(
 				return { diff };
 			}
 			case "custom": {
-				const { stdout: staged } = await exec("git", ["diff", "--cached"]);
-				const { stdout: unstaged } = await exec("git", ["diff"]);
-				return { diff: [staged, unstaged].filter(Boolean).join("\n") || "(no changes)" };
+				return { diff: await collectWorkingTreeDiff(exec, "custom") };
 			}
 			default:
 				return { diff: "", error: `Unknown review type: ${type}` };
@@ -93,7 +79,8 @@ function buildReviewPrompt(action: string, target: string | undefined, instructi
 	}
 
 	const maxDiff = 20000;
-	const truncated = diff.length > maxDiff ? diff.slice(0, maxDiff) + "\n... (truncated)" : diff;
+	const truncation = truncateText(diff, maxDiff);
+	const truncated = truncation.text;
 	prompt += `### Changes\n\`\`\`diff\n${truncated || "(no changes detected)"}\n\`\`\`\n\n`;
 
 	prompt += `### Review Checklist
