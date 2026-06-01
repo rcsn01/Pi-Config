@@ -1,26 +1,28 @@
 # Minimal Subagents
 
-A pi extension that registers a single `subagent` tool with three agents:
+A pi extension that registers a single `subagent` tool with these agents:
 
 | Agent | Tools | Model | Purpose |
 |-------|-------|-------|---------|
-| **scout** | read, grep, find, ls | claude-haiku-4-5 | Fast codebase recon |
+| **default** | read, bash | claude-haiku-4-5 | General delegated work |
+| **explorer** | read, grep, find, ls | claude-haiku-4-5 | Fast read-only codebase investigation |
 | **researcher** | ddg_search, ddg_fetch | claude-sonnet-4-6 | Web research |
+| **worker** | read, write, edit, safe_bash | claude-sonnet-4-6 | Code changes |
+| **guardian** | none | claude-haiku-4-5 | Internal action safety review |
 
 The researcher uses the local `ddg_search` and `ddg_fetch` tools to avoid conflicts with other installed web-search packages.
-| **worker** | read, write, edit, safe_bash | claude-sonnet-4-6 | Code changes |
 
 ## Usage
 
 **Single mode:**
 ```json
-{ "agent": "scout", "task": "Find all auth-related files in src/" }
+{ "agent": "explorer", "task": "Find all auth-related files in src/" }
 ```
 
 **Parallel mode:**
 ```json
 { "tasks": [
-  { "agent": "scout", "task": "Map the database layer" },
+  { "agent": "explorer", "task": "Map the database layer" },
   { "agent": "researcher", "task": "Best practices for connection pooling" }
 ]}
 ```
@@ -53,7 +55,7 @@ Create markdown files with YAML frontmatter in your extension's directory (e.g. 
 ---
 name: my-agent
 description: Does a specific thing
-tools: ddg_search, video_extract
+tools: ddg_search
 model: claude-sonnet-4-20250514
 ---
 
@@ -126,12 +128,9 @@ If your agents need tools beyond the built-in set, those tools must be mapped in
 
 ```typescript
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
-  ddg_search: path.join(EXT_BASE, "web-search", "index.ts"),
-  ddg_fetch: path.join(EXT_BASE, "web-fetch", "index.ts"),
+  ddg_search: path.join(EXT_BASE, "tools-web-search", "index.ts"),
+  ddg_fetch: path.join(EXT_BASE, "tools-web-fetch", "index.ts"),
   safe_bash: path.join(TOOLS_DIR, "safe-bash.ts"),
-  video_extract: path.join(EXT_BASE, "video-extract", "index.ts"),
-  youtube_search: path.join(EXT_BASE, "youtube-search", "index.ts"),
-  google_image_search: path.join(EXT_BASE, "google-image-search", "index.ts"),
 };
 ```
 

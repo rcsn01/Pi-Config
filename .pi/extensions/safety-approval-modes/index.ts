@@ -27,6 +27,7 @@ import {
 	isNetworkToolName,
 	isPathWithinCwd,
 	isReadOnlyShellCommand,
+	isSensitivePath,
 	loadExecPolicy,
 	resolveToolPath,
 	runSandboxedCommand,
@@ -59,13 +60,15 @@ const PATH_FIELDS = ["path", "file", "output", "target", "dest", "destination", 
 
 export default function (pi: ExtensionAPI) {
 	let mode: ModeState = { mode: "default", setAt: Date.now() };
-	let sandboxState: SandboxState = { mode: "danger-full-access", setAt: Date.now() };
+	let sandboxState: SandboxState = { mode: "workspace-write", setAt: Date.now() };
+	let lastDeniedAction: { key: string; title: string; message: string; at: number } | undefined;
+	const oneShotApprovals = new Set<string>();
 
 	// ── Persistence ────────────────────────────────────────────────────
 
 	function reconstruct(ctx: ExtensionContext) {
 		mode = { mode: "default", setAt: Date.now() };
-		sandboxState = { mode: "danger-full-access", setAt: Date.now() };
+		sandboxState = { mode: "workspace-write", setAt: Date.now() };
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom") continue;
 			if (entry.customType === MODE_CUSTOM_TYPE) {
@@ -129,6 +132,14 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		return paths.filter(Boolean);
+	}
+
+	function actionKey(toolName: string, input: unknown): string {
+		return `${toolName}:${JSON.stringify(input ?? {})}`;
+	}
+
+	function rememberDenied(toolName: string, input: unknown, title: string, message: string) {
+		lastDeniedAction = { key: actionKey(toolName, input), title, message, at: Date.now() };
 	}
 
 	// ── Approval helpers ───────────────────────────────────────────────
@@ -327,6 +338,12 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx));
 
 	pi.on("tool_call", async (event, ctx) => {
+		const key = actionKey(event.toolName, event.input);
+		if (oneShotApprovals.has(key)) {
+			oneShotApprovals.delete(key);
+			return;
+		}
+
 		// ── ExecPolicy check (bash only, all modes) ────────────────────
 		if (isToolCallEventType("bash", event)) {
 			const command = event.input.command || "";
@@ -345,7 +362,10 @@ export default function (pi: ExtensionAPI) {
 						policy.matched ? "Execpolicy Check" : "Execpolicy - Default Prompt",
 						`${policy.matched ? `Rule matched: ${policy.rule?.reason || policy.rule?.pattern}` : "No allow rule matched; default action is prompt."}\n\nCommand: ${command.slice(0, 200)}\n\nProceed?`,
 					);
-					if (!proceed) return { block: true, reason: "User declined via execpolicy prompt." };
+					if (!proceed) {
+						rememberDenied(event.toolName, event.input, "Execpolicy Check", command.slice(0, 200));
+						return { block: true, reason: "User declined via execpolicy prompt." };
+					}
 				}
 			}
 		}
@@ -382,6 +402,22 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		// ── Sensitive path reads for default / auto-review ─────────────
+		if ((mode.mode === "default" || mode.mode === "auto-review") &&
+			PATH_READ_TOOLS.has(event.toolName)) {
+			const inputPaths = extractPathsFromInput(event.toolName, event.input);
+			for (const inputPath of inputPaths) {
+				if (inputPath && isSensitivePath(inputPath)) {
+					const message = `Tool \`${event.toolName}\` appears to read a sensitive path.\n\nPath: ${inputPath}`;
+					const { allowed, reason } = await requestApproval(ctx, "Sensitive Path", message);
+					if (!allowed) {
+						rememberDenied(event.toolName, event.input, "Sensitive Path", message);
+						return { block: true, reason: reason ?? "Sensitive path access blocked." };
+					}
+				}
+			}
+		}
+
 		// ── Bash-specific checks across modes ──────────────────────────
 		if (isToolCallEventType("bash", event)) {
 			const command = event.input.command || "";
@@ -404,7 +440,10 @@ export default function (pi: ExtensionAPI) {
 						"Dangerous Command",
 						`${mode.mode === "default" ? "Default" : "Auto-review"} mode detected: ${dangerReason}\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
 					);
-					if (!allowed) return { block: true, reason: reason ?? "Blocked." };
+					if (!allowed) {
+						rememberDenied(event.toolName, event.input, "Dangerous Command", trimmedCmd.slice(0, 200));
+						return { block: true, reason: reason ?? "Blocked." };
+					}
 				}
 
 				// Network command detection
@@ -414,7 +453,10 @@ export default function (pi: ExtensionAPI) {
 						"Network Access",
 						`Command appears to require network access.\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
 					);
-					if (!allowed) return { block: true, reason: reason ?? "Network access blocked." };
+					if (!allowed) {
+						rememberDenied(event.toolName, event.input, "Network Access", trimmedCmd.slice(0, 200));
+						return { block: true, reason: reason ?? "Network access blocked." };
+					}
 				}
 			}
 		}
@@ -427,7 +469,10 @@ export default function (pi: ExtensionAPI) {
 				"Network Tool",
 				`Tool \`${event.toolName}\` requires network access.`,
 			);
-			if (!allowed) return { block: true, reason: reason ?? "Network access blocked." };
+			if (!allowed) {
+				rememberDenied(event.toolName, event.input, "Network Tool", `Tool \`${event.toolName}\` requires network access.`);
+				return { block: true, reason: reason ?? "Network access blocked." };
+			}
 		}
 
 		// ── External path writes for default / auto-review ─────────────
@@ -441,7 +486,10 @@ export default function (pi: ExtensionAPI) {
 						"External Path",
 						`${mode.mode === "default" ? "Default" : "Auto-review"} mode: path "${inputPath}" is outside workspace.\nAllow write?`,
 					);
-					if (!allowed) return { block: true, reason: reason ?? "Write to external path blocked." };
+					if (!allowed) {
+						rememberDenied(event.toolName, event.input, "External Path", inputPath);
+						return { block: true, reason: reason ?? "Write to external path blocked." };
+					}
 				}
 				// Also catch non-external paths that are still outside cwd
 				if (inputPath && !isPathWithinCwd(inputPath, ctx.cwd) && !isExternalWritePath(inputPath)) {
@@ -451,7 +499,10 @@ export default function (pi: ExtensionAPI) {
 						"External Path",
 						`${mode.mode === "default" ? "Default" : "Auto-review"} mode: path "${inputPath}" (resolved: ${resolved}) is outside workspace.\nAllow write?`,
 					);
-					if (!allowed) return { block: true, reason: reason ?? "Write to external path blocked." };
+					if (!allowed) {
+						rememberDenied(event.toolName, event.input, "External Path", inputPath);
+						return { block: true, reason: reason ?? "Write to external path blocked." };
+					}
 				}
 			}
 		}
@@ -517,6 +568,23 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			await switchMode(requestedMode, ctx);
+		},
+	});
+
+	pi.registerCommand("approve", {
+		description: "Allow the last denied action once, then retry it",
+		handler: async (_args, ctx) => {
+			if (!lastDeniedAction) {
+				ctx.ui.notify("No denied action to approve.", "info");
+				return;
+			}
+			const approved = lastDeniedAction;
+			lastDeniedAction = undefined;
+			oneShotApprovals.add(approved.key);
+			ctx.ui.notify(
+				`Approved once: ${approved.title}\nRetry the same action now. This approval will be consumed by the next matching tool call.`,
+				"info",
+			);
 		},
 	});
 
