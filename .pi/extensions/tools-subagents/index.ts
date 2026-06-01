@@ -1,7 +1,7 @@
 /**
  * Minimal subagents extension.
  *
- * Registers a single `subagent` tool with three agents: scout, researcher, worker.
+ * Registers a single `subagent` tool with agents such as explorer, worker, default, researcher, and guardian.
  * Supports single and parallel execution. Output is verbal only (no file handoff).
  */
 import { spawn } from "node:child_process";
@@ -676,7 +676,7 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Run subagents for delegated tasks",
 		promptGuidelines: [
 			"Parallel tool calls are your primary parallelism mechanism — put multiple independent read/fetch/search calls in one function_calls block. Don't use subagents to parallelize simple I/O.",
-			"Use subagent to delegate *reasoning and decisions*: codebase exploration (scout), web research (researcher), or isolated code changes (worker)",
+			"Use subagent to delegate only when it materially improves progress: explorer for read-only codebase investigation, worker for bounded implementation or verification, default for small general tasks, researcher for web research.",
 			"For multiple independent subagent tasks, use parallel mode with tasks[] array",
 			"Subagents have NO context from the current conversation — include ALL necessary context in the task description",
 		],

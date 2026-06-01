@@ -4,7 +4,7 @@
  * Four approval modes:
  *   /permissions read-only    — Read-only browsing in current directory
  *   /permissions default      — Workspace-write with user approval prompts
- *   /permissions auto-review  — Workspace-write with subagent-reviewed approvals
+ *   /permissions auto-review  — Workspace-write with guardian-subagent-reviewed approvals
  *   /permissions full-access  — No restrictions (dangerous; confirm to enable)
  *
  * Preserves:
@@ -54,13 +54,6 @@ const WRITE_TOOLS = new Set(["bash", "write", "edit"]);
 const ALL_PATH_TOOLS = new Set([...PATH_READ_TOOLS, "write", "edit", "ls"]);
 // Field names that might contain paths
 const PATH_FIELDS = ["path", "file", "output", "target", "dest", "destination", "dir", "directory"];
-
-// ── Auto-reviewer prompt path ─────────────────────────────────────────
-
-const REVIEWER_PROMPT_PATH = path.join(
-	path.dirname(new URL(import.meta.url).pathname),
-	"auto-reviewer.md",
-);
 
 // ── Extension ──────────────────────────────────────────────────────────
 
@@ -162,21 +155,52 @@ export default function (pi: ExtensionAPI) {
 				const ok = await ctx.ui.confirm(title, `${message}\n\nProceed?`);
 				return { allowed: ok, reason: ok ? undefined : "User declined." };
 
-			case "auto-review":
-				return await runAutoReviewer(title, message);
+			case "auto-review": {
+				const review = await runAutoReviewer(title, message);
+				if (!review.needsUserApproval) return review;
+				if (!ctx.hasUI) return { allowed: false, reason: review.reason || "Guardian requested user approval, but no UI is available." };
+				const ok = await ctx.ui.confirm(title, `${message}\n\nGuardian requested explicit user approval.\n${review.reason || ""}\n\nProceed?`);
+				return { allowed: ok, reason: ok ? "Approved by user after Guardian review." : "User declined after Guardian review." };
+			}
 
 			case "full-access":
 				return { allowed: true };
 		}
 	}
 
-	// ── Auto-reviewer subprocess ───────────────────────────────────────
+	// ── Guardian auto-reviewer ────────────────────────────────────────────
 
 	async function runAutoReviewer(
 		title: string,
 		message: string,
-	): Promise<{ allowed: boolean; reason?: string }> {
-		const promptContent = `${title}\n\n${message}`;
+	): Promise<{ allowed: boolean; reason?: string; needsUserApproval?: boolean }> {
+		const task = `Evaluate this action for safety. Title: ${title}\n\n${message}`;
+
+		// Read guardian agent config
+		const extDir = path.dirname(new URL(import.meta.url).pathname);
+		const agentsDir = path.join(path.dirname(extDir), "tools-subagents", "agents");
+		const guardianPath = path.join(agentsDir, "guardian.md");
+
+		let systemPrompt = "";
+		let model = "anthropic/claude-haiku-4-5";
+		let tools = "";
+
+		try {
+			const guardianContent = fs.readFileSync(guardianPath, "utf-8");
+			// Parse YAML frontmatter
+			const fmMatch = guardianContent.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+			if (fmMatch) {
+				const fm = fmMatch[1];
+				systemPrompt = fmMatch[2].trim();
+				for (const line of fm.split("\n")) {
+					if (line.startsWith("model:")) model = line.split(":").slice(1).join(":").trim();
+					if (line.startsWith("tools:")) tools = line.split(":").slice(1).join(":").trim();
+				}
+			}
+		} catch {
+			// Guardian not found — fail closed
+			return { allowed: false, reason: "Guardian agent not found; blocked for safety." };
+		}
 
 		// Resolve pi binary
 		const entry = process.argv[1];
@@ -192,6 +216,10 @@ export default function (pi: ExtensionAPI) {
 			} catch {}
 		}
 
+		const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-guardian-"));
+		const promptPath = path.join(tempDir, "guardian.md");
+		await fs.promises.writeFile(promptPath, systemPrompt, { encoding: "utf-8", mode: 0o600 });
+
 		const args = [
 			...baseArgs,
 			"--mode", "json",
@@ -199,11 +227,17 @@ export default function (pi: ExtensionAPI) {
 			"--no-session",
 			"--no-extensions",
 			"--no-skills",
-			"--no-tools",
-			"--models", "anthropic/claude-haiku-4-5",
-			"--append-system-prompt", REVIEWER_PROMPT_PATH,
-			`Review this approval request and respond APPROVE or DENY with a reason:\n\n${promptContent}`,
 		];
+		if (tools) {
+			args.push("--tools", tools);
+		} else {
+			args.push("--no-tools");
+		}
+		args.push(
+			"--models", model,
+			"--append-system-prompt", promptPath,
+			task,
+		);
 
 		try {
 			const output = await new Promise<string>((resolve, reject) => {
@@ -222,47 +256,67 @@ export default function (pi: ExtensionAPI) {
 				proc.on("close", () => resolve(stdout));
 			});
 
-			// Parse the JSON stream output to find the final assistant message
+			// Parse JSON stream to find the final assistant message
+			let content = "";
 			const lines = output.split("\n");
 			for (const line of lines) {
 				if (!line.trim()) continue;
 				try {
 					const evt = JSON.parse(line);
 					if (evt.type === "message_end" && evt.message?.role === "assistant") {
-						const content = typeof evt.message.content === "string"
-							? evt.message.content
-							: Array.isArray(evt.message.content)
-								? evt.message.content
-									.filter((c: any) => c.type === "text")
-									.map((c: any) => c.text)
-									.join("\n")
+						const msg = evt.message.content;
+						content = typeof msg === "string"
+							? msg
+							: Array.isArray(msg)
+								? msg.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n")
 								: "";
-
-						const normalized = content.trim().toUpperCase();
-						if (normalized.startsWith("APPROVE")) {
-							const reason = content.replace(/^APPROVE:?\s*/i, "").trim() || "Approved by reviewer.";
-							return { allowed: true, reason };
-						}
-						if (normalized.startsWith("DENY")) {
-							const reason = content.replace(/^DENY:?\s*/i, "").trim() || "Denied by reviewer.";
-							return { allowed: false, reason };
-						}
-						// Fallback: try to find APPROVE/DENY anywhere
-						if (normalized.includes("APPROVE")) return { allowed: true, reason: "Approved by reviewer." };
-						if (normalized.includes("DENY")) return { allowed: false, reason: "Denied by reviewer." };
 					}
 				} catch {}
 			}
 
-			// If no clear signal, check raw output
-			const upper = output.toUpperCase();
-			if (upper.includes("APPROVE")) return { allowed: true, reason: "Approved by reviewer." };
-			if (upper.includes("DENY")) return { allowed: false, reason: "Denied by reviewer." };
+			if (!content.trim()) {
+				return { allowed: false, reason: "Guardian returned no response; blocked for safety." };
+			}
 
-			// Timeout or unclear response — fail closed
-			return { allowed: false, reason: "Reviewer returned ambiguous response; blocked for safety." };
+			// Try to parse the guardian's JSON verdict
+			try {
+				const verdict = JSON.parse(content.trim());
+				if (verdict.outcome === "allow") {
+					return { allowed: true, reason: verdict.rationale || "Guardian: low risk, allowed." };
+				}
+				if (verdict.outcome === "deny" || verdict.outcome === "needs_user_approval") {
+					const parts: string[] = [];
+					if (verdict.risk_level) parts.push(`risk: ${verdict.risk_level}`);
+					if (verdict.user_authorization) parts.push(`auth: ${verdict.user_authorization}`);
+					if (verdict.outcome === "needs_user_approval") parts.push("needs user approval");
+					if (verdict.rationale) parts.push(verdict.rationale);
+					return {
+						allowed: false,
+						needsUserApproval: verdict.outcome === "needs_user_approval",
+						reason: parts.join(" | ") || "Guardian: denied.",
+					};
+				}
+			} catch {}
+
+			// Fallback: look for allow/deny in text
+			const normalized = content.trim().toUpperCase();
+			if (normalized.includes('"allow"') || normalized.includes('"outcome":"allow"')) {
+				return { allowed: true, reason: "Guardian: allowed (parsed from text)." };
+			}
+			if (normalized.includes("NEEDS_USER_APPROVAL")) {
+				return { allowed: false, needsUserApproval: true, reason: "Guardian: needs user approval." };
+			}
+			if (normalized.includes("DENY") || normalized.includes('"deny"')) {
+				return { allowed: false, reason: "Guardian: denied." };
+			}
+
+			// Unclear response - fail closed
+			return { allowed: false, reason: "Guardian returned ambiguous response; blocked for safety." };
 		} catch (err: any) {
-			return { allowed: false, reason: `Reviewer error: ${err.message || String(err)}` };
+			return { allowed: false, reason: `Guardian error: ${err.message || String(err)}` };
+		} finally {
+			// Cleanup temp dir
+			try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
 		}
 	}
 
@@ -409,7 +463,7 @@ export default function (pi: ExtensionAPI) {
 		const modeInstructions: Record<ApprovalMode, string> = {
 			"read-only": `\n\n## Permission Mode: READ-ONLY\nYou are in read-only browsing mode, limited to the current directory.\n- You CAN read files, search code, list directories, and run read-only commands within ${event.systemPrompt.includes("cwd") ? "the workspace" : "the current directory"}.\n- You CANNOT modify files, run write commands, execute shell commands that change the system, or access the network.\n- Do NOT attempt to use write, edit, or bash for destructive operations.\n- Inform the user if a task requires write access. They can switch mode with /permissions default.`,
 			default: `\n\n## Permission Mode: DEFAULT\nYou may read, write, and edit files within the current workspace, and run commands.\nApproval is required to:\n- Access the internet (curl, fetch, package installs, git push/pull/clone, etc.)\n- Write or edit files outside the workspace\n- Run dangerous commands (sudo, rm -rf, curl piped to shell)\nPrefer safe alternatives when possible.`,
-			"auto-review": `\n\n## Permission Mode: AUTO-REVIEW\nSame workspace-write permissions as Default, but eligible approval requests are routed through an automatic reviewer subagent instead of prompting the user.\nYou may read, write, and edit files within the workspace.\nActions requiring network access, external writes, or dangerous commands will be reviewed automatically and may be denied without user involvement.`,
+			"auto-review": `\n\n## Permission Mode: AUTO-REVIEW\nSame workspace-write permissions as Default, but approval requests are routed through the Guardian safety subagent before execution.\nThe Guardian evaluates risk (data exfiltration, credential probing, destructive actions, security weakening) and user authorization before deciding to allow, deny, or request explicit user approval.\nYou may read, write, and edit files within the workspace.\nActions requiring network access, external writes, or dangerous commands will be reviewed by the Guardian and may be denied or escalated to the user.`,
 			"full-access": `\n\n## Permission Mode: FULL ACCESS\nNo restrictions. You have full access to read, write, and execute any command, including network access and writing outside the workspace.\nExercise caution and always inform the user of destructive operations.`,
 		};
 		return { systemPrompt: event.systemPrompt + modeInstructions[mode.mode] };
@@ -433,7 +487,7 @@ export default function (pi: ExtensionAPI) {
 			const modeLabels: Record<ApprovalMode, string> = {
 				"read-only": "Read-only browsing – read in current directory only",
 				default: "Default – read, edit, and run commands in workspace; approval for internet and external writes",
-				"auto-review": "Auto-review – same as Default but approvals are auto-reviewed by a subagent",
+				"auto-review": "Auto-review – same as Default but approvals are reviewed by the Guardian safety subagent",
 				"full-access": "Full Access – no restrictions, no approval prompts (use with caution)",
 			};
 
