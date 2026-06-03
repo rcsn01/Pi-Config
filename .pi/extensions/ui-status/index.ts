@@ -57,14 +57,12 @@ export default function (pi: ExtensionAPI) {
 
 			const cwd = ctx.cwd;
 			const modeState = latestCustom<{ mode?: string }>(entries, "approval-mode-state");
-			const sandboxState = latestCustom<{ mode?: string }>(entries, "sandbox-state");
 			const goalState = latestCustom<{ state?: { objective?: string; status?: string } }>(entries, "goal-state")?.state;
 			const todoDetails = latestToolDetails<{ todos?: Array<{ status?: string }> }>(entries, "todo");
 			const subagentDetails = latestToolDetails<{ results?: Array<{ progress?: { status?: string } }> }>(entries, "subagent");
 			const model = latestAssistantModel(entries);
 
 			const permissionMode = modeState?.mode || "default";
-			const sandboxMode = sandboxState?.mode || "workspace-write";
 			const todos = todoDetails?.todos || [];
 			const activeTodos = todos.filter((t) => t.status !== "completed" && t.status !== "cancelled").length;
 			const activeGoal = goalState && goalState.status !== "cleared" && goalState.status !== "completed"
@@ -76,7 +74,7 @@ export default function (pi: ExtensionAPI) {
 			if (brief) {
 				const lines = [
 					`Session: ${sessionFile || "ephemeral"} | ${entryCount} entries | ${userMessages} prompts`,
-					`Mode: ${permissionMode} | Sandbox: ${sandboxMode}`,
+					`Mode: ${permissionMode}`,
 					usage ? `Context: ~${Math.round(usage.tokens / 1000)}k tokens` : "",
 					`Cwd: ${cwd}`,
 				].filter(Boolean);
@@ -92,7 +90,6 @@ export default function (pi: ExtensionAPI) {
 				`Directory:    ${cwd}`,
 				`Model:        ${model || "unknown"}`,
 				`Permissions:  ${permissionMode}`,
-				`Sandbox:      ${sandboxMode}`,
 				`Todos:        ${activeTodos} active, ${todos.length} total`,
 				`Goal:         ${activeGoal}`,
 				`Subagents:    ${runningSubagents} running${subagents.length ? `, ${subagents.length} in last run` : ""}`,

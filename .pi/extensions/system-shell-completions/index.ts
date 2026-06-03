@@ -21,7 +21,7 @@ _pi_completions() {
   cur="\${COMP_WORDS[COMP_CWORD]}"
   prev="\${COMP_WORDS[COMP_CWORD-1]}"
 
-  opts="-h --help -v --version -p --print -r --resume -c --continue -e --extension --model --cd -n --name --no-session --fork --session --system-prompt --sandbox"
+  opts="-h --help -v --version -p --print -r --resume -c --continue -e --extension --model --cd -n --name --no-session --fork --session --system-prompt"
 
   if [[ \${cur} == -* ]]; then
     COMPREPLY=( $(compgen -W "\${opts}" -- \${cur}) )
@@ -70,7 +70,6 @@ _pi() {
     '--fork[Fork session]:session file:_files'
     '--session[Session to use]:session file:_files'
     '--system-prompt[Custom system prompt]:prompt:'
-    '--sandbox[Sandbox mode]:(read-only workspace-write danger-full-access)'
   )
   _arguments -S $opts
 }
@@ -93,7 +92,7 @@ complete -c pi -l no-session -d "Ephemeral mode"
 complete -c pi -l fork -d "Fork session" -r
 complete -c pi -l session -d "Session to use" -r
 complete -c pi -l system-prompt -d "Custom system prompt" -r
-complete -c pi -l sandbox -d "Sandbox mode" -r -a "read-only workspace-write danger-full-access"`;
+`;
 }
 
 export default function (pi: ExtensionAPI) {
