@@ -9,6 +9,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Local sibling projects
+OpenSe/
+Deployment/
+
 # Environment
 .env
 .env.local
