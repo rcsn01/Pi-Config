@@ -52,19 +52,6 @@ interface LegacyTodo {
 
 // ─── Status helpers ──────────────────────────────────────────────────────────
 
-const STATUS_ORDER: Record<TodoStatus, number> = {
-	in_progress: 0,
-	pending: 1,
-	completed: 2,
-	cancelled: 3,
-};
-
-function sortTodos(todos: Todo[]): Todo[] {
-	return [...todos].sort((a, b) => {
-		return STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
-	});
-}
-
 function statusIcon(status: TodoStatus): string {
 	switch (status) {
 		case "pending":
@@ -92,7 +79,7 @@ function buildTodoViewModel(todos: Todo[], includeCancelled = true): TodoViewMod
 	return {
 		all,
 		nonCancelled,
-		ordered: sortTodos(source),
+		ordered: [...source],
 		counts: {
 			in_progress: source.filter((t) => t.status === "in_progress").length,
 			pending: source.filter((t) => t.status === "pending").length,
@@ -136,23 +123,25 @@ function renderTodoLine(todo: Todo, theme: Theme, explanationLimit?: number): st
 
 function selectWidgetTodos(vm: TodoViewModel): Todo[] {
 	const allNonCancelled = vm.nonCancelled;
-	const uncompleted = sortTodos(allNonCancelled.filter((t) => t.status !== "completed"));
-	const completed = allNonCancelled
-		.filter((t) => t.status === "completed")
-		.sort((a, b) => Number(b.id) - Number(a.id));
+	if (allNonCancelled.length <= 5) return allNonCancelled;
 
-	if (allNonCancelled.length <= 8) return sortTodos(allNonCancelled);
-	if (uncompleted.length <= 4) return sortTodos(allNonCancelled).slice(-8);
+	const progressIndex = allNonCancelled.findIndex((t) => t.status !== "completed");
+	if (progressIndex === -1) return allNonCancelled.slice(-5);
 
-	const display = [
-		...completed.slice(0, 3),
-		...uncompleted.filter((t) => t.status === "in_progress").slice(0, 1),
-		...uncompleted.filter((t) => t.status === "pending").slice(0, 4),
-	];
+	let start = Math.max(0, progressIndex - 2);
+	let end = Math.min(allNonCancelled.length, progressIndex + 3);
 
-	if (display.length >= 8) return display;
-	const shownIds = new Set(display.map((t) => t.id));
-	return [...display, ...sortTodos(allNonCancelled.filter((t) => !shownIds.has(t.id))).slice(0, 8 - display.length)];
+	while (end - start < 5) {
+		if (start > 0) {
+			start--;
+		} else if (end < allNonCancelled.length) {
+			end++;
+		} else {
+			break;
+		}
+	}
+
+	return allNonCancelled.slice(start, end);
 }
 
 /** Migrate a legacy {done: boolean} entry to the new {status} shape */
@@ -327,33 +316,19 @@ export default function (pi: ExtensionAPI) {
 
 					const lines: string[] = [];
 					const vm = buildTodoViewModel(todos, false);
-					const completed = vm.nonCancelled.filter((t) => t.status === "completed");
 					const counts = vm.counts;
+					const display = selectWidgetTodos(vm);
 					const countParts: string[] = [];
 					if (counts.in_progress) countParts.push(theme.fg("accent", `${counts.in_progress} active`));
 					if (counts.pending) countParts.push(theme.fg("muted", `${counts.pending} pending`));
 					if (counts.completed) countParts.push(theme.fg("success", `${counts.completed} done`));
+					if (vm.nonCancelled.length > display.length) countParts.push(theme.fg("dim", `showing ${display.length}/${vm.nonCancelled.length}`));
 
 					const header = theme.fg("accent", "Todos") + " " + theme.fg("dim", countParts.join(theme.fg("dim", " · ")));
 					lines.push(truncateToWidth(`  ${header}`, width));
 
-					const display = selectWidgetTodos(vm);
-
 					for (const t of display) {
 						lines.push(truncateToWidth(`  ${renderTodoLine(t, theme, 40)}`, width));
-					}
-
-					// Show overflow count
-					const shownIds = new Set(display.map((t) => t.id));
-					const overflowDone = completed.filter((t) => !shownIds.has(t.id)).length;
-					const overflowPending = vm.nonCancelled.filter((t) => t.status === "pending" && !shownIds.has(t.id)).length;
-					const overflowInProgress = vm.nonCancelled.filter((t) => t.status === "in_progress" && !shownIds.has(t.id)).length;
-					if (overflowDone || overflowPending || overflowInProgress) {
-						const overflowParts: string[] = [];
-						if (overflowDone) overflowParts.push(`${overflowDone} more done`);
-						if (overflowInProgress) overflowParts.push(`${overflowInProgress} more active`);
-						if (overflowPending) overflowParts.push(`${overflowPending} more pending`);
-						lines.push(truncateToWidth(`  ${theme.fg("dim", `… ${overflowParts.join(", ")}`)}`, width));
 					}
 
 					cachedWidth = width;
@@ -586,7 +561,6 @@ export default function (pi: ExtensionAPI) {
 // ─── System Prompt Builder ───────────────────────────────────────────────────
 
 function buildActiveTodoPrompt(todos: Todo[]): string {
-	const sorted = sortTodos(todos);
 	const counts = {
 		in_progress: todos.filter((t) => t.status === "in_progress").length,
 		pending: todos.filter((t) => t.status === "pending").length,
@@ -602,7 +576,7 @@ function buildActiveTodoPrompt(todos: Todo[]): string {
 
 	let prompt = `## Active Todo List\n${parts.join(", ")}\n\n`;
 
-	for (const t of sorted) {
+	for (const t of todos) {
 		if (t.status === "cancelled") continue; // skip cancelled in system prompt
 		const icon = statusIcon(t.status);
 		let line = `${icon} #${t.id} ${t.text} (${t.status})`;
