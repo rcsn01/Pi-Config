@@ -304,44 +304,21 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		ctx.ui.setWidget("todo-list", (_tui: any, theme: Theme) => {
-			let cachedWidth: number | undefined;
-			let cachedLines: string[] | undefined;
+		const vm = buildTodoViewModel(todos, false);
+		const counts = vm.counts;
+		const display = selectWidgetTodos(vm);
+		const countParts: string[] = [];
+		if (counts.in_progress) countParts.push(`${counts.in_progress} active`);
+		if (counts.pending) countParts.push(`${counts.pending} pending`);
+		if (counts.completed) countParts.push(`${counts.completed} done`);
+		if (vm.nonCancelled.length > display.length) countParts.push(`showing ${display.length}/${vm.nonCancelled.length}`);
 
-			return {
-				render(width: number): string[] {
-					if (cachedLines && cachedWidth === width) {
-						return cachedLines;
-					}
-
-					const lines: string[] = [];
-					const vm = buildTodoViewModel(todos, false);
-					const counts = vm.counts;
-					const display = selectWidgetTodos(vm);
-					const countParts: string[] = [];
-					if (counts.in_progress) countParts.push(theme.fg("accent", `${counts.in_progress} active`));
-					if (counts.pending) countParts.push(theme.fg("muted", `${counts.pending} pending`));
-					if (counts.completed) countParts.push(theme.fg("success", `${counts.completed} done`));
-					if (vm.nonCancelled.length > display.length) countParts.push(theme.fg("dim", `showing ${display.length}/${vm.nonCancelled.length}`));
-
-					const header = theme.fg("accent", "Todos") + " " + theme.fg("dim", countParts.join(theme.fg("dim", " · ")));
-					lines.push(truncateToWidth(`  ${header}`, width));
-
-					for (const t of display) {
-						lines.push(truncateToWidth(`  ${renderTodoLine(t, theme, 40)}`, width));
-					}
-
-					cachedWidth = width;
-					cachedLines = lines;
-					return lines;
-				},
-
-				invalidate(): void {
-					cachedWidth = undefined;
-					cachedLines = undefined;
-				},
-			};
-		});
+		const lines = [`Todos ${countParts.join(" · ")}`];
+		for (const t of display) {
+			const explanation = t.explanation && t.status !== "pending" ? ` - ${t.explanation.slice(0, 40)}` : "";
+			lines.push(`${statusIcon(t.status)} #${t.id} ${t.text}${explanation}`);
+		}
+		ctx.ui.setWidget("todo-list", lines);
 	}
 
 	// ── Lifecycle hooks to keep widget in sync ──────────────────────────────
