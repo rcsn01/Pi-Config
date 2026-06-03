@@ -34,7 +34,6 @@ interface ExpState {
 const KNOWN_FLAGS: FeatureFlag[] = [
 	{ name: "subagents", description: "Parallel subagent delegation (scout/researcher/worker)", default: true, stage: "experimental", promptHint: "Use subagents to delegate reasoning tasks (scout, researcher, worker)." },
 	{ name: "memories", description: "Read and write persistent project memory (MEMORY.md)", default: false, stage: "experimental", promptHint: "Read and update MEMORY.md for persistent project context when memory is enabled." },
-	{ name: "sandbox", description: "Run commands in sandbox (macOS sandbox-exec / Linux bubblewrap)", default: false, stage: "experimental", promptHint: "Commands may be sandboxed for safety." },
 	{ name: "imagegen", description: "Generate images locally (no API key needed)", default: false, stage: "experimental", promptHint: "Use image_generate tool for image creation." },
 	{ name: "websearch", description: "Search the web via DuckDuckGo (no API key)", default: false, stage: "experimental", promptHint: "Use ddg_search for web queries when needed." },
 	{ name: "unified_exec", description: "Use unified execution model for bash commands", default: false, stage: "experimental" },
@@ -102,13 +101,6 @@ export default function (pi: ExtensionAPI) {
 		pi.appendEntry(EXP_CUSTOM_TYPE, { ...expState });
 	}
 
-	function updateStatus(ctx: ExtensionContext) {
-		const enabledCount = KNOWN_FLAGS
-			.filter((f) => f.stage === "experimental")
-			.filter((f) => getFlag(f.name, expState)).length;
-		ctx.ui.setStatus("experimental", enabledCount > 0 ? `⚙️ ${enabledCount} exp` : undefined);
-	}
-
 	(globalThis as any).__pi_features = {
 		get: (name: string) => getFlag(name, expState),
 		set: setFlag,
@@ -116,9 +108,8 @@ export default function (pi: ExtensionAPI) {
 		list: () => KNOWN_FLAGS.map((flag) => ({ ...flag, enabled: getFlag(flag.name, expState) })),
 	};
 
-	pi.on("session_start", async (_event, ctx) => { reconstruct(ctx); updateStatus(ctx); });
-	pi.on("session_tree", async (_event, ctx) => { reconstruct(ctx); updateStatus(ctx); });
-	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx));
+	pi.on("session_start", async (_event, ctx) => { reconstruct(ctx); });
+	pi.on("session_tree", async (_event, ctx) => { reconstruct(ctx); });
 
 	pi.on("before_agent_start", async (event) => {
 		const hints = KNOWN_FLAGS
@@ -196,7 +187,6 @@ export default function (pi: ExtensionAPI) {
 				expState.features[featName] = subcmd === "on" || subcmd === "enable";
 				expState.setAt = Date.now();
 				persistExperimental();
-				updateStatus(ctx);
 				ctx.ui.notify(`Experimental: ${featName} ${expState.features[featName] ? "ENABLED" : "DISABLED"}`, "info");
 				return;
 			}
@@ -211,7 +201,6 @@ export default function (pi: ExtensionAPI) {
 					expState.features[match.name] = !getFlag(match.name, expState);
 					expState.setAt = Date.now();
 					persistExperimental();
-					updateStatus(ctx);
 					ctx.ui.notify(`${match.name}: ${expState.features[match.name] ? "ENABLED" : "DISABLED"}`, "info");
 					return;
 				}

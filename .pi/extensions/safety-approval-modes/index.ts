@@ -9,7 +9,6 @@
  *
  * Preserves:
  *   /execpolicy  — regex allow/prompt/block rules
- *   /sandbox     — sandboxed ad-hoc command runner and sandbox mode status
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -20,7 +19,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
 	dangerousShellReason,
-	detectSandboxTools,
 	evaluateExecPolicy,
 	isExternalWritePath,
 	isNetworkCommand,
@@ -30,13 +28,10 @@ import {
 	isSensitivePath,
 	loadExecPolicy,
 	resolveToolPath,
-	runSandboxedCommand,
 	saveExecPolicy,
 	type ApprovalMode,
 	type ExecPolicyAction,
 	type ExecPolicyConfig,
-	type SandboxMode,
-	type SandboxState,
 } from "../_shared/command-policy.ts";
 
 interface ModeState {
@@ -45,7 +40,6 @@ interface ModeState {
 }
 
 const MODE_CUSTOM_TYPE = "approval-mode-state";
-const SANDBOX_CUSTOM_TYPE = "sandbox-state";
 
 // Tools that read paths
 const PATH_READ_TOOLS = new Set(["read", "grep", "find"]);
@@ -60,7 +54,6 @@ const PATH_FIELDS = ["path", "file", "output", "target", "dest", "destination", 
 
 export default function (pi: ExtensionAPI) {
 	let mode: ModeState = { mode: "default", setAt: Date.now() };
-	let sandboxState: SandboxState = { mode: "workspace-write", setAt: Date.now() };
 	let lastDeniedAction: { key: string; title: string; message: string; at: number } | undefined;
 	const oneShotApprovals = new Set<string>();
 
@@ -68,7 +61,6 @@ export default function (pi: ExtensionAPI) {
 
 	function reconstruct(ctx: ExtensionContext) {
 		mode = { mode: "default", setAt: Date.now() };
-		sandboxState = { mode: "workspace-write", setAt: Date.now() };
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom") continue;
 			if (entry.customType === MODE_CUSTOM_TYPE) {
@@ -78,19 +70,11 @@ export default function (pi: ExtensionAPI) {
 					mode = { mode: data.mode === "auto" ? "default" : data.mode, setAt: data.setAt };
 				}
 			}
-			if (entry.customType === SANDBOX_CUSTOM_TYPE) {
-				const data = entry.data as SandboxState | undefined;
-				if (data?.mode) sandboxState = data;
-			}
 		}
 	}
 
 	function persistMode() {
 		pi.appendEntry(MODE_CUSTOM_TYPE, { ...mode });
-	}
-
-	function persistSandbox() {
-		pi.appendEntry(SANDBOX_CUSTOM_TYPE, { ...sandboxState });
 	}
 
 	// ── Status display ─────────────────────────────────────────────────
@@ -103,12 +87,6 @@ export default function (pi: ExtensionAPI) {
 			"full-access": "FULL ACCESS",
 		};
 		ctx.ui.setStatus("approval-mode", modeLabels[mode.mode]);
-		const sandboxLabels: Record<SandboxMode, string | undefined> = {
-			"read-only": "SANDBOX: RO",
-			"workspace-write": "SANDBOX: WS",
-			"danger-full-access": undefined,
-		};
-		ctx.ui.setStatus("sandbox", sandboxLabels[sandboxState.mode]);
 	}
 
 	// ── Path extraction from tool inputs ───────────────────────────────
@@ -666,49 +644,4 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// ── /sandbox command ────────────────────────────────────────────────
-
-	pi.registerCommand("sandbox", {
-		description: "Run command in sandbox or change sandbox mode",
-		handler: async (args, ctx) => {
-			const trimmed = (args || "").trim();
-			const parts = trimmed.split(/\s+/);
-			const subcmd = parts[0];
-			const rest = parts.slice(1).join(" ");
-
-			if (subcmd === "mode") {
-				const sandboxMode = rest as SandboxMode;
-				const validModes: SandboxMode[] = ["read-only", "workspace-write", "danger-full-access"];
-				if (!validModes.includes(sandboxMode)) return ctx.ui.notify("Usage: /sandbox mode read-only|workspace-write|danger-full-access", "warning");
-				if (sandboxMode === "danger-full-access" && ctx.hasUI) {
-					const confirmed = await ctx.ui.confirm("⚠️ Full Access Sandbox", "This disables ALL sandbox restrictions. Commands can access anything.\n\nAre you sure?");
-					if (!confirmed) return;
-				}
-				sandboxState = { mode: sandboxMode, setAt: Date.now() };
-				persistSandbox();
-				updateStatus(ctx);
-				ctx.ui.notify(`Sandbox mode: ${sandboxMode}`, "info");
-				return;
-			}
-
-			if (!trimmed || subcmd === "status") {
-				const sandbox = detectSandboxTools();
-				ctx.ui.notify(`Current mode: ${sandboxState.mode}\n${sandbox.available ? `Sandbox available: ${sandbox.tool}` : "No sandbox tools detected"}\nUsage: /sandbox mode <mode> | /sandbox <command>`, "info");
-				return;
-			}
-
-			ctx.ui.notify(`Running in ${sandboxState.mode} sandbox: ${trimmed.slice(0, 80)}...`, "info");
-			const result = await runSandboxedCommand(trimmed, sandboxState.mode, ctx.cwd);
-			ctx.ui.notify([
-				`Sandbox mode: ${sandboxState.mode}`,
-				`Exit code: ${result.code}`,
-				"",
-				"stdout:",
-				result.stdout || "(empty)",
-				"",
-				"stderr:",
-				result.stderr || "(none)",
-			].join("\n"), "info");
-		},
-	});
 }

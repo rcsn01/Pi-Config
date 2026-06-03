@@ -121,7 +121,7 @@ Assess:
 - whether the user authorized the specific side effect
 - whether the action is scoped and reversible
 - whether there are safer alternatives
-- whether policy or sandbox rules allow it
+- whether policy rules allow it
 
 Risk levels:
 
