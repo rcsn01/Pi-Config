@@ -78,6 +78,83 @@ function statusIcon(status: TodoStatus): string {
 	}
 }
 
+interface TodoViewModel {
+	all: Todo[];
+	nonCancelled: Todo[];
+	ordered: Todo[];
+	counts: Record<TodoStatus, number>;
+}
+
+function buildTodoViewModel(todos: Todo[], includeCancelled = true): TodoViewModel {
+	const all = [...todos];
+	const nonCancelled = all.filter((t) => t.status !== "cancelled");
+	const source = includeCancelled ? all : nonCancelled;
+	return {
+		all,
+		nonCancelled,
+		ordered: sortTodos(source),
+		counts: {
+			in_progress: source.filter((t) => t.status === "in_progress").length,
+			pending: source.filter((t) => t.status === "pending").length,
+			completed: source.filter((t) => t.status === "completed").length,
+			cancelled: source.filter((t) => t.status === "cancelled").length,
+		},
+	};
+}
+
+function renderTodoLine(todo: Todo, theme: Theme, explanationLimit?: number): string {
+	const icon = statusIcon(todo.status);
+	const thKey =
+		todo.status === "in_progress"
+			? "accent"
+			: todo.status === "completed"
+				? "success"
+				: todo.status === "cancelled"
+					? "dim"
+					: "dim";
+	const check = theme.fg(thKey, icon);
+	const id = theme.fg("accent", `#${todo.id}`);
+	const itemText =
+		todo.status === "completed"
+			? theme.fg("dim", todo.text)
+			: todo.status === "cancelled"
+				? theme.fg("dim", `✗ ${todo.text}`)
+				: todo.status === "in_progress"
+					? theme.fg("text", theme.bold(todo.text))
+					: theme.fg("muted", todo.text);
+
+	let line = `${check} ${id} ${itemText}`;
+	if (todo.explanation && todo.status !== "pending") {
+		const suffix =
+			explanationLimit && todo.explanation.length > explanationLimit
+				? `${todo.explanation.slice(0, explanationLimit)}…`
+				: todo.explanation;
+		line += theme.fg("dim", ` — ${suffix}`);
+	}
+	return line;
+}
+
+function selectWidgetTodos(vm: TodoViewModel): Todo[] {
+	const allNonCancelled = vm.nonCancelled;
+	const uncompleted = sortTodos(allNonCancelled.filter((t) => t.status !== "completed"));
+	const completed = allNonCancelled
+		.filter((t) => t.status === "completed")
+		.sort((a, b) => Number(b.id) - Number(a.id));
+
+	if (allNonCancelled.length <= 8) return sortTodos(allNonCancelled);
+	if (uncompleted.length <= 4) return sortTodos(allNonCancelled).slice(-8);
+
+	const display = [
+		...completed.slice(0, 3),
+		...uncompleted.filter((t) => t.status === "in_progress").slice(0, 1),
+		...uncompleted.filter((t) => t.status === "pending").slice(0, 4),
+	];
+
+	if (display.length >= 8) return display;
+	const shownIds = new Set(display.map((t) => t.id));
+	return [...display, ...sortTodos(allNonCancelled.filter((t) => !shownIds.has(t.id))).slice(0, 8 - display.length)];
+}
+
 /** Migrate a legacy {done: boolean} entry to the new {status} shape */
 function migrateLegacy(raw: any): Todo {
 	// If it already has a status field, use it
@@ -161,12 +238,8 @@ class TodoListComponent {
 		if (this.todos.length === 0) {
 			lines.push(truncateToWidth(`  ${th.fg("dim", "No todos yet. Ask the agent to add some!")}`, width));
 		} else {
-			const counts = {
-				in_progress: this.todos.filter((t) => t.status === "in_progress").length,
-				pending: this.todos.filter((t) => t.status === "pending").length,
-				completed: this.todos.filter((t) => t.status === "completed").length,
-				cancelled: this.todos.filter((t) => t.status === "cancelled").length,
-			};
+			const vm = buildTodoViewModel(this.todos, true);
+			const counts = vm.counts;
 			const parts: string[] = [];
 			if (counts.in_progress) parts.push(th.fg("accent", `${counts.in_progress} in progress`));
 			if (counts.pending) parts.push(th.fg("muted", `${counts.pending} pending`));
@@ -175,34 +248,8 @@ class TodoListComponent {
 			lines.push(truncateToWidth(`  ${parts.join(th.fg("dim", " • "))}`, width));
 			lines.push("");
 
-			const sorted = sortTodos(this.todos);
-			for (const todo of sorted) {
-				const icon = statusIcon(todo.status);
-				const thKey =
-					todo.status === "in_progress"
-						? "accent"
-						: todo.status === "completed"
-							? "success"
-							: todo.status === "cancelled"
-								? "dim"
-								: "dim";
-				const check = th.fg(thKey, icon);
-				const id = th.fg("accent", `#${todo.id}`);
-
-				let textPart: string;
-				if (todo.status === "completed") {
-					textPart = th.fg("dim", todo.text);
-				} else if (todo.status === "cancelled") {
-					textPart = th.fg("dim", `✗ ${todo.text}`);
-				} else if (todo.status === "in_progress") {
-					textPart = th.fg("text", th.bold(todo.text));
-				} else {
-					textPart = th.fg("text", todo.text);
-				}
-
-				const line = `  ${check} ${id} ${textPart}`;
-				lines.push(truncateToWidth(line, width));
-
+			for (const todo of vm.ordered) {
+				lines.push(truncateToWidth(`  ${renderTodoLine(todo, th)}`, width));
 				if (todo.explanation && todo.status !== "pending") {
 					lines.push(truncateToWidth(`    ${th.fg("dim", `↳ ${todo.explanation}`)}`, width));
 				}
@@ -279,20 +326,9 @@ export default function (pi: ExtensionAPI) {
 					}
 
 					const lines: string[] = [];
-					const allNonCancelled = todos.filter((t) => t.status !== "cancelled");
-
-					// Split into uncompleted (in_progress + pending) and completed
-					const uncompleted = sortTodos(allNonCancelled.filter((t) => t.status !== "completed"));
-					const completed = allNonCancelled
-						.filter((t) => t.status === "completed")
-						.sort((a, b) => Number(b.id) - Number(a.id)); // most recently completed first (higher ID = more recent)
-
-					// Summary counts
-					const counts = {
-						in_progress: allNonCancelled.filter((t) => t.status === "in_progress").length,
-						pending: allNonCancelled.filter((t) => t.status === "pending").length,
-						completed: completed.length,
-					};
+					const vm = buildTodoViewModel(todos, false);
+					const completed = vm.nonCancelled.filter((t) => t.status === "completed");
+					const counts = vm.counts;
 					const countParts: string[] = [];
 					if (counts.in_progress) countParts.push(theme.fg("accent", `${counts.in_progress} active`));
 					if (counts.pending) countParts.push(theme.fg("muted", `${counts.pending} pending`));
@@ -301,66 +337,17 @@ export default function (pi: ExtensionAPI) {
 					const header = theme.fg("accent", "Todos") + " " + theme.fg("dim", countParts.join(theme.fg("dim", " · ")));
 					lines.push(truncateToWidth(`  ${header}`, width));
 
-					// Always show up to 8 items
-					// Prefer: 3 completed + 1 in_progress + 4 pending
-					// When nearing the end (few uncompleted left), show bottom 8
-					let display: Todo[];
-					const totalAll = allNonCancelled.length;
-
-					if (totalAll <= 8) {
-						// Few items total — show all
-						display = sortTodos(allNonCancelled);
-					} else {
-						const uncompletedCount = uncompleted.length;
-						if (uncompletedCount <= 4) {
-							// Nearing the end — show bottom 8 from the sorted list
-							display = sortTodos(allNonCancelled).slice(-8);
-						} else {
-							// Prefer: 3 completed + 1 in_progress + 4 pending = 8
-							const recentCompleted = completed.slice(0, 3);
-							const inProgressItems = uncompleted.filter((t) => t.status === "in_progress").slice(0, 1);
-							const closestPending = uncompleted.filter((t) => t.status === "pending").slice(0, 4);
-							display = [...recentCompleted, ...inProgressItems, ...closestPending];
-
-							// Backfill if any group was short — always fill up to 8
-							if (display.length < 8) {
-								const shownIds = new Set(display.map((t) => t.id));
-								const remaining = sortTodos(allNonCancelled.filter((t) => !shownIds.has(t.id)));
-								display = [...display, ...remaining.slice(0, 8 - display.length)];
-							}
-						}
-					}
+					const display = selectWidgetTodos(vm);
 
 					for (const t of display) {
-						const icon = statusIcon(t.status);
-						const thKey =
-							t.status === "in_progress" ? "accent"
-							: t.status === "completed" ? "success"
-							: "dim";
-						const check = theme.fg(thKey, icon);
-						const id = theme.fg("accent", `#${t.id}`);
-
-						let itemText: string;
-						if (t.status === "completed") {
-							itemText = theme.fg("dim", t.text);
-						} else if (t.status === "in_progress") {
-							itemText = theme.fg("text", theme.bold(t.text));
-						} else {
-							itemText = theme.fg("muted", t.text);
-						}
-
-						let line = `  ${check} ${id} ${itemText}`;
-						if (t.explanation && t.status !== "pending") {
-							line += theme.fg("dim", ` — ${t.explanation.slice(0, 40)}${t.explanation.length > 40 ? "…" : ""}`);
-						}
-						lines.push(truncateToWidth(line, width));
+						lines.push(truncateToWidth(`  ${renderTodoLine(t, theme, 40)}`, width));
 					}
 
 					// Show overflow count
 					const shownIds = new Set(display.map((t) => t.id));
 					const overflowDone = completed.filter((t) => !shownIds.has(t.id)).length;
-					const overflowPending = allNonCancelled.filter((t) => t.status === "pending" && !shownIds.has(t.id)).length;
-					const overflowInProgress = allNonCancelled.filter((t) => t.status === "in_progress" && !shownIds.has(t.id)).length;
+					const overflowPending = vm.nonCancelled.filter((t) => t.status === "pending" && !shownIds.has(t.id)).length;
+					const overflowInProgress = vm.nonCancelled.filter((t) => t.status === "in_progress" && !shownIds.has(t.id)).length;
 					if (overflowDone || overflowPending || overflowInProgress) {
 						const overflowParts: string[] = [];
 						if (overflowDone) overflowParts.push(`${overflowDone} more done`);
@@ -565,33 +552,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Normal update result — show summary + items
-			const sorted = sortTodos(todoList);
+			const sorted = buildTodoViewModel(todoList, true).ordered;
 			let text = theme.fg("success", "✓ ") + theme.fg("muted", details.summary || `Updated (${todoList.length} items)`);
 
 			const display = expanded ? sorted : sorted.slice(0, 5);
 			for (const t of display) {
-				const icon = statusIcon(t.status);
-				const thKey =
-					t.status === "in_progress"
-						? "accent"
-						: t.status === "completed"
-							? "success"
-							: t.status === "cancelled"
-								? "dim"
-								: "dim";
-				const check = theme.fg(thKey, icon);
-				const id = theme.fg("accent", `#${t.id}`);
-				const itemText =
-					t.status === "completed"
-						? theme.fg("dim", t.text)
-						: t.status === "in_progress"
-							? theme.fg("text", t.text)
-							: theme.fg("muted", t.text);
-				let line = `\n${check} ${id} ${itemText}`;
-				if (t.explanation && t.status !== "pending") {
-					line += theme.fg("dim", ` — ${t.explanation.slice(0, 50)}${t.explanation.length > 50 ? "…" : ""}`);
-				}
-				text += line;
+				text += `\n${renderTodoLine(t, theme, 50)}`;
 			}
 			if (!expanded && sorted.length > 5) {
 				text += `\n${theme.fg("dim", `... ${sorted.length - 5} more`)}`;
