@@ -342,15 +342,7 @@ export default function (pi: ExtensionAPI) {
 						"info",
 					);
 				} else {
-					// Show detailed goal status
-					if (!ctx.hasUI) {
-						const status = formatGoalStatus(goal);
-						ctx.ui.notify(status, "info");
-					} else {
-						await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
-							return new GoalStatusWidget(goal, theme, () => done());
-						});
-					}
+					ctx.ui.notify(formatGoalStatus(goal), "info");
 				}
 				return;
 			}
