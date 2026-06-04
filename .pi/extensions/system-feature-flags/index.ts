@@ -37,17 +37,7 @@ interface ExpState {
 	setAt: number;
 }
 
-const KNOWN_FLAGS: FeatureFlag[] = [
-	{ name: "subagents", description: "Parallel subagent delegation (scout/researcher/worker)", default: true, stage: "experimental", promptHint: "Use subagents to delegate reasoning tasks (scout, researcher, worker)." },
-	{ name: "memories", description: "Read and write persistent project memory (MEMORY.md)", default: false, stage: "experimental", promptHint: "Read and update MEMORY.md for persistent project context when memory is enabled." },
-	{ name: "websearch", description: "Search the web via DuckDuckGo (no API key)", default: false, stage: "experimental", promptHint: "Use ddg_search for web queries when needed." },
-	{ name: "unified_exec", description: "Use unified execution model for bash commands", default: false, stage: "experimental" },
-	{ name: "shell_snapshot", description: "Snapshot shell environment before each turn", default: false, stage: "experimental" },
-	{ name: "auto_commit", description: "Automatically git commit after each successful turn", default: false, stage: "experimental" },
-	{ name: "parallel_tools", description: "Execute independent tool calls in parallel", default: true, stage: "beta" },
-	{ name: "stream_responses", description: "Stream LLM responses token by token", default: true, stage: "stable" },
-	{ name: "smart_compaction", description: "Use intelligent compaction heuristic", default: true, stage: "beta" },
-];
+const KNOWN_FLAGS: FeatureFlag[] = [];
 
 function featuresFilePath(cwd: string): string {
 	return path.join(cwd, FEATURES_DIR, FEATURES_FILE);
