@@ -1,0 +1,14 @@
+interface:
+  display_name: "Plane Project Manager"
+  short_description: "Sync project progress into Plane"
+  brand_color: "#2563EB"
+  default_prompt: "Use $plane-project-manager to sync this project's progress into Plane without creating a separate dashboard UI."
+
+dependencies:
+  tools:
+    - type: "extension"
+      value: "integration-plane"
+      description: "Plane REST tools (plane_status, plane_list_projects, plane_sync_workspace, etc.)"
+
+policy:
+  allow_implicit_invocation: true
