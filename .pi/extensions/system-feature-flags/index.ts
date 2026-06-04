@@ -1,17 +1,23 @@
 /**
- * Unified Feature Flags / Experimental Features Extension
+ * Feature Flags Extension
  *
- * Single owner for:
- *   /features     - global persisted feature flags in ~/.pi/features.json
- *   /experimental - session-scoped experimental overrides and prompt hints
+ * /features — interactive toggle UI (or: list|enable|disable|reset|status <name>)
+ *
+ * Interactive UI:
+ *   Typing /features (no args) opens a toggle list.
+ *   ↑/↓ arrows change which item is highlighted.
+ *   Space toggles the highlighted feature on/off.
+ *   Enter saves all changes.
+ *   Escape discards all changes.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
+import { pickGuiOptions } from "../_shared/gui-option-list.ts";
 
-const FEATURES_FILE = path.join(os.homedir(), ".pi", "features.json");
+const FEATURES_DIR = ".pi";
+const FEATURES_FILE = "features.json";
 const EXP_CUSTOM_TYPE = "experimental-state";
 
 interface FeatureFlag {
@@ -34,7 +40,6 @@ interface ExpState {
 const KNOWN_FLAGS: FeatureFlag[] = [
 	{ name: "subagents", description: "Parallel subagent delegation (scout/researcher/worker)", default: true, stage: "experimental", promptHint: "Use subagents to delegate reasoning tasks (scout, researcher, worker)." },
 	{ name: "memories", description: "Read and write persistent project memory (MEMORY.md)", default: false, stage: "experimental", promptHint: "Read and update MEMORY.md for persistent project context when memory is enabled." },
-	{ name: "imagegen", description: "Generate images locally (no API key needed)", default: false, stage: "experimental", promptHint: "Use image_generate tool for image creation." },
 	{ name: "websearch", description: "Search the web via DuckDuckGo (no API key)", default: false, stage: "experimental", promptHint: "Use ddg_search for web queries when needed." },
 	{ name: "unified_exec", description: "Use unified execution model for bash commands", default: false, stage: "experimental" },
 	{ name: "shell_snapshot", description: "Snapshot shell environment before each turn", default: false, stage: "experimental" },
@@ -44,50 +49,136 @@ const KNOWN_FLAGS: FeatureFlag[] = [
 	{ name: "smart_compaction", description: "Use intelligent compaction heuristic", default: true, stage: "beta" },
 ];
 
-function loadFeatures(): FeatureState {
+function featuresFilePath(cwd: string): string {
+	return path.join(cwd, FEATURES_DIR, FEATURES_FILE);
+}
+
+function loadFeatures(cwd: string): FeatureState {
 	try {
-		if (fs.existsSync(FEATURES_FILE)) return JSON.parse(fs.readFileSync(FEATURES_FILE, "utf-8"));
+		const filePath = featuresFilePath(cwd);
+		if (fs.existsSync(filePath)) return JSON.parse(fs.readFileSync(filePath, "utf-8"));
 	} catch {
 		// Corrupt, start fresh.
 	}
 	return { flags: {} };
 }
 
-function saveFeatures(state: FeatureState): void {
-	const dir = path.dirname(FEATURES_FILE);
+function saveFeatures(cwd: string, state: FeatureState): void {
+	const filePath = featuresFilePath(cwd);
+	const dir = path.dirname(filePath);
 	if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-	fs.writeFileSync(FEATURES_FILE, JSON.stringify(state, null, 2));
+	fs.writeFileSync(filePath, JSON.stringify(state, null, 2));
 }
 
 function defaultFeatureState(): Record<string, boolean> {
-	// Session experimental state stores only overrides. Defaults and global
-	// persisted values are resolved by getFlag().
 	return {};
 }
 
-function getFlag(name: string, exp?: ExpState): boolean {
+function getFlag(name: string, cwd: string, exp?: ExpState): boolean {
 	if (exp && name in exp.features) return exp.features[name];
-	const state = loadFeatures();
+	const state = loadFeatures(cwd);
 	if (name in state.flags) return state.flags[name];
 	return KNOWN_FLAGS.find((f) => f.name === name)?.default ?? false;
 }
 
-function setFlag(name: string, value: boolean): void {
-	const state = loadFeatures();
+function setFlag(cwd: string, name: string, value: boolean): void {
+	const state = loadFeatures(cwd);
 	state.flags[name] = value;
-	saveFeatures(state);
+	saveFeatures(cwd, state);
 }
 
-function resetFlag(name: string): void {
-	const state = loadFeatures();
+function resetFlag(cwd: string, name: string): void {
+	const state = loadFeatures(cwd);
 	delete state.flags[name];
-	saveFeatures(state);
+	saveFeatures(cwd, state);
+}
+
+// ── Stage label ─────────────────────────────────────────────────────────────
+
+function stageLabel(stage: string): string {
+	if (stage === "experimental") return "exp";
+	if (stage === "beta") return "beta";
+	return "stable";
+}
+
+// ── Interactive toggle UI ───────────────────────────────────────────────────
+
+async function featuresToggleUI(ctx: ExtensionContext, expState: ExpState, persistExperimental: () => void): Promise<void> {
+	const cwd = ctx.cwd;
+
+	// Snapshot current effective state
+	const pending: Record<string, boolean> = {};
+	const original: Record<string, boolean> = {};
+	for (const flag of KNOWN_FLAGS) {
+		pending[flag.name] = getFlag(flag.name, cwd, expState);
+		original[flag.name] = pending[flag.name];
+	}
+
+	const selected = await pickGuiOptions(ctx, {
+		title: "Feature Flags",
+		message: `Repository: ${cwd}`,
+		options: KNOWN_FLAGS.map((flag) => ({
+			label: flag.name,
+			value: flag.name,
+			description: `[${stageLabel(flag.stage)}] ${flag.description}`,
+			checked: pending[flag.name],
+		})),
+	});
+
+	if (selected) {
+		const selectedSet = new Set(selected);
+		for (const flag of KNOWN_FLAGS) {
+			pending[flag.name] = selectedSet.has(flag.name);
+		}
+
+		// Persist pending values
+		const state = loadFeatures(cwd);
+		for (const flag of KNOWN_FLAGS) {
+			state.flags[flag.name] = pending[flag.name];
+		}
+		saveFeatures(cwd, state);
+
+		// Update session experimental overrides
+		for (const flag of KNOWN_FLAGS) {
+			if (flag.stage === "experimental") {
+				expState.features[flag.name] = pending[flag.name];
+			}
+		}
+		expState.setAt = Date.now();
+		persistExperimental();
+
+		const summary = KNOWN_FLAGS
+			.map((f) => `${pending[f.name] ? "●" : "○"} ${f.name}`)
+			.join("\n");
+		ctx.ui.notify(`Feature flags saved:\n${summary}`, "info");
+	} else {
+		ctx.ui.notify("Changes discarded.", "info");
+	}
+}
+
+// ── Plain-text list (non-interactive fallback) ─────────────────────────────
+
+function featuresListText(cwd: string, expState: ExpState): string {
+	const configPath = featuresFilePath(cwd);
+	const lines = ["Feature Flags:", `Repository: ${cwd}`, `Config: ${configPath}`, "─".repeat(60)];
+	const currentState = loadFeatures(cwd);
+	for (const flag of KNOWN_FLAGS) {
+		const repoValue = currentState.flags[flag.name];
+		const enabled = getFlag(flag.name, cwd, expState);
+		const modified = repoValue !== undefined ? " (repo custom)" : "";
+		lines.push(`  ${enabled ? "●" : "○"} ${flag.stage === "stable" ? "" : flag.stage === "beta" ? "[beta] " : "[exp] "}${flag.name}${modified}`);
+		lines.push(`      ${flag.description}`);
+	}
+	lines.push("", "Commands: /features enable|disable|reset|status <name>");
+	return lines.join("\n");
 }
 
 export default function (pi: ExtensionAPI) {
+	let currentCwd = process.cwd();
 	let expState: ExpState = { features: defaultFeatureState(), setAt: Date.now() };
 
 	function reconstruct(ctx: ExtensionContext) {
+		currentCwd = ctx.cwd;
 		expState = { features: defaultFeatureState(), setAt: Date.now() };
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === EXP_CUSTOM_TYPE) {
@@ -102,10 +193,12 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	(globalThis as any).__pi_features = {
-		get: (name: string) => getFlag(name, expState),
-		set: setFlag,
-		reset: resetFlag,
-		list: () => KNOWN_FLAGS.map((flag) => ({ ...flag, enabled: getFlag(flag.name, expState) })),
+		get: (name: string) => getFlag(name, currentCwd, expState),
+		set: (name: string, value: boolean) => setFlag(currentCwd, name, value),
+		reset: (name: string) => resetFlag(currentCwd, name),
+		list: () => KNOWN_FLAGS.map((flag) => ({ ...flag, enabled: getFlag(flag.name, currentCwd, expState) })),
+		cwd: () => currentCwd,
+		path: () => featuresFilePath(currentCwd),
 	};
 
 	pi.on("session_start", async (_event, ctx) => { reconstruct(ctx); });
@@ -113,21 +206,36 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event) => {
 		const hints = KNOWN_FLAGS
-			.filter((f) => f.promptHint && getFlag(f.name, expState))
+			.filter((f) => f.promptHint && getFlag(f.name, currentCwd, expState))
 			.map((f) => f.promptHint as string);
 		if (hints.length === 0) return;
 		return { systemPrompt: event.systemPrompt + "\n\n## Experimental Features Enabled\n" + hints.map((h) => `- ${h}`).join("\n") };
 	});
 
+	// ── /features command ─────────────────────────────────────────────────
+
 	pi.registerCommand("features", {
-		description: "Manage feature flags (list|enable|disable|reset|status)",
+		description: "Manage repository feature flags — interactive toggle UI (or: list|enable|disable|reset|status <name>)",
 		handler: async (args, ctx) => {
+			const cwd = ctx.cwd;
+			const configPath = featuresFilePath(cwd);
 			const trimmed = (args || "").trim();
 			const parts = trimmed.split(/\s+/);
-			const subcmd = parts[0] || "list";
+			const subcmd = parts[0];
 			const flagName = parts.slice(1).join(" ");
 			const found = flagName ? KNOWN_FLAGS.find((f) => f.name === flagName) : undefined;
 
+			// ── No args: launch interactive toggle UI ──────────────────────────
+			if (!trimmed) {
+				if (ctx.hasUI) {
+					return featuresToggleUI(ctx, expState, persistExperimental);
+				}
+				// No UI — fall back to plain text list
+				ctx.ui.notify(featuresListText(cwd, expState), "info");
+				return;
+			}
+
+			// ── Subcommands ────────────────────────────────────────────────────
 			if (["enable", "disable", "reset", "status"].includes(subcmd) && !flagName) {
 				ctx.ui.notify(`Usage: /features ${subcmd} <flag-name>`, "warning");
 				return;
@@ -139,79 +247,26 @@ export default function (pi: ExtensionAPI) {
 
 			switch (subcmd) {
 				case "enable":
-					setFlag(flagName, true);
-					ctx.ui.notify(`Feature "${flagName}" enabled (${found?.stage}). /reload to apply globally.`, "info");
+					setFlag(cwd, flagName, true);
+					ctx.ui.notify(`Feature "${flagName}" enabled for this repository (${found?.stage}).`, "info");
 					return;
 				case "disable":
-					setFlag(flagName, false);
-					ctx.ui.notify(`Feature "${flagName}" disabled. /reload to apply globally.`, "info");
+					setFlag(cwd, flagName, false);
+					ctx.ui.notify(`Feature "${flagName}" disabled for this repository.`, "info");
 					return;
 				case "reset":
-					resetFlag(flagName);
-					ctx.ui.notify(`Feature "${flagName}" reset to default (${found?.default ? "enabled" : "disabled"}).`, "info");
+					resetFlag(cwd, flagName);
+					ctx.ui.notify(`Feature "${flagName}" reset to default (${found?.default ? "enabled" : "disabled"}) for this repository.`, "info");
 					return;
 				case "status":
-					ctx.ui.notify(`${flagName}: ${getFlag(flagName, expState) ? "enabled" : "disabled"} (${found?.stage})\n${found?.description}`, "info");
+					ctx.ui.notify(`${flagName}: ${getFlag(flagName, cwd, expState) ? "enabled" : "disabled"} (${found?.stage})\n${found?.description}\nConfig: ${configPath}`, "info");
 					return;
 				case "list":
-				default: {
-					const lines = ["Feature Flags:", "─".repeat(60)];
-					const currentState = loadFeatures();
-					for (const flag of KNOWN_FLAGS) {
-						const globalValue = currentState.flags[flag.name];
-						const enabled = getFlag(flag.name, expState);
-						const modified = globalValue !== undefined ? " (global custom)" : "";
-						lines.push(`  ${enabled ? "●" : "○"} ${flag.stage === "stable" ? "" : flag.stage === "beta" ? "[beta] " : "[exp] "}${flag.name}${modified}`);
-						lines.push(`      ${flag.description}`);
-					}
-					lines.push("", "Commands: /features enable|disable|reset|status <name>");
-					ctx.ui.notify(lines.join("\n"), "info");
-				}
+				default:
+					ctx.ui.notify(featuresListText(cwd, expState), "info");
 			}
 		},
 	});
 
-	pi.registerCommand("experimental", {
-		description: "Toggle session experimental features (list|on|off)",
-		handler: async (args, ctx) => {
-			const trimmed = (args || "").trim().toLowerCase();
-			const parts = trimmed.split(/\s+/);
-			const subcmd = parts[0];
-			const featName = parts.slice(1).join(" ");
-			const experimentalFlags = KNOWN_FLAGS.filter((f) => f.stage === "experimental");
 
-			if (subcmd === "on" || subcmd === "enable" || subcmd === "off" || subcmd === "disable") {
-				if (!featName) return ctx.ui.notify(`Usage: /experimental ${subcmd} <feature-name>`, "warning");
-				const found = experimentalFlags.find((f) => f.name === featName);
-				if (!found) return ctx.ui.notify(`Unknown experimental feature: "${featName}". Use /experimental list.`, "warning");
-				expState.features[featName] = subcmd === "on" || subcmd === "enable";
-				expState.setAt = Date.now();
-				persistExperimental();
-				ctx.ui.notify(`Experimental: ${featName} ${expState.features[featName] ? "ENABLED" : "DISABLED"}`, "info");
-				return;
-			}
-
-			if (subcmd === "list" || !trimmed || subcmd === "status") {
-				if (ctx.hasUI && !trimmed) {
-					const choices = experimentalFlags.map((f) => `${getFlag(f.name, expState) ? "✓" : "✗"} ${f.name} — ${f.description}`);
-					const choice = await ctx.ui.select("Toggle Experimental Features:", choices);
-					if (!choice) return;
-					const match = experimentalFlags.find((f) => choice.includes(f.name));
-					if (!match) return;
-					expState.features[match.name] = !getFlag(match.name, expState);
-					expState.setAt = Date.now();
-					persistExperimental();
-					ctx.ui.notify(`${match.name}: ${expState.features[match.name] ? "ENABLED" : "DISABLED"}`, "info");
-					return;
-				}
-				const lines = ["Experimental Features:"];
-				for (const f of experimentalFlags) lines.push(`  ${getFlag(f.name, expState) ? "●" : "○"} ${f.name} — ${f.description}`);
-				lines.push("\nUse /experimental on|off <feature> to set a session override.");
-				ctx.ui.notify(lines.join("\n"), "info");
-				return;
-			}
-
-			ctx.ui.notify("Usage: /experimental [list|on <feature>|off <feature>]", "warning");
-		},
-	});
 }

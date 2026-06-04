@@ -33,6 +33,7 @@ import {
 	type ExecPolicyAction,
 	type ExecPolicyConfig,
 } from "../_shared/command-policy.ts";
+import { pickGuiOption } from "../_shared/gui-option-list.ts";
 
 interface ModeState {
 	mode: ApprovalMode;
@@ -163,7 +164,13 @@ export default function (pi: ExtensionAPI) {
 		title: string,
 		message: string,
 	): Promise<{ allowed: boolean; reason?: string; needsUserApproval?: boolean }> {
-		const task = `Evaluate this action for safety. Title: ${title}\n\n${message}`;
+		const task = `Evaluate this action for safety.
+
+You are operating in auto-review mode. The user expects routine, low-risk actions to be approved without interruption. Only escalate genuinely dangerous actions (data exfiltration, credential probing, destructive operations, or severe policy violations).
+
+Title: ${title}
+
+${message}`;
 
 		// Read guardian agent config
 		const extDir = path.dirname(new URL(import.meta.url).pathname);
@@ -287,15 +294,15 @@ export default function (pi: ExtensionAPI) {
 				}
 			} catch {}
 
-			// Fallback: look for allow/deny in text
+			// Fallback: look for allow/deny in text (handles both JSON and plain-text formats)
 			const normalized = content.trim().toUpperCase();
-			if (normalized.includes('"allow"') || normalized.includes('"outcome":"allow"')) {
+			if (normalized.includes('"allow"') || normalized.includes('"outcome":"allow"') || /OUTCOME\s*:\s*ALLOW/.test(normalized)) {
 				return { allowed: true, reason: "Guardian: allowed (parsed from text)." };
 			}
-			if (normalized.includes("NEEDS_USER_APPROVAL")) {
+			if (normalized.includes("NEEDS_USER_APPROVAL") || /OUTCOME\s*:\s*NEEDS_USER_APPROVAL/.test(normalized)) {
 				return { allowed: false, needsUserApproval: true, reason: "Guardian: needs user approval." };
 			}
-			if (normalized.includes("DENY") || normalized.includes('"deny"')) {
+			if (normalized.includes("DENY") || normalized.includes('"deny"') || /OUTCOME\s*:\s*DENY/.test(normalized)) {
 				return { allowed: false, reason: "Guardian: denied." };
 			}
 
@@ -525,11 +532,16 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(`Current mode: ${mode.mode}. Use /permissions read-only|default|auto-review|full-access`, "info");
 					return;
 				}
-				const choices = validModes.map((m) =>
-					`${m === mode.mode ? "● " : "  "}${m} — ${modeLabels[m]}${m === mode.mode ? " (current)" : ""}`
-				);
-				const choice = await ctx.ui.select("Permission Mode:", choices);
-				const newMode = choice && validModes.find((m) => choice.includes(m));
+				const newMode = await pickGuiOption<ApprovalMode>(ctx, {
+					title: "Permission Mode:",
+					message: `Current mode: ${mode.mode}`,
+					options: validModes.map((m) => ({
+						label: m,
+						value: m,
+						description: modeLabels[m],
+						checked: m === mode.mode,
+					})),
+				});
 				if (!newMode || newMode === mode.mode) return;
 				if (!(await switchMode(newMode, ctx))) return;
 				return;

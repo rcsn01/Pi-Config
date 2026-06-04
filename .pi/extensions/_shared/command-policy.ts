@@ -42,7 +42,6 @@ const NETWORK_TOOL_NAMES = new Set([
 	"ddg_fetch",
 	"web_search",
 	"web_fetch",
-	"image_generate",
 ]);
 
 const NETWORK_COMMAND_PATTERNS = [
