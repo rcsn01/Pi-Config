@@ -1,0 +1,13 @@
+{
+  "flags": {
+    "subagents": true,
+    "memories": true,
+    "websearch": true,
+    "unified_exec": true,
+    "shell_snapshot": true,
+    "auto_commit": true,
+    "parallel_tools": true,
+    "stream_responses": true,
+    "smart_compaction": true
+  }
+}
