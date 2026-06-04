@@ -1,0 +1,5 @@
+{
+  "baseUrl": "https://plane.rcsn01.com",
+  "workspaceSlug": "your-workspace-slug",
+  "apiKey": "plane_api_your_token_here"
+}

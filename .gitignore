@@ -18,6 +18,9 @@ Deployment/
 .env.local
 .env.*.local
 
+# Pi
+.pi/plane.json
+
 # IDE
 .vscode/
 .idea/
