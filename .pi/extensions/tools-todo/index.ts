@@ -297,9 +297,9 @@ export default function (pi: ExtensionAPI) {
 	// ── Widget: persistent todo summary above the input field ──────────────
 
 	function updateTodoWidget(ctx: ExtensionContext): void {
-		// Show widget when there are any non-cancelled todos
-		const nonCancelled = todos.filter((t) => t.status !== "cancelled");
-		if (nonCancelled.length === 0) {
+		// Show widget only when there are active (pending or in_progress) todos
+		const active = todos.filter((t) => t.status === "pending" || t.status === "in_progress");
+		if (active.length === 0) {
 			ctx.ui.setWidget("todo-list", undefined);
 			return;
 		}

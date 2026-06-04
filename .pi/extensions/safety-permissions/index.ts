@@ -4,7 +4,7 @@
  * Four approval modes:
  *   /permissions read-only    — Read-only browsing in current directory
  *   /permissions default      — Workspace-write with user approval prompts
- *   /permissions auto-review  — Workspace-write with guardian-subagent-reviewed approvals
+ *   /permissions auto-review  — Full auto; only prompts you for edits outside the workspace
  *   /permissions full-access  — No restrictions (dangerous; confirm to enable)
  *
  * Preserves:
@@ -42,6 +42,8 @@ interface ModeState {
 
 const MODE_CUSTOM_TYPE = "approval-mode-state";
 
+const MODE_FILE = path.join(".pi", "approval-mode.json");
+
 // Tools that read paths
 const PATH_READ_TOOLS = new Set(["read", "grep", "find"]);
 // Tools that write/edit paths — blocked entirely in read-only
@@ -60,7 +62,35 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Persistence ────────────────────────────────────────────────────
 
+	function saveModeToFile() {
+		try {
+			const filePath = path.join(process.cwd(), MODE_FILE);
+			fs.mkdirSync(path.dirname(filePath), { recursive: true });
+			fs.writeFileSync(filePath, JSON.stringify(mode, null, "\t"), { encoding: "utf-8" });
+		} catch {}
+	}
+
+	function loadModeFromFile(cwd: string): ModeState | null {
+		try {
+			const filePath = path.join(cwd, MODE_FILE);
+			if (fs.existsSync(filePath)) {
+				const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+				if (raw?.mode && ["read-only", "default", "auto-review", "full-access"].includes(raw.mode)) {
+					return { mode: raw.mode, setAt: raw.setAt || Date.now() };
+				}
+			}
+		} catch {}
+		return null;
+	}
+
 	function reconstruct(ctx: ExtensionContext) {
+		// Check file first for persisted mode across sessions
+		const fileMode = loadModeFromFile(ctx.cwd);
+		if (fileMode) {
+			mode = fileMode;
+			return;
+		}
+
 		mode = { mode: "default", setAt: Date.now() };
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom") continue;
@@ -76,6 +106,7 @@ export default function (pi: ExtensionAPI) {
 
 	function persistMode() {
 		pi.appendEntry(MODE_CUSTOM_TYPE, { ...mode });
+		saveModeToFile();
 	}
 
 	// ── Status display ─────────────────────────────────────────────────
@@ -128,7 +159,7 @@ export default function (pi: ExtensionAPI) {
 	 *
 	 * read-only   → block (shouldn't reach here; mutations are pre-blocked)
 	 * default     → prompt user
-	 * auto-review → reviewer subagent
+	 * auto-review → allow all (external writes handled directly)
 	 * full-access → allow
 	 */
 	async function requestApproval(
@@ -146,11 +177,8 @@ export default function (pi: ExtensionAPI) {
 				return { allowed: ok, reason: ok ? undefined : "User declined." };
 
 			case "auto-review": {
-				const review = await runAutoReviewer(title, message);
-				if (!review.needsUserApproval) return review;
-				if (!ctx.hasUI) return { allowed: false, reason: review.reason || "Guardian requested user approval, but no UI is available." };
-				const ok = await ctx.ui.confirm(title, `${message}\n\nGuardian requested explicit user approval.\n${review.reason || ""}\n\nProceed?`);
-				return { allowed: ok, reason: ok ? "Approved by user after Guardian review." : "User declined after Guardian review." };
+				// Full auto except external writes are handled directly in tool_call
+				return { allowed: true };
 			}
 
 			case "full-access":
@@ -166,7 +194,7 @@ export default function (pi: ExtensionAPI) {
 	): Promise<{ allowed: boolean; reason?: string; needsUserApproval?: boolean }> {
 		const task = `Evaluate this action for safety.
 
-You are operating in auto-review mode. The user expects routine, low-risk actions to be approved without interruption. Only escalate genuinely dangerous actions (data exfiltration, credential probing, destructive operations, or severe policy violations).
+You are operating in auto-review mode. You are the FINAL authority — your decision is never escalated to the user. Decide yourself: allow or deny.
 
 Title: ${title}
 
@@ -387,8 +415,8 @@ ${message}`;
 			}
 		}
 
-		// ── Sensitive path reads for default / auto-review ─────────────
-		if ((mode.mode === "default" || mode.mode === "auto-review") &&
+		// ── Sensitive path reads for default ───────────────────────────
+		if (mode.mode === "default" &&
 			PATH_READ_TOOLS.has(event.toolName)) {
 			const inputPaths = extractPathsFromInput(event.toolName, event.input);
 			for (const inputPath of inputPaths) {
@@ -416,8 +444,8 @@ ${message}`;
 				};
 			}
 
-			// Default / auto-review: dangerous commands need approval
-			if (mode.mode === "default" || mode.mode === "auto-review") {
+			// Default: dangerous commands need approval
+			if (mode.mode === "default") {
 				const dangerReason = dangerousShellReason(trimmedCmd);
 				if (dangerReason) {
 					const { allowed, reason } = await requestApproval(
@@ -446,8 +474,8 @@ ${message}`;
 			}
 		}
 
-		// ── Network tool checks for default / auto-review ──────────────
-		if ((mode.mode === "default" || mode.mode === "auto-review") &&
+		// ── Network tool checks for default ────────────────────────────
+		if (mode.mode === "default" &&
 			isNetworkToolName(event.toolName)) {
 			const { allowed, reason } = await requestApproval(
 				ctx,
@@ -466,10 +494,27 @@ ${message}`;
 			const inputPaths = extractPathsFromInput(event.toolName, event.input);
 			for (const inputPath of inputPaths) {
 				if (inputPath && isExternalWritePath(inputPath)) {
+					// Auto-review: prompt user directly for external writes (the ONE thing you care about)
+					if (mode.mode === "auto-review") {
+						if (!ctx.hasUI) {
+							rememberDenied(event.toolName, event.input, "External Path", inputPath);
+							return { block: true, reason: "Auto-review: external write blocked (no UI)." };
+						}
+						const ok = await ctx.ui.confirm(
+							"Auto-review: External Write",
+							`Path "${inputPath}" is outside the workspace.\n\nAllow write?`,
+						);
+						if (!ok) {
+							rememberDenied(event.toolName, event.input, "External Path", inputPath);
+							return { block: true, reason: "Auto-review: external write declined." };
+						}
+						continue;
+					}
+					// Default mode
 					const { allowed, reason } = await requestApproval(
 						ctx,
 						"External Path",
-						`${mode.mode === "default" ? "Default" : "Auto-review"} mode: path "${inputPath}" is outside workspace.\nAllow write?`,
+						`Default mode: path "${inputPath}" is outside workspace.\nAllow write?`,
 					);
 					if (!allowed) {
 						rememberDenied(event.toolName, event.input, "External Path", inputPath);
@@ -479,10 +524,27 @@ ${message}`;
 				// Also catch non-external paths that are still outside cwd
 				if (inputPath && !isPathWithinCwd(inputPath, ctx.cwd) && !isExternalWritePath(inputPath)) {
 					const resolved = resolveToolPath(inputPath, ctx.cwd);
+					// Auto-review: prompt user directly
+					if (mode.mode === "auto-review") {
+						if (!ctx.hasUI) {
+							rememberDenied(event.toolName, event.input, "External Path", inputPath);
+							return { block: true, reason: "Auto-review: external write blocked (no UI)." };
+						}
+						const ok = await ctx.ui.confirm(
+							"Auto-review: External Write",
+							`Path "${inputPath}" (resolved: ${resolved}) is outside the workspace.\n\nAllow write?`,
+						);
+						if (!ok) {
+							rememberDenied(event.toolName, event.input, "External Path", inputPath);
+							return { block: true, reason: "Auto-review: external write declined." };
+						}
+						continue;
+					}
+					// Default mode
 					const { allowed, reason } = await requestApproval(
 						ctx,
 						"External Path",
-						`${mode.mode === "default" ? "Default" : "Auto-review"} mode: path "${inputPath}" (resolved: ${resolved}) is outside workspace.\nAllow write?`,
+						`Default mode: path "${inputPath}" (resolved: ${resolved}) is outside workspace.\nAllow write?`,
 					);
 					if (!allowed) {
 						rememberDenied(event.toolName, event.input, "External Path", inputPath);
@@ -499,7 +561,7 @@ ${message}`;
 		const modeInstructions: Record<ApprovalMode, string> = {
 			"read-only": `\n\n## Permission Mode: READ-ONLY\nYou are in read-only browsing mode, limited to the current directory.\n- You CAN read files, search code, list directories, and run read-only commands within ${event.systemPrompt.includes("cwd") ? "the workspace" : "the current directory"}.\n- You CANNOT modify files, run write commands, execute shell commands that change the system, or access the network.\n- Do NOT attempt to use write, edit, or bash for destructive operations.\n- Inform the user if a task requires write access. They can switch mode with /permissions default.`,
 			default: `\n\n## Permission Mode: DEFAULT\nYou may read, write, and edit files within the current workspace, and run commands.\nApproval is required to:\n- Access the internet (curl, fetch, package installs, git push/pull/clone, etc.)\n- Write or edit files outside the workspace\n- Run dangerous commands (sudo, rm -rf, curl piped to shell)\nPrefer safe alternatives when possible.`,
-			"auto-review": `\n\n## Permission Mode: AUTO-REVIEW\nSame workspace-write permissions as Default, but approval requests are routed through the Guardian safety subagent before execution.\nThe Guardian evaluates risk (data exfiltration, credential probing, destructive actions, security weakening) and user authorization before deciding to allow, deny, or request explicit user approval.\nYou may read, write, and edit files within the workspace.\nActions requiring network access, external writes, or dangerous commands will be reviewed by the Guardian and may be denied or escalated to the user.`,
+			"auto-review": `\n\n## Permission Mode: AUTO-REVIEW\nFull auto — no restrictions on reading, writing within the workspace, web searches, or running commands.\nThe ONLY thing that requires user approval is editing files OUTSIDE the current directory/workspace.\nIf you need to write or edit a file outside the workspace, the user will be prompted.`,
 			"full-access": `\n\n## Permission Mode: FULL ACCESS\nNo restrictions. You have full access to read, write, and execute any command, including network access and writing outside the workspace.\nExercise caution and always inform the user of destructive operations.`,
 		};
 		return { systemPrompt: event.systemPrompt + modeInstructions[mode.mode] };
@@ -523,7 +585,7 @@ ${message}`;
 			const modeLabels: Record<ApprovalMode, string> = {
 				"read-only": "Read-only browsing – read in current directory only",
 				default: "Default – read, edit, and run commands in workspace; approval for internet and external writes",
-				"auto-review": "Auto-review – same as Default but approvals are reviewed by the Guardian safety subagent",
+				"auto-review": "Auto-review – full auto; only prompts you for edits outside the workspace",
 				"full-access": "Full Access – no restrictions, no approval prompts (use with caution)",
 			};
 
