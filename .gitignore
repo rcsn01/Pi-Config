@@ -20,6 +20,7 @@ Deployment/
 
 # Pi
 .pi/plane.json
+.pi/worktrees/
 
 # IDE
 .vscode/
