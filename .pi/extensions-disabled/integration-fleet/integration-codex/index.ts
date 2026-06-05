@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -47,6 +47,7 @@ interface CodexRunResult {
 
 const AskParams = Type.Object({
 	task: Type.String({ description: "Task, question, or analysis request to delegate to Codex" }),
+	cwd: Type.Optional(Type.String({ description: "Optional working directory inside the current git repository, e.g. .pi/worktrees/item-123" })),
 	model: Type.Optional(Type.String({ description: "Optional Codex model override, e.g. gpt-5-codex" })),
 	profile: Type.Optional(Type.String({ description: "Optional Codex config profile" })),
 	timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds; default 30 minutes" })),
@@ -54,6 +55,7 @@ const AskParams = Type.Object({
 
 const ExecParams = Type.Object({
 	task: Type.String({ description: "Implementation task to delegate to Codex" }),
+	cwd: Type.Optional(Type.String({ description: "Optional working directory inside the current git repository, e.g. .pi/worktrees/item-123" })),
 	sandbox: Type.Optional(StringEnum(["workspace-write", "read-only"] as const)),
 	model: Type.Optional(Type.String({ description: "Optional Codex model override" })),
 	profile: Type.Optional(Type.String({ description: "Optional Codex config profile" })),
@@ -65,6 +67,7 @@ const ReviewParams = Type.Object({
 	branch: Type.Optional(Type.String({ description: "Base branch name when action=base" })),
 	commit: Type.Optional(Type.String({ description: "Commit SHA when action=commit" })),
 	instructions: Type.Optional(Type.String({ description: "Additional review focus instructions" })),
+	cwd: Type.Optional(Type.String({ description: "Optional working directory inside the current git repository, e.g. .pi/worktrees/item-123" })),
 	model: Type.Optional(Type.String({ description: "Optional Codex model override" })),
 	profile: Type.Optional(Type.String({ description: "Optional Codex config profile" })),
 	timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds; default 30 minutes" })),
@@ -324,7 +327,6 @@ function buildExecArgs(params: { model?: string; profile?: string }, cwd: string
 		"--json",
 		"--cd", cwd,
 		"--sandbox", sandbox,
-		"--ask-for-approval", "never",
 		"--skip-git-repo-check",
 		"--ephemeral",
 		...commonCodexArgs(params),
@@ -357,6 +359,24 @@ function formatFailure(prefix: string, result: CodexRunResult): string {
 	return parts.join("\n\n");
 }
 
+async function resolveRunCwd(pi: ExtensionAPI, ctx: ExtensionContext, requested?: string): Promise<string> {
+	if (!requested?.trim()) return ctx.cwd;
+	const cleaned = requested.trim().replace(/^@/, "");
+	const rootResult = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: ctx.cwd });
+	if (rootResult.code !== 0) {
+		throw new Error(rootResult.stderr?.trim() || "codex cwd override requires a git repository");
+	}
+	const root = rootResult.stdout.trim();
+	const resolved = path.resolve(ctx.cwd, cleaned);
+	const rel = path.relative(root, resolved);
+	if (rel.startsWith("..") || path.isAbsolute(rel)) {
+		throw new Error(`Codex cwd must be inside current repository: ${requested}`);
+	}
+	const stat = await fs.stat(resolved).catch(() => undefined);
+	if (!stat?.isDirectory()) throw new Error(`Codex cwd does not exist or is not a directory: ${requested}`);
+	return resolved;
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "codex_ask",
@@ -369,11 +389,12 @@ export default function (pi: ExtensionAPI) {
 		],
 		parameters: AskParams,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const runCwd = await resolveRunCwd(pi, ctx, params.cwd);
 			const timeoutMs = params.timeoutMs || DEFAULT_TIMEOUT_MS;
 			const result = await runCodex(
-				buildExecArgs(params, ctx.cwd, "read-only"),
+				buildExecArgs(params, runCwd, "read-only"),
 				params.task,
-				ctx.cwd,
+				runCwd,
 				signal,
 				onUpdate,
 				timeoutMs,
@@ -382,13 +403,13 @@ export default function (pi: ExtensionAPI) {
 			if (result.exitCode !== 0) {
 				return {
 					content: [{ type: "text", text: formatFailure("codex_ask", result) }],
-					details: result,
+					details: { ...result, cwd: runCwd },
 				};
 			}
 
 			return {
 				content: [{ type: "text", text: result.summary }],
-				details: result,
+				details: { ...result, cwd: runCwd },
 			};
 		},
 	});
@@ -411,11 +432,12 @@ export default function (pi: ExtensionAPI) {
 				throw new Error("codex_review action=commit requires commit");
 			}
 
+			const runCwd = await resolveRunCwd(pi, ctx, params.cwd);
 			const timeoutMs = params.timeoutMs || DEFAULT_TIMEOUT_MS;
 			const result = await runCodex(
 				buildReviewArgs(params),
 				params.instructions || "Review the selected changes thoroughly. Be specific and concise.",
-				ctx.cwd,
+				runCwd,
 				signal,
 				onUpdate,
 				timeoutMs,
@@ -424,13 +446,13 @@ export default function (pi: ExtensionAPI) {
 			if (result.exitCode !== 0) {
 				return {
 					content: [{ type: "text", text: formatFailure("codex_review", result) }],
-					details: { ...result, action: params.action, branch: params.branch, commit: params.commit },
+					details: { ...result, action: params.action, branch: params.branch, commit: params.commit, cwd: runCwd },
 				};
 			}
 
 			return {
 				content: [{ type: "text", text: result.summary }],
-				details: { ...result, action: params.action, branch: params.branch, commit: params.commit },
+				details: { ...result, action: params.action, branch: params.branch, commit: params.commit, cwd: runCwd },
 			};
 		},
 	});
@@ -449,6 +471,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: ExecParams,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const sandbox = (params.sandbox || "workspace-write") as CodexSandbox;
+			const runCwd = await resolveRunCwd(pi, ctx, params.cwd);
 
 			if (sandbox === "workspace-write") {
 				if (!ctx.hasUI) {
@@ -456,21 +479,21 @@ export default function (pi: ExtensionAPI) {
 				}
 				const ok = await ctx.ui.confirm(
 					"Allow Codex workspace-write?",
-					`Codex will run in workspace-write mode in ${ctx.cwd}. Continue?`,
+					`Codex will run in workspace-write mode in ${runCwd}. Continue?`,
 				);
 				if (!ok) {
 					return {
 						content: [{ type: "text", text: "codex_exec cancelled by user before launching Codex." }],
-						details: { cancelled: true, sandbox },
+						details: { cancelled: true, sandbox, cwd: runCwd },
 					};
 				}
 			}
 
 			const timeoutMs = params.timeoutMs || DEFAULT_TIMEOUT_MS;
 			const result = await runCodex(
-				buildExecArgs(params, ctx.cwd, sandbox),
+				buildExecArgs(params, runCwd, sandbox),
 				params.task,
-				ctx.cwd,
+				runCwd,
 				signal,
 				onUpdate,
 				timeoutMs,
@@ -479,13 +502,13 @@ export default function (pi: ExtensionAPI) {
 			if (result.exitCode !== 0) {
 				return {
 					content: [{ type: "text", text: formatFailure("codex_exec", result) }],
-					details: { ...result, sandbox },
+					details: { ...result, sandbox, cwd: runCwd },
 				};
 			}
 
 			return {
 				content: [{ type: "text", text: result.summary }],
-				details: { ...result, sandbox },
+				details: { ...result, sandbox, cwd: runCwd },
 			};
 		},
 	});

@@ -2,11 +2,14 @@
  * Thinking Level Extension — `/thinking` command
  *
  * Lets the user pick or set a thinking level.
+ * Persists the choice to the project-local .pi/settings.json.
  * Commands:
  *   /thinking        — show picker with all levels
  *   /thinking high   — set a level directly
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -48,6 +51,25 @@ function parseChoice(choice: string): ThinkingLevel | null {
 	return LEVELS.find((level) => choice.includes(`${level} —`)) ?? null;
 }
 
+/** Read project-local settings.json, returning the parsed object or an empty one. */
+function readProjectSettings(cwd: string): Record<string, unknown> {
+	const path = join(cwd, ".pi", "settings.json");
+	if (!existsSync(path)) return {};
+	try {
+		return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+	} catch {
+		return {};
+	}
+}
+
+/** Write project-local settings.json, creating .pi/ dir if needed. */
+function writeProjectSettings(cwd: string, settings: Record<string, unknown>): void {
+	const dir = join(cwd, ".pi");
+	const path = join(dir, "settings.json");
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(path, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+}
+
 function setThinkingLevel(pi: ExtensionAPI, ctx: ExtensionCommandContext, selected: ThinkingLevel): void {
 	const before = pi.getThinkingLevel() as ThinkingLevel;
 
@@ -61,7 +83,11 @@ function setThinkingLevel(pi: ExtensionAPI, ctx: ExtensionCommandContext, select
 	// Verify the change took effect. Pi can clamp unsupported levels based on model capabilities.
 	const actual = pi.getThinkingLevel() as ThinkingLevel;
 	if (actual === selected) {
-		ctx.ui.notify(`Thinking level: ${selected}`, "info");
+		// Persist to project-local settings.json.
+		const settings = readProjectSettings(ctx.cwd);
+		settings.defaultThinkingLevel = actual;
+		writeProjectSettings(ctx.cwd, settings);
+		ctx.ui.notify(`Thinking level: ${selected} (saved to .pi/settings.json)`, "info");
 	} else {
 		ctx.ui.notify(
 			`Requested thinking level ${selected}, but current model clamped it to ${actual}`,
@@ -71,6 +97,15 @@ function setThinkingLevel(pi: ExtensionAPI, ctx: ExtensionCommandContext, select
 }
 
 export default function (pi: ExtensionAPI) {
+	// On session start, apply the project-level defaultThinkingLevel if set.
+	pi.on("session_start", async (_event, ctx) => {
+		const settings = readProjectSettings(ctx.cwd);
+		const level = settings.defaultThinkingLevel;
+		if (isThinkingLevel(level as string)) {
+			pi.setThinkingLevel(level as ThinkingLevel);
+		}
+	});
+
 	pi.registerCommand("thinking", {
 		description: "Select or set a thinking level",
 		handler: async (args, ctx) => {
@@ -104,11 +139,4 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// Show current thinking level in status bar.
-	pi.on("thinking_level_select", async (event, ctx) => {
-		ctx.ui.setStatus("thinking", `think: ${event.level}`);
-	});
-	pi.on("turn_end", async (_event, ctx) => {
-		ctx.ui.setStatus("thinking", `think: ${pi.getThinkingLevel()}`);
-	});
 }

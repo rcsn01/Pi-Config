@@ -40,8 +40,6 @@ interface ModeState {
 	setAt: number;
 }
 
-const MODE_CUSTOM_TYPE = "approval-mode-state";
-
 const MODE_FILE = path.join(".pi", "approval-mode.json");
 
 // Tools that read paths
@@ -84,28 +82,10 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function reconstruct(ctx: ExtensionContext) {
-		// Check file first for persisted mode across sessions
-		const fileMode = loadModeFromFile(ctx.cwd);
-		if (fileMode) {
-			mode = fileMode;
-			return;
-		}
-
-		mode = { mode: "default", setAt: Date.now() };
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type !== "custom") continue;
-			if (entry.customType === MODE_CUSTOM_TYPE) {
-				const data = entry.data as ModeState | undefined;
-				if (data?.mode) {
-					// Migrate legacy "auto" → "default"
-					mode = { mode: data.mode === "auto" ? "default" : data.mode, setAt: data.setAt };
-				}
-			}
-		}
+		mode = loadModeFromFile(ctx.cwd) ?? { mode: "default", setAt: Date.now() };
 	}
 
 	function persistMode() {
-		pi.appendEntry(MODE_CUSTOM_TYPE, { ...mode });
 		saveModeToFile();
 	}
 
