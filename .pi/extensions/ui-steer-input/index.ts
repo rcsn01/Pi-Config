@@ -50,8 +50,9 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 	let agentActive = false;
 	let queuedCount = 0;
 
-	function updateStatus(ctx: ExtensionContext): void {
-		ctx.ui.setStatus(agentActive ? "steer" : "steer", agentActive ? "↩ steer  ⇥ queue" : undefined);
+	function updateStatus(_ctx: ExtensionContext): void {
+		// Pi already shows the steering/queue hint above the editor via updateWidget().
+		// Keep the footer/status area clear to avoid a duplicate hint under the chat box.
 	}
 
 	function updateWidget(ctx: ExtensionContext): void {
@@ -76,7 +77,6 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 			return new SteerEditor(tui, theme, keybindings, (text) => {
 				pi.sendUserMessage(text, { deliverAs: "followUp" });
 				queuedCount++;
-				ctx.ui.setStatus("steer", `⇥ queued (${queuedCount})`);
 				ctx.ui.notify(
 					`Queued for next turn${queuedCount > 1 ? ` (${queuedCount} pending)` : ""}`,
 					"info",
@@ -109,7 +109,6 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		agentActive = false;
 		ctx.ui.setEditorComponent(undefined);
-		ctx.ui.setStatus("steer", undefined);
 		ctx.ui.setWidget("steer-hint", undefined);
 	});
 }
