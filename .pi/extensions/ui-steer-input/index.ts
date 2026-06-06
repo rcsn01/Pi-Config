@@ -18,6 +18,8 @@ import { matchesKey, Key } from "@earendil-works/pi-tui";
 /**
  * Wraps the built-in editor to intercept Tab during agent streaming.
  * Tab reads the current text, queues it as a followUp, and clears the editor.
+ * Slash-prefixed input is routed through Pi's built-in follow-up handler so
+ * extension commands can execute instead of becoming literal chat messages.
  * All other keys (including Enter → steer) pass through to the built-in editor.
  */
 class SteerEditor extends CustomEditor {
@@ -37,8 +39,28 @@ class SteerEditor extends CustomEditor {
 		if (matchesKey(data, Key.tab)) {
 			const text = this.getText().trim();
 			if (text) {
-				this.sendFollowUp(text);
-				this.setText("");
+				if (text.startsWith("/")) {
+					// Use the app's follow-up action for slash input. Calling
+					// pi.sendUserMessage(..., { deliverAs: "followUp" }) bypasses
+					// slash-command parsing by design, which turns queued commands
+					// into plain chat messages. Built-in /reload is not handled by
+					// session.prompt() while streaming, so route it to a non-conflicting
+					// extension command first.
+					if (text === "/reload" || text.startsWith("/reload ")) {
+						this.setText(text.replace(/^\/reload\b/, "/reload-runtime"));
+					}
+
+					const followUp = this.actionHandlers.get("app.message.followUp");
+					if (followUp) {
+						followUp();
+					} else {
+						this.sendFollowUp(this.getText().trim());
+						this.setText("");
+					}
+				} else {
+					this.sendFollowUp(text);
+					this.setText("");
+				}
 			}
 			return;
 		}
@@ -47,6 +69,17 @@ class SteerEditor extends CustomEditor {
 }
 
 export default function steerInputExtension(pi: ExtensionAPI) {
+	pi.registerCommand("reload-runtime", {
+		description: "Reload keybindings, extensions, skills, prompts, and themes",
+		handler: async (_args, ctx) => {
+			if (!ctx.isIdle()) {
+				ctx.ui.notify("Queued /reload; reloading after the current response finishes.", "info");
+				await ctx.waitForIdle();
+			}
+			await ctx.reload();
+		},
+	});
+
 	let agentActive = false;
 	let queuedCount = 0;
 
