@@ -6,7 +6,6 @@
  *
  * Commands:
  *   /plan                  - Toggle plan mode
- *   /plan off              - Exit plan mode
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -92,17 +91,6 @@ export default function (pi: ExtensionAPI) {
 		description: "Toggle plan mode (propose before implementing)",
 		handler: async (args, ctx) => {
 			const trimmed = (args || "").trim();
-
-			if (trimmed === "off" || trimmed === "exit") {
-				if (!planState.active) {
-					ctx.ui.notify("Plan mode is not active.", "info");
-					return;
-				}
-				planState = { active: false, setAt: Date.now() };
-				persist();
-				ctx.ui.notify("Plan mode exited.", "info");
-				return;
-			}
 
 			// Toggle: on → off, off → on
 			planState.active = !planState.active;
