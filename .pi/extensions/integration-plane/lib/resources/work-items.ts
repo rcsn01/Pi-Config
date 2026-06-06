@@ -45,6 +45,55 @@ export const patchWorkItem = (
 		isWrite: true,
 	})
 
+export type WorkItemListOptions = {
+	name?: string
+	sequenceId?: number
+	state?: string
+}
+
+export type WorkItemSummary = {
+	id: string
+	name: string
+	sequence_id: number
+	state: string
+	priority: string | null
+	external_source: string | null
+	external_id: string | null
+}
+
+export const listWorkItems = async (
+	client: PlaneClient,
+	projectId: string,
+	options: WorkItemListOptions = {},
+): Promise<WorkItemSummary[]> => {
+	const results = await client.listAll<PlaneWorkItem>(`/projects/${projectId}/issues/`)
+
+	let filtered = results
+	if (options.name) {
+		const q = options.name.toLowerCase()
+		filtered = filtered.filter((item) => item.name.toLowerCase().includes(q))
+	}
+	if (options.sequenceId != null) {
+		filtered = filtered.filter((item) => item.sequence_id === options.sequenceId)
+	}
+	if (options.state) {
+		const stateLower = options.state.toLowerCase()
+		filtered = filtered.filter(
+			(item) => (item.state ?? "").toLowerCase() === stateLower,
+		)
+	}
+
+	return filtered.map((item) => ({
+		id: item.id,
+		name: item.name,
+		sequence_id: item.sequence_id ?? 0,
+		state: item.state ?? "unknown",
+		priority: item.priority ?? null,
+		external_source: item.external_source ?? null,
+		external_id: item.external_id ?? null,
+	}))
+}
+
 export const upsertWorkItem = async (
 	client: PlaneClient,
 	projectId: string,
