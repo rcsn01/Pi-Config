@@ -18,21 +18,24 @@ import { matchesKey, Key } from "@earendil-works/pi-tui";
 /**
  * Wraps the built-in editor to intercept Tab during agent streaming.
  * Tab reads the current text, queues it as a followUp, and clears the editor.
- * Slash-prefixed input is routed through Pi's built-in follow-up handler so
- * extension commands can execute instead of becoming literal chat messages.
+ * Slash-prefixed input is queued separately and submitted after the current
+ * response finishes, so Pi's normal slash-command handling runs generically.
  * All other keys (including Enter → steer) pass through to the built-in editor.
  */
 class SteerEditor extends CustomEditor {
 	private sendFollowUp: (text: string) => void;
+	private queueSlashCommand: (text: string, submit?: (text: string) => void | Promise<void>) => void;
 
 	constructor(
 		tui: Parameters<typeof CustomEditor>[0],
 		theme: Parameters<typeof CustomEditor>[1],
 		keybindings: Parameters<typeof CustomEditor>[2],
 		sendFollowUp: (text: string) => void,
+		queueSlashCommand: (text: string, submit?: (text: string) => void | Promise<void>) => void,
 	) {
 		super(tui, theme, keybindings);
 		this.sendFollowUp = sendFollowUp;
+		this.queueSlashCommand = queueSlashCommand;
 	}
 
 	override handleInput(data: string): void {
@@ -40,23 +43,11 @@ class SteerEditor extends CustomEditor {
 			const text = this.getText().trim();
 			if (text) {
 				if (text.startsWith("/")) {
-					// Use the app's follow-up action for slash input. Calling
 					// pi.sendUserMessage(..., { deliverAs: "followUp" }) bypasses
-					// slash-command parsing by design, which turns queued commands
-					// into plain chat messages. Built-in /reload is not handled by
-					// session.prompt() while streaming, so route it to a non-conflicting
-					// extension command first.
-					if (text === "/reload" || text.startsWith("/reload ")) {
-						this.setText(text.replace(/^\/reload\b/, "/reload-runtime"));
-					}
-
-					const followUp = this.actionHandlers.get("app.message.followUp");
-					if (followUp) {
-						followUp();
-					} else {
-						this.sendFollowUp(this.getText().trim());
-						this.setText("");
-					}
+					// slash-command parsing by design. Keep slash commands out of
+					// the chat queue and submit them after the current response ends.
+					this.queueSlashCommand(text, this.onSubmit);
+					this.setText("");
 				} else {
 					this.sendFollowUp(text);
 					this.setText("");
@@ -69,19 +60,9 @@ class SteerEditor extends CustomEditor {
 }
 
 export default function steerInputExtension(pi: ExtensionAPI) {
-	pi.registerCommand("reload-runtime", {
-		description: "Reload keybindings, extensions, skills, prompts, and themes",
-		handler: async (_args, ctx) => {
-			if (!ctx.isIdle()) {
-				ctx.ui.notify("Queued /reload; reloading after the current response finishes.", "info");
-				await ctx.waitForIdle();
-			}
-			await ctx.reload();
-		},
-	});
-
 	let agentActive = false;
 	let queuedCount = 0;
+	let queuedSlashCommands: Array<{ text: string; submit?: (text: string) => void | Promise<void> }> = [];
 
 	function updateStatus(_ctx: ExtensionContext): void {
 		// Pi already shows the steering/queue hint above the editor via updateWidget().
@@ -107,14 +88,27 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 		updateWidget(ctx);
 
 		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-			return new SteerEditor(tui, theme, keybindings, (text) => {
-				pi.sendUserMessage(text, { deliverAs: "followUp" });
-				queuedCount++;
-				ctx.ui.notify(
-					`Queued for next turn${queuedCount > 1 ? ` (${queuedCount} pending)` : ""}`,
-					"info",
-				);
-			});
+			return new SteerEditor(
+				tui,
+				theme,
+				keybindings,
+				(text) => {
+					pi.sendUserMessage(text, { deliverAs: "followUp" });
+					queuedCount++;
+					ctx.ui.notify(
+						`Queued for next turn${queuedCount > 1 ? ` (${queuedCount} pending)` : ""}`,
+						"info",
+					);
+				},
+				(text, submit) => {
+					queuedSlashCommands.push({ text, submit });
+					queuedCount++;
+					ctx.ui.notify(
+						`Queued slash command for after this response${queuedSlashCommands.length > 1 ? ` (${queuedSlashCommands.length} pending)` : ""}`,
+						"info",
+					);
+				},
+			);
 		});
 	});
 
@@ -123,6 +117,17 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 		ctx.ui.setEditorComponent(undefined);
 		updateStatus(ctx);
 		updateWidget(ctx);
+
+		const slashCommands = queuedSlashCommands;
+		queuedSlashCommands = [];
+		for (const { text, submit } of slashCommands) {
+			if (submit) {
+				await submit(text);
+			} else {
+				ctx.ui.setEditorText(text);
+				ctx.ui.notify(`Queued slash command restored to editor: ${text}`, "info");
+			}
+		}
 	});
 
 	// ---- Steer notification (Enter during streaming) ----
@@ -141,6 +146,7 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		agentActive = false;
+		queuedSlashCommands = [];
 		ctx.ui.setEditorComponent(undefined);
 		ctx.ui.setWidget("steer-hint", undefined);
 	});
