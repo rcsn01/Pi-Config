@@ -4,8 +4,9 @@ import { loadPlaneConfig, configSummary } from "./plane/config.ts"
 import { createPlaneClient } from "./plane/client.ts"
 import { PlaneConfigError, PlaneApiError } from "./plane/errors.ts"
 import { listProjects } from "./resources/projects.ts"
-import { findWorkItemByExternal, upsertWorkItem } from "./resources/work-items.ts"
+import { findWorkItemByExternal, upsertWorkItem, listWorkItems } from "./resources/work-items.ts"
 import { listStates, resolveStateId } from "./resources/states.ts"
+import { attachWorkItemFile, listWorkItemAttachments } from "./resources/attachments.ts"
 import { syncNormalizedWorkspace } from "./sync/orchestrator.ts"
 import { priorityFromProgress } from "./sync/mapping.ts"
 import type { NormalizeOutput } from "./plane/types.ts"
@@ -145,6 +146,104 @@ export const registerPlaneTools = (pi: ExtensionAPI) => {
 							: undefined,
 				})
 			})
+			if (!result.ok) return { content: [{ type: "text", text: result.text }] }
+			return {
+				content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }],
+			}
+		},
+	})
+
+	pi.registerTool({
+		name: "plane_list_work_items",
+		label: "Plane List Work Items",
+		description:
+			"List work items in a Plane project. Supports optional filters: name (substring match), sequence_id (number), state (state name).",
+		promptSnippet: "List Plane work items in a project",
+		promptGuidelines: [
+			"Use to browse work items when external_source/external_id is unknown.",
+			"Filter by name substring to find items by partial name match.",
+		],
+		parameters: Type.Object({
+			project_id: Type.String({ description: "Plane project UUID" }),
+			name: Type.Optional(Type.String({ description: "Filter: substring match on item name" })),
+			sequence_id: Type.Optional(Type.Number({ description: "Filter: exact match on sequence ID (e.g., 9 for TTSP-9)" })),
+			state: Type.Optional(Type.String({ description: "Filter: match on state name (e.g., 'Backlog', 'In Progress')" })),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const result = await withClient(ctx.cwd, (client) =>
+				listWorkItems(client, params.project_id, {
+					name: params.name,
+					sequenceId: params.sequence_id,
+					state: params.state,
+				}),
+			)
+			if (!result.ok) return { content: [{ type: "text", text: result.text }] }
+			return {
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify(result.data, null, 2),
+					},
+				],
+			}
+		},
+	})
+
+	pi.registerTool({
+		name: "plane_attach_work_item_file",
+		label: "Plane Attach Work Item File",
+		description:
+			"Attach a local file to a Plane work item/issue via the Plane attachment API.",
+		promptSnippet: "Attach a local file to a Plane work item",
+		promptGuidelines: [
+			"Use when the user asks to upload or attach a file to a Plane work item.",
+			"Resolve project_id and issue_id before attaching; sequence keys like TTSP-9 are not issue UUIDs.",
+			"For Markdown files, prefer text/plain if text/markdown is rejected by the Plane server.",
+		],
+		parameters: Type.Object({
+			project_id: Type.String({ description: "Plane project UUID" }),
+			issue_id: Type.String({ description: "Plane work item/issue UUID" }),
+			file_path: Type.String({ description: "Local path to the file, relative to the current workspace" }),
+			mime_type: Type.Optional(Type.String({ description: "Optional MIME type override; .md defaults to text/plain" })),
+			external_source: Type.Optional(Type.String({ description: "Optional external source for idempotent attachment tracking" })),
+			external_id: Type.Optional(Type.String({ description: "Optional external ID for idempotent attachment tracking" })),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const result = await withClient(ctx.cwd, (client) =>
+				attachWorkItemFile(client, {
+					projectId: params.project_id,
+					issueId: params.issue_id,
+					filePath: params.file_path,
+					cwd: ctx.cwd,
+					mimeType: params.mime_type,
+					externalSource: params.external_source,
+					externalId: params.external_id,
+				}),
+			)
+			if (!result.ok) return { content: [{ type: "text", text: result.text }] }
+			return {
+				content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }],
+			}
+		},
+	})
+
+	pi.registerTool({
+		name: "plane_list_work_item_attachments",
+		label: "Plane List Work Item Attachments",
+		description: "List file attachments for a Plane work item/issue.",
+		promptSnippet: "List Plane work item attachments",
+		promptGuidelines: [
+			"Use to verify files attached to a Plane work item.",
+			"Requires the Plane issue UUID, not a sequence key like TTSP-9.",
+		],
+		parameters: Type.Object({
+			project_id: Type.String({ description: "Plane project UUID" }),
+			issue_id: Type.String({ description: "Plane work item/issue UUID" }),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const result = await withClient(ctx.cwd, (client) =>
+				listWorkItemAttachments(client, params.project_id, params.issue_id),
+			)
 			if (!result.ok) return { content: [{ type: "text", text: result.text }] }
 			return {
 				content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }],
