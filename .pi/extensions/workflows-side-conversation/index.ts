@@ -12,13 +12,24 @@
  *   /side <prompt>           - Enter side mode and immediately run the inline prompt
  */
 
-import type { ExtensionAPI, ReplacedSessionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ReplacedSessionContext } from "@earendil-works/pi-coding-agent";
+
+const SIDE_STATUS_ID = "side-mode";
+const SIDE_STATUS_TEXT = "currently in /side mode, /side to exit.";
+
+function updateSideModeStatus(ctx: ExtensionContext): void {
+	const inSideMode = Boolean(ctx.sessionManager.getHeader()?.parentSession);
+	ctx.ui.setStatus(SIDE_STATUS_ID, inSideMode ? SIDE_STATUS_TEXT : undefined);
+}
 
 function getErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
 export default function (pi: ExtensionAPI) {
+	pi.on("session_start", async (_event, ctx) => updateSideModeStatus(ctx));
+	pi.on("turn_end", async (_event, ctx) => updateSideModeStatus(ctx));
+
 	pi.registerCommand("side", {
 		description: "Toggle side mode: fork from main, or return to main from side",
 		handler: async (args, ctx) => {
@@ -36,6 +47,7 @@ export default function (pi: ExtensionAPI) {
 				if (parentSession) {
 					const result = await ctx.switchSession(parentSession, {
 						withSession: async (mainCtx: ReplacedSessionContext) => {
+							updateSideModeStatus(mainCtx);
 							mainCtx.ui.notify("↩ Returned to main conversation.", "info");
 						},
 					});
@@ -53,6 +65,7 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				const withSideSession = async (sideCtx: ReplacedSessionContext) => {
+					updateSideModeStatus(sideCtx);
 					sideCtx.ui.notify(
 						"⚡ Side mode active. Use /side again to return to the main conversation.",
 						"info",
