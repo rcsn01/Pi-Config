@@ -1,26 +1,28 @@
 /**
  * Turn Notify Extension - Recreates Codex's desktop notification feature
  *
- * Sends desktop notifications when the agent completes a turn.
- * Supports macOS (osascript), Linux (notify-send), and fallback terminal bell.
+ * Sends notifications when the agent completes a turn.
+ * Supports desktop notifications and cmux in-app notifications.
  *
  * Command:
- *   /notify          - Show that desktop notifications are always enabled
+ *   /notify          - Send a test notification
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-async function sendDesktopNotification(title: string, message: string): Promise<void> {
+async function runCommand(cmd: string, args: string[]): Promise<void> {
 	const { execFile } = await import("node:child_process");
-	const run = (cmd: string, args: string[]) =>
-		new Promise<void>((resolve) => {
-			execFile(cmd, args, { timeout: 5000 }, () => resolve());
-		});
+	await new Promise<void>((resolve) => {
+		execFile(cmd, args, { timeout: 5000 }, () => resolve());
+	});
+}
+
+async function sendDesktopNotification(title: string, message: string): Promise<void> {
 	try {
 		if (process.platform === "darwin") {
-			await run("osascript", ["-e", `display notification ${JSON.stringify(message)} with title ${JSON.stringify(title)}`]);
+			await runCommand("osascript", ["-e", `display notification ${JSON.stringify(message)} with title ${JSON.stringify(title)}`]);
 		} else if (process.platform === "linux") {
-			await run("notify-send", [title, message]);
+			await runCommand("notify-send", [title, message]);
 		} else {
 			// Windows toast or fallback
 			console.log("\x07"); // terminal bell
@@ -28,6 +30,24 @@ async function sendDesktopNotification(title: string, message: string): Promise<
 	} catch {
 		// Silently fail - notifications are best-effort
 	}
+}
+
+async function sendCmuxNotification(title: string, message: string): Promise<void> {
+	if (!process.env.CMUX_WORKSPACE_ID && !process.env.CMUX_SURFACE_ID && !process.env.CMUX_BUNDLED_CLI_PATH) return;
+
+	const cmux = process.env.CMUX_BUNDLED_CLI_PATH || "cmux";
+	try {
+		await runCommand(cmux, ["notify", "--title", title, "--body", message]);
+	} catch {
+		// Silently fail - notifications are best-effort
+	}
+}
+
+async function sendNotifications(title: string, message: string): Promise<void> {
+	await Promise.all([
+		sendDesktopNotification(title, message),
+		sendCmuxNotification(title, message),
+	]);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -54,24 +74,19 @@ export default function (pi: ExtensionAPI) {
 			const preview = text.slice(0, 120).replace(/\n/g, " ");
 			const display = preview.length < text.length ? preview + "…" : preview;
 
-			await sendDesktopNotification("Pi - Turn Complete", display || "Task completed");
+			await sendNotifications("Pi - Turn Complete", display || "Task completed");
 		} else {
-			await sendDesktopNotification("Pi - Turn Complete", "Agent finished processing");
+			await sendNotifications("Pi - Turn Complete", "Agent finished processing");
 		}
-	});
-
-	// ── Notify Status Widget ──────────────────────────────────────────────
-
-	pi.on("turn_end", async (_event, ctx) => {
-		ctx.ui.setStatus("notify", "🔔 ON");
 	});
 
 	// ── Command: /notify ──────────────────────────────────────────────────
 
 	pi.registerCommand("notify", {
-		description: "Desktop notifications are always enabled on turn complete",
+		description: "Send a test desktop and cmux notification",
 		handler: async (_args, ctx) => {
-			ctx.ui.notify("Desktop notifications are always enabled 🔔", "info");
+			await sendNotifications("Pi", "Notifications are enabled ✓");
+			ctx.ui.notify("Sent desktop and cmux notification test.", "info");
 		},
 	});
 }
