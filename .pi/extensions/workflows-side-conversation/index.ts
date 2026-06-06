@@ -1,25 +1,31 @@
 /**
  * Side Mode Extension - `/side` toggles between main and side conversations
  *
- * From a main conversation, `/side` forks the current session path and switches
- * into that fork. The side session knows the main conversation up to the fork
- * point because it is created from the current leaf.
+ * From a main conversation, `/side` creates a marked child session with the
+ * current resolved conversation context and switches into it.
  *
- * From a side/forked conversation, `/side` switches back to the parent session.
+ * From a marked side conversation, `/side` switches back to the parent session.
  *
  * Commands:
  *   /side                    - Enter side mode, or exit side mode if already there
  *   /side <prompt>           - Enter side mode and immediately run the inline prompt
  */
 
-import type { ExtensionAPI, ExtensionContext, ReplacedSessionContext } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext } from "@earendil-works/pi-coding-agent";
+import type { CustomEntry, ExtensionAPI, ExtensionContext, ReplacedSessionContext } from "@earendil-works/pi-coding-agent";
 
+const SIDE_MARKER_TYPE = "side-mode-session";
 const SIDE_STATUS_ID = "side-mode";
 const SIDE_STATUS_TEXT = "currently in /side mode, /side to exit.";
 
+function isSideModeSession(ctx: ExtensionContext): boolean {
+	return ctx.sessionManager
+		.getEntries()
+		.some((entry) => entry.type === "custom" && entry.customType === SIDE_MARKER_TYPE);
+}
+
 function updateSideModeStatus(ctx: ExtensionContext): void {
-	const inSideMode = Boolean(ctx.sessionManager.getHeader()?.parentSession);
-	ctx.ui.setStatus(SIDE_STATUS_ID, inSideMode ? SIDE_STATUS_TEXT : undefined);
+	ctx.ui.setStatus(SIDE_STATUS_ID, isSideModeSession(ctx) ? SIDE_STATUS_TEXT : undefined);
 }
 
 function getErrorMessage(error: unknown): string {
@@ -31,7 +37,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_end", async (_event, ctx) => updateSideModeStatus(ctx));
 
 	pi.registerCommand("side", {
-		description: "Toggle side mode: fork from main, or return to main from side",
+		description: "Toggle side mode: start a marked side conversation, or return to main from side",
 		handler: async (args, ctx) => {
 			const prompt = (args || "").trim();
 
@@ -43,8 +49,10 @@ export default function (pi: ExtensionAPI) {
 
 				const parentSession = ctx.sessionManager.getHeader()?.parentSession;
 
-				// If this session was created as a fork/side session, /side exits back to main.
-				if (parentSession) {
+				// Only sessions explicitly created by this extension count as side mode.
+				// Ordinary pi forks/clones also have parentSession, so using parentSession
+				// alone makes the footer and /side behavior lie in non-side sessions.
+				if (parentSession && isSideModeSession(ctx)) {
 					const result = await ctx.switchSession(parentSession, {
 						withSession: async (mainCtx: ReplacedSessionContext) => {
 							updateSideModeStatus(mainCtx);
@@ -58,11 +66,19 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 
-				const currentLeafId = ctx.sessionManager.getLeafId();
-				if (!currentLeafId) {
-					ctx.ui.notify("No conversation to enter side mode from.", "warning");
+				const currentSessionFile = ctx.sessionManager.getSessionFile();
+				if (!currentSessionFile) {
+					ctx.ui.notify("Side mode needs a persisted main session to return to.", "warning");
 					return;
 				}
+
+				const currentMessages = buildSessionContext(
+					ctx.sessionManager.getEntries(),
+					ctx.sessionManager.getLeafId(),
+				).messages;
+				const currentCustomEntries = ctx.sessionManager
+					.getBranch()
+					.filter((entry): entry is CustomEntry => entry.type === "custom" && entry.customType !== SIDE_MARKER_TYPE);
 
 				const withSideSession = async (sideCtx: ReplacedSessionContext) => {
 					updateSideModeStatus(sideCtx);
@@ -78,8 +94,20 @@ export default function (pi: ExtensionAPI) {
 					}
 				};
 
-				const result = await ctx.fork(currentLeafId, {
-					position: "at",
+				const result = await ctx.newSession({
+					parentSession: currentSessionFile,
+					setup: async (sessionManager) => {
+						for (const message of currentMessages) {
+							sessionManager.appendMessage(message);
+						}
+						for (const entry of currentCustomEntries) {
+							sessionManager.appendCustomEntry(entry.customType, entry.data);
+						}
+						sessionManager.appendCustomEntry(SIDE_MARKER_TYPE, {
+							parentSession: currentSessionFile,
+							createdAt: new Date().toISOString(),
+						});
+					},
 					withSession: withSideSession,
 				});
 
