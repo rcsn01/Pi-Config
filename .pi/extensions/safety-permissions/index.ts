@@ -20,6 +20,7 @@ import * as path from "node:path";
 import {
 	dangerousShellReason,
 	evaluateExecPolicy,
+	extractExternalPathsFromCommand,
 	isExternalWritePath,
 	isNetworkCommand,
 	isNetworkToolName,
@@ -186,7 +187,7 @@ ${message}`;
 		const guardianPath = path.join(agentsDir, "guardian.md");
 
 		let systemPrompt = "";
-		let model = "anthropic/claude-haiku-4-5";
+		let model: string | undefined;  // undefined = use default model
 		let tools = "";
 
 		try {
@@ -237,8 +238,10 @@ ${message}`;
 		} else {
 			args.push("--no-tools");
 		}
+		if (model) {
+			args.push("--model", model);
+		}
 		args.push(
-			"--models", model,
 			"--append-system-prompt", promptPath,
 			task,
 		);
@@ -321,6 +324,72 @@ ${message}`;
 		} finally {
 			// Cleanup temp dir
 			try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+		}
+	}
+
+	// ── Guardian helper for auto-review ──────────────────────────────
+
+	/**
+	 * Run the guardian LLM to evaluate an action. If the guardian allows,
+	 * proceed silently. If denied, block with notification. If it needs
+	 * user approval, prompt the user directly.
+	 */
+	async function guardianReview(
+		ctx: ExtensionContext,
+		title: string,
+		message: string,
+	): Promise<{ allowed: boolean; reason?: string }> {
+		if (!ctx.hasUI) {
+			return { allowed: false, reason: "Auto-review: no UI available for guardian fallback." };
+		}
+
+		// Notify user the guardian is reviewing
+		ctx.ui.notify(`Guardian reviewing: ${title}...`, "info");
+
+		try {
+			const result = await runAutoReviewer(title, message);
+
+			if (result.allowed) {
+				ctx.ui.notify(`Guardian: ALLOWED — ${result.reason || "low risk"}`, "info");
+				return { allowed: true, reason: result.reason };
+			}
+
+			if (result.needsUserApproval) {
+				// Guardian is uncertain — escalate to user
+				ctx.ui.notify(
+					`Guardian uncertain: ${result.reason || "needs review"}`,
+					"warning",
+				);
+				const ok = await ctx.ui.confirm(
+					`Auto-review: ${title}`,
+					`${message}\n\nGuardian verdict: ${result.reason || "needs user approval"}\n\nProceed anyway?`,
+				);
+				if (!ok) {
+					return { allowed: false, reason: "Auto-review: user declined after guardian escalation." };
+				}
+				return { allowed: true, reason: "User approved after guardian escalation." };
+			}
+
+			// Guardian denied
+			ctx.ui.notify(
+				`Guardian: DENIED — ${result.reason || "blocked for safety"}`,
+				"error",
+			);
+			return { allowed: false, reason: result.reason || "Guardian denied." };
+		} catch (err: any) {
+			// Guardian failed — fall back to direct user prompt
+			ctx.ui.notify(
+				`Guardian unavailable: ${err.message || String(err)}. Falling back to manual approval.`,
+				"warning",
+			);
+			const ok = await ctx.ui.confirm(
+				`Auto-review: ${title} (guardian unavailable)`,
+				`${message}\n\nGuardian could not evaluate. Proceed?`,
+			);
+			if (!ok) {
+				return { allowed: false, reason: "Auto-review: user declined (guardian fallback)." };
+			}
+			return { allowed: true, reason: "User approved (guardian fallback)." };
 		}
 	}
 
@@ -424,31 +493,73 @@ ${message}`;
 				};
 			}
 
-			// Default: dangerous commands need approval
-			if (mode.mode === "default") {
+			// Default & auto-review: dangerous commands need approval
+			if (mode.mode === "default" || mode.mode === "auto-review") {
 				const dangerReason = dangerousShellReason(trimmedCmd);
 				if (dangerReason) {
-					const { allowed, reason } = await requestApproval(
-						ctx,
-						"Dangerous Command",
-						`${mode.mode === "default" ? "Default" : "Auto-review"} mode detected: ${dangerReason}\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
-					);
-					if (!allowed) {
-						rememberDenied(event.toolName, event.input, "Dangerous Command", trimmedCmd.slice(0, 200));
-						return { block: true, reason: reason ?? "Blocked." };
+					if (mode.mode === "auto-review") {
+						const { allowed, reason } = await guardianReview(
+							ctx,
+							"Dangerous Command",
+							`Auto-review mode: ${dangerReason}\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
+						);
+						if (!allowed) {
+							rememberDenied(event.toolName, event.input, "Dangerous Command", trimmedCmd.slice(0, 200));
+							return { block: true, reason: reason ?? "Auto-review: dangerous command blocked." };
+						}
+					} else {
+						const { allowed, reason } = await requestApproval(
+							ctx,
+							"Dangerous Command",
+							`Default mode detected: ${dangerReason}\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
+						);
+						if (!allowed) {
+							rememberDenied(event.toolName, event.input, "Dangerous Command", trimmedCmd.slice(0, 200));
+							return { block: true, reason: reason ?? "Blocked." };
+						}
 					}
 				}
 
-				// Network command detection
+				// Network command detection (default: prompt; auto-review: prompt for install/modify commands)
 				if (isNetworkCommand(trimmedCmd)) {
-					const { allowed, reason } = await requestApproval(
-						ctx,
-						"Network Access",
-						`Command appears to require network access.\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
-					);
-					if (!allowed) {
-						rememberDenied(event.toolName, event.input, "Network Access", trimmedCmd.slice(0, 200));
-						return { block: true, reason: reason ?? "Network access blocked." };
+					if (mode.mode === "auto-review") {
+						const { allowed, reason } = await guardianReview(
+							ctx,
+							"Network Command",
+							`Command may install/modify software outside the workspace.\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
+						);
+						if (!allowed) {
+							rememberDenied(event.toolName, event.input, "Network Access", trimmedCmd.slice(0, 200));
+							return { block: true, reason: reason ?? "Auto-review: network command blocked." };
+						}
+					} else {
+						const { allowed, reason } = await requestApproval(
+							ctx,
+							"Network Access",
+							`Command appears to require network access.\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
+						);
+						if (!allowed) {
+							rememberDenied(event.toolName, event.input, "Network Access", trimmedCmd.slice(0, 200));
+							return { block: true, reason: reason ?? "Network access blocked." };
+						}
+					}
+				}
+
+				// Auto-review: detect bash commands referencing paths outside the workspace
+				if (mode.mode === "auto-review") {
+					const externalPaths = extractExternalPathsFromCommand(trimmedCmd, ctx.cwd);
+					if (externalPaths.length > 0) {
+						const pathList = externalPaths.slice(0, 5).join("\n");
+						const extra = externalPaths.length > 5 ? `\n... and ${externalPaths.length - 5} more` : "";
+						const { allowed, reason } = await guardianReview(
+							ctx,
+							"External Path in Command",
+							`Command references paths outside the workspace:\n${pathList}${extra}\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
+						);
+						if (!allowed) {
+							rememberDenied(event.toolName, event.input, "External Path", externalPaths[0]);
+							return { block: true, reason: reason ?? "Auto-review: external path command blocked." };
+						}
 					}
 				}
 			}
@@ -476,17 +587,14 @@ ${message}`;
 				if (inputPath && isExternalWritePath(inputPath)) {
 					// Auto-review: prompt user directly for external writes (the ONE thing you care about)
 					if (mode.mode === "auto-review") {
-						if (!ctx.hasUI) {
-							rememberDenied(event.toolName, event.input, "External Path", inputPath);
-							return { block: true, reason: "Auto-review: external write blocked (no UI)." };
-						}
-						const ok = await ctx.ui.confirm(
-							"Auto-review: External Write",
-							`Path "${inputPath}" is outside the workspace.\n\nAllow write?`,
+						const { allowed, reason } = await guardianReview(
+							ctx,
+							"External Write",
+							`Path "${inputPath}" is outside the workspace.`,
 						);
-						if (!ok) {
+						if (!allowed) {
 							rememberDenied(event.toolName, event.input, "External Path", inputPath);
-							return { block: true, reason: "Auto-review: external write declined." };
+							return { block: true, reason: reason ?? "Auto-review: external write blocked." };
 						}
 						continue;
 					}
@@ -506,17 +614,14 @@ ${message}`;
 					const resolved = resolveToolPath(inputPath, ctx.cwd);
 					// Auto-review: prompt user directly
 					if (mode.mode === "auto-review") {
-						if (!ctx.hasUI) {
-							rememberDenied(event.toolName, event.input, "External Path", inputPath);
-							return { block: true, reason: "Auto-review: external write blocked (no UI)." };
-						}
-						const ok = await ctx.ui.confirm(
-							"Auto-review: External Write",
-							`Path "${inputPath}" (resolved: ${resolved}) is outside the workspace.\n\nAllow write?`,
+						const { allowed, reason } = await guardianReview(
+							ctx,
+							"External Write",
+							`Path "${inputPath}" (resolved: ${resolved}) is outside the workspace.`,
 						);
-						if (!ok) {
+						if (!allowed) {
 							rememberDenied(event.toolName, event.input, "External Path", inputPath);
-							return { block: true, reason: "Auto-review: external write declined." };
+							return { block: true, reason: reason ?? "Auto-review: external write blocked." };
 						}
 						continue;
 					}
@@ -541,7 +646,7 @@ ${message}`;
 		const modeInstructions: Record<ApprovalMode, string> = {
 			"read-only": `\n\n## Permission Mode: READ-ONLY\nYou are in read-only browsing mode, limited to the current directory.\n- You CAN read files, search code, list directories, and run read-only commands within ${event.systemPrompt.includes("cwd") ? "the workspace" : "the current directory"}.\n- You CANNOT modify files, run write commands, execute shell commands that change the system, or access the network.\n- Do NOT attempt to use write, edit, or bash for destructive operations.\n- Inform the user if a task requires write access. They can switch mode with /permissions default.`,
 			default: `\n\n## Permission Mode: DEFAULT\nYou may read, write, and edit files within the current workspace, and run commands.\nApproval is required to:\n- Access the internet (curl, fetch, package installs, git push/pull/clone, etc.)\n- Write or edit files outside the workspace\n- Run dangerous commands (sudo, rm -rf, curl piped to shell)\nPrefer safe alternatives when possible.`,
-			"auto-review": `\n\n## Permission Mode: AUTO-REVIEW\nFull auto — no restrictions on reading, writing within the workspace, web searches, or running commands.\nThe ONLY thing that requires user approval is editing files OUTSIDE the current directory/workspace.\nIf you need to write or edit a file outside the workspace, the user will be prompted.`,
+			"auto-review": `\n\n## Permission Mode: AUTO-REVIEW\nFull auto — no restrictions on reading, writing within the workspace, web searches, or running commands.\nA guardian LLM reviews dangerous commands, network installs, and writes outside the workspace.\nSafe actions pass silently. Risky actions may trigger a user prompt.`,
 			"full-access": `\n\n## Permission Mode: FULL ACCESS\nNo restrictions. You have full access to read, write, and execute any command, including network access and writing outside the workspace.\nExercise caution and always inform the user of destructive operations.`,
 		};
 		return { systemPrompt: event.systemPrompt + modeInstructions[mode.mode] };
