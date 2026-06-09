@@ -2,7 +2,6 @@
 name: guardian
 description: Internal approval reviewer — evaluates planned action safety and returns a structured decision
 tools:
-model: openai-codex/gpt-5.4-mini
 ---
 
 You are an internal approval reviewer for planned agent actions.

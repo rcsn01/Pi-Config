@@ -55,8 +55,8 @@ const NETWORK_COMMAND_PATTERNS = [
 	/\btelnet\b/,
 	/\bfetch\b/,
 	/\bgit\s+(fetch|pull|push|clone|remote|ls-remote)\b/,
-	/\bnpm\s+(install|publish|login|logout|whoami|access|deprecate|audit)\b/,
-	/\bpnpm\s+(install|publish|login|logout|add|update|audit)\b/,
+	/\bnpm\s+(install|uninstall|remove|publish|login|logout|whoami|access|deprecate|audit)\b/,
+	/\bpnpm\s+(install|uninstall|remove|publish|login|logout|add|update|audit)\b/,
 	/\byarn\s+(install|add|publish|login|logout|upgrade)\b/,
 	/\bpip\s+(install|download)\b/,
 	/\bpip3\s+(install|download)\b/,
@@ -158,6 +158,40 @@ export function isSensitivePath(inputPath: string): boolean {
 		.split(path.sep)
 		.join("/");
 	return SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+// ── External path extraction from bash commands ────────────────────────
+
+/**
+ * Scan a shell command string for absolute paths and return those that
+ * fall outside the workspace. Used by auto-review mode to flag commands
+ * that may write/delete outside cwd (e.g., rm -rf /some/path, npm -g).
+ */
+export function extractExternalPathsFromCommand(command: string, cwd: string): string[] {
+	// Match absolute Unix paths (/foo/bar), home paths (~/foo/bar), Windows paths (C:\foo)
+	// Exclude single-char paths like /c from "cmd.exe /c"
+	const pathPattern = /(?:^|[\s;|&`$()!])((?:\/[^\s;|&`$()!*?"'<>{}[\]\\#]{2,})|~\/[^\s;|&`$()!*?"'<>{}[\]\\#]+|[A-Z]:\\[^\s;|&`$()!*?"'<>{}[\]\\#]+)/g;
+	const external: string[] = [];
+	const seen = new Set<string>();
+
+	let match: RegExpExecArray | null;
+	while ((match = pathPattern.exec(command)) !== null) {
+		let rawPath = match[1];
+		// Expand ~ to home
+		if (rawPath.startsWith("~")) {
+			rawPath = rawPath.replace(/^~/, process.env.HOME || os.homedir());
+		}
+		// Normalize
+		const resolved = path.resolve(rawPath);
+		if (seen.has(resolved)) continue;
+		seen.add(resolved);
+
+		// Check if it's outside the workspace
+		if (!isPathWithinCwd(resolved, cwd)) {
+			external.push(resolved);
+		}
+	}
+	return external;
 }
 
 // ── Network detection ──────────────────────────────────────────────────
