@@ -58,6 +58,7 @@ const PATH_FIELDS = ["path", "file", "output", "target", "dest", "destination", 
 export default function (pi: ExtensionAPI) {
 	let mode: ModeState = { mode: "default", setAt: Date.now() };
 	let lastDeniedAction: { key: string; title: string; message: string; at: number } | undefined;
+	let lastUserPrompt = "";
 	const oneShotApprovals = new Set<string>();
 
 	// ── Persistence ────────────────────────────────────────────────────
@@ -184,8 +185,7 @@ ${message}`;
 
 		// Read guardian agent config
 		const extDir = path.dirname(new URL(import.meta.url).pathname);
-		const agentsDir = path.join(path.dirname(extDir), "tools-subagents", "agents");
-		const guardianPath = path.join(agentsDir, "guardian.md");
+		const guardianPath = path.join(extDir, "guardian.md");
 
 		let systemPrompt = "";
 		let model = "";  // Empty = use pi's default model from settings
@@ -362,27 +362,7 @@ ${message}`;
 		}
 
 		// Extract user's last request for authorization context
-		let userRequest = "(unknown)";
-		try {
-			const entries = ctx.sessionManager.getEntries();
-			// Walk backwards to find the last user message
-			for (let i = entries.length - 1; i >= 0; i--) {
-				const entry = entries[i];
-				if (entry.role === "user" && entry.content) {
-					const text = typeof entry.content === "string"
-						? entry.content
-						: Array.isArray(entry.content)
-							? entry.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join(" ")
-							: "";
-					if (text.trim()) {
-						userRequest = text.trim().slice(0, 500);
-						break;
-					}
-				}
-			}
-		} catch {
-			// Session access failed — proceed without user context
-		}
+		const userRequest = lastUserPrompt || "(unknown)";
 
 		// Build evaluation message with user context
 		const evaluationMessage = `User request: ${userRequest}\n\nAction: ${title}\n${actionDescription}`;
@@ -682,6 +662,7 @@ ${message}`;
 	// ── System prompt injection ────────────────────────────────────────
 
 	pi.on("before_agent_start", async (event) => {
+		lastUserPrompt = (event.prompt || "").slice(0, 500);
 		const modeInstructions: Record<ApprovalMode, string> = {
 			"read-only": `\n\n## Permission Mode: READ-ONLY\nYou are in read-only browsing mode, limited to the current directory.\n- You CAN read files, search code, list directories, and run read-only commands within ${event.systemPrompt.includes("cwd") ? "the workspace" : "the current directory"}.\n- You CANNOT modify files, run write commands, execute shell commands that change the system, or access the network.\n- Do NOT attempt to use write, edit, or bash for destructive operations.\n- Inform the user if a task requires write access. They can switch mode with /permissions default.`,
 			default: `\n\n## Permission Mode: DEFAULT\nYou may read, write, and edit files within the current workspace, and run commands.\nApproval is required to:\n- Access the internet (curl, fetch, package installs, git push/pull/clone, etc.)\n- Write or edit files outside the workspace\n- Run dangerous commands (sudo, rm -rf, curl piped to shell)\nPrefer safe alternatives when possible.`,
