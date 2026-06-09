@@ -187,7 +187,7 @@ ${message}`;
 		const guardianPath = path.join(agentsDir, "guardian.md");
 
 		let systemPrompt = "";
-		let model: string | undefined;  // undefined = use default model
+		let model = "";  // Empty = use pi's default model from settings
 		let tools = "";
 
 		try {
@@ -230,7 +230,6 @@ ${message}`;
 			"--mode", "json",
 			"-p",
 			"--no-session",
-			"--no-extensions",
 			"--no-skills",
 		];
 		if (tools) {
@@ -343,27 +342,40 @@ ${message}`;
 			return { allowed: false, reason: "Auto-review: no UI available for guardian fallback." };
 		}
 
-		// Notify user the guardian is reviewing
-		ctx.ui.notify(`Guardian reviewing: ${title}...`, "info");
+		// Show persistent yellow widget while reviewing
+		const t = ctx.ui.theme;
+		const boxWidth = 42;
+		const top = t.fg("warning", `┌${"─".repeat(boxWidth)}┐`);
+		const bot = t.fg("warning", `└${"─".repeat(boxWidth)}┘`);
+		const reviewLine = t.fg("warning", `│ 🔍 Guardian: ${title.padEnd(boxWidth - 14).slice(0, boxWidth - 14)} │`);
+		ctx.ui.setWidget("guardian-review", [top, reviewLine, bot]);
 
 		try {
 			const result = await runAutoReviewer(title, message);
 
 			if (result.allowed) {
-				ctx.ui.notify(`Guardian: ALLOWED — ${result.reason || "low risk"}`, "info");
+				const reason = (result.reason || "low risk").slice(0, boxWidth - 16);
+				ctx.ui.setWidget("guardian-review", [
+					t.fg("success", `┌${"─".repeat(boxWidth)}┐`),
+					t.fg("success", `│ ✅ ALLOWED — ${reason.padEnd(boxWidth - 16)} │`),
+					t.fg("success", `└${"─".repeat(boxWidth)}┘`),
+				]);
+				setTimeout(() => ctx.ui.setWidget("guardian-review", undefined), 3000);
 				return { allowed: true, reason: result.reason };
 			}
 
 			if (result.needsUserApproval) {
-				// Guardian is uncertain — escalate to user
-				ctx.ui.notify(
-					`Guardian uncertain: ${result.reason || "needs review"}`,
-					"warning",
-				);
+				const reason = (result.reason || "uncertain").slice(0, boxWidth - 22);
+				ctx.ui.setWidget("guardian-review", [
+					t.fg("warning", `┌${"─".repeat(boxWidth)}┐`),
+					t.fg("warning", `│ ⚠️  NEEDS APPROVAL — ${reason.padEnd(boxWidth - 22)} │`),
+					t.fg("warning", `└${"─".repeat(boxWidth)}┘`),
+				]);
 				const ok = await ctx.ui.confirm(
 					`Auto-review: ${title}`,
 					`${message}\n\nGuardian verdict: ${result.reason || "needs user approval"}\n\nProceed anyway?`,
 				);
+				ctx.ui.setWidget("guardian-review", undefined);
 				if (!ok) {
 					return { allowed: false, reason: "Auto-review: user declined after guardian escalation." };
 				}
@@ -371,21 +383,26 @@ ${message}`;
 			}
 
 			// Guardian denied
-			ctx.ui.notify(
-				`Guardian: DENIED — ${result.reason || "blocked for safety"}`,
-				"error",
-			);
+			const reason = (result.reason || "blocked for safety").slice(0, boxWidth - 14);
+			ctx.ui.setWidget("guardian-review", [
+				t.fg("error", `┌${"─".repeat(boxWidth)}┐`),
+				t.fg("error", `│ ❌ DENIED — ${reason.padEnd(boxWidth - 14)} │`),
+				t.fg("error", `└${"─".repeat(boxWidth)}┘`),
+			]);
+			setTimeout(() => ctx.ui.setWidget("guardian-review", undefined), 5000);
 			return { allowed: false, reason: result.reason || "Guardian denied." };
 		} catch (err: any) {
 			// Guardian failed — fall back to direct user prompt
-			ctx.ui.notify(
-				`Guardian unavailable: ${err.message || String(err)}. Falling back to manual approval.`,
-				"warning",
-			);
+			ctx.ui.setWidget("guardian-review", [
+				t.fg("warning", `┌${"─".repeat(boxWidth)}┐`),
+				t.fg("warning", `│ ⚠️  Guardian unavailable — manual approval ${''.padEnd(boxWidth - 43)} │`),
+				t.fg("warning", `└${"─".repeat(boxWidth)}┘`),
+			]);
 			const ok = await ctx.ui.confirm(
 				`Auto-review: ${title} (guardian unavailable)`,
 				`${message}\n\nGuardian could not evaluate. Proceed?`,
 			);
+			ctx.ui.setWidget("guardian-review", undefined);
 			if (!ok) {
 				return { allowed: false, reason: "Auto-review: user declined (guardian fallback)." };
 			}
