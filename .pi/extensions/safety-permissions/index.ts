@@ -284,11 +284,19 @@ ${message}`;
 				return { allowed: false, reason: "Guardian returned no response; blocked for safety." };
 			}
 
-			// Try to parse the guardian's JSON verdict
+			// Try to parse the guardian's JSON verdict — strip markdown fences first
+			let jsonCandidate = content.trim()
+				.replace(/```json\s*/gi, "")
+				.replace(/```\s*/g, "")
+				.trim();
 			try {
-				const verdict = JSON.parse(content.trim());
+				const verdict = JSON.parse(jsonCandidate);
 				if (verdict.outcome === "allow") {
-					return { allowed: true, reason: verdict.rationale || "Guardian: low risk, allowed." };
+					const parts: string[] = [];
+					if (verdict.risk_level) parts.push(`risk: ${verdict.risk_level}`);
+					if (verdict.user_authorization) parts.push(`auth: ${verdict.user_authorization}`);
+					const reason = verdict.rationale || parts.join(", ") || "allowed";
+					return { allowed: true, reason };
 				}
 				if (verdict.outcome === "deny" || verdict.outcome === "needs_user_approval") {
 					const parts: string[] = [];
@@ -304,15 +312,32 @@ ${message}`;
 				}
 			} catch {}
 
-			// Fallback: look for allow/deny in text (handles both JSON and plain-text formats)
-			const normalized = content.trim().toUpperCase();
-			if (normalized.includes('"allow"') || normalized.includes('"outcome":"allow"') || /OUTCOME\s*:\s*ALLOW/.test(normalized)) {
-				return { allowed: true, reason: "Guardian: allowed (parsed from text)." };
+			// Super-lenient fallback: look for ALLOW or DENY anywhere in content
+			// Strip markdown code fences, extra whitespace, and common prefixes
+			let cleaned = content
+				.replace(/```[\s\S]*?```/g, "")  // strip code blocks
+				.replace(/^[\s\S]*?(ALLOW|DENY)/im, "$1")  // strip everything before ALLOW/DENY
+				.trim()
+				.toUpperCase();
+
+			if (cleaned.startsWith("ALLOW")) {
+				return { allowed: true, reason: "Guardian: allowed." };
 			}
-			if (normalized.includes("NEEDS_USER_APPROVAL") || /OUTCOME\s*:\s*NEEDS_USER_APPROVAL/.test(normalized)) {
+			if (cleaned.startsWith("DENY")) {
+				return { allowed: false, reason: "Guardian: denied." };
+			}
+
+			// Also check for NEEDS_USER_APPROVAL
+			if (content.toUpperCase().includes("NEEDS_USER_APPROVAL")) {
 				return { allowed: false, needsUserApproval: true, reason: "Guardian: needs user approval." };
 			}
-			if (normalized.includes("DENY") || normalized.includes('"deny"') || /OUTCOME\s*:\s*DENY/.test(normalized)) {
+
+			// Last resort: check original JSON-style patterns
+			const normalized = content.trim().toUpperCase();
+			if (normalized.includes('"ALLOW"') || normalized.includes('"OUTCOME":"ALLOW"')) {
+				return { allowed: true, reason: "Guardian: allowed." };
+			}
+			if (normalized.includes('"DENY"') || normalized.includes('"OUTCOME":"DENY"')) {
 				return { allowed: false, reason: "Guardian: denied." };
 			}
 
@@ -336,25 +361,51 @@ ${message}`;
 	async function guardianReview(
 		ctx: ExtensionContext,
 		title: string,
-		message: string,
+		actionDescription: string,
 	): Promise<{ allowed: boolean; reason?: string }> {
 		if (!ctx.hasUI) {
 			return { allowed: false, reason: "Auto-review: no UI available for guardian fallback." };
 		}
 
+		// Extract user's last request for authorization context
+		let userRequest = "(unknown)";
+		try {
+			const entries = ctx.sessionManager.getEntries();
+			// Walk backwards to find the last user message
+			for (let i = entries.length - 1; i >= 0; i--) {
+				const entry = entries[i];
+				if (entry.role === "user" && entry.content) {
+					const text = typeof entry.content === "string"
+						? entry.content
+						: Array.isArray(entry.content)
+							? entry.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join(" ")
+							: "";
+					if (text.trim()) {
+						userRequest = text.trim().slice(0, 500);
+						break;
+					}
+				}
+			}
+		} catch {
+			// Session access failed — proceed without user context
+		}
+
+		// Build evaluation message with user context
+		const evaluationMessage = `User request: ${userRequest}\n\nAction: ${title}\n${actionDescription}`;
+
 		// Show persistent yellow widget while reviewing
 		const t = ctx.ui.theme;
-		const boxWidth = 42;
+		const boxWidth = 50;
 		const top = t.fg("warning", `┌${"─".repeat(boxWidth)}┐`);
 		const bot = t.fg("warning", `└${"─".repeat(boxWidth)}┘`);
-		const reviewLine = t.fg("warning", `│ 🔍 Guardian: ${title.padEnd(boxWidth - 14).slice(0, boxWidth - 14)} │`);
+		const reviewLine = t.fg("warning", `│ 🔍 Guardian evaluating risk vs authorization... ${" ".padEnd(boxWidth - 44)}│`);
 		ctx.ui.setWidget("guardian-review", [top, reviewLine, bot]);
 
 		try {
-			const result = await runAutoReviewer(title, message);
+			const result = await runAutoReviewer(title, evaluationMessage);
 
 			if (result.allowed) {
-				const reason = (result.reason || "low risk").slice(0, boxWidth - 16);
+				const reason = (result.reason || "low risk, authorized").slice(0, boxWidth - 16);
 				ctx.ui.setWidget("guardian-review", [
 					t.fg("success", `┌${"─".repeat(boxWidth)}┐`),
 					t.fg("success", `│ ✅ ALLOWED — ${reason.padEnd(boxWidth - 16)} │`),
@@ -373,7 +424,7 @@ ${message}`;
 				]);
 				const ok = await ctx.ui.confirm(
 					`Auto-review: ${title}`,
-					`${message}\n\nGuardian verdict: ${result.reason || "needs user approval"}\n\nProceed anyway?`,
+					`${actionDescription}\n\nGuardian verdict: ${result.reason || "needs user approval"}\n\nProceed anyway?`,
 				);
 				ctx.ui.setWidget("guardian-review", undefined);
 				if (!ok) {
@@ -395,7 +446,7 @@ ${message}`;
 			// Guardian failed — fall back to direct user prompt
 			ctx.ui.setWidget("guardian-review", [
 				t.fg("warning", `┌${"─".repeat(boxWidth)}┐`),
-				t.fg("warning", `│ ⚠️  Guardian unavailable — manual approval ${''.padEnd(boxWidth - 43)} │`),
+				t.fg("warning", `│ ⚠️  Guardian unavailable — manual approval ${" ".padEnd(boxWidth - 45)}│`),
 				t.fg("warning", `└${"─".repeat(boxWidth)}┘`),
 			]);
 			const ok = await ctx.ui.confirm(
