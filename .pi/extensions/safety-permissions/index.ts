@@ -17,6 +17,7 @@ import * as cp from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Box, Text } from "@earendil-works/pi-tui";
 import {
 	dangerousShellReason,
 	evaluateExecPolicy,
@@ -172,7 +173,7 @@ export default function (pi: ExtensionAPI) {
 	async function runAutoReviewer(
 		title: string,
 		message: string,
-	): Promise<{ allowed: boolean; reason?: string; needsUserApproval?: boolean }> {
+	): Promise<{ allowed: boolean; reason?: string }> {
 		const task = `Evaluate this action for safety.
 
 You are operating in auto-review mode. You are the FINAL authority — your decision is never escalated to the user. Decide yourself: allow or deny.
@@ -298,15 +299,13 @@ ${message}`;
 					const reason = verdict.rationale || parts.join(", ") || "allowed";
 					return { allowed: true, reason };
 				}
-				if (verdict.outcome === "deny" || verdict.outcome === "needs_user_approval") {
+				if (verdict.outcome === "deny") {
 					const parts: string[] = [];
 					if (verdict.risk_level) parts.push(`risk: ${verdict.risk_level}`);
 					if (verdict.user_authorization) parts.push(`auth: ${verdict.user_authorization}`);
-					if (verdict.outcome === "needs_user_approval") parts.push("needs user approval");
 					if (verdict.rationale) parts.push(verdict.rationale);
 					return {
 						allowed: false,
-						needsUserApproval: verdict.outcome === "needs_user_approval",
 						reason: parts.join(" | ") || "Guardian: denied.",
 					};
 				}
@@ -325,11 +324,6 @@ ${message}`;
 			}
 			if (cleaned.startsWith("DENY")) {
 				return { allowed: false, reason: "Guardian: denied." };
-			}
-
-			// Also check for NEEDS_USER_APPROVAL
-			if (content.toUpperCase().includes("NEEDS_USER_APPROVAL")) {
-				return { allowed: false, needsUserApproval: true, reason: "Guardian: needs user approval." };
 			}
 
 			// Last resort: check original JSON-style patterns
@@ -393,67 +387,31 @@ ${message}`;
 		// Build evaluation message with user context
 		const evaluationMessage = `User request: ${userRequest}\n\nAction: ${title}\n${actionDescription}`;
 
-		// Show persistent yellow widget while reviewing
-		const t = ctx.ui.theme;
-		const boxWidth = 50;
-		const top = t.fg("warning", `┌${"─".repeat(boxWidth)}┐`);
-		const bot = t.fg("warning", `└${"─".repeat(boxWidth)}┘`);
-		const reviewLine = t.fg("warning", `│ 🔍 Guardian evaluating risk vs authorization... ${" ".padEnd(boxWidth - 44)}│`);
-		ctx.ui.setWidget("guardian-review", [top, reviewLine, bot]);
-
 		try {
 			const result = await runAutoReviewer(title, evaluationMessage);
 
+			// Emit custom verdict message in warning color
+			const icon = result.allowed ? "✅" : "❌";
+			const label = result.allowed ? "ALLOWED" : "DENIED";
+			pi.sendMessage({
+				customType: "auto-review-verdict",
+				content: `${icon} ${label}: ${title} — ${result.reason || ""}`,
+				display: true,
+				details: { title, allowed: result.allowed, reason: result.reason },
+			});
+
 			if (result.allowed) {
-				const reason = (result.reason || "low risk, authorized").slice(0, boxWidth - 16);
-				ctx.ui.setWidget("guardian-review", [
-					t.fg("success", `┌${"─".repeat(boxWidth)}┐`),
-					t.fg("success", `│ ✅ ALLOWED — ${reason.padEnd(boxWidth - 16)} │`),
-					t.fg("success", `└${"─".repeat(boxWidth)}┘`),
-				]);
-				setTimeout(() => ctx.ui.setWidget("guardian-review", undefined), 3000);
 				return { allowed: true, reason: result.reason };
 			}
 
-			if (result.needsUserApproval) {
-				const reason = (result.reason || "uncertain").slice(0, boxWidth - 22);
-				ctx.ui.setWidget("guardian-review", [
-					t.fg("warning", `┌${"─".repeat(boxWidth)}┐`),
-					t.fg("warning", `│ ⚠️  NEEDS APPROVAL — ${reason.padEnd(boxWidth - 22)} │`),
-					t.fg("warning", `└${"─".repeat(boxWidth)}┘`),
-				]);
-				const ok = await ctx.ui.confirm(
-					`Auto-review: ${title}`,
-					`${actionDescription}\n\nGuardian verdict: ${result.reason || "needs user approval"}\n\nProceed anyway?`,
-				);
-				ctx.ui.setWidget("guardian-review", undefined);
-				if (!ok) {
-					return { allowed: false, reason: "Auto-review: user declined after guardian escalation." };
-				}
-				return { allowed: true, reason: "User approved after guardian escalation." };
-			}
-
 			// Guardian denied
-			const reason = (result.reason || "blocked for safety").slice(0, boxWidth - 14);
-			ctx.ui.setWidget("guardian-review", [
-				t.fg("error", `┌${"─".repeat(boxWidth)}┐`),
-				t.fg("error", `│ ❌ DENIED — ${reason.padEnd(boxWidth - 14)} │`),
-				t.fg("error", `└${"─".repeat(boxWidth)}┘`),
-			]);
-			setTimeout(() => ctx.ui.setWidget("guardian-review", undefined), 5000);
 			return { allowed: false, reason: result.reason || "Guardian denied." };
 		} catch (err: any) {
 			// Guardian failed — fall back to direct user prompt
-			ctx.ui.setWidget("guardian-review", [
-				t.fg("warning", `┌${"─".repeat(boxWidth)}┐`),
-				t.fg("warning", `│ ⚠️  Guardian unavailable — manual approval ${" ".padEnd(boxWidth - 45)}│`),
-				t.fg("warning", `└${"─".repeat(boxWidth)}┘`),
-			]);
 			const ok = await ctx.ui.confirm(
 				`Auto-review: ${title} (guardian unavailable)`,
-				`${message}\n\nGuardian could not evaluate. Proceed?`,
+				`${actionDescription}\n\nGuardian could not evaluate. Proceed?`,
 			);
-			ctx.ui.setWidget("guardian-review", undefined);
 			if (!ok) {
 				return { allowed: false, reason: "Auto-review: user declined (guardian fallback)." };
 			}
@@ -466,6 +424,19 @@ ${message}`;
 	pi.on("session_start", async (_event, ctx) => { reconstruct(ctx); updateStatus(ctx); });
 	pi.on("session_tree", async (_event, ctx) => { reconstruct(ctx); updateStatus(ctx); });
 	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx));
+
+	// ── Custom rendering for auto-review verdict messages ─────────────
+
+	pi.registerMessageRenderer("auto-review-verdict", (message, _expanded, theme) => {
+		const details = message.details as { allowed?: boolean } | undefined;
+		const bg = details?.allowed ? "toolSuccessBg" : "toolErrorBg";
+		const text = theme.fg("warning", message.content as string);
+		const box = new Box(1, 1, (t) => theme.bg(bg, t));
+		box.addChild(new Text(text, 0, 0));
+		return box;
+	});
+
+	// ── tool_call handler ──────────────────────────────────────────────
 
 	pi.on("tool_call", async (event, ctx) => {
 		const key = actionKey(event.toolName, event.input);
@@ -662,8 +633,8 @@ ${message}`;
 						);
 						if (!allowed) {
 							rememberDenied(event.toolName, event.input, "External Path", inputPath);
-							return { block: true, reason: reason ?? "Auto-review: external write blocked." };
 						}
+							return { block: true, reason: reason ?? "Auto-review: external write blocked." };
 						continue;
 					}
 					// Default mode
