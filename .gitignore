@@ -22,6 +22,8 @@ Deployment/
 # Pi
 .pi/plane.json
 .pi/worktrees/
+.pi/workflow-runs/
+.pi/workflow-approvals/
 
 # IDE
 .vscode/

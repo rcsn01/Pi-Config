@@ -14,14 +14,19 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
+type PlanPhase = "planning" | "awaiting_review";
+
 interface PlanState {
 	active: boolean;
+	phase?: PlanPhase;
 	prompt?: string;
 	setAt: number;
+	latestPlanSignature?: string;
 }
 
 interface ProposedPlanDetails {
 	createdAt: number;
+	signature?: string;
 }
 
 interface PlanQuestionAnswer {
@@ -133,7 +138,9 @@ Rules for the proposed plan:
 - Opening and closing tags must be on their own lines.
 - Use Markdown inside the block.
 - Produce exactly one <proposed_plan> block when finalizing a plan, and no other plan text outside the block.
-- If revising a previous plan, output a complete replacement plan.
+- If revising a previous plan and the feedback materially changes the plan, output a complete replacement plan.
+- If revising feedback is a no-op, ambiguous, or repeats the existing plan, do not emit another <proposed_plan>; briefly say that the current plan already covers it and ask for specific changes.
+- If the user says "continue", "ok", "go ahead", "implement", or repeats the same plan after a proposed plan exists, do not restate the plan. Treat it as plan review/acceptance ambiguity and respond briefly unless the Plan Mode extension intercepts it.
 - Do not ask "should I proceed?" in the final plan; the user can leave Plan Mode and request implementation.
 </collaboration_mode>`;
 
@@ -261,6 +268,73 @@ function planSignature(plan: string): string {
 	return `${plan.length}:${hash}`;
 }
 
+function stripPlanTags(text: string): string {
+	const extracted = extractProposedPlan(text);
+	return (extracted ?? text)
+		.replaceAll(PROPOSED_PLAN_OPEN, "")
+		.replaceAll(PROPOSED_PLAN_CLOSE, "")
+		.trim();
+}
+
+function normalizeComparableText(text: string): string {
+	return stripPlanTags(text)
+		.toLowerCase()
+		.replace(/```[\s\S]*?```/g, " ")
+		.replace(/[^a-z0-9]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function wordSet(text: string): Set<string> {
+	return new Set(normalizeComparableText(text).split(" ").filter((word) => word.length > 2));
+}
+
+function jaccardSimilarity(a: string, b: string): number {
+	const left = wordSet(a);
+	const right = wordSet(b);
+	if (left.size === 0 || right.size === 0) return 0;
+	let intersection = 0;
+	for (const word of left) {
+		if (right.has(word)) intersection++;
+	}
+	return intersection / (left.size + right.size - intersection);
+}
+
+function isDuplicatePlanText(input: string, plan: string): boolean {
+	const normalizedInput = normalizeComparableText(input);
+	const normalizedPlan = normalizeComparableText(plan);
+	if (!normalizedInput || !normalizedPlan) return false;
+	if (normalizedInput === normalizedPlan) return true;
+	if (normalizedInput.length > 500 && (normalizedInput.includes(normalizedPlan) || normalizedPlan.includes(normalizedInput))) return true;
+	return normalizedInput.length > 500 && jaccardSimilarity(normalizedInput, normalizedPlan) >= 0.82;
+}
+
+function isAmbiguousPlanAcceptance(input: string): boolean {
+	const normalized = normalizeComparableText(input);
+	return /^(continue|ok|okay|yes|yep|yeah|sure|proceed|go ahead|do it|looks good|sounds good|approved|approve|accept|accepted|implement|ship it)$/.test(normalized);
+}
+
+function customMessageFromEntry(entry: any): { customType: string; content: unknown; details?: any } | undefined {
+	if (entry?.type === "custom_message" && typeof entry.customType === "string") {
+		return { customType: entry.customType, content: entry.content, details: entry.details };
+	}
+	if (entry?.type === "message" && entry.message?.role === "custom" && typeof entry.message.customType === "string") {
+		return { customType: entry.message.customType, content: entry.message.content, details: entry.message.details };
+	}
+	return undefined;
+}
+
+function customMessageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return content
+			.filter((part: any) => part?.type === "text" && typeof part.text === "string")
+			.map((part: any) => part.text)
+			.join("\n");
+	}
+	return "";
+}
+
 function rememberOnce(seen: Set<string>, key: string, limit = 50): boolean {
 	if (seen.has(key)) return false;
 	seen.add(key);
@@ -272,8 +346,12 @@ function rememberOnce(seen: Set<string>, key: string, limit = 50): boolean {
 	return true;
 }
 
-function updateStatus(ctx: ExtensionContext, active: boolean): void {
-	ctx.ui.setStatus("plan", active ? "📋 PLAN MODE" : undefined);
+function updateStatus(ctx: ExtensionContext, state: PlanState): void {
+	if (!state.active) {
+		ctx.ui.setStatus("plan", undefined);
+		return;
+	}
+	ctx.ui.setStatus("plan", state.phase === "awaiting_review" ? "📋 PLAN REVIEW" : "📋 PLAN MODE");
 }
 
 function optionDisplay(option: { label: string; description?: string }, index: number, recommended?: string): string {
@@ -415,31 +493,142 @@ export default function (pi: ExtensionAPI) {
 
 	const reconstruct = (ctx: ExtensionContext) => {
 		planState = { active: false, setAt: Date.now() };
+		latestProposedPlan = undefined;
+		latestProposedPlanKey = undefined;
+		renderedPlanKeys.clear();
+		promptedPlanKeys.clear();
+
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === PLAN_CUSTOM_TYPE) {
 				const data = entry.data as PlanState | undefined;
 				if (data) planState = data;
+				continue;
+			}
+
+			const custom = customMessageFromEntry(entry);
+			if (custom?.customType === PROPOSED_PLAN_CUSTOM_TYPE) {
+				const plan = customMessageText(custom.content).trim();
+				if (plan) {
+					const key = custom.details?.signature || planSignature(plan);
+					latestProposedPlan = plan;
+					latestProposedPlanKey = key;
+					renderedPlanKeys.add(key);
+				}
 			}
 		}
-		updateStatus(ctx, planState.active);
+
+		if (planState.active && latestProposedPlan && planState.phase !== "planning") {
+			planState = { ...planState, phase: "awaiting_review", latestPlanSignature: latestProposedPlanKey };
+		}
+		updateStatus(ctx, planState);
 	};
 
 	const persist = () => {
 		pi.appendEntry(PLAN_CUSTOM_TYPE, { ...planState });
 	};
 
+	function requireLatestPlan(ctx: ExtensionContext): string | undefined {
+		if (latestProposedPlan?.trim()) return latestProposedPlan;
+		ctx.ui.notify("No proposed plan is available yet.", "warning");
+		return undefined;
+	}
+
+	function sendPlanImplementation(ctx: ExtensionContext, plan: string): void {
+		setPlanMode(ctx, false, undefined);
+		ctx.ui.notify("Plan mode exited. Implementing proposed plan...", "info");
+		pi.sendUserMessage(`Implement this proposed plan:\n\n${plan}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+	}
+
+	function sendFreshPlanImplementation(ctx: ExtensionContext, plan: string): void {
+		pendingFreshImplementationPlan = plan;
+		setPlanMode(ctx, false, undefined);
+		ctx.ui.notify("Plan mode exited. Starting fresh implementation session...", "info");
+		pi.sendUserMessage(PLAN_IMPLEMENT_FRESH_COMMAND, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+	}
+
+	async function sendPlanRevision(ctx: ExtensionContext, feedback?: string): Promise<void> {
+		const plan = requireLatestPlan(ctx);
+		if (!plan) return;
+		const trimmed = feedback?.trim() || (await ctx.ui.editor("What should Pi do differently?", ""))?.trim();
+		if (!trimmed) {
+			ctx.ui.notify("Plan revision cancelled.", "info");
+			return;
+		}
+		pi.sendUserMessage(
+			`Revise the current proposed plan with this feedback. If the feedback is already covered, say that briefly and do not restate the plan.\n\nFeedback:\n${trimmed}`,
+			ctx.isIdle() ? undefined : { deliverAs: "followUp" },
+		);
+	}
+
+	function showLatestPlan(ctx: ExtensionContext): void {
+		const plan = requireLatestPlan(ctx);
+		if (!plan) return;
+		pi.sendMessage<ProposedPlanDetails>({
+			customType: PROPOSED_PLAN_CUSTOM_TYPE,
+			content: plan,
+			display: true,
+			details: { createdAt: Date.now(), signature: latestProposedPlanKey },
+		});
+	}
+
+	async function promptForPlanReviewAction(ctx: ExtensionContext, reason: string): Promise<void> {
+		const plan = requireLatestPlan(ctx);
+		if (!plan) return;
+
+		if (!ctx.hasUI) {
+			ctx.ui.notify(`${reason}\n\nUse /plan implement, /plan revise <feedback>, /plan show, or /plan exit.`, "info");
+			return;
+		}
+
+		const implement = "Implement current plan";
+		const implementFresh = "Clear context and implement";
+		const revise = "Revise current plan";
+		const show = "Show current plan";
+		const stay = "Stay in plan mode";
+		const selected = await ctx.ui.select(reason, [implement, implementFresh, revise, show, stay]);
+		if (!selected || selected === stay) return;
+		if (selected === implement) return sendPlanImplementation(ctx, plan);
+		if (selected === implementFresh) return sendFreshPlanImplementation(ctx, plan);
+		if (selected === revise) return sendPlanRevision(ctx);
+		if (selected === show) return showLatestPlan(ctx);
+	}
+
 	pi.on("session_start", async (_event, ctx) => reconstruct(ctx));
 	pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
 
+	// ── Intercept repeated/ambiguous review input ──────────────────────────
+
+	pi.on("input", async (event, ctx) => {
+		if (!planState.active || planState.phase !== "awaiting_review" || !latestProposedPlan) return { action: "continue" };
+		if (event.source === "extension") return { action: "continue" };
+		if (event.text.trim().startsWith("/")) return { action: "continue" };
+		if (!ctx.hasUI) return { action: "continue" };
+
+		if (isDuplicatePlanText(event.text, latestProposedPlan)) {
+			await promptForPlanReviewAction(ctx, "That appears to repeat the current proposed plan. What should Pi do next?");
+			return { action: "handled" };
+		}
+
+		if (isAmbiguousPlanAcceptance(event.text)) {
+			await promptForPlanReviewAction(ctx, "A proposed plan is ready. What should Pi do next?");
+			return { action: "handled" };
+		}
+
+		return { action: "continue" };
+	});
+
 	// ── Status Widget ─────────────────────────────────────────────────────
 
-	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx, planState.active));
+	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx, planState));
 
 	// ── Inject plan mode into system prompt ───────────────────────────────
 
 	pi.on("before_agent_start", async (event, _ctx) => {
 		if (!planState.active) return;
-		return { systemPrompt: event.systemPrompt + PLAN_MODE_PROMPT };
+		const reviewPrompt = planState.phase === "awaiting_review"
+			? `\n\n<plan_review_state>\nA proposed plan already exists. Prefer targeted revision or concise no-op acknowledgement over restating the whole plan. Only emit a new <proposed_plan> block when the user's latest feedback materially changes the plan.\n</plan_review_state>`
+			: "";
+		return { systemPrompt: event.systemPrompt + PLAN_MODE_PROMPT + reviewPrompt };
 	});
 
 	// ── Extract and render <proposed_plan> blocks ─────────────────────────
@@ -452,20 +641,21 @@ export default function (pi: ExtensionAPI) {
 		if (!plan) return;
 
 		const visibleText = stripProposedPlanBlocks(text);
-		const key = `${event.message.timestamp ?? "unknown"}:${planSignature(plan)}`;
+		const key = planSignature(plan);
 		latestProposedPlan = plan;
 		latestProposedPlanKey = key;
+		planState = { ...planState, phase: "awaiting_review", latestPlanSignature: key };
+		persist();
 
-		// message_end should only run once per assistant response, but keep an
-		// idempotency guard so reloads/event replays do not create duplicate
-		// custom Proposed Plan messages. The assistant replacement is still
-		// returned so raw tags stay stripped even if the custom message is skipped.
+		// Deduplicate by plan content, not assistant-message timestamp. If the model
+		// repeats the same plan in a later turn, keep the transcript clean and avoid
+		// prompting the user to review the same plan again.
 		if (rememberOnce(renderedPlanKeys, key)) {
 			pi.sendMessage<ProposedPlanDetails>({
 				customType: PROPOSED_PLAN_CUSTOM_TYPE,
 				content: plan,
 				display: true,
-				details: { createdAt: Date.now() },
+				details: { createdAt: Date.now(), signature: key },
 			});
 		}
 
@@ -488,32 +678,16 @@ export default function (pi: ExtensionAPI) {
 		if (!selected) return;
 
 		if (selected === implement) {
-			const plan = latestProposedPlan;
-			setPlanMode(ctx, false, undefined);
-			ctx.ui.notify("Plan mode exited. Implementing proposed plan...", "info");
-			pi.sendUserMessage(`Implement this proposed plan:\n\n${plan}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+			sendPlanImplementation(ctx, latestProposedPlan);
 			return;
 		}
 
 		if (selected === implementFresh) {
-			pendingFreshImplementationPlan = latestProposedPlan;
-			setPlanMode(ctx, false, undefined);
-			ctx.ui.notify("Plan mode exited. Starting fresh implementation session...", "info");
-			pi.sendUserMessage(PLAN_IMPLEMENT_FRESH_COMMAND, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+			sendFreshPlanImplementation(ctx, latestProposedPlan);
 			return;
 		}
 
-		const feedback = await ctx.ui.editor("What should Pi do differently?", "");
-		const trimmed = feedback?.trim();
-		if (!trimmed) {
-			ctx.ui.notify("Plan revision cancelled.", "info");
-			return;
-		}
-
-		pi.sendUserMessage(
-			`Revise the proposed plan with this feedback:\n\n${trimmed}`,
-			ctx.isIdle() ? undefined : { deliverAs: "followUp" },
-		);
+		await sendPlanRevision(ctx);
 	});
 
 	// ── Block common mutations while planning ─────────────────────────────
@@ -542,13 +716,19 @@ export default function (pi: ExtensionAPI) {
 	// ── Command: /plan ────────────────────────────────────────────────────
 
 	function setPlanMode(ctx: ExtensionContext, active: boolean, prompt?: string): void {
-		planState = { active, prompt, setAt: Date.now() };
+		planState = {
+			active,
+			prompt,
+			phase: active ? "planning" : undefined,
+			setAt: Date.now(),
+			latestPlanSignature: active ? latestProposedPlanKey : undefined,
+		};
 		if (!active) {
 			latestProposedPlan = undefined;
 			latestProposedPlanKey = undefined;
 		}
 		persist();
-		updateStatus(ctx, active);
+		updateStatus(ctx, planState);
 	}
 
 	pi.registerCommand("plan-implement-fresh", {
@@ -590,11 +770,58 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("plan", {
-		description: "Toggle plan mode, or /plan <task> to plan a task",
+		description: "Toggle plan mode, or use /plan <task|implement|fresh|revise|show|exit>",
+		getArgumentCompletions: (prefix: string) => {
+			const items = ["implement", "accept", "fresh", "revise ", "show", "status", "exit"];
+			return items.filter((item) => item.startsWith(prefix)).map((value) => ({ value, label: value }));
+		},
 		handler: async (args, ctx) => {
 			const trimmed = (args || "").trim();
+			const [command, ...rest] = trimmed.split(/\s+/);
+			const subcommand = command?.toLowerCase();
+			const feedback = rest.join(" ").trim();
+
+			if (subcommand === "implement" || subcommand === "accept") {
+				const plan = requireLatestPlan(ctx);
+				if (plan) sendPlanImplementation(ctx, plan);
+				return;
+			}
+
+			if (subcommand === "fresh") {
+				const plan = requireLatestPlan(ctx);
+				if (plan) sendFreshPlanImplementation(ctx, plan);
+				return;
+			}
+
+			if (subcommand === "revise") {
+				await sendPlanRevision(ctx, feedback);
+				return;
+			}
+
+			if (subcommand === "show") {
+				showLatestPlan(ctx);
+				return;
+			}
+
+			if (subcommand === "status") {
+				ctx.ui.notify(
+					planState.active
+						? `Plan mode active (${planState.phase || "planning"}).${latestProposedPlan ? " A proposed plan is awaiting review." : ""}`
+						: "Plan mode inactive.",
+					"info",
+				);
+				return;
+			}
+
+			if (subcommand === "exit") {
+				setPlanMode(ctx, false, undefined);
+				ctx.ui.notify("Plan mode exited.", "info");
+				return;
+			}
 
 			if (trimmed) {
+				latestProposedPlan = undefined;
+				latestProposedPlanKey = undefined;
 				setPlanMode(ctx, true, trimmed);
 				ctx.ui.notify("📋 Plan mode active", "info");
 				pi.sendUserMessage(trimmed, ctx.isIdle() ? undefined : { deliverAs: "followUp" });

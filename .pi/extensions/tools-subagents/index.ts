@@ -29,7 +29,7 @@ interface ToolEvent {
 	args: string;
 }
 
-interface AgentProgress {
+export interface AgentProgress {
 	agent: string;
 	status: "pending" | "running" | "completed" | "failed";
 	task: string;
@@ -43,7 +43,7 @@ interface AgentProgress {
 	error?: string;
 }
 
-interface AgentResult {
+export interface AgentResult {
 	agent: string;
 	task: string;
 	output: string;
@@ -56,6 +56,14 @@ interface AgentResult {
 interface Details {
 	mode: "single" | "parallel";
 	results: AgentResult[];
+}
+
+export interface RunSubagentsParallelOptions {
+	tasks: Array<{ agent: string; task: string; cwd?: string }>;
+	cwd: string;
+	maxConcurrency?: number;
+	signal?: AbortSignal;
+	onUpdate?: (index: number, result: AgentResult) => void;
 }
 
 // ── Config ─────────────────────────────────────────────────────────────
@@ -111,7 +119,7 @@ export function unregisterAgent(name: string): void {
 // (which creates separate module instances) can access the shared agents array.
 (globalThis as any).__pi_subagents = { registerAgent, unregisterAgent };
 
-function loadAgents(): AgentConfig[] {
+export function loadAgents(): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 	if (!fs.existsSync(AGENTS_DIR)) return agents;
 	for (const entry of fs.readdirSync(AGENTS_DIR)) {
@@ -301,7 +309,7 @@ function extractToolArgsPreview(args: Record<string, unknown>): string {
 	return s.length > 80 ? s.slice(0, 80) + "…" : s;
 }
 
-async function runSubagent(
+export async function runSubagent(
 	agent: AgentConfig,
 	task: string,
 	cwd: string,
@@ -519,6 +527,19 @@ async function mapConcurrent<T, R>(
 	const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
 	await Promise.all(workers);
 	return results;
+}
+
+export async function runSubagentsParallel(options: RunSubagentsParallelOptions): Promise<AgentResult[]> {
+	const availableAgents = loadAgents();
+	const available = availableAgents.map((a) => a.name).join(", ") || "none";
+	const concurrency = Math.max(1, options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
+	return mapConcurrent(options.tasks, concurrency, async (task, index) => {
+		const agent = availableAgents.find((a) => a.name === task.agent);
+		if (!agent) throw new Error(`Unknown agent: ${task.agent}. Available agents: ${available}`);
+		const result = await runSubagent(agent, task.task, task.cwd ?? options.cwd, options.signal, () => undefined);
+		options.onUpdate?.(index, result);
+		return result;
+	});
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────
