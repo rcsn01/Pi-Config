@@ -51,6 +51,29 @@ export interface AgentResult {
 	progress: AgentProgress;
 	model?: string;
 	usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number };
+	truncated?: boolean;
+	originalOutputBytes?: number;
+}
+
+export type SubagentProgressEvent =
+	| { type: "started"; agent: string; task: string }
+	| { type: "tool_call"; agent: string; tool: string; args?: string }
+	| { type: "tool_result"; agent: string; tool: string; args?: string }
+	| { type: "message"; agent: string; message: string; tokens: number }
+	| { type: "completed"; agent: string; result: AgentResult }
+	| { type: "failed"; agent: string; result?: AgentResult; error: string };
+
+export interface RunSubagentOptions {
+	agent: string | AgentConfig;
+	task?: string;
+	prompt?: string;
+	cwd: string;
+	signal?: AbortSignal;
+	timeoutMs?: number;
+	maxOutputBytes?: number;
+	model?: string;
+	onUpdate?: (progress: AgentProgress) => void;
+	onProgress?: (event: SubagentProgressEvent, progress?: AgentProgress) => void | Promise<void>;
 }
 
 interface Details {
@@ -59,11 +82,14 @@ interface Details {
 }
 
 export interface RunSubagentsParallelOptions {
-	tasks: Array<{ agent: string; task: string; cwd?: string }>;
+	tasks: Array<{ agent: string; task?: string; prompt?: string; cwd?: string }>;
 	cwd: string;
 	maxConcurrency?: number;
 	signal?: AbortSignal;
+	timeoutMs?: number;
+	maxOutputBytes?: number;
 	onUpdate?: (index: number, result: AgentResult) => void;
+	onProgress?: (index: number, event: SubagentProgressEvent, progress?: AgentProgress) => void | Promise<void>;
 }
 
 // ── Config ─────────────────────────────────────────────────────────────
@@ -120,8 +146,8 @@ export function unregisterAgent(name: string): void {
 (globalThis as any).__pi_subagents = { registerAgent, unregisterAgent };
 
 export function loadAgents(): AgentConfig[] {
-	const agents: AgentConfig[] = [];
-	if (!fs.existsSync(AGENTS_DIR)) return agents;
+	const discovered: AgentConfig[] = [];
+	if (!fs.existsSync(AGENTS_DIR)) return [...agents];
 	for (const entry of fs.readdirSync(AGENTS_DIR)) {
 		if (!entry.endsWith(".md")) continue;
 		const filePath = path.join(AGENTS_DIR, entry);
@@ -132,7 +158,7 @@ export function loadAgents(): AgentConfig[] {
 			.split(",")
 			.map((t) => t.trim())
 			.filter(Boolean);
-		agents.push({
+		discovered.push({
 			name: frontmatter.name,
 			description: frontmatter.description || "",
 			tools,
@@ -141,7 +167,10 @@ export function loadAgents(): AgentConfig[] {
 			filePath,
 		});
 	}
-	return agents;
+	const byName = new Map<string, AgentConfig>();
+	for (const agent of discovered) byName.set(agent.name, agent);
+	for (const agent of agents) byName.set(agent.name, agent);
+	return [...byName.values()];
 }
 
 // ── Pi Binary Resolution ──────────────────────────────────────────────
@@ -231,6 +260,7 @@ async function buildPiArgs(
 	agent: AgentConfig,
 	task: string,
 	cwd: string,
+	model?: string,
 ): Promise<{ args: string[]; tempDir: string }> {
 	const piBin = resolvePiBinary();
 	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sub-"));
@@ -269,7 +299,7 @@ async function buildPiArgs(
 		args.push("--extension", extPath);
 	}
 
-	args.push("--models", agent.model);
+	args.push("--models", model || agent.model);
 	args.push("--append-system-prompt", promptPath);
 
 	// Handle long tasks by writing to file
@@ -309,14 +339,48 @@ function extractToolArgsPreview(args: Record<string, unknown>): string {
 	return s.length > 80 ? s.slice(0, 80) + "…" : s;
 }
 
+function resolveAgentConfig(agent: string | AgentConfig): AgentConfig {
+	if (typeof agent !== "string") return agent;
+	const availableAgents = loadAgents();
+	const found = availableAgents.find((a) => a.name === agent);
+	if (!found) throw new Error(`Unknown agent: ${agent}. Available agents: ${availableAgents.map((a) => a.name).join(", ") || "none"}`);
+	return found;
+}
+
+function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number | undefined): { signal?: AbortSignal; cleanup: () => void } {
+	if (!timeoutMs) return { signal, cleanup: () => undefined };
+	const controller = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => controller.abort(new Error(`Subagent timed out after ${timeoutMs}ms`)), timeoutMs);
+	const abort = () => controller.abort(signal?.reason);
+	if (signal?.aborted) controller.abort(signal.reason);
+	else signal?.addEventListener("abort", abort, { once: true });
+	return {
+		signal: controller.signal,
+		cleanup: () => {
+			if (timer) clearTimeout(timer);
+			timer = undefined;
+			signal?.removeEventListener("abort", abort);
+		},
+	};
+}
+
+export async function runSubagent(options: RunSubagentOptions): Promise<AgentResult>;
+export async function runSubagent(agent: AgentConfig, task: string, cwd: string, signal?: AbortSignal, onUpdate?: (progress: AgentProgress) => void): Promise<AgentResult>;
 export async function runSubagent(
-	agent: AgentConfig,
-	task: string,
-	cwd: string,
-	signal: AbortSignal | undefined,
-	onUpdate?: (progress: AgentProgress) => void,
+	agentOrOptions: AgentConfig | RunSubagentOptions,
+	taskArg?: string,
+	cwdArg?: string,
+	signalArg?: AbortSignal,
+	onUpdateArg?: (progress: AgentProgress) => void,
 ): Promise<AgentResult> {
-	const { args, tempDir } = await buildPiArgs(agent, task, cwd);
+	const options: RunSubagentOptions = "cwd" in (agentOrOptions as any)
+		? agentOrOptions as RunSubagentOptions
+		: { agent: agentOrOptions as AgentConfig, task: taskArg, cwd: cwdArg || process.cwd(), signal: signalArg, onUpdate: onUpdateArg };
+	const agent = resolveAgentConfig(options.agent);
+	const task = options.task ?? options.prompt ?? "";
+	const { signal, cleanup } = withTimeoutSignal(options.signal, options.timeoutMs);
+	await options.onProgress?.({ type: "started", agent: agent.name, task });
+	const { args, tempDir } = await buildPiArgs(agent, task, options.cwd, options.model);
 	const command = args[0];
 	const spawnArgs = args.slice(1);
 
@@ -341,10 +405,15 @@ export async function runSubagent(
 
 	const startTime = Date.now();
 	const progress = result.progress;
+	let lastTool: string | undefined;
+	let lastToolArgs: string | undefined;
+	let recentToolCount = 0;
+	let lastMessage = "";
 
+	const emitProgress = (event: SubagentProgressEvent) => { void options.onProgress?.(event, progress); };
 	const fireUpdate = throttle(() => {
 		progress.durationMs = Date.now() - startTime;
-		onUpdate?.(progress);
+		options.onUpdate?.(progress);
 	}, 150);
 
 	const exitCode = await new Promise<number>((resolve) => {
@@ -366,6 +435,11 @@ export async function runSubagent(
 					progress.toolCount++;
 					progress.currentTool = evt.toolName;
 					progress.currentToolArgs = extractToolArgsPreview((evt.args || {}) as Record<string, unknown>);
+					if (progress.currentTool && (progress.currentTool !== lastTool || progress.currentToolArgs !== lastToolArgs)) {
+						lastTool = progress.currentTool;
+						lastToolArgs = progress.currentToolArgs;
+						emitProgress({ type: "tool_call", agent: agent.name, tool: progress.currentTool, args: progress.currentToolArgs });
+					}
 					fireUpdate();
 				}
 
@@ -375,9 +449,14 @@ export async function runSubagent(
 							tool: progress.currentTool,
 							args: progress.currentToolArgs || "",
 						});
+						for (const tool of progress.recentTools.slice(recentToolCount)) {
+							emitProgress({ type: "tool_result", agent: agent.name, tool: tool.tool, args: tool.args });
+						}
+						recentToolCount = progress.recentTools.length;
 						// Keep last 20
 						if (progress.recentTools.length > 20) {
 							progress.recentTools.splice(0, progress.recentTools.length - 20);
+							recentToolCount = Math.min(recentToolCount, progress.recentTools.length);
 						}
 					}
 					progress.currentTool = undefined;
@@ -421,6 +500,10 @@ export async function runSubagent(
 							}
 							if (proseLines.length > 0) {
 								progress.lastMessage = proseLines.slice(0, 3).join(" ");
+								if (progress.lastMessage !== lastMessage) {
+									lastMessage = progress.lastMessage;
+									emitProgress({ type: "message", agent: agent.name, message: lastMessage, tokens: progress.tokens });
+								}
 							}
 						}
 					}
@@ -463,7 +546,8 @@ export async function runSubagent(
 		}
 	});
 
-	// Cleanup temp dir
+	// Cleanup temp dir and timeout listeners
+	cleanup();
 	try {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	} catch {}
@@ -474,13 +558,19 @@ export async function runSubagent(
 	if (progress.error) result.output = result.output || `Error: ${progress.error}`;
 
 	// Truncate output if very large
-	if (result.output.length > DEFAULT_MAX_BYTES) {
-		const trunc = truncateHead(result.output, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+	const maxBytes = options.maxOutputBytes ?? DEFAULT_MAX_BYTES;
+	result.originalOutputBytes = Buffer.byteLength(result.output, "utf-8");
+	if (result.originalOutputBytes > maxBytes) {
+		const trunc = truncateHead(result.output, { maxLines: DEFAULT_MAX_LINES, maxBytes });
 		result.output = trunc.content;
 		if (trunc.truncated) {
 			result.output += "\n\n[Output truncated]";
+			result.truncated = true;
 		}
 	}
+
+	if (progress.status === "completed") await options.onProgress?.({ type: "completed", agent: agent.name, result }, progress);
+	else await options.onProgress?.({ type: "failed", agent: agent.name, result, error: progress.error || result.output || `Subagent ${agent.name} failed` }, progress);
 
 	return result;
 }
@@ -536,7 +626,15 @@ export async function runSubagentsParallel(options: RunSubagentsParallelOptions)
 	return mapConcurrent(options.tasks, concurrency, async (task, index) => {
 		const agent = availableAgents.find((a) => a.name === task.agent);
 		if (!agent) throw new Error(`Unknown agent: ${task.agent}. Available agents: ${available}`);
-		const result = await runSubagent(agent, task.task, task.cwd ?? options.cwd, options.signal, () => undefined);
+		const result = await runSubagent({
+			agent,
+			task: task.task ?? task.prompt ?? "",
+			cwd: task.cwd ?? options.cwd,
+			signal: options.signal,
+			timeoutMs: options.timeoutMs,
+			maxOutputBytes: options.maxOutputBytes,
+			onProgress: (event, progress) => options.onProgress?.(index, event, progress),
+		});
 		options.onUpdate?.(index, result);
 		return result;
 	});

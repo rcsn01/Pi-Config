@@ -10,7 +10,7 @@
  * rendered message and blocks common mutating tools while plan mode is active.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
@@ -365,6 +365,7 @@ export default function (pi: ExtensionAPI) {
 	let latestProposedPlan: string | undefined;
 	let latestProposedPlanKey: string | undefined;
 	let pendingFreshImplementationPlan: string | undefined;
+	let pendingProposedPlanRender: { plan: string; key: string; createdAt: number } | undefined;
 	const renderedPlanKeys = new Set<string>();
 	const promptedPlanKeys = new Set<string>();
 
@@ -497,6 +498,7 @@ export default function (pi: ExtensionAPI) {
 		latestProposedPlanKey = undefined;
 		renderedPlanKeys.clear();
 		promptedPlanKeys.clear();
+		pendingProposedPlanRender = undefined;
 
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === PLAN_CUSTOM_TYPE) {
@@ -539,11 +541,56 @@ export default function (pi: ExtensionAPI) {
 		pi.sendUserMessage(`Implement this proposed plan:\n\n${plan}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 	}
 
-	function sendFreshPlanImplementation(ctx: ExtensionContext, plan: string): void {
-		pendingFreshImplementationPlan = plan;
+	function isCommandContext(ctx: ExtensionContext): ctx is ExtensionCommandContext {
+		return typeof (ctx as any).newSession === "function";
+	}
+
+	async function startFreshPlanImplementation(ctx: ExtensionCommandContext, plan: string): Promise<void> {
+		const signature = planSignature(plan);
+		pendingFreshImplementationPlan = undefined;
 		setPlanMode(ctx, false, undefined);
 		ctx.ui.notify("Plan mode exited. Starting fresh implementation session...", "info");
-		pi.sendUserMessage(PLAN_IMPLEMENT_FRESH_COMMAND, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+
+		const parentSession = ctx.sessionManager.getSessionFile();
+		const handoffPrompt = `${PLAN_IMPLEMENT_FRESH_PREFIX}\n\n${plan}`;
+		const result = await ctx.newSession({
+			parentSession: parentSession || undefined,
+			withSession: async (freshCtx) => {
+				await freshCtx.sendUserMessage(handoffPrompt);
+			},
+		});
+
+		if (result.cancelled) {
+			latestProposedPlan = plan;
+			latestProposedPlanKey = signature;
+			planState = {
+				active: true,
+				phase: "awaiting_review",
+				setAt: Date.now(),
+				latestPlanSignature: signature,
+			};
+			persist();
+			updateStatus(ctx, planState);
+			ctx.ui.notify("Fresh implementation session cancelled. Plan mode restored.", "info");
+		}
+	}
+
+	async function sendFreshPlanImplementation(ctx: ExtensionContext, plan: string): Promise<void> {
+		if (isCommandContext(ctx)) {
+			await startFreshPlanImplementation(ctx, plan);
+			return;
+		}
+
+		pendingFreshImplementationPlan = plan;
+		const signature = planSignature(plan);
+		setPlanMode(ctx, false, undefined);
+		latestProposedPlan = plan;
+		latestProposedPlanKey = signature;
+		if (ctx.hasUI) ctx.ui.setEditorText(PLAN_IMPLEMENT_FRESH_COMMAND);
+		ctx.ui.notify(
+			`Plan mode exited. ${PLAN_IMPLEMENT_FRESH_COMMAND} has been placed in the editor; press Enter to start a fresh implementation session.`,
+			"info",
+		);
 	}
 
 	async function sendPlanRevision(ctx: ExtensionContext, feedback?: string): Promise<void> {
@@ -563,12 +610,30 @@ export default function (pi: ExtensionAPI) {
 	function showLatestPlan(ctx: ExtensionContext): void {
 		const plan = requireLatestPlan(ctx);
 		if (!plan) return;
-		pi.sendMessage<ProposedPlanDetails>({
-			customType: PROPOSED_PLAN_CUSTOM_TYPE,
-			content: plan,
-			display: true,
-			details: { createdAt: Date.now(), signature: latestProposedPlanKey },
-		});
+		pi.sendMessage<ProposedPlanDetails>(
+			{
+				customType: PROPOSED_PLAN_CUSTOM_TYPE,
+				content: plan,
+				display: true,
+				details: { createdAt: Date.now(), signature: latestProposedPlanKey },
+			},
+			{ triggerTurn: false },
+		);
+	}
+
+	function flushPendingProposedPlanRender(): void {
+		const pending = pendingProposedPlanRender;
+		if (!pending) return;
+		pendingProposedPlanRender = undefined;
+		pi.sendMessage<ProposedPlanDetails>(
+			{
+				customType: PROPOSED_PLAN_CUSTOM_TYPE,
+				content: pending.plan,
+				display: true,
+				details: { createdAt: pending.createdAt, signature: pending.key },
+			},
+			{ triggerTurn: false },
+		);
 	}
 
 	async function promptForPlanReviewAction(ctx: ExtensionContext, reason: string): Promise<void> {
@@ -588,7 +653,7 @@ export default function (pi: ExtensionAPI) {
 		const selected = await ctx.ui.select(reason, [implement, implementFresh, revise, show, stay]);
 		if (!selected || selected === stay) return;
 		if (selected === implement) return sendPlanImplementation(ctx, plan);
-		if (selected === implementFresh) return sendFreshPlanImplementation(ctx, plan);
+		if (selected === implementFresh) return await sendFreshPlanImplementation(ctx, plan);
 		if (selected === revise) return sendPlanRevision(ctx);
 		if (selected === show) return showLatestPlan(ctx);
 	}
@@ -650,13 +715,14 @@ export default function (pi: ExtensionAPI) {
 		// Deduplicate by plan content, not assistant-message timestamp. If the model
 		// repeats the same plan in a later turn, keep the transcript clean and avoid
 		// prompting the user to review the same plan again.
+		//
+		// Do not call pi.sendMessage() from message_end: while the agent is still
+		// streaming, pi treats that as a steer message and feeds the custom plan
+		// back into the active agent. That skips the review prompt and can cause the
+		// model to repeat the same <proposed_plan> block. Defer display until
+		// agent_end, where sendMessage({ triggerTurn: false }) is append-only.
 		if (rememberOnce(renderedPlanKeys, key)) {
-			pi.sendMessage<ProposedPlanDetails>({
-				customType: PROPOSED_PLAN_CUSTOM_TYPE,
-				content: plan,
-				display: true,
-				details: { createdAt: Date.now(), signature: key },
-			});
+			pendingProposedPlanRender = { plan, key, createdAt: Date.now() };
 		}
 
 		return { message: replaceAssistantText(event.message, visibleText) };
@@ -666,6 +732,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_end", async (_event, ctx) => {
 		if (!planState.active) return;
+		flushPendingProposedPlanRender();
 		if (ctx.mode !== "tui") return;
 		if (ctx.hasPendingMessages()) return;
 		if (!latestProposedPlan || !latestProposedPlanKey) return;
@@ -683,7 +750,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (selected === implementFresh) {
-			sendFreshPlanImplementation(ctx, latestProposedPlan);
+			await sendFreshPlanImplementation(ctx, latestProposedPlan);
 			return;
 		}
 
@@ -732,27 +799,15 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("plan-implement-fresh", {
-		description: "Internal: implement the latest proposed plan in a fresh session",
+		description: "Implement the latest proposed plan in a fresh session",
 		handler: async (_args, ctx) => {
-			const plan = pendingFreshImplementationPlan;
+			const plan = pendingFreshImplementationPlan || latestProposedPlan;
 			if (!plan?.trim()) {
 				ctx.ui.notify("No proposed plan is available for fresh implementation.", "warning");
 				return;
 			}
 
-			pendingFreshImplementationPlan = undefined;
-			setPlanMode(ctx, false, undefined);
-			const handoffPrompt = `${PLAN_IMPLEMENT_FRESH_PREFIX}\n\n${plan}`;
-			const result = await ctx.newSession({
-				withSession: async (freshCtx) => {
-					await freshCtx.sendUserMessage(handoffPrompt);
-				},
-			});
-
-			if (result.cancelled) {
-				pendingFreshImplementationPlan = plan;
-				ctx.ui.notify("Fresh implementation session cancelled.", "info");
-			}
+			await startFreshPlanImplementation(ctx, plan);
 		},
 	});
 
@@ -789,7 +844,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (subcommand === "fresh") {
 				const plan = requireLatestPlan(ctx);
-				if (plan) sendFreshPlanImplementation(ctx, plan);
+				if (plan) await sendFreshPlanImplementation(ctx, plan);
 				return;
 			}
 
