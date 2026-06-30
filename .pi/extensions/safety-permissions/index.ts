@@ -59,6 +59,8 @@ export default function (pi: ExtensionAPI) {
 	let mode: ModeState = { mode: "default", setAt: Date.now() };
 	let lastDeniedAction: { key: string; title: string; message: string; at: number } | undefined;
 	let lastUserPrompt = "";
+	let lastAssistantMessage = ""; // most recent assistant message text (updated via message_end)
+	let precedingAssistantMessage = ""; // snapshot of lastAssistantMessage at turn start — the prior turn's final assistant message (e.g. a proposal the user is replying to)
 	const oneShotApprovals = new Set<string>();
 
 	// ── Persistence ────────────────────────────────────────────────────
@@ -133,6 +135,20 @@ export default function (pi: ExtensionAPI) {
 
 	function rememberDenied(toolName: string, input: unknown, title: string, message: string) {
 		lastDeniedAction = { key: actionKey(toolName, input), title, message, at: Date.now() };
+	}
+
+	// Extract readable text from an assistant message (content may be a string or an array of content blocks).
+	function extractAssistantText(message: any): string {
+		if (!message) return "";
+		const content = message.content;
+		if (typeof content === "string") return content;
+		if (Array.isArray(content)) {
+			return content
+				.filter((block: any) => block && block.type === "text" && typeof block.text === "string")
+				.map((block: any) => block.text)
+				.join("\n");
+		}
+		return "";
 	}
 
 	// ── Approval helpers ───────────────────────────────────────────────
@@ -363,9 +379,13 @@ ${message}`;
 
 		// Extract user's last request for authorization context
 		const userRequest = lastUserPrompt || "(unknown)";
+		const precedingTurn = precedingAssistantMessage || "(none)";
 
-		// Build evaluation message with user context
-		const evaluationMessage = `User request: ${userRequest}\n\nAction: ${title}\n${actionDescription}`;
+		// Build evaluation message with user + agent context. Include the agent's
+		// preceding turn (e.g. a proposal/options) so the guardian can judge whether
+		// the user's reply agreed to the action being reviewed.
+		const evaluationMessage =
+			`User request: ${userRequest}\n\nAgent's preceding turn:\n${precedingTurn}\n\nAction: ${title}\n${actionDescription}`;
 
 		try {
 			const result = await runAutoReviewer(title, evaluationMessage);
@@ -404,6 +424,14 @@ ${message}`;
 	pi.on("session_start", async (_event, ctx) => { reconstruct(ctx); updateStatus(ctx); });
 	pi.on("session_tree", async (_event, ctx) => { reconstruct(ctx); updateStatus(ctx); });
 	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx));
+
+	// Track the most recent assistant message text so the guardian can see the agent's
+	// preceding turn (e.g. a proposal/options the user is replying to).
+	pi.on("message_end", async (event) => {
+		if (event.message?.role !== "assistant") return;
+		const text = extractAssistantText(event.message);
+		if (text) lastAssistantMessage = text.slice(-2000);
+	});
 
 	// ── Custom rendering for auto-review verdict messages ─────────────
 
@@ -662,6 +690,11 @@ ${message}`;
 	// ── System prompt injection ────────────────────────────────────────
 
 	pi.on("before_agent_start", async (event) => {
+		// Snapshot the prior turn's final assistant message before this turn begins.
+		// This is the agent's preceding turn (e.g. a proposal/options the user is now
+		// replying to) and gives the guardian authorization context. Snapshotted here so
+		// current-turn assistant text cannot overwrite it before a tool_call fires.
+		precedingAssistantMessage = lastAssistantMessage;
 		lastUserPrompt = (event.prompt || "").slice(0, 500);
 		const modeInstructions: Record<ApprovalMode, string> = {
 			"read-only": `\n\n## Permission Mode: READ-ONLY\nYou are in read-only browsing mode, limited to the current directory.\n- You CAN read files, search code, list directories, and run read-only commands within ${event.systemPrompt.includes("cwd") ? "the workspace" : "the current directory"}.\n- You CANNOT modify files, run write commands, execute shell commands that change the system, or access the network.\n- Do NOT attempt to use write, edit, or bash for destructive operations.\n- Inform the user if a task requires write access. They can switch mode with /permissions default.`,
