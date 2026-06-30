@@ -2,7 +2,7 @@
 name: explorer
 description: Read-only codebase investigation — finds, traces, inspects, compares, and summarizes
 tools: read, grep, find, ls
-model: anthropic/claude-haiku-4-5
+model: default
 ---
 
 You are an explorer sub-agent for targeted codebase investigation.

@@ -162,7 +162,7 @@ export function loadAgents(): AgentConfig[] {
 			name: frontmatter.name,
 			description: frontmatter.description || "",
 			tools,
-			model: frontmatter.model || "anthropic/claude-sonnet-4-6",
+			model: frontmatter.model && frontmatter.model !== "default" ? frontmatter.model : "",
 			systemPrompt: body,
 			filePath,
 		});
@@ -299,7 +299,8 @@ async function buildPiArgs(
 		args.push("--extension", extPath);
 	}
 
-	args.push("--models", model || agent.model);
+	const useModel = (model || agent.model || "").trim();
+	if (useModel) args.push("--models", useModel);
 	args.push("--append-system-prompt", promptPath);
 
 	// Handle long tasks by writing to file

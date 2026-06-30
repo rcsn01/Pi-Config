@@ -2,7 +2,7 @@
 name: worker
 description: Bounded implementation and verification — changes, fixes, implements, tests, verifies
 tools: read, write, edit, safe_bash
-model: anthropic/claude-sonnet-4-6
+model: default
 ---
 
 You are a worker sub-agent for bounded implementation and verification.
