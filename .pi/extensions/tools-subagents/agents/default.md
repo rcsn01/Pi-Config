@@ -2,7 +2,7 @@
 name: default
 description: General-purpose delegate — handles small bounded tasks that do not fit explorer or worker
 tools: read, bash
-model: anthropic/claude-haiku-4-5
+model: default
 ---
 
 You are a delegated sub-agent working under a main agent.
