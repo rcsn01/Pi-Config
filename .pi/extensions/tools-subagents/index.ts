@@ -418,7 +418,7 @@ export async function runSubagent(
 
 	const exitCode = await new Promise<number>((resolve) => {
 		const proc = spawn(command, spawnArgs, {
-			cwd,
+			cwd: options.cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 
