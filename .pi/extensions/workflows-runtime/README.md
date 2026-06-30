@@ -23,6 +23,17 @@ Durable workflows are approved JavaScript definitions that coordinate phases, du
 /workflows raw <run-id>
 ```
 
+### Triggering a workflow interactively
+
+Running `/workflow` with no arguments opens a workflow picker, then prompts you for the workflow's prompt/args before it runs:
+
+1. Type `/workflow` and press Enter.
+2. Choose a workflow from the list.
+3. Type the prompt/task for the workflow in the editor that appears (Esc cancels).
+4. The workflow runs with what you typed as its args.
+
+The same prompt step appears whenever a workflow is invoked without args and interactive UI is available, e.g. `/workflow fan-out-and-synthesize` or `/workflow background deep-research`. Providing args inline (e.g. `/workflow deep-verification path/to/file.md`) skips the prompt. In non-interactive modes (RPC/print) the prompt is skipped and the workflow runs with the given (possibly empty) args.
+
 Foreground workflows occupy the current Pi command until completion. Background workflows are in-process only; they do not continue after Pi exits. Resume is deterministic replay from persisted state and the workflow source snapshot.
 
 ## Authoring Workflows

@@ -42,6 +42,16 @@ async function chooseWorkflow(ctx: ExtensionContext, entries: RegistryEntry[]): 
 	return entries.find((e) => e.name === name);
 }
 
+async function promptForArgs(ctx: ExtensionContext, entry: RegistryEntry): Promise<string | undefined> {
+	if (!ctx.hasUI) return "";
+	const inputs = entry.workflow?.inputs;
+	const inputName = inputs ? Object.keys(inputs)[0] : undefined;
+	const title = inputName
+		? `Enter ${inputName} for ${entry.name}`
+		: `Enter the prompt for ${entry.name}`;
+	return ctx.ui.editor(title, "");
+}
+
 async function runAndReport(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -179,7 +189,13 @@ async function runNamed(pi: ExtensionAPI, ctx: ExtensionContext, name: string, a
 		ctx.ui.notify(`Unknown workflow: ${name}\n\nAvailable:\n${entries.map((e) => `- ${e.name}`).join("\n")}`, "error");
 		return;
 	}
-	const prepared = await prepareNewWorkflowRun(ctx, entry, args);
+	let workflowArgs = args;
+	if (!workflowArgs && ctx.hasUI) {
+		const prompted = await promptForArgs(ctx, entry);
+		if (prompted === undefined) { ctx.ui.notify("Workflow cancelled.", "info"); return; }
+		workflowArgs = prompted;
+	}
+	const prepared = await prepareNewWorkflowRun(ctx, entry, workflowArgs);
 	await runAndReport(pi, ctx, prepared, background);
 }
 
