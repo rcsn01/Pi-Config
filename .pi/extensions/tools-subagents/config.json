@@ -1,0 +1,7 @@
+{
+  "maxConcurrency": 4,
+  "defaultModel": "github-copilot/gpt-5.6-sol",
+  "agentModels": {},
+  "agentThinkingLevels": {},
+  "defaultThinkingLevel": "medium"
+}
