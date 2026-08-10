@@ -8,7 +8,24 @@
 		"turndown": "^7.2.0",
 		"unpdf": "^1.4.0"
 	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "0.84.1",
+		"@earendil-works/pi-coding-agent": "0.84.1",
+		"@earendil-works/pi-tui": "0.84.1",
+		"@types/node": "26.1.2",
+		"@types/turndown": "5.0.6",
+		"ignore": "7.0.5",
+		"typebox": "1.3.11",
+		"typescript": "7.0.2",
+		"vitest": "4.1.10"
+	},
 	"scripts": {
-		"test:workflows": "node --test extensions/workflows-runtime/tests/*.test.mjs"
+		"typecheck": "tsc --noEmit",
+		"test": "pnpm test:core && pnpm test:features && pnpm test:todos && pnpm test:workflows && pnpm test:integrations",
+		"test:core": "vitest run extensions/_shared",
+		"test:features": "vitest run extensions/system-feature-flags/catalog.test.ts",
+		"test:todos": "vitest run extensions/tools-todo/todo-state.test.ts",
+		"test:workflows": "node --test extensions/workflows-runtime/tests/*.test.mjs",
+		"test:integrations": "vitest run extensions-disabled/integration-plane/lib/plane/client.test.ts"
 	}
 }

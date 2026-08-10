@@ -558,7 +558,7 @@ async function fetchAndExtract(
 // ── Extension Registration ───────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-	const fetchTool = {
+	pi.registerTool({
 		name: "ddg_fetch",
 		label: "Web Fetch",
 		description:
@@ -667,7 +667,5 @@ export default function (pi: ExtensionAPI) {
 			text.setText(status + "\n" + theme.fg("dim", preview));
 			return text;
 		},
-	} as const;
-
-	pi.registerTool(fetchTool);
+	});
 }

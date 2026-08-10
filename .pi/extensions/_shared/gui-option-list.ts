@@ -1,3 +1,4 @@
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
 export type GuiOptionListSelectionMode = "single" | "multiple";
@@ -17,26 +18,7 @@ export interface GuiOptionListRequest<T extends string = string> {
 	options: Array<GuiOptionListOption<T>>;
 }
 
-type CustomUiFactory<T> = (
-	tui: { requestRender?: () => void },
-	theme: {
-		fg?: (color: string, text: string) => string;
-		bg?: (color: string, text: string) => string;
-		bold?: (text: string) => string;
-	},
-	keybindings: unknown,
-	done: (value: T) => void,
-) => { render: (width: number) => string[]; handleInput?: (data: string) => void; invalidate: () => void };
-
-type UiContext = {
-	hasUI?: boolean;
-	ui: {
-		custom?: <T>(factory: CustomUiFactory<T>, options?: unknown) => Promise<T>;
-		select?: (title: string, options: string[]) => Promise<string | undefined>;
-		notify?: (message: string, level?: string) => void;
-		[key: string]: unknown;
-	};
-};
+type UiContext = Pick<ExtensionContext, "hasUI" | "ui">;
 
 type GuiOptionListResponse<T extends string = string> =
 	| { value?: T; values?: T[]; cancelled?: boolean }
@@ -88,8 +70,8 @@ function requestCustomChecklist<T extends string>(
 		const saveIndex = options.length;
 		const cancelIndex = options.length + 1;
 		const maxVisibleOptions = Math.max(6, Math.min(12, totalRows));
-		const style = (color: string, text: string) => theme.fg?.(color, text) ?? text;
-		const bold = (text: string) => theme.bold?.(text) ?? text;
+		const style = (color: Parameters<typeof theme.fg>[0], text: string) => theme.fg(color, text);
+		const bold = (text: string) => theme.bold(text);
 		const invalidate = () => {
 			cachedWidth = undefined;
 			cachedLines = undefined;
@@ -133,14 +115,14 @@ function requestCustomChecklist<T extends string>(
 			else selected.add(option.value);
 			// Keep cursor unchanged so toggling does not jump back to the first item.
 			invalidate();
-			tui.requestRender?.();
+			tui.requestRender();
 		};
 		const moveCursor = (next: number) => {
 			cursor = clamp(next, 0, totalRows - 1);
 			if (cursor < scroll) scroll = cursor;
 			if (cursor >= scroll + maxVisibleOptions) scroll = cursor - maxVisibleOptions + 1;
 			invalidate();
-			tui.requestRender?.();
+			tui.requestRender();
 		};
 
 		return {
@@ -181,7 +163,7 @@ async function requestStructuredOptionList<T extends string>(
 	ctx: UiContext,
 	request: Required<Pick<GuiOptionListRequest<T>, "selectionMode">> & GuiOptionListRequest<T>,
 ): Promise<{ supported: boolean; result: T | T[] | undefined }> {
-	const ui = ctx.ui as Record<string, unknown>;
+	const ui = ctx.ui as unknown as Record<string, unknown>;
 	const payload = {
 		method: request.selectionMode === "multiple" ? "checklist" : "optionList",
 		title: request.title,
@@ -236,7 +218,7 @@ export async function pickGuiOptions<T extends string>(
 
 	const select = ctx.ui.select;
 	if (typeof select !== "function") {
-		ctx.ui.notify?.("This UI does not support multiple-choice option lists.", "warning");
+		ctx.ui.notify("This UI does not support multiple-choice option lists.", "warning");
 		return undefined;
 	}
 

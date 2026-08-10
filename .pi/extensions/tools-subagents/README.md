@@ -70,31 +70,21 @@ Frontmatter fields:
 
 The markdown body becomes the agent's system prompt.
 
-### 2. Register agents via `globalThis.__pi_subagents`
+### 2. Register agents through the shared service
 
-Pi loads extensions via jiti, which creates separate module instances. Direct imports from the subagents extension will reference a different `agents` array than the one the `subagent` tool uses. Use the `globalThis` bridge instead:
+Resolve the active runner through the typed shared registry. This avoids importing runner implementation state and remains stable when jiti creates separate module instances:
 
 ```typescript
-import { parseFrontmatter } from "@mariozechner/pi-coding-agent";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
-
-interface AgentConfig {
-  name: string;
-  description: string;
-  tools: string[];
-  model: string;
-  systemPrompt: string;
-  filePath: string;
-}
+import { getSubagentService } from "../_shared/subagent-service.ts";
 
 const AGENTS_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), "agents");
 
 function registerMyAgents(): void {
-  const subagents = (globalThis as any).__pi_subagents as
-    | { registerAgent: (config: AgentConfig) => void; unregisterAgent: (name: string) => void }
-    | undefined;
-  if (!subagents) return; // subagents extension not loaded
+  const subagents = getSubagentService();
+  if (!subagents) return;
 
   for (const entry of fs.readdirSync(AGENTS_DIR)) {
     if (!entry.endsWith(".md")) continue;
@@ -109,7 +99,7 @@ function registerMyAgents(): void {
         name: frontmatter.name,
         description: frontmatter.description || "",
         tools,
-        model: frontmatter.model || "anthropic/claude-sonnet-4-6",
+        model: frontmatter.model || "",
         systemPrompt: body,
         filePath,
       });

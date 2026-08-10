@@ -1,8 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { projectStatePath } from "../../_shared/state-paths.ts";
 import type { RegistryEntry } from "./registry.ts";
-import { APPROVALS_DIR, ensureDir, entrySource, projectPathHash, slugify } from "./registry.ts";
+import { ensureDir, entrySource, projectPathHash, slugify } from "./registry.ts";
 import { formatApprovalPlan } from "./ui.ts";
 
 export function approvalKey(cwd: string, entry: RegistryEntry): { projectHash: string; workflowName: string; sourceHash: string } {
@@ -11,7 +12,7 @@ export function approvalKey(cwd: string, entry: RegistryEntry): { projectHash: s
 
 export function approvalPath(cwd: string, entry: RegistryEntry): string {
 	const key = approvalKey(cwd, entry);
-	return path.join(cwd, APPROVALS_DIR, key.projectHash, `${slugify(key.workflowName)}-${key.sourceHash.slice(0, 16)}.json`);
+	return projectStatePath(cwd, "workflow-approvals", `${slugify(key.workflowName)}-${key.sourceHash.slice(0, 16)}.json`);
 }
 
 export async function hasApproval(cwd: string, entry: RegistryEntry): Promise<boolean> {

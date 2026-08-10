@@ -13,108 +13,20 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import * as fs from "node:fs";
-import * as path from "node:path";
-
-function fuzzyMatch(pattern: string, str: string): boolean {
-	const p = pattern.toLowerCase();
-	const s = str.toLowerCase();
-	let pi = 0;
-	for (let si = 0; si < s.length && pi < p.length; si++) {
-		if (s[si] === p[pi]) pi++;
-	}
-	return pi === p.length;
-}
-
-function scoreMatch(query: string, relPath: string): number {
-	const q = query.toLowerCase();
-	const p = relPath.toLowerCase();
-	const base = path.basename(p);
-	if (base === q) return 1000;
-	if (base.startsWith(q)) return 900 - base.length;
-	if (base.includes(q)) return 800 - base.indexOf(q);
-	if (p.startsWith(q)) return 700 - p.length;
-	if (p.includes(q)) return 600 - p.indexOf(q);
-	return fuzzyMatch(q, p) ? 300 - p.length : -1;
-}
-
-function loadGitignore(cwd: string): string[] {
-	const gitignorePath = path.join(cwd, ".gitignore");
-	try {
-		if (!fs.existsSync(gitignorePath)) return [];
-		return fs.readFileSync(gitignorePath, "utf-8")
-			.split("\n")
-			.map((line) => line.trim())
-			.filter((line) => line && !line.startsWith("#") && !line.startsWith("!"));
-	} catch {
-		return [];
-	}
-}
-
-function isIgnored(relPath: string, patterns: string[]): boolean {
-	const normalized = relPath.split(path.sep).join("/");
-	for (const raw of patterns) {
-		const pattern = raw.replace(/^\//, "");
-		if (pattern.endsWith("/")) {
-			const dir = pattern.slice(0, -1);
-			if (normalized === dir || normalized.startsWith(dir + "/") || normalized.includes("/" + dir + "/")) return true;
-			continue;
-		}
-		if (pattern.includes("*")) {
-			const re = new RegExp("^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$" );
-			if (re.test(normalized) || re.test(path.basename(normalized))) return true;
-			continue;
-		}
-		if (normalized === pattern || normalized.startsWith(pattern + "/") || path.basename(normalized) === pattern) return true;
-	}
-	return false;
-}
+import { discoverFiles } from "../_shared/file-discovery.ts";
 
 async function findFiles(
 	cwd: string,
 	query: string,
 	maxResults = 20,
-	options: { includeHidden?: boolean } = {},
+	options: { includeHidden?: boolean; signal?: AbortSignal } = {},
 ): Promise<string[]> {
-	const results: string[] = [];
-	const ignorePatterns = loadGitignore(cwd);
-	const ignoreDirs = new Set([
-		"node_modules", ".git", "__pycache__", ".venv", "venv",
-		"dist", "build", ".next", ".cache", "target", ".idea", ".vscode",
-	]);
-
-	function walk(dir: string, depth: number) {
-		if (depth > 5 || results.length >= maxResults * 2) return;
-
-		let entries: fs.Dirent[];
-		try {
-			entries = fs.readdirSync(dir, { withFileTypes: true });
-		} catch {
-			return;
-		}
-
-		for (const entry of entries) {
-			if (!options.includeHidden && entry.name.startsWith(".")) continue;
-			if (ignoreDirs.has(entry.name)) continue;
-
-			const fullPath = path.join(dir, entry.name);
-			const relPath = path.relative(cwd, fullPath);
-			if (isIgnored(relPath, ignorePatterns)) continue;
-
-			if (entry.isDirectory()) {
-				walk(fullPath, depth + 1);
-			} else if (entry.isFile()) {
-				if (scoreMatch(query, relPath) >= 0) {
-					results.push(relPath);
-				}
-			}
-		}
-	}
-
-	walk(cwd, 0);
-	return results
-		.sort((a, b) => scoreMatch(query, b) - scoreMatch(query, a) || a.localeCompare(b))
-		.slice(0, maxResults);
+	return discoverFiles(cwd, {
+		query,
+		maxResults,
+		includeHidden: options.includeHidden,
+		signal: options.signal,
+	});
 }
 
 export default function (pi: ExtensionAPI) {
@@ -176,12 +88,12 @@ export default function (pi: ExtensionAPI) {
 			include_hidden: Type.Optional(Type.Boolean({ description: "Include hidden dotfiles/directories" })),
 		}),
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const files = await findFiles(
 				ctx.cwd,
 				params.query,
 				params.max_results || 20,
-				{ includeHidden: params.include_hidden },
+				{ includeHidden: params.include_hidden, signal },
 			);
 
 			if (files.length === 0) {

@@ -108,7 +108,7 @@ function formatResults(results: SearchResult[]): string {
 }
 
 export default function (pi: ExtensionAPI) {
-	const searchTool = {
+	pi.registerTool({
 		name: "ddg_search",
 		label: "DuckDuckGo Search",
 		description:
@@ -166,7 +166,5 @@ export default function (pi: ExtensionAPI) {
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 			return new Text(text.slice(0, 500), 0, 0);
 		},
-	} as const;
-
-	pi.registerTool(searchTool);
+	});
 }

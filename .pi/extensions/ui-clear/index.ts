@@ -36,7 +36,7 @@ export default function (pi: ExtensionAPI) {
 
 				const result = await ctx.newSession({
 					parentSession: parentSession || undefined,
-					setup: (_sm) => {
+					setup: async (_sm) => {
 						// Fresh session - no context carryover from previous session
 					},
 					withSession: async (newCtx) => {

@@ -183,7 +183,7 @@ async function runCodex(
 	input: string | undefined,
 	cwd: string,
 	signal: AbortSignal | undefined,
-	onUpdate: ((partial: { content: Array<{ type: "text"; text: string }>; details?: Record<string, unknown> }) => void) | undefined,
+	onUpdate: ((partial: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }) => void) | undefined,
 	timeoutMs: number,
 ): Promise<CodexRunResult> {
 	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-codex-"));
@@ -245,7 +245,7 @@ async function runCodex(
 			finish(-1);
 		}, timeoutMs);
 
-		proc.stdout.on("data", (chunk: Buffer) => {
+		proc.stdout?.on("data", (chunk: Buffer) => {
 			const text = chunk.toString();
 			stdout += text;
 			lineBuffer += text;
@@ -254,7 +254,7 @@ async function runCodex(
 			for (const line of lines) processLine(line);
 		});
 
-		proc.stderr.on("data", (chunk: Buffer) => {
+		proc.stderr?.on("data", (chunk: Buffer) => {
 			stderr += chunk.toString();
 		});
 

@@ -14,7 +14,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { collectWorkingTreeDiff, truncateText } from "../_shared/git.ts";
+import { collectWorkingTreeDiff, runGit, truncateText } from "../_shared/git.ts";
 
 const REVIEW_CUSTOM_TYPE = "code-review";
 
@@ -26,35 +26,36 @@ const ReviewToolParams = Type.Object({
 });
 
 async function getGitDiff(
-	exec: (cmd: string, args: string[]) => Promise<{ stdout: string; stderr: string }>,
+	cwd: string,
 	type: string,
 	target?: string,
+	signal?: AbortSignal,
 ): Promise<{ diff: string; error?: string }> {
 	try {
 		switch (type) {
 			case "base": {
-				const { stdout: upstream } = await exec("git", [
+				const { stdout: upstream } = await runGit(cwd, [
 					"rev-parse", "--abbrev-ref", `${target}@{upstream}`,
-				]);
+				], { signal });
 				const upstreamBranch = upstream.trim();
-				const { stdout: mergeBase } = await exec("git", [
+				const { stdout: mergeBase } = await runGit(cwd, [
 					"merge-base", upstreamBranch, "HEAD",
-				]);
-				const { stdout: diff } = await exec("git", [
+				], { signal });
+				const { stdout: diff } = await runGit(cwd, [
 					"diff", mergeBase.trim() + "...HEAD",
-				]);
+				], { signal });
 				return { diff };
 			}
 			case "uncommitted": {
-				return { diff: await collectWorkingTreeDiff(exec, "uncommitted", { includeUntrackedContent: true }) };
+				return { diff: await collectWorkingTreeDiff(cwd, "uncommitted", { includeUntrackedContent: true, signal }) };
 			}
 			case "commit": {
 				const sha = target || "HEAD";
-				const { stdout: diff } = await exec("git", ["show", "--format=fuller", sha]);
+				const { stdout: diff } = await runGit(cwd, ["show", "--format=fuller", sha], { signal });
 				return { diff };
 			}
 			case "custom": {
-				return { diff: await collectWorkingTreeDiff(exec, "custom") };
+				return { diff: await collectWorkingTreeDiff(cwd, "custom", { signal }) };
 			}
 			default:
 				return { diff: "", error: `Unknown review type: ${type}` };
@@ -119,14 +120,15 @@ export default function (pi: ExtensionAPI) {
 		],
 		parameters: ReviewToolParams,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const action = params.action;
 			const target = params.branch || params.commit || undefined;
 
 			const { diff, error } = await getGitDiff(
-				(cmd, args) => pi.exec(cmd, args, { cwd: ctx.cwd }),
+				ctx.cwd,
 				action,
 				target,
+				signal,
 			);
 
 			if (error) {

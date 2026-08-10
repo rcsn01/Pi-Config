@@ -1,0 +1,215 @@
+{
+	"version": 1,
+	"extensions": {
+		"agent-thinking": {
+			"displayName": "Thinking Control",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"config-personality": {
+			"displayName": "Personality",
+			"pack": "extras",
+			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		},
+		"integration-fleet": {
+			"displayName": "Fleet Integration",
+			"pack": "excluded",
+			"defaultEnabled": false,
+			"requires": ["safety-permissions", "tools-subagents", "tools-worktree"],
+			"conflicts": ["workflows-goal"]
+		},
+		"integration-plane": {
+			"displayName": "Plane Integration",
+			"pack": "integrations",
+			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		},
+		"observability-usage": {
+			"displayName": "Provider Usage",
+			"pack": "observability",
+			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		},
+		"safety-permissions": {
+			"displayName": "Safety Permissions",
+			"pack": "safety",
+			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		},
+		"sessions-memory": {
+			"displayName": "Session Memory",
+			"pack": "excluded",
+			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		},
+		"system-feature-flags": {
+			"displayName": "Feature Flags",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"tools-ask-user": {
+			"displayName": "Ask User",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"tools-code-review": {
+			"displayName": "Code Review",
+			"pack": "git",
+			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		},
+		"tools-file-context": {
+			"displayName": "File Context",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"tools-file-picker": {
+			"displayName": "File Picker",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"tools-file-search": {
+			"displayName": "File Search",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"tools-lsp": {
+			"displayName": "Language Server Tools",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"tools-subagents": {
+			"displayName": "Subagents",
+			"pack": "autonomy",
+			"defaultEnabled": false,
+			"requires": ["safety-permissions"],
+			"conflicts": []
+		},
+		"tools-todo": {
+			"displayName": "Todo",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"tools-web-fetch": {
+			"displayName": "Web Fetch",
+			"pack": "research",
+			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		},
+		"tools-web-search": {
+			"displayName": "Web Search",
+			"pack": "research",
+			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		},
+		"tools-worktree": {
+			"displayName": "Git Worktrees",
+			"pack": "git",
+			"defaultEnabled": false,
+			"requires": ["safety-permissions"],
+			"conflicts": []
+		},
+		"ui-clear": {
+			"displayName": "Clear Session",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"ui-context": {
+			"displayName": "Context Diagnostics",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"ui-copy-all": {
+			"displayName": "Copy Conversation",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"ui-notification": {
+			"displayName": "Notifications",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"ui-sessions": {
+			"displayName": "Sessions",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"ui-status-separators": {
+			"displayName": "Status Footer",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"ui-steer-input": {
+			"displayName": "Steer Input Editor",
+			"pack": "editor",
+			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		},
+		"workflows-goal": {
+			"displayName": "Goal Mode",
+			"pack": "autonomy",
+			"defaultEnabled": false,
+			"requires": ["safety-permissions"],
+			"conflicts": ["integration-fleet"]
+		},
+		"workflows-plan-mode": {
+			"displayName": "Plan Mode",
+			"pack": "planning",
+			"defaultEnabled": false,
+			"requires": ["safety-permissions"],
+			"conflicts": []
+		},
+		"workflows-runtime": {
+			"displayName": "Workflow Runtime",
+			"pack": "autonomy",
+			"defaultEnabled": false,
+			"requires": ["safety-permissions", "tools-subagents"],
+			"conflicts": []
+		},
+		"workflows-side-conversation": {
+			"displayName": "Side Conversation",
+			"pack": "sessions",
+			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		}
+	}
+}

@@ -1,8 +1,9 @@
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
+import { projectStatePath } from "../../_shared/state-paths.ts";
 import type { RegistryEntry, WorkflowTrust } from "./registry.ts";
-import { ensureDir, RUNS_DIR } from "./registry.ts";
+import { ensureDir } from "./registry.ts";
 
 export type RunStatus = "created" | "running" | "pausing" | "paused" | "completed" | "failed" | "stopped";
 
@@ -74,7 +75,7 @@ export class AsyncQueue {
 }
 
 export function runPaths(cwd: string, runId: string): RunPaths {
-	const root = path.join(cwd, RUNS_DIR, runId);
+	const root = projectStatePath(cwd, "workflow-runs", runId);
 	return {
 		root,
 		events: path.join(root, "events.jsonl"),
@@ -347,7 +348,7 @@ export async function readRunState(cwd: string, runId: string): Promise<RunState
 }
 
 export async function listRunStates(cwd: string): Promise<RunState[]> {
-	const base = path.join(cwd, RUNS_DIR);
+	const base = projectStatePath(cwd, "workflow-runs");
 	if (!fs.existsSync(base)) return [];
 	const states: RunState[] = [];
 	for (const entry of await fsp.readdir(base)) {

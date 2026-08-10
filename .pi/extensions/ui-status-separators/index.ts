@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import * as path from "node:path";
+import { collectSessionUsage, normalizeContextUsage } from "../_shared/usage.ts";
 
 function sanitizeStatusText(text: string): string {
 	return text
@@ -37,21 +38,7 @@ function installFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
 		dispose: footerData.onBranchChange(() => tui.requestRender()),
 		invalidate() {},
 		render(width: number): string[] {
-			let totalInput = 0;
-			let totalOutput = 0;
-			let totalCacheRead = 0;
-			let totalCacheWrite = 0;
-			let totalCost = 0;
-
-			for (const entry of ctx.sessionManager.getEntries()) {
-				if (entry.type === "message" && entry.message.role === "assistant") {
-					totalInput += entry.message.usage.input;
-					totalOutput += entry.message.usage.output;
-					totalCacheRead += entry.message.usage.cacheRead;
-					totalCacheWrite += entry.message.usage.cacheWrite;
-					totalCost += entry.message.usage.cost.total;
-				}
-			}
+			const usage = collectSessionUsage(ctx.sessionManager.getEntries());
 
 			let pwd = formatCwd(ctx.sessionManager.getCwd());
 			const branch = footerData.getGitBranch();
@@ -61,21 +48,20 @@ function installFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
 			if (sessionName) pwd = `${pwd} • ${sessionName}`;
 
 			const statsParts: string[] = [];
-			if (totalInput) statsParts.push(`↑${formatTokens(totalInput)}`);
-			if (totalOutput) statsParts.push(`↓${formatTokens(totalOutput)}`);
-			if (totalCacheRead) statsParts.push(`R${formatTokens(totalCacheRead)}`);
-			if (totalCacheWrite) statsParts.push(`W${formatTokens(totalCacheWrite)}`);
-			if (totalCost) statsParts.push(`$${totalCost.toFixed(3)}`);
+			if (usage.input) statsParts.push(`↑${formatTokens(usage.input)}`);
+			if (usage.output) statsParts.push(`↓${formatTokens(usage.output)}`);
+			if (usage.cacheRead) statsParts.push(`R${formatTokens(usage.cacheRead)}`);
+			if (usage.cacheWrite) statsParts.push(`W${formatTokens(usage.cacheWrite)}`);
+			if (usage.cost) statsParts.push(`$${usage.cost.toFixed(3)}`);
 
-			const contextUsage = ctx.getContextUsage();
-			const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
-			const contextPercentValue = contextUsage?.percent ?? 0;
-			const contextPercent = contextUsage?.percent !== null && contextUsage?.percent !== undefined
+			const contextUsage = normalizeContextUsage(ctx.getContextUsage(), ctx.model?.contextWindow);
+			const contextPercentValue = contextUsage.percent ?? 0;
+			const contextPercent = contextUsage.percent !== null
 				? contextPercentValue.toFixed(1)
 				: "?";
 			const contextDisplay = contextPercent === "?"
-				? `?/${formatTokens(contextWindow)} (auto)`
-				: `${contextPercent}%/${formatTokens(contextWindow)} (auto)`;
+				? `?/${formatTokens(contextUsage.contextWindow)} (auto)`
+				: `${contextPercent}%/${formatTokens(contextUsage.contextWindow)} (auto)`;
 			statsParts.push(
 				contextPercentValue > 90
 					? theme.fg("error", contextDisplay)
