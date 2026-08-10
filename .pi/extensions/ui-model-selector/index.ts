@@ -1,9 +1,11 @@
 /**
  * Custom /model selector.
  *
- * Routes the built-in command through a searchable model picker, then lets the
- * user choose a supported thinking level and (for GPT-5.6) 272K or 1.05M
- * context. Context choices are persisted as native models.json overrides.
+ * Routes fresh-session startup and the built-in command through a searchable
+ * model picker, then lets the user choose a supported thinking level and (for
+ * GPT-5.6) 272K or 1.05M context. Explicit --model startup overrides and
+ * resumed sessions skip the automatic picker. Context choices are persisted as
+ * native models.json overrides.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -11,7 +13,7 @@ import { join } from "node:path";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Input, SelectList, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	installModelCommandHandler,
@@ -23,6 +25,7 @@ import {
 	formatTokenCount,
 	getContextWindowChoices,
 	mergeContextWindowOverride,
+	shouldOpenStartupModelSelector,
 	supportsContextProfiles,
 } from "./model-config.ts";
 
@@ -302,7 +305,7 @@ async function runModelControl(pi: ExtensionAPI, args: string, ctx: ExtensionCon
 export default function modelSelectorExtension(pi: ExtensionAPI) {
 	let uninstallModelCommandHandler: (() => void) | undefined;
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		uninstallModelCommandHandler?.();
 		uninstallModelCommandHandler = undefined;
 		if (ctx.mode !== "tui") return;
@@ -317,6 +320,14 @@ export default function modelSelectorExtension(pi: ExtensionAPI) {
 		uninstallModelCommandHandler = installModelCommandHandler(handler);
 		ctx.ui.setEditorComponent((tui, theme, keybindings) =>
 			new ModelCommandRoutingEditor(tui, theme, keybindings, handler));
+
+		const hasConversationHistory = buildSessionContext(
+			ctx.sessionManager.getEntries(),
+			ctx.sessionManager.getLeafId(),
+		).messages.length > 0;
+		if (shouldOpenStartupModelSelector(event.reason, hasConversationHistory, process.argv.slice(2))) {
+			await handler("");
+		}
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {

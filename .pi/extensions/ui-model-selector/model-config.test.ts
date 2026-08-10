@@ -10,7 +10,9 @@ import {
 	getContextWindowChoices,
 	GPT_56_LONG_CONTEXT,
 	GPT_56_SHORT_CONTEXT,
+	hasExplicitModelArgument,
 	mergeContextWindowOverride,
+	shouldOpenStartupModelSelector,
 } from "./model-config.ts";
 
 const models = [
@@ -54,6 +56,32 @@ describe("model command routing", () => {
 		expect(getModelCommandHandler()).toBe(second);
 		uninstallSecond();
 		expect(getModelCommandHandler()).toBeUndefined();
+	});
+});
+
+describe("startup model selection", () => {
+	it("opens for a fresh startup and /new", () => {
+		expect(shouldOpenStartupModelSelector("startup", false, [])).toBe(true);
+		expect(shouldOpenStartupModelSelector("new", false, [])).toBe(true);
+	});
+
+	it("does not open when startup restores conversation history", () => {
+		expect(shouldOpenStartupModelSelector("startup", true, [])).toBe(false);
+	});
+
+	it.each(["reload", "resume", "fork"] as const)("does not open for %s", (reason) => {
+		expect(shouldOpenStartupModelSelector(reason, false, [])).toBe(false);
+	});
+
+	it("recognizes explicit --model forms and bypasses automatic selection", () => {
+		expect(hasExplicitModelArgument(["--model", "anthropic/claude-sonnet-4.6"])).toBe(true);
+		expect(hasExplicitModelArgument(["--model=anthropic/claude-sonnet-4.6"])).toBe(true);
+		expect(shouldOpenStartupModelSelector("startup", false, ["--model", "gpt-5.6-sol"])).toBe(false);
+		expect(shouldOpenStartupModelSelector("new", false, ["--model=gpt-5.6-sol"])).toBe(false);
+	});
+
+	it("does not mistake model scoping or prompt text for an explicit model", () => {
+		expect(hasExplicitModelArgument(["--models", "gpt-*", "explain --model selection"])).toBe(false);
 	});
 });
 
