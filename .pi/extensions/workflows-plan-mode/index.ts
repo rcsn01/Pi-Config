@@ -10,8 +10,13 @@
  * rendered message and blocks common mutating tools while plan mode is active.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Text } from "@earendil-works/pi-tui";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	Theme,
+} from "@earendil-works/pi-coding-agent";
+import { Box, Markdown, Text, type EditorComponent, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 type PlanPhase = "planning" | "awaiting_review";
@@ -22,6 +27,7 @@ interface PlanState {
 	prompt?: string;
 	setAt: number;
 	latestPlanSignature?: string;
+	promptedPlanSignature?: string;
 }
 
 interface ProposedPlanDetails {
@@ -40,6 +46,34 @@ interface PlanQuestionAnswer {
 interface PlanQuestionDetails {
 	answers: PlanQuestionAnswer[];
 	cancelled: boolean;
+}
+
+export const PLAN_REVIEW_ACTIONS = [
+	{ value: "implement", label: "Implement current plan" },
+	{ value: "fresh", label: "Clear context and implement" },
+	{ value: "revise", label: "Revise current plan" },
+	{ value: "stay", label: "Stay in Plan Mode" },
+] as const;
+
+export type PlanReviewAction = (typeof PLAN_REVIEW_ACTIONS)[number]["value"];
+
+function createPlanMarkdownTheme(theme: Theme): MarkdownTheme {
+	return {
+		heading: (text) => theme.fg("mdHeading", text),
+		link: (text) => theme.fg("mdLink", text),
+		linkUrl: (text) => theme.fg("mdLinkUrl", text),
+		code: (text) => theme.fg("mdCode", text),
+		codeBlock: (text) => theme.fg("mdCodeBlock", text),
+		codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
+		quote: (text) => theme.fg("mdQuote", text),
+		quoteBorder: (text) => theme.fg("mdQuoteBorder", text),
+		hr: (text) => theme.fg("mdHr", text),
+		listBullet: (text) => theme.fg("mdListBullet", text),
+		bold: (text) => theme.bold(text),
+		italic: (text) => theme.italic(text),
+		strikethrough: (text) => theme.strikethrough(text),
+		underline: (text) => theme.underline(text),
+	};
 }
 
 const PLAN_CUSTOM_TYPE = "plan-mode-state";
@@ -360,6 +394,44 @@ function optionDisplay(option: { label: string; description?: string }, index: n
 	return `${index + 1}. ${option.label}${recommendedSuffix}${suffix}`;
 }
 
+function createCommandSubmitBridge(): EditorComponent {
+	let text = "";
+	return {
+		getText: () => text,
+		setText: (value) => {
+			text = value;
+		},
+		handleInput: () => {},
+		render: () => [],
+		invalidate: () => {},
+	};
+}
+
+async function submitEditorCommand(ctx: ExtensionContext, command: string): Promise<boolean> {
+	if (ctx.mode !== "tui") return false;
+
+	const previousEditorFactory = ctx.ui.getEditorComponent();
+	let bridge: EditorComponent | undefined;
+	let submit: EditorComponent["onSubmit"];
+	try {
+		// Pi wires the active editor's onSubmit callback to the same path used by
+		// interactive Enter presses. Submitting through that callback gives the
+		// slash command a proper ExtensionCommandContext without asking the user
+		// to press Enter a second time.
+		ctx.ui.setEditorComponent(() => {
+			bridge = createCommandSubmitBridge();
+			return bridge;
+		});
+		submit = bridge?.onSubmit;
+	} finally {
+		ctx.ui.setEditorComponent(previousEditorFactory);
+	}
+
+	if (!submit) return false;
+	await submit(command);
+	return true;
+}
+
 export default function (pi: ExtensionAPI) {
 	let planState: PlanState = { active: false, setAt: Date.now() };
 	let latestProposedPlan: string | undefined;
@@ -367,7 +439,6 @@ export default function (pi: ExtensionAPI) {
 	let pendingFreshImplementationPlan: string | undefined;
 	let pendingProposedPlanRender: { plan: string; key: string; createdAt: number } | undefined;
 	const renderedPlanKeys = new Set<string>();
-	const promptedPlanKeys = new Set<string>();
 
 	// ── Plan Mode clarification tool ───────────────────────────────────────
 
@@ -480,13 +551,22 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerMessageRenderer<ProposedPlanDetails>(PROPOSED_PLAN_CUSTOM_TYPE, (message, { expanded }, theme) => {
 		const content = typeof message.content === "string" ? message.content : "";
-		let text = `${theme.fg("accent", "Proposed Plan")}\n\n${content}`;
-		if (expanded && message.details?.createdAt) {
-			text += `\n\n${theme.fg("dim", `created ${new Date(message.details.createdAt).toLocaleString()}`)}`;
-		}
-
 		const box = new Box(1, 1, (value) => theme.bg("customMessageBg", value));
-		box.addChild(new Text(text, 0, 0));
+		box.addChild(new Text(`${theme.fg("accent", theme.bold("Proposed Plan"))}\n`, 0, 0));
+		box.addChild(
+			new Markdown(
+				content,
+				0,
+				0,
+				createPlanMarkdownTheme(theme),
+				{ color: (text) => theme.fg("customMessageText", text) },
+			),
+		);
+		if (expanded && message.details?.createdAt) {
+			box.addChild(
+				new Text(theme.fg("dim", `\ncreated ${new Date(message.details.createdAt).toLocaleString()}`), 0, 0),
+			);
+		}
 		return box;
 	});
 
@@ -497,7 +577,6 @@ export default function (pi: ExtensionAPI) {
 		latestProposedPlan = undefined;
 		latestProposedPlanKey = undefined;
 		renderedPlanKeys.clear();
-		promptedPlanKeys.clear();
 		pendingProposedPlanRender = undefined;
 
 		for (const entry of ctx.sessionManager.getBranch()) {
@@ -520,7 +599,17 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (planState.active && latestProposedPlan && planState.phase !== "planning") {
-			planState = { ...planState, phase: "awaiting_review", latestPlanSignature: latestProposedPlanKey };
+			const reconstructedSignature = latestProposedPlanKey;
+			planState = {
+				...planState,
+				phase: "awaiting_review",
+				latestPlanSignature: reconstructedSignature,
+				// Older sessions predate promptedPlanSignature. A matching durable
+				// proposed-plan message means that plan already reached its review stage.
+				promptedPlanSignature:
+					planState.promptedPlanSignature ??
+					(planState.latestPlanSignature === reconstructedSignature ? reconstructedSignature : undefined),
+			};
 		}
 		updateStatus(ctx, planState);
 	};
@@ -568,6 +657,7 @@ export default function (pi: ExtensionAPI) {
 				phase: "awaiting_review",
 				setAt: Date.now(),
 				latestPlanSignature: signature,
+				promptedPlanSignature: signature,
 			};
 			persist();
 			updateStatus(ctx, planState);
@@ -586,10 +676,12 @@ export default function (pi: ExtensionAPI) {
 		setPlanMode(ctx, false, undefined);
 		latestProposedPlan = plan;
 		latestProposedPlanKey = signature;
+		if (await submitEditorCommand(ctx, PLAN_IMPLEMENT_FRESH_COMMAND)) return;
+
 		if (ctx.hasUI) ctx.ui.setEditorText(PLAN_IMPLEMENT_FRESH_COMMAND);
 		ctx.ui.notify(
-			`Plan mode exited. ${PLAN_IMPLEMENT_FRESH_COMMAND} has been placed in the editor; press Enter to start a fresh implementation session.`,
-			"info",
+			`Plan mode exited. Automatic command submission was unavailable, so ${PLAN_IMPLEMENT_FRESH_COMMAND} has been placed in the editor.`,
+			"warning",
 		);
 	}
 
@@ -636,26 +728,44 @@ export default function (pi: ExtensionAPI) {
 		);
 	}
 
+	function printPlanReviewInstructions(ctx: ExtensionContext, reason: string): void {
+		const instructions = `${reason}\n\nUse /plan implement, /plan fresh, /plan revise, or /plan show.`;
+		if (ctx.hasUI) {
+			ctx.ui.notify(instructions, "info");
+			return;
+		}
+		process.stderr.write(`[Plan Mode] ${instructions}\n`);
+	}
+
+	async function showPlanReview(ctx: ExtensionContext, reason: string): Promise<PlanReviewAction> {
+		if (ctx.mode !== "tui") {
+			printPlanReviewInstructions(ctx, reason);
+			return "stay";
+		}
+
+		const selected = await ctx.ui.select(
+			reason,
+			PLAN_REVIEW_ACTIONS.map((action) => action.label),
+		);
+		return PLAN_REVIEW_ACTIONS.find((action) => action.label === selected)?.value ?? "stay";
+	}
+
+	async function handlePlanReviewAction(
+		ctx: ExtensionContext,
+		plan: string,
+		reason: string,
+	): Promise<void> {
+		const selected = await showPlanReview(ctx, reason);
+		if (selected === "implement") return sendPlanImplementation(ctx, plan);
+		if (selected === "fresh") return await sendFreshPlanImplementation(ctx, plan);
+		if (selected === "revise") return sendPlanRevision(ctx);
+	}
+
 	async function promptForPlanReviewAction(ctx: ExtensionContext, reason: string): Promise<void> {
 		const plan = requireLatestPlan(ctx);
 		if (!plan) return;
-
-		if (!ctx.hasUI) {
-			ctx.ui.notify(`${reason}\n\nUse /plan implement, /plan revise <feedback>, /plan show, or /plan exit.`, "info");
-			return;
-		}
-
-		const implement = "Implement current plan";
-		const implementFresh = "Clear context and implement";
-		const revise = "Revise current plan";
-		const show = "Show current plan";
-		const stay = "Stay in plan mode";
-		const selected = await ctx.ui.select(reason, [implement, implementFresh, revise, show, stay]);
-		if (!selected || selected === stay) return;
-		if (selected === implement) return sendPlanImplementation(ctx, plan);
-		if (selected === implementFresh) return await sendFreshPlanImplementation(ctx, plan);
-		if (selected === revise) return sendPlanRevision(ctx);
-		if (selected === show) return showLatestPlan(ctx);
+		showLatestPlan(ctx);
+		await handlePlanReviewAction(ctx, plan, reason);
 	}
 
 	pi.on("session_start", async (_event, ctx) => reconstruct(ctx));
@@ -667,15 +777,14 @@ export default function (pi: ExtensionAPI) {
 		if (!planState.active || planState.phase !== "awaiting_review" || !latestProposedPlan) return { action: "continue" };
 		if (event.source === "extension") return { action: "continue" };
 		if (event.text.trim().startsWith("/")) return { action: "continue" };
-		if (!ctx.hasUI) return { action: "continue" };
 
 		if (isDuplicatePlanText(event.text, latestProposedPlan)) {
-			await promptForPlanReviewAction(ctx, "That appears to repeat the current proposed plan. What should Pi do next?");
+			await promptForPlanReviewAction(ctx, "That input appears to repeat the current proposed plan.");
 			return { action: "handled" };
 		}
 
 		if (isAmbiguousPlanAcceptance(event.text)) {
-			await promptForPlanReviewAction(ctx, "A proposed plan is ready. What should Pi do next?");
+			await promptForPlanReviewAction(ctx, "That input may be approval to implement the proposed plan.");
 			return { action: "handled" };
 		}
 
@@ -720,7 +829,7 @@ export default function (pi: ExtensionAPI) {
 		// streaming, pi treats that as a steer message and feeds the custom plan
 		// back into the active agent. That skips the review prompt and can cause the
 		// model to repeat the same <proposed_plan> block. Defer display until
-		// agent_end, where sendMessage({ triggerTurn: false }) is append-only.
+		// agent_settled, where sendMessage({ triggerTurn: false }) is append-only.
 		if (rememberOnce(renderedPlanKeys, key)) {
 			pendingProposedPlanRender = { plan, key, createdAt: Date.now() };
 		}
@@ -730,31 +839,21 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Post-plan implementation prompt ───────────────────────────────────
 
-	pi.on("agent_end", async (_event, ctx) => {
+	pi.on("agent_settled", async (_event, ctx) => {
 		if (!planState.active) return;
+
+		// Append the durable transcript message before opening Pi's built-in selector.
+		// This keeps the complete plan in chat and the approval controls in the
+		// normal editor area.
 		flushPendingProposedPlanRender();
-		if (ctx.mode !== "tui") return;
-		if (ctx.hasPendingMessages()) return;
 		if (!latestProposedPlan || !latestProposedPlanKey) return;
-		if (!rememberOnce(promptedPlanKeys, latestProposedPlanKey)) return;
+		if (planState.promptedPlanSignature === latestProposedPlanKey) return;
 
-		const implement = "Yes, implement this plan";
-		const implementFresh = "Yes, clear context and implement";
-		const revise = "No, and tell Pi what to do differently";
-		const selected = await ctx.ui.select("Implement this plan?", [implement, implementFresh, revise]);
-		if (!selected) return;
-
-		if (selected === implement) {
-			sendPlanImplementation(ctx, latestProposedPlan);
-			return;
-		}
-
-		if (selected === implementFresh) {
-			await sendFreshPlanImplementation(ctx, latestProposedPlan);
-			return;
-		}
-
-		await sendPlanRevision(ctx);
+		const plan = latestProposedPlan;
+		const signature = latestProposedPlanKey;
+		planState = { ...planState, promptedPlanSignature: signature };
+		persist();
+		await handlePlanReviewAction(ctx, plan, "A proposed plan is ready for review.");
 	});
 
 	// ── Block common mutations while planning ─────────────────────────────
@@ -789,6 +888,7 @@ export default function (pi: ExtensionAPI) {
 			phase: active ? "planning" : undefined,
 			setAt: Date.now(),
 			latestPlanSignature: active ? latestProposedPlanKey : undefined,
+			promptedPlanSignature: active ? planState.promptedPlanSignature : undefined,
 		};
 		if (!active) {
 			latestProposedPlan = undefined;
