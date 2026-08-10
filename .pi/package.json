@@ -23,7 +23,7 @@
 		"typecheck": "tsc --noEmit",
 		"test": "pnpm test:core && pnpm test:features && pnpm test:todos && pnpm test:workflows && pnpm test:integrations",
 		"test:core": "vitest run extensions/_shared",
-		"test:features": "vitest run extensions/system-feature-flags/catalog.test.ts",
+		"test:features": "vitest run extensions/system-feature-flags/catalog.test.ts extensions/ui-model-selector/model-config.test.ts",
 		"test:todos": "vitest run extensions/tools-todo/todo-state.test.ts",
 		"test:workflows": "node --test extensions/workflows-runtime/tests/*.test.mjs",
 		"test:integrations": "vitest run extensions-disabled/integration-plane/lib/plane/client.test.ts"
