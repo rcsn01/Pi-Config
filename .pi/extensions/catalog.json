@@ -1,13 +1,6 @@
 {
 	"version": 1,
 	"extensions": {
-		"agent-thinking": {
-			"displayName": "Thinking Control",
-			"pack": "core",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
 		"config-personality": {
 			"displayName": "Personality",
 			"pack": "extras",
@@ -151,6 +144,13 @@
 		"ui-copy-all": {
 			"displayName": "Copy Conversation",
 			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"ui-model-selector": {
+			"displayName": "Model, Thinking, and Context Selector",
+			"pack": "editor",
 			"defaultEnabled": true,
 			"requires": [],
 			"conflicts": []
