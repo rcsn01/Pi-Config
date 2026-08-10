@@ -18,6 +18,11 @@ const formatError = (error: unknown) => {
 	return error instanceof Error ? error.message : String(error)
 }
 
+const textResult = (text: string) => ({
+	content: [{ type: "text" as const, text }],
+	details: {},
+})
+
 const withClient = async <T>(
 	cwd: string,
 	fn: (client: ReturnType<typeof createPlaneClient>) => Promise<T>,
@@ -46,16 +51,9 @@ export const registerPlaneTools = (pi: ExtensionAPI) => {
 				const summary = configSummary(config)
 				const client = createPlaneClient(config)
 				await client.request("GET", "/projects/", { query: { per_page: "1" } })
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ ...summary, apiReachable: true }, null, 2),
-						},
-					],
-				}
+				return textResult(JSON.stringify({ ...summary, apiReachable: true }, null, 2))
 			} catch (error) {
-				return { content: [{ type: "text", text: formatError(error) }] }
+				return textResult(formatError(error))
 			}
 		},
 	})
@@ -69,10 +67,8 @@ export const registerPlaneTools = (pi: ExtensionAPI) => {
 		parameters: Type.Object({}),
 		async execute(_id, _params, _signal, _onUpdate, ctx) {
 			const result = await withClient(ctx.cwd, listProjects)
-			if (!result.ok) return { content: [{ type: "text", text: result.text }] }
-			return {
-				content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }],
-			}
+			if (!result.ok) return textResult(result.text)
+			return textResult(JSON.stringify(result.data, null, 2))
 		},
 	})
 
@@ -96,15 +92,8 @@ export const registerPlaneTools = (pi: ExtensionAPI) => {
 					params.external_id,
 				),
 			)
-			if (!result.ok) return { content: [{ type: "text", text: result.text }] }
-			return {
-				content: [
-					{
-						type: "text",
-						text: result.data ? JSON.stringify(result.data, null, 2) : "Not found",
-					},
-				],
-			}
+			if (!result.ok) return textResult(result.text)
+			return textResult(result.data ? JSON.stringify(result.data, null, 2) : "Not found")
 		},
 	})
 
@@ -146,10 +135,8 @@ export const registerPlaneTools = (pi: ExtensionAPI) => {
 							: undefined,
 				})
 			})
-			if (!result.ok) return { content: [{ type: "text", text: result.text }] }
-			return {
-				content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }],
-			}
+			if (!result.ok) return textResult(result.text)
+			return textResult(JSON.stringify(result.data, null, 2))
 		},
 	})
 
@@ -177,15 +164,8 @@ export const registerPlaneTools = (pi: ExtensionAPI) => {
 					state: params.state,
 				}),
 			)
-			if (!result.ok) return { content: [{ type: "text", text: result.text }] }
-			return {
-				content: [
-					{
-						type: "text",
-						text: JSON.stringify(result.data, null, 2),
-					},
-				],
-			}
+			if (!result.ok) return textResult(result.text)
+			return textResult(JSON.stringify(result.data, null, 2))
 		},
 	})
 
@@ -220,10 +200,8 @@ export const registerPlaneTools = (pi: ExtensionAPI) => {
 					externalId: params.external_id,
 				}),
 			)
-			if (!result.ok) return { content: [{ type: "text", text: result.text }] }
-			return {
-				content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }],
-			}
+			if (!result.ok) return textResult(result.text)
+			return textResult(JSON.stringify(result.data, null, 2))
 		},
 	})
 
@@ -244,10 +222,8 @@ export const registerPlaneTools = (pi: ExtensionAPI) => {
 			const result = await withClient(ctx.cwd, (client) =>
 				listWorkItemAttachments(client, params.project_id, params.issue_id),
 			)
-			if (!result.ok) return { content: [{ type: "text", text: result.text }] }
-			return {
-				content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }],
-			}
+			if (!result.ok) return textResult(result.text)
+			return textResult(JSON.stringify(result.data, null, 2))
 		},
 	})
 
@@ -268,10 +244,8 @@ export const registerPlaneTools = (pi: ExtensionAPI) => {
 			const result = await withClient(ctx.cwd, (client) =>
 				syncNormalizedWorkspace(client, params.normalized as NormalizeOutput),
 			)
-			if (!result.ok) return { content: [{ type: "text", text: result.text }] }
-			return {
-				content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }],
-			}
+			if (!result.ok) return textResult(result.text)
+			return textResult(JSON.stringify(result.data, null, 2))
 		},
 	})
 }

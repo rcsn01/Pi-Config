@@ -1,11 +1,9 @@
 import {
-	loadAgents as baseLoadAgents,
-	runSubagent as baseRunSubagent,
-	runSubagentsParallel as baseRunSubagentsParallel,
+	requireSubagentService,
 	type AgentConfig,
 	type AgentProgress,
 	type AgentResult,
-} from "../../tools-subagents/index.ts";
+} from "../../_shared/subagent-service.ts";
 
 export type { AgentConfig, AgentProgress, AgentResult };
 
@@ -39,7 +37,7 @@ export interface RunSubagentsParallelOptions {
 }
 
 export function loadAgents(): AgentConfig[] {
-	return baseLoadAgents();
+	return requireSubagentService().loadAgents();
 }
 
 function resolveAgent(agent: string | AgentConfig): AgentConfig {
@@ -58,7 +56,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<AgentRes
 	let recentToolCount = 0;
 	let lastMessage = "";
 	try {
-		const result = await baseRunSubagent({ agent, task: options.prompt, cwd: options.cwd, signal: options.signal, model: options.model, timeoutMs: options.timeoutMs, maxOutputBytes: options.maxOutputBytes, onUpdate: (progress) => {
+		const result = await requireSubagentService().runSubagent({ agent, task: options.prompt, cwd: options.cwd, signal: options.signal, model: options.model, timeoutMs: options.timeoutMs, maxOutputBytes: options.maxOutputBytes, onUpdate: (progress) => {
 			if (progress.currentTool && (progress.currentTool !== lastTool || progress.currentToolArgs !== lastToolArgs)) {
 				lastTool = progress.currentTool;
 				lastToolArgs = progress.currentToolArgs;
@@ -88,7 +86,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<AgentRes
 }
 
 export async function runSubagentsParallel(options: RunSubagentsParallelOptions): Promise<AgentResult[]> {
-	return baseRunSubagentsParallel({
+	return requireSubagentService().runSubagentsParallel({
 		tasks: options.tasks.map((task) => ({ agent: task.agent, task: task.prompt, cwd: task.cwd })),
 		cwd: options.cwd,
 		maxConcurrency: options.maxConcurrency,

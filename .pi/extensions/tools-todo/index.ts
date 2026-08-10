@@ -22,18 +22,14 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	applyTodoUpdate,
+	reconstructTodoState,
+	type Todo,
+	type TodoStatus,
+} from "./todo-state.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-
-type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
-
-interface Todo {
-	id: string;
-	text: string;
-	status: TodoStatus;
-	/** Most recent explanation for a status change */
-	explanation?: string;
-}
 
 interface TodoDetails {
 	todos: Todo[];
@@ -41,13 +37,6 @@ interface TodoDetails {
 	error?: string;
 	/** Diff summary of what changed */
 	summary?: string;
-}
-
-/** Legacy shape for backward-compatible reconstruction */
-interface LegacyTodo {
-	id: number;
-	text: string;
-	done: boolean;
 }
 
 // ─── Status helpers ──────────────────────────────────────────────────────────
@@ -142,33 +131,6 @@ function selectWidgetTodos(vm: TodoViewModel): Todo[] {
 	}
 
 	return allNonCancelled.slice(start, end);
-}
-
-/** Migrate a legacy {done: boolean} entry to the new {status} shape */
-function migrateLegacy(raw: any): Todo {
-	// If it already has a status field, use it
-	if (raw && typeof raw.status === "string") {
-		return {
-			id: String(raw.id),
-			text: String(raw.text),
-			status: raw.status as TodoStatus,
-			explanation: raw.explanation,
-		};
-	}
-	// Legacy: done: boolean → status
-	if (raw && typeof raw.done === "boolean") {
-		return {
-			id: String(raw.id),
-			text: String(raw.text),
-			status: raw.done ? "completed" : "pending",
-		};
-	}
-	// Fallback
-	return {
-		id: String(raw.id),
-		text: String(raw.text ?? "Unknown"),
-		status: "pending",
-	};
 }
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
@@ -274,8 +236,7 @@ export default function (pi: ExtensionAPI) {
 	 * and legacy multi-action format.
 	 */
 	const reconstructState = (ctx: ExtensionContext) => {
-		todos = [];
-		nextId = "1";
+		let reconstructed = reconstructTodoState(undefined);
 
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "message") continue;
@@ -283,15 +244,10 @@ export default function (pi: ExtensionAPI) {
 			if (msg.role !== "toolResult" || msg.toolName !== "todo") continue;
 
 			const details = msg.details as TodoDetails | (TodoDetails & { action?: string }) | undefined;
-			if (details) {
-				// Migrate any legacy entries in the stored todos
-				if (details.todos) {
-					todos = details.todos.map(migrateLegacy);
-				}
-				// Ensure nextId is a string
-				nextId = String(details.nextId);
-			}
+			if (details?.todos) reconstructed = reconstructTodoState(details.todos);
 		}
+		todos = reconstructed.todos;
+		nextId = reconstructed.nextId;
 	};
 
 	// ── Widget: persistent todo summary above the input field ──────────────
@@ -385,82 +341,25 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			const incoming = params.todos;
-
-			// ── Clear (empty array) ─────────────────────────────────────────
-			if (!incoming || incoming.length === 0) {
-				const count = todos.length;
-				todos = [];
-				nextId = "1";
+			const previousTodos = todos;
+			const result = applyTodoUpdate({ todos, nextId }, incoming ?? []);
+			if (!result.ok) {
 				return {
-					content: [{ type: "text", text: count > 0 ? `Cleared ${count} todos` : "No todos to clear" }],
-					details: { todos: [], nextId: "1", summary: count > 0 ? `-${count} removed` : "no changes" } as TodoDetails,
-				};
-			}
-
-			// ── Validate: at most one in_progress ────────────────────────────
-			const inProgressCount = incoming.filter((t) => t.status === "in_progress").length;
-			if (inProgressCount > 1) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Error: at most one item can be in_progress (found ${inProgressCount})`,
-						},
-					],
+					content: [{ type: "text", text: `Error: ${result.error}` }],
 					details: {
-						todos: [...todos],
-						nextId,
-						error: `multiple in_progress (${inProgressCount})`,
+						todos: result.state.todos,
+						nextId: result.state.nextId,
+						error: result.error,
 					} as TodoDetails,
 				};
 			}
-
-			// ── Auto-demote: if setting an item in_progress and current in_progress item exists ──
-			if (inProgressCount === 1) {
-				const newInProgress = incoming.find((t) => t.status === "in_progress");
-				const currentInProgress = todos.find((t) => t.status === "in_progress");
-				if (newInProgress && currentInProgress && String(newInProgress.id) !== String(currentInProgress.id)) {
-					// Auto-demote the old in_progress item in the incoming list
-					for (const t of incoming) {
-						if (String(t.id) === String(currentInProgress.id) && t.status === "in_progress") {
-							t.status = "pending";
-							t.explanation = "Auto-demoted: another item set in_progress";
-						}
-					}
-				}
-			}
-
-			// ── Build the new list, assigning IDs where missing ──────────────
-			const newTodos: Todo[] = [];
-			let maxId = 0;
-			const usedIds = new Set<string>();
-
-			// First pass: collect explicitly-provided IDs and find max
-			for (const raw of incoming) {
-				if (raw.id) {
-					usedIds.add(String(raw.id));
-					const num = Number(raw.id);
-					if (!isNaN(num) && num > maxId) maxId = num;
-				}
-			}
-
-			// Second pass: build the list, auto-assigning IDs for items without one
-			let nextAutoId = maxId + 1;
-			for (const raw of incoming) {
-				const id = raw.id || String(nextAutoId++);
-				newTodos.push({
-					id,
-					text: raw.text,
-					status: raw.status || "pending",
-					explanation: raw.explanation,
-				});
-			}
+			const newTodos = result.state.todos;
 
 			// ── Compute diff summary ────────────────────────────────────────
 			const added = newTodos.filter((n) => !todos.find((o) => o.id === n.id)).length;
-			const removed = todos.filter((o) => !newTodos.find((n) => n.id === o.id)).length;
+			const removed = previousTodos.filter((o) => !newTodos.find((n) => n.id === o.id)).length;
 			const updated = newTodos.filter((n) => {
-				const old = todos.find((o) => o.id === n.id);
+				const old = previousTodos.find((o) => o.id === n.id);
 				return old && (old.status !== n.status || old.text !== n.text);
 			}).length;
 			const diffParts: string[] = [];
@@ -469,8 +368,8 @@ export default function (pi: ExtensionAPI) {
 			if (removed) diffParts.push(`-${removed} removed`);
 			const diffSummary = diffParts.join(", ") || "no changes";
 
-			todos = newTodos;
-			nextId = String(maxId + 1);
+			todos = result.state.todos;
+			nextId = result.state.nextId;
 
 			return {
 				content: [{ type: "text", text: `${diffSummary} (${todos.length} items)` }],

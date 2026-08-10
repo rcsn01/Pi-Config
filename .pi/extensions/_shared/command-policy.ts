@@ -212,7 +212,7 @@ export function isReadOnlyShellCommand(command: string): boolean {
 }
 
 export function dangerousShellReason(command: string): string | undefined {
-	return dangerousCommandReason(command);
+	return dangerousCommandReason(command) ?? undefined;
 }
 
 export function loadExecPolicy(): ExecPolicyConfig {

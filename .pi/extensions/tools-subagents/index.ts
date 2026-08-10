@@ -12,84 +12,36 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { getMarkdownTheme, parseFrontmatter, truncateHead, withFileMutationQueue, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	registerSubagentService,
+	type AgentConfig,
+	type AgentProgress,
+	type AgentResult,
+	type RunSubagentOptions,
+	type RunSubagentsParallelOptions,
+	type SubagentProgressEvent,
+	type SubagentService,
+} from "../_shared/subagent-service.ts";
+
+export type {
+	AgentConfig,
+	AgentProgress,
+	AgentResult,
+	RunSubagentOptions,
+	RunSubagentsParallelOptions,
+	SubagentProgressEvent,
+} from "../_shared/subagent-service.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
-
-export interface AgentConfig {
-	name: string;
-	description: string;
-	tools: string[];
-	model: string;
-	systemPrompt: string;
-	filePath: string;
-}
 
 interface ToolEvent {
 	tool: string;
 	args: string;
 }
 
-export interface AgentProgress {
-	agent: string;
-	status: "pending" | "running" | "completed" | "failed";
-	task: string;
-	currentTool?: string;
-	currentToolArgs?: string;
-	recentTools: ToolEvent[];
-	toolCount: number;
-	tokens: number;
-	durationMs: number;
-	lastMessage: string;
-	error?: string;
-}
-
-export interface AgentResult {
-	agent: string;
-	task: string;
-	output: string;
-	exitCode: number;
-	progress: AgentProgress;
-	model?: string;
-	usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number };
-	truncated?: boolean;
-	originalOutputBytes?: number;
-}
-
-export type SubagentProgressEvent =
-	| { type: "started"; agent: string; task: string }
-	| { type: "tool_call"; agent: string; tool: string; args?: string }
-	| { type: "tool_result"; agent: string; tool: string; args?: string }
-	| { type: "message"; agent: string; message: string; tokens: number }
-	| { type: "completed"; agent: string; result: AgentResult }
-	| { type: "failed"; agent: string; result?: AgentResult; error: string };
-
-export interface RunSubagentOptions {
-	agent: string | AgentConfig;
-	task?: string;
-	prompt?: string;
-	cwd: string;
-	signal?: AbortSignal;
-	timeoutMs?: number;
-	maxOutputBytes?: number;
-	model?: string;
-	onUpdate?: (progress: AgentProgress) => void;
-	onProgress?: (event: SubagentProgressEvent, progress?: AgentProgress) => void | Promise<void>;
-}
-
 interface Details {
 	mode: "single" | "parallel";
 	results: AgentResult[];
-}
-
-export interface RunSubagentsParallelOptions {
-	tasks: Array<{ agent: string; task?: string; prompt?: string; cwd?: string }>;
-	cwd: string;
-	maxConcurrency?: number;
-	signal?: AbortSignal;
-	timeoutMs?: number;
-	maxOutputBytes?: number;
-	onUpdate?: (index: number, result: AgentResult) => void;
-	onProgress?: (index: number, event: SubagentProgressEvent, progress?: AgentProgress) => void | Promise<void>;
 }
 
 // ── Config ─────────────────────────────────────────────────────────────
@@ -140,10 +92,6 @@ export function registerAgent(config: AgentConfig): void {
 export function unregisterAgent(name: string): void {
 	agents = agents.filter((a) => a.name !== name);
 }
-
-// Expose registration functions globally so other extensions loaded via jiti
-// (which creates separate module instances) can access the shared agents array.
-(globalThis as any).__pi_subagents = { registerAgent, unregisterAgent };
 
 export function loadAgents(): AgentConfig[] {
 	const discovered: AgentConfig[] = [];
@@ -758,7 +706,17 @@ function renderAgentProgress(
 
 // ── Extension ─────────────────────────────────────────────────────────
 
+const service: SubagentService = {
+	id: "tools-subagents",
+	registerAgent,
+	unregisterAgent,
+	loadAgents,
+	runSubagent: (options) => runSubagent(options),
+	runSubagentsParallel,
+};
+
 export default function (pi: ExtensionAPI) {
+	registerSubagentService(service);
 	const config = loadConfig();
 	const maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 	agents = loadAgents();

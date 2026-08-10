@@ -27,9 +27,9 @@ class SteerEditor extends CustomEditor {
 	private queueSlashCommand: (text: string, submit?: (text: string) => void | Promise<void>) => void;
 
 	constructor(
-		tui: Parameters<typeof CustomEditor>[0],
-		theme: Parameters<typeof CustomEditor>[1],
-		keybindings: Parameters<typeof CustomEditor>[2],
+		tui: ConstructorParameters<typeof CustomEditor>[0],
+		theme: ConstructorParameters<typeof CustomEditor>[1],
+		keybindings: ConstructorParameters<typeof CustomEditor>[2],
 		sendFollowUp: (text: string) => void,
 		queueSlashCommand: (text: string, submit?: (text: string) => void | Promise<void>) => void,
 	) {

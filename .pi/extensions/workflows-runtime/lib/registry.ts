@@ -9,8 +9,6 @@ import deepVerification from "../bundled/deep-verification.ts";
 import deepResearch from "../bundled/deep-research.ts";
 import generateFilterTournament from "../bundled/generate-filter-tournament.ts";
 
-export const RUNS_DIR = path.join(".pi", "workflow-runs");
-export const APPROVALS_DIR = path.join(".pi", "workflow-approvals");
 export const PROJECT_WORKFLOWS_DIR = path.join(".pi", "workflows");
 
 export type WorkflowTrust = "bundled" | "project";

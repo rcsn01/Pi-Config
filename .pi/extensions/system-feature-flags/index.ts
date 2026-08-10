@@ -15,6 +15,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pickGuiOptions } from "../_shared/gui-option-list.ts";
+import {
+	loadExtensionCatalog,
+	type ExtensionCatalog,
+	type ExtensionCatalogEntry,
+	validateExtensionSelection,
+} from "./catalog.ts";
 
 const EXTENSIONS_DIR = ".pi/extensions";
 const DISABLED_DIR = ".pi/extensions-disabled";
@@ -26,21 +32,32 @@ interface ExtensionInfo {
 	name: string;
 	enabled: boolean;
 	protected: boolean;
+	metadata?: ExtensionCatalogEntry;
 }
 
 // ── Directory scanning ──────────────────────────────────────────────────────
 
-function scanExtensions(cwd: string): ExtensionInfo[] {
+function scanExtensions(cwd: string, catalog: ExtensionCatalog): ExtensionInfo[] {
 	const result: ExtensionInfo[] = [];
 	const enabledDirs = listExtensionDirs(cwd, EXTENSIONS_DIR);
 	const disabledDirs = listExtensionDirs(cwd, DISABLED_DIR);
 
 	for (const name of enabledDirs) {
-		result.push({ name, enabled: true, protected: PROTECTED.has(name) });
+		result.push({
+			name,
+			enabled: true,
+			protected: PROTECTED.has(name),
+			metadata: catalog.extensions[name],
+		});
 	}
 	for (const name of disabledDirs) {
 		if (!enabledDirs.has(name)) {
-			result.push({ name, enabled: false, protected: PROTECTED.has(name) });
+			result.push({
+				name,
+				enabled: false,
+				protected: PROTECTED.has(name),
+				metadata: catalog.extensions[name],
+			});
 		}
 	}
 
@@ -92,16 +109,18 @@ function disableExtension(cwd: string, name: string): boolean {
 	}
 }
 
-function resetExtension(cwd: string, name: string): boolean {
-	// Default state: enabled (move to extensions/).
-	return enableExtension(cwd, name);
+function setExtensionEnabled(cwd: string, name: string, enabled: boolean): boolean {
+	return enabled ? enableExtension(cwd, name) : disableExtension(cwd, name);
 }
 
 // ── Interactive toggle UI ───────────────────────────────────────────────────
 
-async function featuresToggleUI(ctx: ExtensionContext): Promise<void> {
+async function featuresToggleUI(
+	ctx: ExtensionContext,
+	catalog: ExtensionCatalog,
+): Promise<void> {
 	const cwd = ctx.cwd;
-	const extensions = scanExtensions(cwd);
+	const extensions = scanExtensions(cwd, catalog);
 
 	if (extensions.length === 0) {
 		ctx.ui.notify("No toggleable extensions found.", "info");
@@ -118,20 +137,25 @@ async function featuresToggleUI(ctx: ExtensionContext): Promise<void> {
 		title: "Extension Toggles",
 		message: `Repository: ${cwd}\nRun /reload after toggling for changes to take effect.`,
 		options: extensions.map((ext) => ({
-			label: ext.name,
+			label: ext.metadata?.displayName ?? ext.name,
 			value: ext.name,
 			description: ext.protected
 				? "[protected] cannot be disabled"
-				: ext.enabled
-					? "enabled"
-					: "disabled",
+				: `${ext.enabled ? "enabled" : "disabled"} · ${ext.metadata?.pack ?? "uncataloged"}`,
 			checked: ext.enabled,
 		})),
-		minimumSelected: 0,
 	});
 
 	if (selected) {
 		const selectedSet = new Set(selected);
+		for (const ext of extensions) {
+			if (ext.protected) selectedSet.add(ext.name);
+		}
+		const issues = validateExtensionSelection(catalog, selectedSet);
+		if (issues.length > 0) {
+			ctx.ui.notify(`Extension changes blocked:\n${issues.join("\n")}`, "warning");
+			return;
+		}
 
 		let moved = 0;
 		for (const ext of extensions) {
@@ -156,8 +180,8 @@ async function featuresToggleUI(ctx: ExtensionContext): Promise<void> {
 
 // ── Plain-text list (non-interactive fallback) ─────────────────────────────
 
-function featuresListText(cwd: string): string {
-	const extensions = scanExtensions(cwd);
+function featuresListText(cwd: string, catalog: ExtensionCatalog): string {
+	const extensions = scanExtensions(cwd, catalog);
 	if (extensions.length === 0) {
 		return "No toggleable extensions found.";
 	}
@@ -172,7 +196,11 @@ function featuresListText(cwd: string): string {
 
 	for (const ext of extensions) {
 		const status = ext.protected ? "protected" : ext.enabled ? "enabled " : "disabled";
-		lines.push(`  ${ext.enabled ? "●" : "○"} ${status}  ${ext.name}${ext.protected ? " (cannot disable)" : ""}`);
+		const pack = ext.metadata?.pack ?? "uncataloged";
+		const defaultState = ext.metadata?.defaultEnabled ? "on" : "off";
+		lines.push(
+			`  ${ext.enabled ? "●" : "○"} ${status}  ${ext.name} [${pack}, default ${defaultState}]${ext.protected ? " (cannot disable)" : ""}`,
+		);
 	}
 
 	lines.push("", "Commands: /features enable|disable|reset <name>");
@@ -187,6 +215,14 @@ export default function (pi: ExtensionAPI) {
 		description: "Manage extension toggles — interactive UI (or: list|enable|disable|reset|status <name>)",
 		handler: async (args, ctx) => {
 			const cwd = ctx.cwd;
+			let catalog: ExtensionCatalog;
+			try {
+				catalog = loadExtensionCatalog(cwd);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`Cannot manage extensions: ${message}`, "error");
+				return;
+			}
 			const trimmed = (args || "").trim();
 			const parts = trimmed.split(/\s+/);
 			const subcmd = parts[0];
@@ -195,9 +231,9 @@ export default function (pi: ExtensionAPI) {
 			// ── No args: launch interactive toggle UI ──────────────────────────
 			if (!trimmed) {
 				if (ctx.hasUI) {
-					return featuresToggleUI(ctx);
+					return featuresToggleUI(ctx, catalog);
 				}
-				ctx.ui.notify(featuresListText(cwd), "info");
+				ctx.ui.notify(featuresListText(cwd, catalog), "info");
 				return;
 			}
 
@@ -207,7 +243,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const extensions = scanExtensions(cwd);
+			const extensions = scanExtensions(cwd, catalog);
 			const found = extensions.find((e) => e.name === extName);
 
 			if (extName && !found) {
@@ -225,6 +261,9 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(`"${extName}" is already enabled.`, "info");
 						return;
 					}
+					const desired = enabledExtensionNames(extensions);
+					desired.add(extName);
+					if (!notifySelectionIssues(ctx, catalog, desired)) return;
 					if (enableExtension(cwd, extName)) {
 						ctx.ui.notify(`"${extName}" enabled. Run /reload to apply.`, "info");
 					} else {
@@ -241,6 +280,9 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(`"${extName}" is already disabled.`, "info");
 						return;
 					}
+					const desired = enabledExtensionNames(extensions);
+					desired.delete(extName);
+					if (!notifySelectionIssues(ctx, catalog, desired)) return;
 					if (disableExtension(cwd, extName)) {
 						ctx.ui.notify(`"${extName}" disabled. Run /reload to apply.`, "info");
 					} else {
@@ -253,24 +295,54 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(`"${extName}" is protected and cannot be changed.`, "warning");
 						return;
 					}
-					if (resetExtension(cwd, extName)) {
-						ctx.ui.notify(`"${extName}" reset to default (enabled). Run /reload to apply.`, "info");
+					const defaultEnabled = found!.metadata?.defaultEnabled ?? false;
+					if (found!.enabled === defaultEnabled) {
+						ctx.ui.notify(`"${extName}" already matches its default (${defaultEnabled ? "enabled" : "disabled"}).`, "info");
+						return;
+					}
+					const desired = enabledExtensionNames(extensions);
+					if (defaultEnabled) desired.add(extName);
+					else desired.delete(extName);
+					if (!notifySelectionIssues(ctx, catalog, desired)) return;
+					if (setExtensionEnabled(cwd, extName, defaultEnabled)) {
+						ctx.ui.notify(`"${extName}" reset to default (${defaultEnabled ? "enabled" : "disabled"}). Run /reload to apply.`, "info");
 					} else {
 						ctx.ui.notify(`Failed to reset "${extName}".`, "error");
 					}
 					return;
 				}
 				case "status": {
+					const metadata = found!.metadata;
 					ctx.ui.notify(
-						`${extName}: ${found!.enabled ? "enabled" : "disabled"}${found!.protected ? " (protected)" : ""}`,
+						[
+							`${extName}: ${found!.enabled ? "enabled" : "disabled"}${found!.protected ? " (protected)" : ""}`,
+							metadata ? `Pack: ${metadata.pack}; default: ${metadata.defaultEnabled ? "enabled" : "disabled"}` : "Not present in catalog.",
+							metadata?.requires.length ? `Requires: ${metadata.requires.join(", ")}` : "Requires: none",
+							metadata?.conflicts.length ? `Conflicts: ${metadata.conflicts.join(", ")}` : "Conflicts: none",
+						].join("\n"),
 						"info",
 					);
 					return;
 				}
 				case "list":
 				default:
-					ctx.ui.notify(featuresListText(cwd), "info");
+					ctx.ui.notify(featuresListText(cwd, catalog), "info");
 			}
 		},
 	});
+}
+
+function enabledExtensionNames(extensions: ExtensionInfo[]): Set<string> {
+	return new Set(extensions.filter((extension) => extension.enabled).map((extension) => extension.name));
+}
+
+function notifySelectionIssues(
+	ctx: ExtensionContext,
+	catalog: ExtensionCatalog,
+	enabled: ReadonlySet<string>,
+): boolean {
+	const issues = validateExtensionSelection(catalog, enabled);
+	if (issues.length === 0) return true;
+	ctx.ui.notify(`Extension change blocked:\n${issues.join("\n")}`, "warning");
+	return false;
 }

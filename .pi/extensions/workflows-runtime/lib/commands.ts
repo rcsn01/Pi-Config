@@ -71,7 +71,7 @@ async function runAndReport(
 			const result = await runPreparedWorkflow(pi, runCtx, prepared, control);
 			const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
 			pi.sendMessage({ customType: CUSTOM_TYPE, content: text, display: true, details: { workflow: prepared.entry.name, runId: prepared.store.runId, background } });
-			ctx.ui.notify(`Workflow completed: ${prepared.entry.name}`, "success");
+			ctx.ui.notify(`Workflow completed: ${prepared.entry.name}`, "info");
 		} catch (error: any) {
 			if (control.pauseMode) ctx.ui.notify(`Workflow paused: ${prepared.entry.name}`, "warning");
 			else if (controller.signal.aborted) ctx.ui.notify(`Workflow stopped: ${prepared.entry.name}`, "warning");
@@ -159,7 +159,7 @@ async function handleIntegrate(ctx: ExtensionContext, runId: string, key: string
 		if (!ok) return;
 	}
 	await execFile("git", ["apply", patchPath], { cwd: ctx.cwd });
-	ctx.ui.notify(`Applied workflow patch ${info.patchPath}. Review, test, and commit manually.`, "success");
+	ctx.ui.notify(`Applied workflow patch ${info.patchPath}. Review, test, and commit manually.`, "info");
 }
 
 async function handleCleanupWorktrees(ctx: ExtensionContext, runId: string): Promise<void> {
@@ -179,7 +179,7 @@ async function handleCleanupWorktrees(ctx: ExtensionContext, runId: string): Pro
 			skipped.push(`${key} (${error?.message || String(error)})`);
 		}
 	}
-	ctx.ui.notify(`Workflow worktree cleanup\nCleaned: ${cleaned.join(", ") || "none"}\nSkipped: ${skipped.join(", ") || "none"}`, skipped.length ? "warning" : "success");
+	ctx.ui.notify(`Workflow worktree cleanup\nCleaned: ${cleaned.join(", ") || "none"}\nSkipped: ${skipped.join(", ") || "none"}`, skipped.length ? "warning" : "info");
 }
 
 async function runNamed(pi: ExtensionAPI, ctx: ExtensionContext, name: string, args: string, background = false): Promise<void> {

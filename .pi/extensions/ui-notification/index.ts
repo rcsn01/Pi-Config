@@ -57,7 +57,7 @@ export default function (pi: ExtensionAPI) {
 		// Get the last assistant message
 		const messages = event.messages || [];
 		const lastAssistant = [...messages].reverse().find(
-			(m: any) => m.role === "assistant" && m.content,
+			(message) => message.role === "assistant",
 		);
 
 		if (lastAssistant) {
@@ -66,7 +66,7 @@ export default function (pi: ExtensionAPI) {
 				text = lastAssistant.content;
 			} else if (Array.isArray(lastAssistant.content)) {
 				const textBlock = lastAssistant.content.find(
-					(b: any) => b.type === "text",
+					(block) => block.type === "text",
 				);
 				if (textBlock) text = textBlock.text;
 			}

@@ -112,7 +112,7 @@ function normalizePhases(workflowName: string, phases: WorkflowPhaseInput[] | un
 	});
 }
 
-function normalizeCapabilities(definition: WorkflowDefinition): { capabilities: WorkflowCapabilities; canEditFiles: boolean } {
+function normalizeCapabilities<TArgs, TResult>(definition: WorkflowDefinition<TArgs, TResult>): { capabilities: WorkflowCapabilities; canEditFiles: boolean } {
 	const hasCanEditFiles = typeof definition.canEditFiles === "boolean";
 	const hasCapabilities = definition.capabilities !== undefined;
 	if (!hasCanEditFiles && !hasCapabilities) {

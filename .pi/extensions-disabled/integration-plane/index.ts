@@ -11,7 +11,7 @@
  *   /plane doc <mapping|surfaces|runbook> - Print a reference doc
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import * as fs from "node:fs"
 import * as path from "node:path"
@@ -67,7 +67,7 @@ const runPythonScript = async (
 }
 
 const printReference = (
-	ctx: { ui: { notify: (message: string, level: string) => void } },
+	ctx: Pick<ExtensionContext, "ui">,
 	name: string,
 ) => {
 	const files: Record<string, string> = {
@@ -89,7 +89,7 @@ const printReference = (
 }
 
 const showPlaneStatus = async (
-	ctx: { cwd: string; ui: { notify: (message: string, level: string) => void } },
+	ctx: Pick<ExtensionContext, "cwd" | "ui">,
 ) => {
 	try {
 		const config = loadPlaneConfig(ctx.cwd)
@@ -162,7 +162,10 @@ export default function (pi: ExtensionAPI) {
 				}
 			} catch (error: unknown) {
 				const message = error instanceof Error ? error.message : String(error)
-				return { content: [{ type: "text", text: `Error: ${message}` }] }
+				return {
+					content: [{ type: "text", text: `Error: ${message}` }],
+					details: { script: "normalize_progress_sources.py", error: message },
+				}
 			}
 		},
 	})
@@ -186,12 +189,15 @@ export default function (pi: ExtensionAPI) {
 				}
 			} catch (error: unknown) {
 				const message = error instanceof Error ? error.message : String(error)
-				return { content: [{ type: "text", text: `Error: ${message}` }] }
+				return {
+					content: [{ type: "text", text: `Error: ${message}` }],
+					details: { script: "plan_plane_surfaces.py", error: message },
+				}
 			}
 		},
 	})
 
-	const showHelp = (ctx: { ui: { notify: (message: string, level: string) => void } }) => {
+	const showHelp = (ctx: Pick<ExtensionContext, "ui">) => {
 		ctx.ui.notify(
 			[
 				"integration-plane — Plane Project Manager (REST API)",

@@ -12,7 +12,10 @@
  */
 
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
-import type { CustomEntry, ExtensionAPI, ExtensionContext, ReplacedSessionContext } from "@earendil-works/pi-coding-agent";
+import type { CustomEntry, ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+type NewSessionOptions = NonNullable<Parameters<ExtensionCommandContext["newSession"]>[0]>;
+type ReplacedSessionContext = Parameters<NonNullable<NewSessionOptions["withSession"]>>[0];
 
 const SIDE_MARKER_TYPE = "side-mode-session";
 const SIDE_STATUS_ID = "side-mode";
@@ -98,7 +101,9 @@ export default function (pi: ExtensionAPI) {
 					parentSession: currentSessionFile,
 					setup: async (sessionManager) => {
 						for (const message of currentMessages) {
-							sessionManager.appendMessage(message);
+							if (message.role === "user" || message.role === "assistant" || message.role === "toolResult") {
+								sessionManager.appendMessage(message);
+							}
 						}
 						for (const entry of currentCustomEntries) {
 							sessionManager.appendCustomEntry(entry.customType, entry.data);

@@ -88,13 +88,13 @@ class GoalStatusWidget {
 			lines.push(th.fg("dim", "  No active goal. Use /goal <objective> to set one."));
 		} else {
 			const statusIcon = this.goal.status === "active"
-				? th.fg("info", "●")
+				? th.fg("accent", "●")
 				: this.goal.status === "paused"
 					? th.fg("warning", "⏸")
 					: th.fg("success", "✓");
 
 			const statusLabel = this.goal.status === "active"
-				? th.fg("info", "ACTIVE")
+				? th.fg("accent", "ACTIVE")
 				: this.goal.status === "paused"
 					? th.fg("warning", "PAUSED")
 					: th.fg("success", "COMPLETED");

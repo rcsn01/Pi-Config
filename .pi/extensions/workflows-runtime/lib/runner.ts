@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { NormalizedWorkflowDefinition, WorkflowAgentOptions, WorkflowParallelOptions } from "./definition.ts";
+import { parsePorcelainStatus, runGit } from "../../_shared/git.ts";
 import type { RegistryEntry } from "./registry.ts";
 import { enrichEntryWithWorkflow, entrySource, loadWorkflowFromEntry, nowId, writeWorkflowSnapshot } from "./registry.ts";
 import { approve, removeApproval } from "./approval.ts";
@@ -45,6 +46,7 @@ export interface PreparedWorkflowRun {
 	workflow: NormalizedWorkflowDefinition;
 	store: RunStore;
 	state: RunState;
+	resume: boolean;
 }
 
 export interface WorkflowRunControl {
@@ -69,7 +71,7 @@ export async function prepareNewWorkflowRun(ctx: ExtensionContext, entry: Regist
 	}
 	const enriched = enrichEntryWithWorkflow(entry, workflow);
 	const state = await store.initialize(enriched, args, sourceSnapshotPath);
-	return { entry: enriched, workflow, store, state };
+	return { entry: enriched, workflow, store, state, resume: false };
 }
 
 export async function prepareExistingWorkflowRun(ctx: ExtensionContext, entry: RegistryEntry, state: RunState): Promise<PreparedWorkflowRun> {
@@ -77,7 +79,7 @@ export async function prepareExistingWorkflowRun(ctx: ExtensionContext, entry: R
 	if (!state.sourceSnapshotPath) throw new Error(`Run ${state.runId} cannot be replayed: missing workflow source snapshot`);
 	const workflow = await loadWorkflowFromEntry({ ...entry, sourceHash: state.sourceHash, source: entrySource(entry) }, state.trust === "project" ? state.sourceSnapshotPath : undefined);
 	const enriched = enrichEntryWithWorkflow({ ...entry, sourceHash: state.sourceHash }, workflow);
-	return { entry: enriched, workflow, store, state };
+	return { entry: enriched, workflow, store, state, resume: true };
 }
 
 function safeWorktreeId(value: string): string {
@@ -117,7 +119,7 @@ export async function prepareStateEntry(cwd: string, state: RunState, fallback?:
 }
 
 export class WorkflowRun {
-	private agentConfigs: AgentConfig[];
+	private agentConfigs?: AgentConfig[];
 	private scheduler: Semaphore;
 	private state: RunState;
 	private pi: ExtensionAPI;
@@ -126,6 +128,7 @@ export class WorkflowRun {
 	private workflow: NormalizedWorkflowDefinition;
 	private store: RunStore;
 	private control: WorkflowRunControl;
+	private resume: boolean;
 
 	constructor(
 		pi: ExtensionAPI,
@@ -135,6 +138,7 @@ export class WorkflowRun {
 		store: RunStore,
 		state: RunState,
 		control: WorkflowRunControl = {},
+		resume = false,
 	) {
 		this.pi = pi;
 		this.commandCtx = commandCtx;
@@ -142,7 +146,7 @@ export class WorkflowRun {
 		this.workflow = workflow;
 		this.store = store;
 		this.control = control;
-		this.agentConfigs = loadAgents();
+		this.resume = resume;
 		this.state = state;
 		this.scheduler = new Semaphore(workflow.budget?.maxConcurrent || DEFAULT_MAX_CONCURRENT, commandCtx.signal);
 	}
@@ -150,7 +154,7 @@ export class WorkflowRun {
 	get runId(): string { return this.state.runId; }
 
 	async execute(): Promise<unknown> {
-		this.state = await this.store.append({ type: "run_started" });
+		this.state = await this.store.append({ type: this.resume ? "run_resumed" : "run_started" });
 		const runtimeCtx = this.buildContext();
 		try {
 			throwIfAborted(this.commandCtx.signal);
@@ -254,8 +258,9 @@ export class WorkflowRun {
 		return this.scheduler.withSlot(async () => {
 			await this.waitIfPaused();
 
-			const agent = this.agentConfigs.find((a) => a.name === options.agent);
-			if (!agent) throw new Error(`Unknown subagent '${options.agent}'. Available: ${this.agentConfigs.map((a) => a.name).join(", ") || "none"}`);
+			const agentConfigs = this.agentConfigs ??= loadAgents();
+			const agent = agentConfigs.find((a) => a.name === options.agent);
+			if (!agent) throw new Error(`Unknown subagent '${options.agent}'. Available: ${agentConfigs.map((a) => a.name).join(", ") || "none"}`);
 
 			const runTarget = await this.prepareAgentTarget(options);
 			this.state = await this.store.append({ type: "agent_started", key: options.key, agent: options.agent, prompt: options.prompt, dependsOn: options.dependsOn, metadata: options.metadata, worktree: runTarget.worktree });
@@ -369,10 +374,28 @@ export class WorkflowRun {
 
 	private async collectWorktreeArtifacts(key: string, worktree: { path: string; branch: string; branchId: string; preserve?: boolean; fileOwnership?: string[] }, returned: unknown): Promise<Record<string, unknown>> {
 		const status = await git(worktree.path, ["status", "--porcelain"]).catch(() => "");
-		const changedFiles = status.split(/\r?\n/).map((line) => line.slice(3).trim()).filter(Boolean);
+		const statusRecords = await runGit(worktree.path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+			signal: this.commandCtx.signal,
+			maxOutputBytes: 2_000_000,
+		});
+		const changedFiles = parsePorcelainStatus(statusRecords.stdout).map((entry) => entry.path);
 		const unstaged = await git(worktree.path, ["diff", "--binary"]).catch(() => "");
 		const staged = await git(worktree.path, ["diff", "--binary", "--cached"]).catch(() => "");
-		const patch = [staged, unstaged].filter(Boolean).join("\n");
+		const untrackedList = await runGit(worktree.path, ["ls-files", "--others", "--exclude-standard", "-z"], {
+			signal: this.commandCtx.signal,
+			maxOutputBytes: 2_000_000,
+		});
+		const untrackedPatches: string[] = [];
+		for (const file of untrackedList.stdout.split("\0").filter(Boolean)) {
+			const result = await runGit(worktree.path, ["diff", "--binary", "--no-index", "--", "/dev/null", file], {
+				signal: this.commandCtx.signal,
+				allowFailure: true,
+				maxOutputBytes: 10_000_000,
+			});
+			if (result.exitCode === 1 && result.stdout) untrackedPatches.push(result.stdout);
+			else if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `Could not collect patch for untracked file: ${file}`);
+		}
+		const patch = [staged, unstaged, ...untrackedPatches].filter(Boolean).join("\n");
 		const patchPath = patch ? await this.artifact(`diffs/${key}.patch`, patch) : undefined;
 		const summary = { ...worktree, changedFiles, status, patchPath, result: returned };
 		const jsonPath = await this.artifact(`diffs/${key}.json`, summary);
@@ -390,6 +413,9 @@ export class WorkflowRun {
 
 export async function invalidateKeyAndDependents(cwd: string, runId: string, key: string): Promise<RunState> {
 	let state = await readRunState(cwd, runId);
+	if (!state.steps[key] && !state.agents[key]) {
+		throw new Error(`Durable key not found in run ${runId}: ${key}`);
+	}
 	const queue = [key];
 	const seen = new Set<string>();
 	while (queue.length) {
@@ -403,7 +429,7 @@ export async function invalidateKeyAndDependents(cwd: string, runId: string, key
 }
 
 export async function runPreparedWorkflow(pi: ExtensionAPI, ctx: ExtensionContext, prepared: PreparedWorkflowRun, control: WorkflowRunControl = {}): Promise<unknown> {
-	const run = new WorkflowRun(pi, ctx, prepared.entry, prepared.workflow, prepared.store, prepared.state || initialState(prepared.store.runId, prepared.entry, ""), control);
+	const run = new WorkflowRun(pi, ctx, prepared.entry, prepared.workflow, prepared.store, prepared.state || initialState(prepared.store.runId, prepared.entry, ""), control, prepared.resume);
 	return run.execute();
 }
 

@@ -36,13 +36,15 @@ import {
 	type ExecPolicyConfig,
 } from "../_shared/command-policy.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
+import { projectStatePath } from "../_shared/state-paths.ts";
 
 interface ModeState {
 	mode: ApprovalMode;
 	setAt: number;
 }
 
-const MODE_FILE = path.join(".pi", "approval-mode.json");
+const MODE_FILE = "approval-mode.json";
+const LEGACY_MODE_FILE = path.join(".pi", MODE_FILE);
 
 // Tools that read paths
 const PATH_READ_TOOLS = new Set(["read", "grep", "find"]);
@@ -62,12 +64,13 @@ export default function (pi: ExtensionAPI) {
 	let lastAssistantMessage = ""; // most recent assistant message text (updated via message_end)
 	let precedingAssistantMessage = ""; // snapshot of lastAssistantMessage at turn start — the prior turn's final assistant message (e.g. a proposal the user is replying to)
 	const oneShotApprovals = new Set<string>();
+	let projectCwd = process.cwd();
 
 	// ── Persistence ────────────────────────────────────────────────────
 
 	function saveModeToFile() {
 		try {
-			const filePath = path.join(process.cwd(), MODE_FILE);
+			const filePath = projectStatePath(projectCwd, MODE_FILE);
 			fs.mkdirSync(path.dirname(filePath), { recursive: true });
 			fs.writeFileSync(filePath, JSON.stringify(mode, null, "\t"), { encoding: "utf-8" });
 		} catch {}
@@ -75,7 +78,12 @@ export default function (pi: ExtensionAPI) {
 
 	function loadModeFromFile(cwd: string): ModeState | null {
 		try {
-			const filePath = path.join(cwd, MODE_FILE);
+			const filePath = projectStatePath(cwd, MODE_FILE);
+			const legacyPath = path.join(cwd, LEGACY_MODE_FILE);
+			if (!fs.existsSync(filePath) && fs.existsSync(legacyPath)) {
+				fs.mkdirSync(path.dirname(filePath), { recursive: true });
+				fs.copyFileSync(legacyPath, filePath, fs.constants.COPYFILE_EXCL);
+			}
 			if (fs.existsSync(filePath)) {
 				const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
 				if (raw?.mode && ["read-only", "default", "auto-review", "full-access"].includes(raw.mode)) {
@@ -87,6 +95,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function reconstruct(ctx: ExtensionContext) {
+		projectCwd = ctx.cwd;
 		mode = loadModeFromFile(ctx.cwd) ?? { mode: "default", setAt: Date.now() };
 	}
 

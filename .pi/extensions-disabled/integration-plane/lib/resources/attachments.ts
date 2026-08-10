@@ -87,7 +87,7 @@ const uploadToPresignedTarget = async (
 	for (const [key, value] of Object.entries(createResponse.upload_data.fields)) {
 		form.append(key, value)
 	}
-	form.append("file", new Blob([contents], { type: mimeType }), fileName)
+	form.append("file", new Blob([new Uint8Array(contents)], { type: mimeType }), fileName)
 
 	const response = await fetch(createResponse.upload_data.url, {
 		method: "POST",
