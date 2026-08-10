@@ -3,9 +3,10 @@ import {
 	type AgentConfig,
 	type AgentProgress,
 	type AgentResult,
+	type AgentThinkingLevel,
 } from "../../_shared/subagent-service.ts";
 
-export type { AgentConfig, AgentProgress, AgentResult };
+export type { AgentConfig, AgentProgress, AgentResult, AgentThinkingLevel };
 
 export type WorkflowSubagentProgressEvent =
 	| { type: "started"; agent: string; task: string }
@@ -21,13 +22,14 @@ export interface RunSubagentOptions {
 	cwd: string;
 	signal?: AbortSignal;
 	model?: string;
+	thinkingLevel?: AgentThinkingLevel;
 	timeoutMs?: number;
 	maxOutputBytes?: number;
 	onProgress?: (event: WorkflowSubagentProgressEvent, progress?: AgentProgress) => void | Promise<void>;
 }
 
 export interface RunSubagentsParallelOptions {
-	tasks: Array<{ agent: string; prompt: string; cwd?: string }>;
+	tasks: Array<{ agent: string; prompt: string; cwd?: string; model?: string; thinkingLevel?: AgentThinkingLevel }>;
 	cwd: string;
 	maxConcurrency?: number;
 	signal?: AbortSignal;
@@ -56,7 +58,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<AgentRes
 	let recentToolCount = 0;
 	let lastMessage = "";
 	try {
-		const result = await requireSubagentService().runSubagent({ agent, task: options.prompt, cwd: options.cwd, signal: options.signal, model: options.model, timeoutMs: options.timeoutMs, maxOutputBytes: options.maxOutputBytes, onUpdate: (progress) => {
+		const result = await requireSubagentService().runSubagent({ agent, task: options.prompt, cwd: options.cwd, signal: options.signal, model: options.model, thinkingLevel: options.thinkingLevel, timeoutMs: options.timeoutMs, maxOutputBytes: options.maxOutputBytes, onUpdate: (progress) => {
 			if (progress.currentTool && (progress.currentTool !== lastTool || progress.currentToolArgs !== lastToolArgs)) {
 				lastTool = progress.currentTool;
 				lastToolArgs = progress.currentToolArgs;
@@ -87,7 +89,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<AgentRes
 
 export async function runSubagentsParallel(options: RunSubagentsParallelOptions): Promise<AgentResult[]> {
 	return requireSubagentService().runSubagentsParallel({
-		tasks: options.tasks.map((task) => ({ agent: task.agent, task: task.prompt, cwd: task.cwd })),
+		tasks: options.tasks.map((task) => ({ agent: task.agent, task: task.prompt, cwd: task.cwd, model: task.model, thinkingLevel: task.thinkingLevel })),
 		cwd: options.cwd,
 		maxConcurrency: options.maxConcurrency,
 		signal: options.signal,

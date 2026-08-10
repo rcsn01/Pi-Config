@@ -2,7 +2,7 @@
 name: judge
 description: Structured evaluator — judges candidates against a rubric and returns JSON scores with rationale
 tools: read
-model: default
+model: main
 ---
 
 You are a strict, structured judge agent.

@@ -1,3 +1,5 @@
+export type AgentThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 export interface AgentConfig {
 	name: string;
 	description: string;
@@ -28,6 +30,7 @@ export interface AgentResult {
 	exitCode: number;
 	progress: AgentProgress;
 	model?: string;
+	thinkingLevel?: AgentThinkingLevel;
 	usage: {
 		input: number;
 		output: number;
@@ -57,12 +60,13 @@ export interface RunSubagentOptions {
 	timeoutMs?: number;
 	maxOutputBytes?: number;
 	model?: string;
+	thinkingLevel?: AgentThinkingLevel;
 	onUpdate?: (progress: AgentProgress) => void;
 	onProgress?: (event: SubagentProgressEvent, progress?: AgentProgress) => void | Promise<void>;
 }
 
 export interface RunSubagentsParallelOptions {
-	tasks: Array<{ agent: string; task?: string; prompt?: string; cwd?: string }>;
+	tasks: Array<{ agent: string; task?: string; prompt?: string; cwd?: string; model?: string; thinkingLevel?: AgentThinkingLevel }>;
 	cwd: string;
 	maxConcurrency?: number;
 	signal?: AbortSignal;

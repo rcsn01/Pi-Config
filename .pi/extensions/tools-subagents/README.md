@@ -1,86 +1,189 @@
-# Minimal Subagents
+# Tools Subagents
 
-A pi extension that registers a single `subagent` tool with these agents:
+A Pi extension that registers one `subagent` tool and runs specialized agents in isolated child Pi processes.
 
-| Agent | Tools | Model | Purpose |
-|-------|-------|-------|---------|
-| **default** | read, bash | claude-haiku-4-5 | General delegated work |
-| **explorer** | read, grep, find, ls | claude-haiku-4-5 | Fast read-only codebase investigation |
-| **researcher** | ddg_search, ddg_fetch | claude-sonnet-4-6 | Web research |
-| **worker** | read, write, edit, safe_bash | claude-sonnet-4-6 | Code changes |
-| **guardian** | none | claude-haiku-4-5 | Internal action safety review |
+| Agent | Tools | Purpose |
+|---|---|---|
+| **default** | read, bash | Small general delegated tasks |
+| **explorer** | read, grep, find, ls | Read-only codebase investigation |
+| **worker** | read, write, edit, safe_bash | Bounded implementation and verification |
+| **researcher** | ddg_search, ddg_fetch | Web research and synthesis |
+| **judge** | read | Structured rubric-based evaluation |
 
-The researcher uses the local `ddg_search` and `ddg_fetch` tools to avoid conflicts with other installed web-search packages.
+The researcher uses the local `ddg_search` and `ddg_fetch` extensions. The worker uses the bundled `safe_bash` tool.
 
 ## Usage
 
 **Single mode:**
+
 ```json
 { "agent": "explorer", "task": "Find all auth-related files in src/" }
 ```
 
 **Parallel mode:**
-```json
-{ "tasks": [
-  { "agent": "explorer", "task": "Map the database layer" },
-  { "agent": "researcher", "task": "Best practices for connection pooling" }
-]}
-```
-
-Max 4 concurrent subagents (configurable). Each runs as an isolated `pi` process with no inherited context — all context must be in the task description.
-
-Use `/subagents status` to verify discovered agents, configured tools, extension paths, and missing dependencies.
-
-## Config
-
-Optional `config.json` next to `index.ts`:
 
 ```json
-{ "maxConcurrency": 4 }
+{
+  "tasks": [
+    { "agent": "explorer", "task": "Map the database layer" },
+    { "agent": "researcher", "task": "Research connection-pooling best practices" }
+  ]
+}
 ```
+
+Each subagent receives only its task and agent system prompt; it does not inherit the main conversation. Parallel execution defaults to four child processes.
+
+## Model and Thinking Configuration
+
+`config.json` next to `index.ts` controls concurrency, models, and thinking levels:
+
+```json
+{
+  "maxConcurrency": 4,
+  "defaultModel": "main",
+  "agentModels": {
+    "worker": "anthropic/claude-sonnet-4-6",
+    "researcher": "main"
+  },
+  "defaultThinkingLevel": "medium",
+  "agentThinkingLevels": {
+    "worker": "high"
+  }
+}
+```
+
+- `defaultModel` applies to every agent without an individual model override.
+- `agentModels.<agent>` overrides `defaultModel` for that agent.
+- `defaultThinkingLevel` applies when an agent has no individual thinking override. Omit it to let Pi choose its default.
+- `agentThinkingLevels.<agent>` overrides the global thinking level for that agent.
+- Thinking levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the UI only offers levels supported by the selected model.
+- `main` means the main Pi session's active `provider/model` at the moment the child is launched.
+- Legacy `default` remains accepted as an alias for `main`.
+- A specific model uses canonical `provider/model` syntax, such as `anthropic/claude-sonnet-4-6`.
+- Existing `provider/model:thinking` values remain supported and are normalized into separate child `--model` and `--thinking` arguments at launch.
+- Missing model configuration ultimately falls back to `main`.
+- Empty or malformed settings are configuration errors rather than silent fallbacks.
+
+Unknown fields in `config.json` are preserved by slash-command updates. Direct edits are read on subsequent launches.
+
+### Resolution precedence
+
+A launch selects its model in this order:
+
+1. Explicit invocation override, such as a workflow's `ctx.agent({ model: ... })`
+2. `agentModels[agentName]`
+3. `defaultModel`
+4. The agent Markdown frontmatter `model`
+5. `main`
+
+This precedence applies to ordinary tool calls, parallel calls, dynamically registered agents, and workflow launches through the shared subagent service.
+
+Thinking is selected independently in this order:
+
+1. An explicit workflow/invocation thinking override
+2. Thinking suffix on an explicit invocation model
+3. `agentThinkingLevels[agentName]`
+4. Thinking suffix on the selected configured model (backward compatibility)
+5. `defaultThinkingLevel`
+6. Pi's default behavior
+
+### Dynamic `main` behavior
+
+The extension tracks the main model on session start and whenever `/model` changes it. It also checks the current tool context before an ordinary `subagent` call. Therefore, changing the main session model affects subsequently launched agents configured as `main`. An agent that is already running keeps the concrete model selected at its launch.
+
+Only model identity is inherited from `main`. Configure thinking separately in `/subagents`; the main session's current thinking level is not copied automatically.
+
+## Slash Commands
+
+```text
+/subagents
+/subagents status
+/subagents models
+/subagents model
+/subagents model all main
+/subagents model all anthropic/claude-sonnet-4-6
+/subagents model worker main
+/subagents model worker anthropic/claude-sonnet-4-6
+/subagents model worker inherit
+/subagents thinking all high
+/subagents thinking all default
+/subagents thinking worker xhigh
+/subagents thinking worker inherit
+```
+
+- `/subagents` opens the interactive configuration menu in TUI mode. The first menu shows **All subagents** plus every discovered subagent with its effective model and thinking level.
+- Selecting a target opens the searchable model picker, followed by a thinking-level picker tailored to the selected model.
+- Individual subagents offer model and thinking **Inherit** choices. **All subagents** offers **Pi default** thinking, which removes explicit thinking overrides.
+- After applying both selections, the refreshed menu stays open so more subagents can be adjusted; press Escape to close it. In non-TUI modes, bare `/subagents` falls back to status output.
+- `/subagents status` shows discovered agents, tools, missing tool extensions, effective models, and effective thinking levels.
+- `/subagents models` shows global and individual model/thinking settings plus every effective assignment.
+- `/subagents model` opens the same interactive menu in TUI mode.
+- `model all <model>` sets `defaultModel` and clears individual model overrides.
+- `model <agent> <model>` creates or replaces one model override; `inherit` removes it.
+- `thinking all <level>` sets `defaultThinkingLevel` and clears individual thinking overrides; `default` removes explicit thinking settings.
+- `thinking <agent> <level>` creates or replaces one thinking override; `inherit` removes it.
+
+Specific models entered through the command must be present in Pi's authenticated available-model catalogue. Invalid agents and unavailable models do not change the file. Successful changes update `config.json` atomically through Pi's file-mutation queue and take effect without `/reload`.
+
+## Child Pi Selection
+
+Children are started with:
+
+```text
+--model <provider/model>
+--thinking <level>        # only when explicitly configured
+```
+
+`--model` selects the model used by that child. `--thinking` applies the configured thinking level; it is omitted for Pi-default behavior. Pi's separate `--models` option only scopes the catalogue used for model cycling; it does not select the child model.
+
+Child processes use `--no-extensions` and then load only the extensions required by the agent's declared tools. A provider that exists only in an extension not loaded by the child is therefore unavailable even if it appears in the main session.
 
 ## UI
 
-Default view shows medium detail (agent status, task preview, recent tools). Expand to see full task, all tool calls, complete output, and token usage.
+`/subagents` opens a three-step configuration UI:
+
+1. Choose **All subagents** or one subagent from a menu displaying each effective model and thinking level.
+2. Search and select `main`, an authenticated/scoped `provider/model`, or (for one subagent) `inherit`.
+3. Select a thinking level supported by that model, inherit the global setting, or use Pi's default behavior.
+
+The default tool view shows agent status, resolved model, task preview, recent tools, duration, and tokens. Expand the tool result to see the complete task, output, errors, and usage. The resolved model is recorded before the child's first response event, so progress starts with the intended assignment visible.
 
 ## Registering Agents from Other Extensions
 
-Other extensions can dynamically register and unregister agents at runtime. This is useful for domain-specific agents that should only be available when a particular extension is active.
+Other extensions can register and unregister agents at runtime through the shared service.
 
-### 1. Define agent `.md` files
-
-Create markdown files with YAML frontmatter in your extension's directory (e.g. `my-extension/agents/my-agent.md`):
+### 1. Define an agent
 
 ```markdown
 ---
 name: my-agent
 description: Does a specific thing
 tools: ddg_search
-model: claude-sonnet-4-20250514
+model: main
 ---
 
 You are an agent that does a specific thing...
 ```
 
 Frontmatter fields:
-- **name** (required) — unique agent name, used in `{ agent: "my-agent" }` calls
-- **description** — short description
-- **tools** — comma-separated list of tools the agent needs (builtin or extension)
-- **model** — model identifier (defaults to `anthropic/claude-sonnet-4-6`)
 
-The markdown body becomes the agent's system prompt.
+- **name** (required): unique tool-facing agent name
+- **description**: short status description
+- **tools**: comma-separated built-in or mapped extension tools
+- **model**: fallback assignment used only when central config does not specify a global or per-agent model
 
-### 2. Register agents through the shared service
+The Markdown body becomes the child system prompt.
 
-Resolve the active runner through the typed shared registry. This avoids importing runner implementation state and remains stable when jiti creates separate module instances:
+### 2. Register through the shared service
 
 ```typescript
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { getSubagentService } from "../_shared/subagent-service.ts";
 
-const AGENTS_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), "agents");
+const AGENTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "agents");
 
 function registerMyAgents(): void {
   const subagents = getSubagentService();
@@ -93,28 +196,32 @@ function registerMyAgents(): void {
     const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
     if (!frontmatter.name) continue;
 
-    const tools = (frontmatter.tools || "").split(",").map(t => t.trim()).filter(Boolean);
+    const tools = (frontmatter.tools || "")
+      .split(",")
+      .map((tool) => tool.trim())
+      .filter(Boolean);
+
     try {
       subagents.registerAgent({
         name: frontmatter.name,
         description: frontmatter.description || "",
         tools,
-        model: frontmatter.model || "",
+        model: frontmatter.model || "main",
         systemPrompt: body,
         filePath,
       });
     } catch {
-      // Already registered — skip
+      // Already registered.
     }
   }
 }
 ```
 
-Call `registerMyAgents()` when your extension activates (e.g. in a command handler). The agents become available to the `subagent` tool immediately.
+The central `agentModels` map resolves dynamically registered agents by name exactly like bundled agents.
 
-### 3. Adding custom tool support
+### 3. Map custom tools
 
-If your agents need tools beyond the built-in set, those tools must be mapped in the `CUSTOM_TOOL_EXTENSIONS` record in `subagents/index.ts`:
+Custom child tools must be mapped in `CUSTOM_TOOL_EXTENSIONS` in `index.ts`:
 
 ```typescript
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
@@ -124,14 +231,17 @@ const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 };
 ```
 
-Built-in tools (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`) work automatically. Any other tool the agent lists in its frontmatter must have a corresponding entry here pointing to the extension's `index.ts`.
+Built-in tools (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`) need no mapping.
 
 ## Structure
 
-```
-subagents/
-├── index.ts           # Extension entry point
-├── agents/            # Built-in agent configs (frontmatter + system prompt)
-└── tools/             # Extensions loaded into subagent processes
-    └── safe-bash.ts   # bash with dangerous command blocking
+```text
+tools-subagents/
+├── index.ts                 # Extension entry point and child runner
+├── model-config.ts          # Model parsing, resolution, and update helpers
+├── model-config.test.ts     # Focused model configuration tests
+├── config.json              # Concurrency and model assignments
+├── agents/                  # Bundled agent definitions
+└── tools/
+    └── safe-bash.ts         # Restricted child bash extension
 ```

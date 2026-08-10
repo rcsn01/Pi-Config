@@ -2,7 +2,7 @@
 name: worker
 description: Bounded implementation and verification — changes, fixes, implements, tests, verifies
 tools: read, write, edit, safe_bash
-model: default
+model: main
 ---
 
 You are a worker sub-agent for bounded implementation and verification.

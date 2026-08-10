@@ -1,16 +1,18 @@
 /**
  * Minimal subagents extension.
  *
- * Registers a single `subagent` tool with agents such as explorer, worker, default, researcher, and guardian.
+ * Registers a single `subagent` tool with agents such as explorer, worker, default, researcher, and judge.
  * Supports single and parallel execution. Output is verbal only (no file handoff).
  */
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme, parseFrontmatter, truncateHead, withFileMutationQueue, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Input, Markdown, SelectList, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	registerSubagentService,
@@ -22,6 +24,28 @@ import {
 	type SubagentProgressEvent,
 	type SubagentService,
 } from "../_shared/subagent-service.ts";
+import {
+	appendChildModelArgument,
+	appendChildThinkingArgument,
+	canonicalMainModel,
+	clearAllThinkingAssignments,
+	normalizeModelSetting,
+	normalizeThinkingLevel,
+	parseModelConfiguration,
+	removeAgentModelAssignment,
+	removeAgentThinkingAssignment,
+	resolveLaunchConfiguration,
+	selectModelSetting,
+	setAgentModelAssignment,
+	setAgentThinkingAssignment,
+	setAllModelAssignments,
+	setAllThinkingAssignments,
+	splitModelThinkingSetting,
+	THINKING_LEVELS,
+	type ModelConfiguration,
+	type ResolvedLaunchConfiguration,
+	type SubagentThinkingLevel,
+} from "./model-config.ts";
 
 export type {
 	AgentConfig,
@@ -46,23 +70,57 @@ interface Details {
 
 // ── Config ─────────────────────────────────────────────────────────────
 
-interface ExtensionConfig {
+interface ExtensionConfig extends ModelConfiguration {
 	maxConcurrency?: number;
 }
 
-const EXT_DIR = path.dirname(new URL(import.meta.url).pathname);
+const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = path.join(EXT_DIR, "agents");
 const TOOLS_DIR = path.join(EXT_DIR, "tools");
 const CONFIG_PATH = path.join(EXT_DIR, "config.json");
 const DEFAULT_MAX_CONCURRENCY = 4;
+let activeMainModel: string | undefined;
+
+function readConfigDocument(): Record<string, unknown> {
+	if (!fs.existsSync(CONFIG_PATH)) return {};
+	try {
+		const value = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8")) as unknown;
+		if (typeof value !== "object" || value === null || Array.isArray(value)) {
+			throw new Error("the root value must be a JSON object");
+		}
+		return value as Record<string, unknown>;
+	} catch (error) {
+		throw new Error(`Cannot read subagent config ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
 
 function loadConfig(): ExtensionConfig {
-	try {
-		if (fs.existsSync(CONFIG_PATH)) {
-			return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8")) as ExtensionConfig;
-		}
-	} catch {}
-	return {};
+	const document = readConfigDocument();
+	const modelConfig = parseModelConfiguration(document);
+	const maxConcurrency = document.maxConcurrency;
+	if (maxConcurrency !== undefined && (!Number.isInteger(maxConcurrency) || (maxConcurrency as number) < 1)) {
+		throw new Error("Subagent config maxConcurrency must be a positive integer.");
+	}
+	return { ...modelConfig, maxConcurrency: maxConcurrency as number | undefined };
+}
+
+function rememberMainModel(model: { provider: unknown; id: unknown } | undefined): void {
+	activeMainModel = model ? canonicalMainModel(model) : undefined;
+}
+
+function resolveLaunch(
+	agent: AgentConfig,
+	explicitModel?: string,
+	explicitThinkingLevel?: SubagentThinkingLevel,
+): ResolvedLaunchConfiguration {
+	return resolveLaunchConfiguration({
+		agentName: agent.name,
+		config: readConfigDocument(),
+		explicitModel,
+		explicitThinkingLevel,
+		frontmatterModel: agent.model,
+		mainModel: activeMainModel,
+	});
 }
 
 // Built-in tools that pi provides natively (no extension needed)
@@ -110,7 +168,7 @@ export function loadAgents(): AgentConfig[] {
 			name: frontmatter.name,
 			description: frontmatter.description || "",
 			tools,
-			model: frontmatter.model && frontmatter.model !== "default" ? frontmatter.model : "",
+			model: frontmatter.model?.trim() || "",
 			systemPrompt: body,
 			filePath,
 		});
@@ -208,7 +266,7 @@ async function buildPiArgs(
 	agent: AgentConfig,
 	task: string,
 	cwd: string,
-	model?: string,
+	launch: ResolvedLaunchConfiguration,
 ): Promise<{ args: string[]; tempDir: string }> {
 	const piBin = resolvePiBinary();
 	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sub-"));
@@ -219,7 +277,7 @@ async function buildPiArgs(
 		await fs.promises.writeFile(promptPath, agent.systemPrompt, { encoding: "utf-8", mode: 0o600 });
 	});
 
-	const args = [...piBin.baseArgs, "--mode", "json", "-p", "--no-session", "--no-skills"];
+	let args = [...piBin.baseArgs, "--mode", "json", "-p", "--no-session", "--no-skills"];
 
 	// Separate builtin tools from custom tools
 	const builtinTools: string[] = [];
@@ -247,8 +305,8 @@ async function buildPiArgs(
 		args.push("--extension", extPath);
 	}
 
-	const useModel = (model || agent.model || "").trim();
-	if (useModel) args.push("--models", useModel);
+	args = appendChildModelArgument(args, launch.model);
+	args = appendChildThinkingArgument(args, launch.thinkingLevel);
 	args.push("--append-system-prompt", promptPath);
 
 	// Handle long tasks by writing to file
@@ -327,9 +385,10 @@ export async function runSubagent(
 		: { agent: agentOrOptions as AgentConfig, task: taskArg, cwd: cwdArg || process.cwd(), signal: signalArg, onUpdate: onUpdateArg };
 	const agent = resolveAgentConfig(options.agent);
 	const task = options.task ?? options.prompt ?? "";
+	const launch = resolveLaunch(agent, options.model, options.thinkingLevel);
 	const { signal, cleanup } = withTimeoutSignal(options.signal, options.timeoutMs);
 	await options.onProgress?.({ type: "started", agent: agent.name, task });
-	const { args, tempDir } = await buildPiArgs(agent, task, options.cwd, options.model);
+	const { args, tempDir } = await buildPiArgs(agent, task, options.cwd, launch);
 	const command = args[0];
 	const spawnArgs = args.slice(1);
 
@@ -338,7 +397,8 @@ export async function runSubagent(
 		task,
 		output: "",
 		exitCode: 0,
-		model: agent.model,
+		model: launch.model,
+		thinkingLevel: launch.thinkingLevel,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 		progress: {
 			agent: agent.name,
@@ -571,7 +631,7 @@ async function mapConcurrent<T, R>(
 export async function runSubagentsParallel(options: RunSubagentsParallelOptions): Promise<AgentResult[]> {
 	const availableAgents = loadAgents();
 	const available = availableAgents.map((a) => a.name).join(", ") || "none";
-	const concurrency = Math.max(1, options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
+	const concurrency = Math.max(1, options.maxConcurrency ?? loadConfig().maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
 	return mapConcurrent(options.tasks, concurrency, async (task, index) => {
 		const agent = availableAgents.find((a) => a.name === task.agent);
 		if (!agent) throw new Error(`Unknown agent: ${task.agent}. Available agents: ${available}`);
@@ -582,6 +642,8 @@ export async function runSubagentsParallel(options: RunSubagentsParallelOptions)
 			signal: options.signal,
 			timeoutMs: options.timeoutMs,
 			maxOutputBytes: options.maxOutputBytes,
+			model: task.model,
+			thinkingLevel: task.thinkingLevel,
 			onProgress: (event, progress) => options.onProgress?.(index, event, progress),
 		});
 		options.onUpdate?.(index, result);
@@ -618,10 +680,11 @@ function renderAgentProgress(
 				? theme.fg("success", "✓")
 				: theme.fg("error", "✗");
 	const stats = `${prog.toolCount} tools · ${formatTokens(prog.tokens)} tok · ${formatDuration(prog.durationMs)}`;
-	const modelStr = r.model ? theme.fg("dim", ` (${r.model})`) : "";
+	const configuration = [r.model, r.thinkingLevel ? `thinking ${r.thinkingLevel}` : undefined].filter(Boolean).join(" · ");
+	const configurationStr = configuration ? theme.fg("dim", ` (${configuration})`) : "";
 	c.addChild(
 		new Text(
-			truncLine(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelStr} — ${theme.fg("dim", stats)}`, w),
+			truncLine(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${configurationStr} — ${theme.fg("dim", stats)}`, w),
 			0, 0,
 		),
 	);
@@ -704,6 +767,671 @@ function renderAgentProgress(
 	return c;
 }
 
+// ── Model Command Helpers ─────────────────────────────────────────────
+
+const SUBAGENT_MODEL_USAGE = [
+	"Usage:",
+	"  /subagents",
+	"  /subagents status",
+	"  /subagents models",
+	"  /subagents model",
+	"  /subagents model all <main|provider/model>",
+	"  /subagents model <agent> <main|provider/model|inherit>",
+	"  /subagents thinking all <default|off|minimal|low|medium|high|xhigh|max>",
+	"  /subagents thinking <agent> <inherit|off|minimal|low|medium|high|xhigh|max>",
+].join("\n");
+
+function selectedModelSettingForAgent(agent: AgentConfig, config: ModelConfiguration): string {
+	return selectModelSetting({
+		agentName: agent.name,
+		config,
+		frontmatterModel: agent.model,
+	});
+}
+
+function effectiveModelForAgent(agent: AgentConfig, config: ModelConfiguration): { setting: string; resolved: string } {
+	const selected = selectedModelSettingForAgent(agent, config);
+	const split = splitModelThinkingSetting(selected);
+	return {
+		setting: split.model,
+		resolved: split.model === "main" ? canonicalMainModel(activeMainModel) : split.model,
+	};
+}
+
+function effectiveThinkingForAgent(agent: AgentConfig, config: ModelConfiguration): SubagentThinkingLevel | undefined {
+	if (Object.hasOwn(config.agentThinkingLevels, agent.name)) return config.agentThinkingLevels[agent.name];
+	const selected = splitModelThinkingSetting(selectedModelSettingForAgent(agent, config));
+	return selected.thinkingLevel ?? config.defaultThinkingLevel;
+}
+
+function modelDisplay(setting: string, resolved: string): string {
+	return setting === resolved ? resolved : `${setting} → ${resolved}`;
+}
+
+function thinkingDisplay(level: SubagentThinkingLevel | undefined): string {
+	return level ?? "Pi default";
+}
+
+function statusLines(availableAgents: AgentConfig[]): string[] {
+	const config = loadConfig();
+	const lines = [
+		"Subagents status:",
+		`Extensions dir: ${EXT_BASE}`,
+		`Max concurrency: ${config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY}`,
+		`Main model: ${canonicalMainModel(activeMainModel)}`,
+		"",
+		"Agents:",
+	];
+	for (const agent of availableAgents) {
+		const missing = agent.tools
+			.filter((tool) => !BUILTIN_TOOLS.has(tool) && (!CUSTOM_TOOL_EXTENSIONS[tool] || !fs.existsSync(CUSTOM_TOOL_EXTENSIONS[tool])))
+			.map((tool) => `${tool}${CUSTOM_TOOL_EXTENSIONS[tool] ? ` (${CUSTOM_TOOL_EXTENSIONS[tool]})` : " (unmapped)"}`);
+		const effective = effectiveModelForAgent(agent, config);
+		lines.push(`- ${agent.name}: ${agent.description || "(no description)"}`);
+		lines.push(`  model: ${modelDisplay(effective.setting, effective.resolved)}`);
+		lines.push(`  thinking: ${thinkingDisplay(effectiveThinkingForAgent(agent, config))}`);
+		lines.push(`  tools: ${agent.tools.join(", ") || "none"}`);
+		if (missing.length) lines.push(`  missing: ${missing.join(", ")}`);
+	}
+	return lines;
+}
+
+function modelStatusLines(availableAgents: AgentConfig[]): string[] {
+	const config = loadConfig();
+	const modelOverrides = Object.entries(config.agentModels);
+	const thinkingOverrides = Object.entries(config.agentThinkingLevels);
+	const lines = [
+		"Subagent model and thinking configuration:",
+		`Main model: ${canonicalMainModel(activeMainModel)}`,
+		`Global model: ${config.defaultModel ?? "(unset; frontmatter/main fallback)"}`,
+		`Global thinking: ${thinkingDisplay(config.defaultThinkingLevel)}`,
+		"Individual model overrides:",
+		...(modelOverrides.length > 0
+			? modelOverrides.sort(([left], [right]) => left.localeCompare(right)).map(([name, model]) => `- ${name}: ${model}`)
+			: ["- (none)"]),
+		"Individual thinking overrides:",
+		...(thinkingOverrides.length > 0
+			? thinkingOverrides.sort(([left], [right]) => left.localeCompare(right)).map(([name, level]) => `- ${name}: ${level}`)
+			: ["- (none)"]),
+		"",
+		"Effective assignments:",
+	];
+	for (const agent of availableAgents) {
+		const effective = effectiveModelForAgent(agent, config);
+		lines.push(`- ${agent.name}: ${modelDisplay(effective.setting, effective.resolved)} · thinking ${thinkingDisplay(effectiveThinkingForAgent(agent, config))}`);
+	}
+	return lines;
+}
+
+function catalogueModelReference(setting: string): string {
+	return splitModelThinkingSetting(setting).model;
+}
+
+async function validateAvailableModel(setting: string, ctx: ExtensionContext): Promise<boolean> {
+	if (setting === "main") return true;
+	try {
+		await ctx.modelRegistry.refresh({ allowNetwork: false });
+	} catch (error) {
+		ctx.ui.notify(`Could not refresh Pi's model catalogue: ${error instanceof Error ? error.message : String(error)}`, "error");
+		return false;
+	}
+	const reference = catalogueModelReference(setting);
+	const available = ctx.modelRegistry.getAvailable();
+	if (available.some((model) => `${model.provider}/${model.id}` === reference)) return true;
+	ctx.ui.notify(
+		`Unavailable or unauthenticated model: ${reference}\n\n${SUBAGENT_MODEL_USAGE}`,
+		"error",
+	);
+	return false;
+}
+
+async function updateConfigDocument(
+	update: (document: Record<string, unknown>) => Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	return withFileMutationQueue(CONFIG_PATH, async () => {
+		const next = update(readConfigDocument());
+		parseModelConfiguration(next);
+		const temporaryPath = `${CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
+		try {
+			await fs.promises.writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
+			await fs.promises.rename(temporaryPath, CONFIG_PATH);
+		} finally {
+			await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined);
+		}
+		return next;
+	});
+}
+
+async function applyModelCommand(
+	target: string,
+	rawValue: string,
+	availableAgents: AgentConfig[],
+	ctx: ExtensionContext,
+): Promise<void> {
+	const agent = availableAgents.find((candidate) => candidate.name === target);
+	if (target !== "all" && !agent) {
+		ctx.ui.notify(`Unknown subagent: ${target}. Available: ${availableAgents.map((item) => item.name).join(", ") || "none"}\n\n${SUBAGENT_MODEL_USAGE}`, "error");
+		return;
+	}
+
+	const value = rawValue.trim();
+	if (value.toLowerCase() === "inherit") {
+		if (target === "all") {
+			ctx.ui.notify(`"inherit" applies only to an individual agent.\n\n${SUBAGENT_MODEL_USAGE}`, "error");
+			return;
+		}
+		await updateConfigDocument((document) => removeAgentModelAssignment(document, target));
+		ctx.ui.notify(`${target} now inherits the global/frontmatter model setting.`, "info");
+		return;
+	}
+
+	let setting: string;
+	try {
+		setting = normalizeModelSetting(value, `model for ${target}`);
+	} catch (error) {
+		ctx.ui.notify(`${error instanceof Error ? error.message : String(error)}\n\n${SUBAGENT_MODEL_USAGE}`, "error");
+		return;
+	}
+	if (!(await validateAvailableModel(setting, ctx))) return;
+
+	if (target === "all") {
+		await updateConfigDocument((document) => setAllModelAssignments(document, setting));
+		ctx.ui.notify(`All subagents now use ${setting}; individual overrides were cleared.`, "info");
+	} else {
+		await updateConfigDocument((document) => setAgentModelAssignment(document, target, setting));
+		ctx.ui.notify(`${target} now uses ${setting}.`, "info");
+	}
+}
+
+async function applyThinkingCommand(
+	target: string,
+	rawValue: string,
+	availableAgents: AgentConfig[],
+	ctx: ExtensionContext,
+): Promise<void> {
+	const agent = availableAgents.find((candidate) => candidate.name === target);
+	if (target !== "all" && !agent) {
+		ctx.ui.notify(`Unknown subagent: ${target}. Available: ${availableAgents.map((item) => item.name).join(", ") || "none"}\n\n${SUBAGENT_MODEL_USAGE}`, "error");
+		return;
+	}
+
+	const value = rawValue.trim().toLowerCase();
+	if (target === "all" && value === "default") {
+		await updateConfigDocument(clearAllThinkingAssignments);
+		ctx.ui.notify("All subagents now use Pi's default thinking behavior; individual thinking overrides were cleared.", "info");
+		return;
+	}
+	if (target !== "all" && value === "inherit") {
+		await updateConfigDocument((document) => removeAgentThinkingAssignment(document, target));
+		ctx.ui.notify(`${target} now inherits the global/Pi default thinking level.`, "info");
+		return;
+	}
+
+	let level: SubagentThinkingLevel;
+	try {
+		level = normalizeThinkingLevel(value, `thinking level for ${target}`);
+	} catch (error) {
+		ctx.ui.notify(`${error instanceof Error ? error.message : String(error)}\n\n${SUBAGENT_MODEL_USAGE}`, "error");
+		return;
+	}
+
+	if (target === "all") {
+		await updateConfigDocument((document) => setAllThinkingAssignments(document, level));
+		ctx.ui.notify(`All subagents now use ${level} thinking; individual thinking overrides were cleared.`, "info");
+	} else {
+		await updateConfigDocument((document) => setAgentThinkingAssignment(document, target, level));
+		ctx.ui.notify(`${target} now uses ${level} thinking.`, "info");
+	}
+}
+
+async function applyInteractiveConfiguration(
+	target: string,
+	rawModel: string,
+	rawThinking: string,
+	availableAgents: AgentConfig[],
+	ctx: ExtensionContext,
+): Promise<void> {
+	const agent = availableAgents.find((candidate) => candidate.name === target);
+	if (target !== "all" && !agent) throw new Error(`Unknown subagent: ${target}`);
+
+	const modelValue = rawModel.trim();
+	const inheritModel = modelValue.toLowerCase() === "inherit";
+	if (target === "all" && inheritModel) throw new Error('"inherit" applies only to an individual agent model.');
+	const modelSetting = inheritModel ? undefined : normalizeModelSetting(modelValue, `model for ${target}`);
+	if (modelSetting && !(await validateAvailableModel(modelSetting, ctx))) return;
+
+	const thinkingValue = rawThinking.trim().toLowerCase();
+	const clearThinking = target === "all" && thinkingValue === "default";
+	const inheritThinking = target !== "all" && thinkingValue === "inherit";
+	if (!clearThinking && !inheritThinking) normalizeThinkingLevel(thinkingValue, `thinking level for ${target}`);
+
+	await updateConfigDocument((document) => {
+		let next = target === "all"
+			? setAllModelAssignments(document, modelSetting!)
+			: inheritModel
+				? removeAgentModelAssignment(document, target)
+				: setAgentModelAssignment(document, target, modelSetting!);
+
+		if (clearThinking) next = clearAllThinkingAssignments(next);
+		else if (inheritThinking) next = removeAgentThinkingAssignment(next, target);
+		else if (target === "all") next = setAllThinkingAssignments(next, thinkingValue);
+		else next = setAgentThinkingAssignment(next, target, thinkingValue);
+		return next;
+	});
+
+	const modelNote = inheritModel ? "inherited model" : modelSetting;
+	const thinkingNote = clearThinking ? "Pi default thinking" : inheritThinking ? "inherited thinking" : `${thinkingValue} thinking`;
+	ctx.ui.notify(
+		target === "all"
+			? `All subagents now use ${modelNote} with ${thinkingNote}; individual overrides were cleared.`
+			: `${target} now uses ${modelNote} with ${thinkingNote}.`,
+		"info",
+	);
+}
+
+function modelKey(model: Pick<Model<Api>, "provider" | "id">): string {
+	return `${model.provider}/${model.id}`;
+}
+
+function formatContextWindow(tokens: number): string {
+	if (tokens >= 1_000_000) {
+		const millions = tokens / 1_000_000;
+		return `${Number.isInteger(millions) ? millions.toFixed(0) : millions.toFixed(2)}M context`;
+	}
+	if (tokens >= 1_000) {
+		const thousands = tokens / 1_000;
+		return `${Number.isInteger(thousands) ? thousands.toFixed(0) : thousands.toFixed(1)}K context`;
+	}
+	return `${tokens} context`;
+}
+
+function availableModelCatalogue(ctx: ExtensionContext): Model<Api>[] {
+	const models = ctx.scopedModels.length > 0
+		? ctx.scopedModels.map((entry) =>
+			ctx.modelRegistry.find(entry.model.provider, entry.model.id) ?? entry.model)
+		: ctx.modelRegistry.getAvailable();
+	const unique = new Map<string, Model<Api>>();
+	for (const model of models) unique.set(modelKey(model), model);
+	return [...unique.values()].sort((left, right) => modelKey(left).localeCompare(modelKey(right)));
+}
+
+async function selectSubagentTarget(
+	availableAgents: AgentConfig[],
+	ctx: ExtensionContext,
+): Promise<string | undefined> {
+	const config = loadConfig();
+	const defaultSelection = config.defaultModel
+		? splitModelThinkingSetting(config.defaultModel)
+		: undefined;
+	const defaultModel = defaultSelection
+		? modelDisplay(defaultSelection.model, defaultSelection.model === "main" ? canonicalMainModel(activeMainModel) : defaultSelection.model)
+		: "(unset; per-agent fallback)";
+	const defaultThinking = defaultSelection?.thinkingLevel ?? config.defaultThinkingLevel;
+	const items = [
+		{
+			value: "all",
+			label: "All subagents",
+			description: `${defaultModel} · thinking ${thinkingDisplay(defaultThinking)} · clears individual overrides`,
+		},
+		...availableAgents.map((agent) => {
+			const effective = effectiveModelForAgent(agent, config);
+			return {
+				value: agent.name,
+				label: agent.name,
+				description: `${modelDisplay(effective.setting, effective.resolved)} · thinking ${thinkingDisplay(effectiveThinkingForAgent(agent, config))}`,
+			};
+		}),
+	];
+
+	return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+		const list = new SelectList(items, Math.min(Math.max(items.length, 1), 12), {
+			selectedPrefix: (text) => theme.fg("accent", text),
+			selectedText: (text) => theme.fg("accent", text),
+			description: (text) => theme.fg("muted", text),
+			scrollInfo: (text) => theme.fg("dim", text),
+			noMatch: (text) => theme.fg("warning", text),
+		}, { minPrimaryColumnWidth: 18, maxPrimaryColumnWidth: 28 });
+		list.onSelect = (item) => done(item.value);
+		list.onCancel = () => done(undefined);
+
+		return {
+			render(width: number) {
+				const border = theme.fg("accent", "─".repeat(Math.max(0, width)));
+				return [
+					border,
+					truncateToWidth(theme.fg("accent", theme.bold("Subagent Configuration")), width),
+					truncateToWidth(theme.fg("dim", "Choose all subagents or one agent to change model and thinking"), width),
+					"",
+					...list.render(width),
+					"",
+					truncateToWidth(theme.fg("dim", "↑↓ navigate · Enter select · Esc close"), width),
+					border,
+				];
+			},
+			invalidate() {
+				list.invalidate();
+			},
+			handleInput(data: string) {
+				list.handleInput(data);
+				tui.requestRender();
+			},
+		};
+	});
+}
+
+interface ModelPickerChoice {
+	value: string;
+	label: string;
+	description: string;
+	searchText: string;
+}
+
+function filterModelChoices(choices: readonly ModelPickerChoice[], query: string): ModelPickerChoice[] {
+	const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+	if (terms.length === 0) return [...choices];
+	return choices.filter((choice) => {
+		const searchable = `${choice.label} ${choice.description} ${choice.searchText}`.toLowerCase();
+		return terms.every((term) => searchable.includes(term));
+	});
+}
+
+async function selectSubagentModel(
+	target: string,
+	availableAgents: AgentConfig[],
+	models: readonly Model<Api>[],
+	ctx: ExtensionContext,
+): Promise<string | undefined> {
+	const config = loadConfig();
+	const agent = target === "all" ? undefined : availableAgents.find((candidate) => candidate.name === target);
+	if (target !== "all" && !agent) throw new Error(`Unknown subagent: ${target}`);
+
+	const hasOverride = target !== "all" && Object.hasOwn(config.agentModels, target);
+	const currentValue = target === "all"
+		? config.defaultModel ?? "main"
+		: hasOverride
+			? config.agentModels[target]!
+			: "inherit";
+	const currentModelValue = currentValue === "inherit"
+		? currentValue
+		: splitModelThinkingSetting(currentValue).model;
+	const mainModel = canonicalMainModel(activeMainModel);
+	const choices: ModelPickerChoice[] = [];
+
+	if (agent) {
+		const inheritedAgentModels = { ...config.agentModels };
+		delete inheritedAgentModels[target];
+		const inherited = effectiveModelForAgent(agent, { ...config, agentModels: inheritedAgentModels });
+		choices.push({
+			value: "inherit",
+			label: `${currentValue === "inherit" ? "●" : "○"} Inherit global/frontmatter setting`,
+			description: `Uses ${modelDisplay(inherited.setting, inherited.resolved)}`,
+			searchText: "inherit default global frontmatter",
+		});
+	}
+
+	choices.push({
+		value: "main",
+		label: `${currentModelValue === "main" ? "●" : "○"} Main session model`,
+		description: `${mainModel} · follows future /model changes`,
+		searchText: `main default ${mainModel}`,
+	});
+
+	const configuredReference = currentModelValue === "main" || currentModelValue === "inherit"
+		? undefined
+		: currentModelValue;
+	for (const model of models) {
+		const reference = modelKey(model);
+		const isCurrent = reference === configuredReference;
+		choices.push({
+			value: reference,
+			label: `${isCurrent ? "●" : "○"} ${reference}`,
+			description: `${model.name} · ${formatContextWindow(model.contextWindow)} · ${model.reasoning ? "thinking" : "no thinking"}${isCurrent && currentValue !== reference ? ` · configured as ${currentValue}` : ""}`,
+			searchText: `${reference} ${model.name}`,
+		});
+	}
+
+	return ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => {
+		const search = new Input();
+		let list: SelectList;
+
+		const rebuildList = () => {
+			const filtered = filterModelChoices(choices, search.getValue());
+			list = new SelectList(
+				filtered.map((choice) => ({
+					value: choice.value,
+					label: choice.label,
+					description: choice.description,
+				})),
+				Math.min(Math.max(filtered.length, 1), 12),
+				{
+					selectedPrefix: (text) => theme.fg("accent", text),
+					selectedText: (text) => theme.fg("accent", text),
+					description: (text) => theme.fg("muted", text),
+					scrollInfo: (text) => theme.fg("dim", text),
+					noMatch: (text) => theme.fg("warning", text),
+				},
+				{ minPrimaryColumnWidth: 30, maxPrimaryColumnWidth: 52 },
+			);
+			list.onSelect = (item) => done(item.value);
+			list.onCancel = () => done(undefined);
+			if (!search.getValue()) {
+				const currentIndex = filtered.findIndex((choice) => choice.value === currentModelValue);
+				if (currentIndex >= 0) list.setSelectedIndex(currentIndex);
+			}
+		};
+
+		rebuildList();
+
+		return {
+			get focused() {
+				return search.focused;
+			},
+			set focused(value: boolean) {
+				search.focused = value;
+			},
+			render(width: number) {
+				const border = theme.fg("accent", "─".repeat(Math.max(0, width)));
+				return [
+					border,
+					truncateToWidth(theme.fg("accent", theme.bold(`Model for ${target === "all" ? "all subagents" : target}`)), width),
+					...search.render(width),
+					"",
+					...list.render(width),
+					"",
+					truncateToWidth(theme.fg("dim", "Type to filter · ↑↓ navigate · Enter next · Esc back"), width),
+					border,
+				];
+			},
+			invalidate() {
+				search.invalidate();
+				list.invalidate();
+			},
+			handleInput(data: string) {
+				if (
+					keybindings.matches(data, "tui.select.up") ||
+					keybindings.matches(data, "tui.select.down") ||
+					keybindings.matches(data, "tui.select.confirm") ||
+					keybindings.matches(data, "tui.select.cancel")
+				) {
+					list.handleInput(data);
+				} else {
+					const before = search.getValue();
+					search.handleInput(data);
+					if (search.getValue() !== before) rebuildList();
+				}
+				tui.requestRender();
+			},
+		};
+	});
+}
+
+const THINKING_DESCRIPTIONS: Record<SubagentThinkingLevel, string> = {
+	off: "No extended thinking",
+	minimal: "Fastest reasoning",
+	low: "Light reasoning",
+	medium: "Balanced reasoning",
+	high: "Deep reasoning",
+	xhigh: "Extra-high reasoning",
+	max: "Maximum reasoning",
+};
+
+function modelSettingAfterChoice(
+	target: string,
+	choice: string,
+	agent: AgentConfig | undefined,
+	config: ModelConfiguration,
+): string {
+	if (choice !== "inherit") return choice;
+	if (!agent || target === "all") throw new Error('"inherit" requires an individual subagent.');
+	const inheritedAgentModels = { ...config.agentModels };
+	delete inheritedAgentModels[target];
+	return selectModelSetting({
+		agentName: agent.name,
+		config: { ...config, agentModels: inheritedAgentModels },
+		frontmatterModel: agent.model,
+	});
+}
+
+function findCatalogueModel(
+	setting: string,
+	models: readonly Model<Api>[],
+	ctx: ExtensionContext,
+): Model<Api> | undefined {
+	const selected = splitModelThinkingSetting(setting).model;
+	const reference = selected === "main" ? canonicalMainModel(activeMainModel) : selected;
+	const listed = models.find((model) => modelKey(model) === reference);
+	if (listed) return listed;
+	const slash = reference.indexOf("/");
+	return slash > 0
+		? ctx.modelRegistry.find(reference.slice(0, slash), reference.slice(slash + 1))
+		: undefined;
+}
+
+async function selectSubagentThinking(
+	target: string,
+	modelChoice: string,
+	availableAgents: AgentConfig[],
+	models: readonly Model<Api>[],
+	ctx: ExtensionContext,
+): Promise<string | undefined> {
+	const config = loadConfig();
+	const agent = target === "all" ? undefined : availableAgents.find((candidate) => candidate.name === target);
+	if (target !== "all" && !agent) throw new Error(`Unknown subagent: ${target}`);
+
+	const pendingModelSetting = modelSettingAfterChoice(target, modelChoice, agent, config);
+	const catalogueModel = findCatalogueModel(pendingModelSetting, models, ctx);
+	const supported = catalogueModel
+		? getSupportedThinkingLevels(catalogueModel).map((level) => normalizeThinkingLevel(level))
+		: [...THINKING_LEVELS];
+
+	const currentModelSetting = target === "all"
+		? config.defaultModel ?? "main"
+		: selectedModelSettingForAgent(agent!, config);
+	const pendingModel = splitModelThinkingSetting(pendingModelSetting).model;
+	const currentModel = splitModelThinkingSetting(currentModelSetting);
+	const sameModel = currentModel.model === pendingModel;
+	const currentValue = target === "all"
+		? sameModel && currentModel.thinkingLevel
+			? currentModel.thinkingLevel
+			: config.defaultThinkingLevel ?? "default"
+		: Object.hasOwn(config.agentThinkingLevels, target)
+			? config.agentThinkingLevels[target]!
+			: sameModel && currentModel.thinkingLevel
+				? currentModel.thinkingLevel
+				: "inherit";
+
+	const items: Array<{ value: string; label: string; description: string }> = [];
+	if (target === "all") {
+		items.push({
+			value: "default",
+			label: `${currentValue === "default" ? "●" : "○"} Pi default`,
+			description: "Do not pass a --thinking override to child Pi processes",
+		});
+	} else {
+		const inheritedAgentThinking = { ...config.agentThinkingLevels };
+		delete inheritedAgentThinking[target];
+		const inheritedConfig = { ...config, agentThinkingLevels: inheritedAgentThinking };
+		const inheritedModelSetting = modelSettingAfterChoice(target, modelChoice, agent, inheritedConfig);
+		const inheritedSplit = splitModelThinkingSetting(inheritedModelSetting);
+		const inheritedLevel = inheritedSplit.thinkingLevel ?? inheritedConfig.defaultThinkingLevel;
+		items.push({
+			value: "inherit",
+			label: `${currentValue === "inherit" ? "●" : "○"} Inherit global/Pi default`,
+			description: `Uses ${thinkingDisplay(inheritedLevel)}`,
+		});
+	}
+
+	for (const level of supported) {
+		items.push({
+			value: level,
+			label: `${currentValue === level ? "●" : "○"} ${level}`,
+			description: THINKING_DESCRIPTIONS[level],
+		});
+	}
+
+	return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+		const list = new SelectList(items, Math.min(Math.max(items.length, 1), 10), {
+			selectedPrefix: (text) => theme.fg("accent", text),
+			selectedText: (text) => theme.fg("accent", text),
+			description: (text) => theme.fg("muted", text),
+			scrollInfo: (text) => theme.fg("dim", text),
+			noMatch: (text) => theme.fg("warning", text),
+		}, { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 36 });
+		list.onSelect = (item) => done(item.value);
+		list.onCancel = () => done(undefined);
+		const currentIndex = items.findIndex((item) => item.value === currentValue);
+		if (currentIndex >= 0) list.setSelectedIndex(currentIndex);
+
+		return {
+			render(width: number) {
+				const border = theme.fg("accent", "─".repeat(Math.max(0, width)));
+				const modelLabel = splitModelThinkingSetting(pendingModelSetting).model;
+				return [
+					border,
+					truncateToWidth(theme.fg("accent", theme.bold(`Thinking for ${target === "all" ? "all subagents" : target}`)), width),
+					truncateToWidth(theme.fg("dim", `Model: ${modelLabel}`), width),
+					"",
+					...list.render(width),
+					"",
+					truncateToWidth(theme.fg("dim", "↑↓ navigate · Enter apply · Esc back"), width),
+					border,
+				];
+			},
+			invalidate() {
+				list.invalidate();
+			},
+			handleInput(data: string) {
+				list.handleInput(data);
+				tui.requestRender();
+			},
+		};
+	});
+}
+
+async function runInteractiveModelCommand(availableAgents: AgentConfig[], ctx: ExtensionContext): Promise<void> {
+	if (ctx.mode !== "tui") {
+		ctx.ui.notify(`Interactive subagent model configuration requires TUI mode.\n\n${SUBAGENT_MODEL_USAGE}`, "error");
+		return;
+	}
+	try {
+		await ctx.modelRegistry.refresh({ allowNetwork: false });
+	} catch (error) {
+		ctx.ui.notify(`Could not refresh Pi's model catalogue: ${error instanceof Error ? error.message : String(error)}`, "error");
+		return;
+	}
+	const models = availableModelCatalogue(ctx);
+
+	while (true) {
+		const target = await selectSubagentTarget(availableAgents, ctx);
+		if (!target) return;
+		const model = await selectSubagentModel(target, availableAgents, models, ctx);
+		if (model === undefined) continue;
+		const thinking = await selectSubagentThinking(target, model, availableAgents, models, ctx);
+		if (thinking === undefined) continue;
+		await applyInteractiveConfiguration(target, model, thinking, availableAgents, ctx);
+	}
+}
+
 // ── Extension ─────────────────────────────────────────────────────────
 
 const service: SubagentService = {
@@ -721,25 +1449,56 @@ export default function (pi: ExtensionAPI) {
 	const maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 	agents = loadAgents();
 
+	pi.on("session_start", (_event, ctx) => rememberMainModel(ctx.model));
+	pi.on("model_select", (event) => rememberMainModel(event.model));
+
 	pi.registerCommand("subagents", {
-		description: "Show subagent status and available agents",
-		handler: async (_args, ctx) => {
-			const lines = [
-				"Subagents status:",
-				`Extensions dir: ${EXT_BASE}`,
-				`Max concurrency: ${maxConcurrency}`,
-				"",
-				"Agents:",
-			];
-			for (const agent of agents) {
-				const missing = agent.tools
-					.filter((tool) => !BUILTIN_TOOLS.has(tool) && (!CUSTOM_TOOL_EXTENSIONS[tool] || !fs.existsSync(CUSTOM_TOOL_EXTENSIONS[tool])))
-					.map((tool) => `${tool}${CUSTOM_TOOL_EXTENSIONS[tool] ? ` (${CUSTOM_TOOL_EXTENSIONS[tool]})` : " (unmapped)"}`);
-				lines.push(`- ${agent.name}: ${agent.description || "(no description)"}`);
-				lines.push(`  tools: ${agent.tools.join(", ") || "none"}`);
-				if (missing.length) lines.push(`  missing: ${missing.join(", ")}`);
+		description: "View and configure subagent models and thinking levels",
+		getArgumentCompletions: (prefix) => {
+			const agentCommands = loadAgents().flatMap((agent) => [
+				`model ${agent.name} main`,
+				`thinking ${agent.name} inherit`,
+			]);
+			const values = ["status", "models", "model", "model all main", "thinking all default", "thinking all medium", ...agentCommands];
+			const matches = values.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
+			return matches.length > 0 ? matches : null;
+		},
+		handler: async (args, ctx) => {
+			rememberMainModel(ctx.model);
+			agents = loadAgents();
+			const parts = args.trim().split(/\s+/).filter(Boolean);
+			try {
+				if (parts.length === 0) {
+					if (ctx.mode === "tui") await runInteractiveModelCommand(agents, ctx);
+					else ctx.ui.notify(statusLines(agents).join("\n"), "info");
+					return;
+				}
+				if (parts.length === 1 && parts[0] === "status") {
+					ctx.ui.notify(statusLines(agents).join("\n"), "info");
+					return;
+				}
+				if (parts.length === 1 && parts[0] === "models") {
+					ctx.ui.notify(modelStatusLines(agents).join("\n"), "info");
+					return;
+				}
+				if (parts[0] === "model") {
+					if (parts.length === 1) {
+						await runInteractiveModelCommand(agents, ctx);
+						return;
+					}
+					if (parts.length === 3) {
+						await applyModelCommand(parts[1]!, parts[2]!, agents, ctx);
+						return;
+					}
+				}
+				if (parts[0] === "thinking" && parts.length === 3) {
+					await applyThinkingCommand(parts[1]!, parts[2]!, agents, ctx);
+					return;
+				}
+				ctx.ui.notify(SUBAGENT_MODEL_USAGE, "error");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
-			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
 
@@ -775,6 +1534,8 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const cwd = ctx.cwd;
+			rememberMainModel(ctx.model);
+			agents = loadAgents();
 
 			// Validate mode
 			if (params.tasks && params.tasks.length > 0) {
@@ -817,9 +1578,20 @@ export default function (pi: ExtensionAPI) {
 
 				const results = await mapConcurrent(taskList, maxConcurrency, async (t, idx) => {
 					const agent = agents.find((a) => a.name === t.agent)!;
-					const result = await runSubagent(agent, t.task, t.cwd ?? cwd, signal, (progress) => {
-						allResults[idx].progress = progress;
-						fireParallelUpdate();
+					const launch = resolveLaunch(agent);
+					allResults[idx].model = launch.model;
+					allResults[idx].thinkingLevel = launch.thinkingLevel;
+					allResults[idx].progress.status = "running";
+					flushParallelUpdate();
+					const result = await runSubagent({
+						agent,
+						task: t.task,
+						cwd: t.cwd ?? cwd,
+						signal,
+						onUpdate: (progress) => {
+							allResults[idx].progress = progress;
+							fireParallelUpdate();
+						},
 					});
 
 					// Update allResults with the completed result so the UI reflects it immediately
@@ -847,21 +1619,29 @@ export default function (pi: ExtensionAPI) {
 					throw new Error(`Unknown agent: ${params.agent}. Available agents: ${available}`);
 				}
 
+				const launch = resolveLaunch(agent);
 				const liveResult: AgentResult = {
 					agent: params.agent!,
 					task: params.task!,
 					output: "",
 					exitCode: -1,
-					model: agent.model,
+					model: launch.model,
+					thinkingLevel: launch.thinkingLevel,
 					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 					progress: { agent: params.agent!, status: "running" as const, task: params.task!, recentTools: [], toolCount: 0, tokens: 0, durationMs: 0, lastMessage: "" },
 				};
-				const result = await runSubagent(agent, params.task, params.cwd ?? cwd, signal, (progress) => {
-					liveResult.progress = progress;
-					onUpdate?.({
-						content: [{ type: "text", text: "(running...)" }],
-						details: { mode: "single" as const, results: [liveResult] },
-					});
+				const result = await runSubagent({
+					agent,
+					task: params.task,
+					cwd: params.cwd ?? cwd,
+					signal,
+					onUpdate: (progress) => {
+						liveResult.progress = progress;
+						onUpdate?.({
+							content: [{ type: "text", text: "(running...)" }],
+							details: { mode: "single" as const, results: [liveResult] },
+						});
+					},
 				});
 
 				const isError = result.exitCode !== 0 || !!result.progress.error;
