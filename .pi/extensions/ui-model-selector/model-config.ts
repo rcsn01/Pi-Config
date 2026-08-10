@@ -12,6 +12,8 @@ export interface ContextWindowChoice {
 	description: string;
 }
 
+export type SessionStartReason = "startup" | "reload" | "new" | "resume" | "fork";
+
 export const GPT_56_SHORT_CONTEXT = 272_000;
 export const GPT_56_LONG_CONTEXT = 1_050_000;
 
@@ -50,6 +52,20 @@ export function formatTokenCount(tokens: number): string {
 
 export function supportsContextProfiles(modelId: string): boolean {
 	return GPT_56_DUAL_CONTEXT_IDS.has(modelId.toLowerCase());
+}
+
+export function hasExplicitModelArgument(argv: readonly string[]): boolean {
+	return argv.some((argument) => argument === "--model" || argument.startsWith("--model="));
+}
+
+export function shouldOpenStartupModelSelector(
+	reason: SessionStartReason,
+	hasConversationHistory: boolean,
+	argv: readonly string[],
+): boolean {
+	if (hasExplicitModelArgument(argv)) return false;
+	if (reason === "new") return true;
+	return reason === "startup" && !hasConversationHistory;
 }
 
 export function getContextWindowChoices(model: Pick<ModelChoiceLike, "id" | "contextWindow">): ContextWindowChoice[] {
