@@ -12,11 +12,12 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import * as cp from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Box, Text } from "@earendil-works/pi-tui";
 import {
 	dangerousShellReason,
@@ -41,6 +42,25 @@ import { projectStatePath } from "../_shared/state-paths.ts";
 interface ModeState {
 	mode: ApprovalMode;
 	setAt: number;
+}
+
+interface GuardianDefinition {
+	systemPrompt: string;
+	model: string;
+	tools: string;
+}
+
+export function resolveGuardianPath(moduleUrl: string): string {
+	return path.join(path.dirname(fileURLToPath(moduleUrl)), "guardian.md");
+}
+
+export function parseGuardianDefinition(content: string): GuardianDefinition {
+	const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
+	return {
+		systemPrompt: body.trim(),
+		model: frontmatter.model?.trim() ?? "",
+		tools: frontmatter.tools?.trim() ?? "",
+	};
 }
 
 const MODE_FILE = "approval-mode.json";
@@ -209,29 +229,20 @@ Title: ${title}
 ${message}`;
 
 		// Read guardian agent config
-		const extDir = path.dirname(new URL(import.meta.url).pathname);
-		const guardianPath = path.join(extDir, "guardian.md");
-
-		let systemPrompt = "";
-		let model = "";  // Empty = use pi's default model from settings
-		let tools = "";
+		const guardianPath = resolveGuardianPath(import.meta.url);
+		let definition: GuardianDefinition;
 
 		try {
-			const guardianContent = fs.readFileSync(guardianPath, "utf-8");
-			// Parse YAML frontmatter
-			const fmMatch = guardianContent.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-			if (fmMatch) {
-				const fm = fmMatch[1];
-				systemPrompt = fmMatch[2].trim();
-				for (const line of fm.split("\n")) {
-					if (line.startsWith("model:")) model = line.split(":").slice(1).join(":").trim();
-					if (line.startsWith("tools:")) tools = line.split(":").slice(1).join(":").trim();
-				}
+			definition = parseGuardianDefinition(fs.readFileSync(guardianPath, "utf-8"));
+			if (!definition.systemPrompt) {
+				return { allowed: false, reason: "Guardian agent has no system prompt; blocked for safety." };
 			}
 		} catch {
-			// Guardian not found — fail closed
+			// Guardian not found or invalid — fail closed
 			return { allowed: false, reason: "Guardian agent not found; blocked for safety." };
 		}
+
+		const { systemPrompt, model, tools } = definition;
 
 		// Resolve pi binary
 		const entry = process.argv[1];
@@ -650,8 +661,8 @@ ${message}`;
 						);
 						if (!allowed) {
 							rememberDenied(event.toolName, event.input, "External Path", inputPath);
-						}
 							return { block: true, reason: reason ?? "Auto-review: external write blocked." };
+						}
 						continue;
 					}
 					// Default mode
