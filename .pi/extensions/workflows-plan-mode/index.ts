@@ -8,8 +8,11 @@
  * Plan mode asks the model to explore non-mutatingly and finalize plans in a
  * <proposed_plan> block. The extension extracts that block into a custom
  * rendered message and blocks common mutating tools while plan mode is active.
+ * It also keeps a global Plan Mode model/thinking profile while preserving each
+ * conversation's normal profile and Pi's native normal defaults.
  */
 
+import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -18,6 +21,14 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text, type EditorComponent, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	createNormalDefaultsStore,
+	createPlanModeProfileStore,
+	type ModeModelProfile,
+	type NormalDefaultsStore,
+	type PlanModeProfileStore,
+	validateModeModelProfile,
+} from "./model-profile.ts";
 
 type PlanPhase = "planning" | "awaiting_review";
 
@@ -28,6 +39,13 @@ interface PlanState {
 	setAt: number;
 	latestPlanSignature?: string;
 	promptedPlanSignature?: string;
+	normalProfile?: ModeModelProfile;
+}
+
+export interface PlanModeDependencies {
+	profileStore?: PlanModeProfileStore;
+	normalDefaultsStore?: NormalDefaultsStore;
+	waitForNativePersistence?: () => Promise<void>;
 }
 
 interface ProposedPlanDetails {
@@ -380,12 +398,26 @@ function rememberOnce(seen: Set<string>, key: string, limit = 50): boolean {
 	return true;
 }
 
+function profileLabel(profile: Pick<ModeModelProfile, "provider" | "modelId" | "thinkingLevel">): string {
+	return `${profile.provider}/${profile.modelId} · ${profile.thinkingLevel}`;
+}
+
+function profileFromCurrentSession(pi: ExtensionAPI, ctx: ExtensionContext): ModeModelProfile | undefined {
+	if (!ctx.model) return undefined;
+	return {
+		provider: ctx.model.provider,
+		modelId: ctx.model.id,
+		thinkingLevel: pi.getThinkingLevel() as ModelThinkingLevel,
+	};
+}
+
 function updateStatus(ctx: ExtensionContext, state: PlanState): void {
 	if (!state.active) {
 		ctx.ui.setStatus("plan", undefined);
 		return;
 	}
-	ctx.ui.setStatus("plan", state.phase === "awaiting_review" ? "📋 PLAN REVIEW" : "📋 PLAN MODE");
+	const phase = state.phase === "awaiting_review" ? "PLAN REVIEW" : "PLAN";
+	ctx.ui.setStatus("plan", `📋 ${phase}`);
 }
 
 function optionDisplay(option: { label: string; description?: string }, index: number, recommended?: string): string {
@@ -432,8 +464,22 @@ async function submitEditorCommand(ctx: ExtensionContext, command: string): Prom
 	return true;
 }
 
-export default function (pi: ExtensionAPI) {
+export function createPlanModeExtension(dependencies: PlanModeDependencies = {}) {
+	return (pi: ExtensionAPI) => registerPlanModeExtension(pi, dependencies);
+}
+
+function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDependencies): void {
+	const profileStore = dependencies.profileStore ?? createPlanModeProfileStore();
+	const normalDefaultsStore = dependencies.normalDefaultsStore ?? createNormalDefaultsStore();
+	const waitForNativePersistence = dependencies.waitForNativePersistence ??
+		(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+
 	let planState: PlanState = { active: false, setAt: Date.now() };
+	let activePlanProfile: ModeModelProfile | undefined;
+	let normalGlobalDefaults: ModeModelProfile | undefined;
+	let profileTransitionDepth = 0;
+	let profileEventQueue = Promise.resolve();
+	let lifecycleGeneration = 0;
 	let latestProposedPlan: string | undefined;
 	let latestProposedPlanKey: string | undefined;
 	let pendingFreshImplementationPlan: string | undefined;
@@ -572,8 +618,11 @@ export default function (pi: ExtensionAPI) {
 
 	// ── State Reconstruction ──────────────────────────────────────────────
 
-	const reconstruct = (ctx: ExtensionContext) => {
+	const reconstruct = async (ctx: ExtensionContext) => {
+		const generation = ++lifecycleGeneration;
 		planState = { active: false, setAt: Date.now() };
+		activePlanProfile = undefined;
+		normalGlobalDefaults = undefined;
 		latestProposedPlan = undefined;
 		latestProposedPlanKey = undefined;
 		renderedPlanKeys.clear();
@@ -582,7 +631,17 @@ export default function (pi: ExtensionAPI) {
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === PLAN_CUSTOM_TYPE) {
 				const data = entry.data as PlanState | undefined;
-				if (data) planState = data;
+				if (data) {
+					let normalProfile: ModeModelProfile | undefined;
+					try {
+						normalProfile = data.normalProfile
+							? validateModeModelProfile(data.normalProfile, "Session normal profile")
+							: undefined;
+					} catch (error) {
+						ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+					}
+					planState = { ...data, normalProfile };
+				}
 				continue;
 			}
 
@@ -611,7 +670,20 @@ export default function (pi: ExtensionAPI) {
 					(planState.latestPlanSignature === reconstructedSignature ? reconstructedSignature : undefined),
 			};
 		}
-		updateStatus(ctx, planState);
+
+		if (planState.active) {
+			activePlanProfile = profileFromCurrentSession(pi, ctx);
+			const fallback = planState.normalProfile ?? activePlanProfile;
+			if (fallback) {
+				try {
+					const defaults = await normalDefaultsStore.capture(ctx.cwd, fallback);
+					if (generation === lifecycleGeneration) normalGlobalDefaults = defaults;
+				} catch (error) {
+					ctx.ui.notify(`Could not read Pi's normal defaults: ${error instanceof Error ? error.message : String(error)}`, "error");
+				}
+			}
+		}
+		if (generation === lifecycleGeneration) updateStatus(ctx, planState);
 	};
 
 	const persist = () => {
@@ -624,8 +696,155 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	}
 
-	function sendPlanImplementation(ctx: ExtensionContext, plan: string): void {
-		setPlanMode(ctx, false, undefined);
+	async function resolveProfileModel(ctx: ExtensionContext, profile: ModeModelProfile): Promise<Model<any>> {
+		const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false, providers: [profile.provider] });
+		if (refresh.aborted) throw new Error(`Refreshing ${profile.provider} was aborted.`);
+		const refreshError = refresh.errors.get(profile.provider);
+		if (refreshError) throw refreshError;
+		const model = ctx.modelRegistry.find(profile.provider, profile.modelId);
+		if (!model) throw new Error(`Plan Mode model ${profile.provider}/${profile.modelId} is unavailable.`);
+		if (
+			ctx.scopedModels.length > 0 &&
+			!ctx.scopedModels.some((entry) => entry.model.provider === profile.provider && entry.model.id === profile.modelId)
+		) {
+			throw new Error(`Plan Mode model ${profile.provider}/${profile.modelId} is outside this session's model scope.`);
+		}
+		return model;
+	}
+
+	async function applySessionProfile(ctx: ExtensionContext, profile: ModeModelProfile): Promise<ModeModelProfile> {
+		const model = await resolveProfileModel(ctx, profile);
+		const changed = await pi.setModel(model);
+		if (!changed) throw new Error(`No configured authentication for ${profile.provider}/${profile.modelId}.`);
+		pi.setThinkingLevel(profile.thinkingLevel);
+		return { ...profile, thinkingLevel: pi.getThinkingLevel() as ModelThinkingLevel };
+	}
+
+	async function preserveNormalGlobalDefaults(
+		ctx: ExtensionContext,
+		defaults = normalGlobalDefaults,
+	): Promise<void> {
+		if (!defaults) return;
+		await waitForNativePersistence();
+		await normalDefaultsStore.restore(ctx.cwd, defaults);
+	}
+
+	function commitPlanState(ctx: ExtensionContext, active: boolean, prompt?: string): void {
+		planState = {
+			active,
+			prompt,
+			phase: active ? "planning" : undefined,
+			setAt: Date.now(),
+			latestPlanSignature: active ? latestProposedPlanKey : undefined,
+			promptedPlanSignature: active ? planState.promptedPlanSignature : undefined,
+			normalProfile: active ? planState.normalProfile : undefined,
+		};
+		if (!active) {
+			latestProposedPlan = undefined;
+			latestProposedPlanKey = undefined;
+			activePlanProfile = undefined;
+			normalGlobalDefaults = undefined;
+		}
+		persist();
+		updateStatus(ctx, planState);
+	}
+
+	async function enterPlanMode(ctx: ExtensionContext, prompt?: string): Promise<boolean> {
+		if (planState.active) return true;
+		const normalProfile = profileFromCurrentSession(pi, ctx);
+		if (!normalProfile) {
+			ctx.ui.notify("Cannot enter Plan Mode because the current session has no model.", "error");
+			return false;
+		}
+
+		let switchedSessionProfile = false;
+		try {
+			normalGlobalDefaults = await normalDefaultsStore.capture(ctx.cwd, normalProfile);
+			const storedProfile = await profileStore.load();
+			planState = { ...planState, normalProfile };
+			if (!storedProfile) {
+				await profileStore.save(normalProfile);
+				activePlanProfile = normalProfile;
+				commitPlanState(ctx, true, prompt);
+				return true;
+			}
+
+			profileTransitionDepth++;
+			try {
+				activePlanProfile = await applySessionProfile(ctx, storedProfile);
+				switchedSessionProfile = true;
+				await profileStore.save(activePlanProfile);
+				await preserveNormalGlobalDefaults(ctx);
+			} finally {
+				profileTransitionDepth--;
+			}
+			commitPlanState(ctx, true, prompt);
+			return true;
+		} catch (error) {
+			let rollbackError: unknown;
+			if (switchedSessionProfile) {
+				try {
+					profileTransitionDepth++;
+					await applySessionProfile(ctx, normalProfile);
+					await preserveNormalGlobalDefaults(ctx);
+				} catch (failure) {
+					rollbackError = failure;
+				} finally {
+					profileTransitionDepth--;
+				}
+			}
+			activePlanProfile = undefined;
+			normalGlobalDefaults = undefined;
+			planState = { ...planState, normalProfile: undefined };
+			const rollbackNote = rollbackError
+				? ` Rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+				: "";
+			ctx.ui.notify(
+				`Could not enter Plan Mode: ${error instanceof Error ? error.message : String(error)}${rollbackNote}`,
+				"error",
+			);
+			return false;
+		}
+	}
+
+	async function exitPlanMode(ctx: ExtensionContext): Promise<boolean> {
+		if (!planState.active) return true;
+		const normalProfile = planState.normalProfile;
+		if (normalProfile) {
+			let restoredSessionProfile = false;
+			try {
+				profileTransitionDepth++;
+				await applySessionProfile(ctx, normalProfile);
+				restoredSessionProfile = true;
+				await preserveNormalGlobalDefaults(ctx);
+			} catch (error) {
+				let rollbackError: unknown;
+				if (restoredSessionProfile && activePlanProfile) {
+					try {
+						await applySessionProfile(ctx, activePlanProfile);
+						await preserveNormalGlobalDefaults(ctx);
+					} catch (failure) {
+						rollbackError = failure;
+					}
+				}
+				const rollbackNote = rollbackError
+					? ` Rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+					: "";
+				ctx.ui.notify(
+					`Could not exit Plan Mode: ${error instanceof Error ? error.message : String(error)}${rollbackNote}`,
+					"error",
+				);
+				return false;
+			} finally {
+				profileTransitionDepth--;
+			}
+		}
+		commitPlanState(ctx, false, undefined);
+		return true;
+	}
+
+	async function sendPlanImplementation(ctx: ExtensionContext, plan: string): Promise<void> {
+		if (!(await exitPlanMode(ctx))) return;
 		ctx.ui.notify("Plan mode exited. Implementing proposed plan...", "info");
 		pi.sendUserMessage(`Implement this proposed plan:\n\n${plan}`, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 	}
@@ -637,7 +856,7 @@ export default function (pi: ExtensionAPI) {
 	async function startFreshPlanImplementation(ctx: ExtensionCommandContext, plan: string): Promise<void> {
 		const signature = planSignature(plan);
 		pendingFreshImplementationPlan = undefined;
-		setPlanMode(ctx, false, undefined);
+		if (!(await exitPlanMode(ctx))) return;
 		ctx.ui.notify("Plan mode exited. Starting fresh implementation session...", "info");
 
 		const parentSession = ctx.sessionManager.getSessionFile();
@@ -649,11 +868,11 @@ export default function (pi: ExtensionAPI) {
 			},
 		});
 
-		if (result.cancelled) {
+		if (result.cancelled && await enterPlanMode(ctx)) {
 			latestProposedPlan = plan;
 			latestProposedPlanKey = signature;
 			planState = {
-				active: true,
+				...planState,
 				phase: "awaiting_review",
 				setAt: Date.now(),
 				latestPlanSignature: signature,
@@ -673,7 +892,10 @@ export default function (pi: ExtensionAPI) {
 
 		pendingFreshImplementationPlan = plan;
 		const signature = planSignature(plan);
-		setPlanMode(ctx, false, undefined);
+		if (!(await exitPlanMode(ctx))) {
+			pendingFreshImplementationPlan = undefined;
+			return;
+		}
 		latestProposedPlan = plan;
 		latestProposedPlanKey = signature;
 		if (await submitEditorCommand(ctx, PLAN_IMPLEMENT_FRESH_COMMAND)) return;
@@ -770,6 +992,63 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => reconstruct(ctx));
 	pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
+
+	function enqueueProfileEvent(task: () => Promise<void>): Promise<void> {
+		const result = profileEventQueue.then(task, task);
+		profileEventQueue = result.catch(() => {});
+		return result;
+	}
+
+	async function rememberActivePlanProfile(
+		ctx: ExtensionContext,
+		profile: ModeModelProfile,
+		generation: number,
+		defaults: ModeModelProfile | undefined,
+	): Promise<void> {
+		if (generation !== lifecycleGeneration || !planState.active) return;
+		activePlanProfile = profile;
+		let persistenceError: unknown;
+		try {
+			await profileStore.save(profile);
+		} catch (error) {
+			persistenceError = error;
+		}
+		try {
+			await preserveNormalGlobalDefaults(ctx, defaults);
+		} catch (error) {
+			ctx.ui.notify(
+				`Could not preserve Pi's normal defaults: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+		}
+		if (persistenceError) {
+			ctx.ui.notify(
+				`Could not save the Plan Mode profile: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}`,
+				"error",
+			);
+		}
+		if (generation === lifecycleGeneration && planState.active) updateStatus(ctx, planState);
+	}
+
+	pi.on("model_select", async (event, ctx) => {
+		if (!planState.active || profileTransitionDepth > 0 || event.source === "restore") return;
+		const profile: ModeModelProfile = {
+			provider: event.model.provider,
+			modelId: event.model.id,
+			thinkingLevel: pi.getThinkingLevel() as ModelThinkingLevel,
+		};
+		const generation = lifecycleGeneration;
+		const defaults = normalGlobalDefaults;
+		await enqueueProfileEvent(() => rememberActivePlanProfile(ctx, profile, generation, defaults));
+	});
+
+	pi.on("thinking_level_select", async (event, ctx) => {
+		if (!planState.active || profileTransitionDepth > 0 || !activePlanProfile) return;
+		const profile = { ...activePlanProfile, thinkingLevel: event.level as ModelThinkingLevel };
+		const generation = lifecycleGeneration;
+		const defaults = normalGlobalDefaults;
+		await enqueueProfileEvent(() => rememberActivePlanProfile(ctx, profile, generation, defaults));
+	});
 
 	// ── Intercept repeated/ambiguous review input ──────────────────────────
 
@@ -881,23 +1160,6 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Command: /plan ────────────────────────────────────────────────────
 
-	function setPlanMode(ctx: ExtensionContext, active: boolean, prompt?: string): void {
-		planState = {
-			active,
-			prompt,
-			phase: active ? "planning" : undefined,
-			setAt: Date.now(),
-			latestPlanSignature: active ? latestProposedPlanKey : undefined,
-			promptedPlanSignature: active ? planState.promptedPlanSignature : undefined,
-		};
-		if (!active) {
-			latestProposedPlan = undefined;
-			latestProposedPlanKey = undefined;
-		}
-		persist();
-		updateStatus(ctx, planState);
-	}
-
 	pi.registerCommand("plan-implement-fresh", {
 		description: "Implement the latest proposed plan in a fresh session",
 		handler: async (_args, ctx) => {
@@ -911,16 +1173,26 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	async function togglePlanMode(ctx: ExtensionContext, prompt?: string): Promise<boolean> {
+		if (planState.active) {
+			if (!(await exitPlanMode(ctx))) return false;
+			ctx.ui.notify("Plan mode exited.", "info");
+			return true;
+		}
+		if (!(await enterPlanMode(ctx, prompt))) return false;
+		ctx.ui.notify(
+			activePlanProfile
+				? `📋 Plan mode active: ${profileLabel(activePlanProfile)}. Normal on exit: ${profileLabel(planState.normalProfile!)}`
+				: "📋 Plan mode active.",
+			"info",
+		);
+		return true;
+	}
+
 	pi.registerShortcut("shift+tab", {
 		description: "Toggle plan mode",
 		handler: async (ctx) => {
-			setPlanMode(ctx, !planState.active, planState.active ? undefined : planState.prompt);
-			ctx.ui.notify(
-				planState.active
-					? "📋 Plan mode active. The agent will create a proposed plan before implementation."
-					: "Plan mode exited.",
-				"info",
-			);
+			await togglePlanMode(ctx, planState.active ? undefined : planState.prompt);
 		},
 	});
 
@@ -938,7 +1210,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (subcommand === "implement" || subcommand === "accept") {
 				const plan = requireLatestPlan(ctx);
-				if (plan) sendPlanImplementation(ctx, plan);
+				if (plan) await sendPlanImplementation(ctx, plan);
 				return;
 			}
 
@@ -959,9 +1231,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (subcommand === "status") {
+				const profileDetails = planState.active && activePlanProfile && planState.normalProfile
+					? ` Plan: ${profileLabel(activePlanProfile)}. Normal on exit: ${profileLabel(planState.normalProfile)}.`
+					: "";
 				ctx.ui.notify(
 					planState.active
-						? `Plan mode active (${planState.phase || "planning"}).${latestProposedPlan ? " A proposed plan is awaiting review." : ""}`
+						? `Plan mode active (${planState.phase || "planning"}).${profileDetails}${latestProposedPlan ? " A proposed plan is awaiting review." : ""}`
 						: "Plan mode inactive.",
 					"info",
 				);
@@ -969,27 +1244,26 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (subcommand === "exit") {
-				setPlanMode(ctx, false, undefined);
-				ctx.ui.notify("Plan mode exited.", "info");
+				if (await exitPlanMode(ctx)) ctx.ui.notify("Plan mode exited.", "info");
 				return;
 			}
 
 			if (trimmed) {
-				latestProposedPlan = undefined;
-				latestProposedPlanKey = undefined;
-				setPlanMode(ctx, true, trimmed);
-				ctx.ui.notify("📋 Plan mode active", "info");
-				pi.sendUserMessage(trimmed, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+				if (planState.active || await enterPlanMode(ctx, trimmed)) {
+					latestProposedPlan = undefined;
+					latestProposedPlanKey = undefined;
+					planState = { ...planState, prompt: trimmed, phase: "planning" };
+					persist();
+					updateStatus(ctx, planState);
+					ctx.ui.notify("📋 Plan mode active", "info");
+					pi.sendUserMessage(trimmed, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+				}
 				return;
 			}
 
-			setPlanMode(ctx, !planState.active, undefined);
-			ctx.ui.notify(
-				planState.active
-					? "📋 Plan mode active. The agent will create a proposed plan before implementation."
-					: "Plan mode exited.",
-				"info",
-			);
+			await togglePlanMode(ctx);
 		},
 	});
 }
+
+export default createPlanModeExtension();
