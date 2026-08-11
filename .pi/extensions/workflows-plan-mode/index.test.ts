@@ -65,6 +65,7 @@ function createHarness(options: HarnessOptions = {}) {
 		return options.selection;
 	});
 	const notify = vi.fn();
+	const setStatus = vi.fn();
 	const editor = vi.fn(async () => options.editorResult);
 	const setEditorText = vi.fn();
 	const freshSendUserMessage = vi.fn();
@@ -97,7 +98,7 @@ function createHarness(options: HarnessOptions = {}) {
 		input: vi.fn(async () => undefined),
 		editor,
 		notify,
-		setStatus: vi.fn(),
+		setStatus,
 		setEditorText,
 		getEditorComponent,
 		setEditorComponent,
@@ -189,6 +190,7 @@ function createHarness(options: HarnessOptions = {}) {
 		custom,
 		select,
 		notify,
+		setStatus,
 		editor,
 		setEditorText,
 		getEditorComponent,
@@ -452,6 +454,17 @@ describe("plan review lifecycle", () => {
 		expect(harness.select).not.toHaveBeenCalled();
 		expect(harness.custom).not.toHaveBeenCalled();
 	});
+
+	it("shows only the Plan Mode phase in the bottom status bar", async () => {
+		const harness = createHarness();
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		expect(harness.setStatus).toHaveBeenLastCalledWith("plan", "📋 PLAN");
+
+		await initializeAndExtract(harness, "# Status Bar Plan");
+		await harness.emit("turn_end");
+		expect(harness.setStatus).toHaveBeenLastCalledWith("plan", "📋 PLAN REVIEW");
+		expect(harness.setStatus.mock.calls.flat().join(" ")).not.toContain("/");
+	});
 });
 
 describe("Plan Mode model and thinking profiles", () => {
@@ -486,6 +499,10 @@ describe("Plan Mode model and thinking profiles", () => {
 			"setThinking:high",
 		]));
 		expect(stores.restore).toHaveBeenCalledWith("/test/project", profileFor(normalModel, "medium"));
+		expect(harness.notify).toHaveBeenLastCalledWith(
+			"📋 Plan mode active: github-copilot/gpt-5.6-sol · high. Normal on exit: anthropic/claude-sonnet-4.6 · medium",
+			"info",
+		);
 
 		await harness.commands.get("plan").handler("exit", harness.ctx);
 		expect(harness.timeline.slice(-2)).toEqual([
