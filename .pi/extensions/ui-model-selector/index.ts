@@ -232,6 +232,7 @@ async function applySelection(
 			allowNetwork: false,
 			providers: [selectedModel.provider],
 		});
+		if (refresh.aborted) throw new Error(`Refreshing ${selectedModel.provider} was aborted.`);
 		const refreshError = refresh.errors.get(selectedModel.provider);
 		if (refreshError) throw refreshError;
 		model = ctx.modelRegistry.find(selectedModel.provider, selectedModel.id) ?? selectedModel;
@@ -266,7 +267,14 @@ async function runModelControl(pi: ExtensionAPI, args: string, ctx: ExtensionCon
 	}
 
 	try {
-		await ctx.modelRegistry.refresh({ allowNetwork: false });
+		const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false });
+		if (refresh.aborted) throw new Error("Model catalogue refresh was aborted.");
+		if (refresh.errors.size > 0) {
+			const details = [...refresh.errors.entries()]
+				.map(([provider, error]) => `${provider}: ${error.message}`)
+				.join("; ");
+			throw new Error(details);
+		}
 	} catch (error) {
 		ctx.ui.notify(
 			`Could not reload the model catalogue: ${error instanceof Error ? error.message : String(error)}`,
