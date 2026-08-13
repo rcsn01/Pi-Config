@@ -1,3 +1,18 @@
 {
-  "defaultThinkingLevel": "xhigh"
+  "uiModelSelector": {
+    "profiles": {
+      "normal": {
+        "provider": "github-copilot",
+        "modelId": "gpt-5.6-sol",
+        "thinkingLevel": "medium",
+        "contextWindow": 272000
+      },
+      "plan": {
+        "provider": "github-copilot",
+        "modelId": "gpt-5.6-sol",
+        "thinkingLevel": "xhigh",
+        "contextWindow": 1050000
+      }
+    }
+  }
 }

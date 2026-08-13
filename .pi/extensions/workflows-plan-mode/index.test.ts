@@ -233,7 +233,7 @@ const planModel = {
 };
 
 function profileFor(model: typeof normalModel, thinkingLevel: ModelThinkingLevel): ModeModelProfile {
-	return { provider: model.provider, modelId: model.id, thinkingLevel };
+	return { provider: model.provider, modelId: model.id, thinkingLevel, contextWindow: model.contextWindow };
 }
 
 function createProfileDependencies(initial?: ModeModelProfile) {
@@ -500,7 +500,7 @@ describe("Plan Mode model and thinking profiles", () => {
 		]));
 		expect(stores.restore).toHaveBeenCalledWith("/test/project", profileFor(normalModel, "medium"));
 		expect(harness.notify).toHaveBeenLastCalledWith(
-			"📋 Plan mode active: github-copilot/gpt-5.6-sol · high. Normal on exit: anthropic/claude-sonnet-4.6 · medium",
+			"📋 Plan mode active: github-copilot/gpt-5.6-sol · high · 1,050,000 ctx. Normal on exit: anthropic/claude-sonnet-4.6 · medium · 1,000,000 ctx",
 			"info",
 		);
 
@@ -712,7 +712,7 @@ describe("Plan Mode model and thinking profiles", () => {
 		await harness.commands.get("plan").handler("status", harness.ctx);
 		expect(harness.notify).toHaveBeenLastCalledWith(
 			expect.stringContaining(
-				"Plan: github-copilot/gpt-5.6-sol · high. Normal on exit: anthropic/claude-sonnet-4.6 · medium.",
+				"Plan: github-copilot/gpt-5.6-sol · high · 1,050,000 ctx. Normal on exit: anthropic/claude-sonnet-4.6 · medium · 1,000,000 ctx.",
 			),
 			"info",
 		);
@@ -730,7 +730,11 @@ describe("Plan Mode profile schema", () => {
 
 			const store = createNormalDefaultsStore(directory);
 			expect(await store.capture("/test/project", profileFor(normalModel, "medium")))
-				.toEqual(profileFor(planModel, "high"));
+				.toEqual({
+					...profileFor(planModel, "high"),
+					// Native settings have no context field; the active session fallback supplies it.
+					contextWindow: normalModel.contextWindow,
+				});
 			await store.restore("/test/project", profileFor(normalModel, "medium"));
 
 			const restored = SettingsManager.create("/test/project", directory).getGlobalSettings();
@@ -753,7 +757,7 @@ describe("Plan Mode profile schema", () => {
 			await store.save(profileFor(planModel, "high"));
 			expect(await store.load()).toEqual(profileFor(planModel, "high"));
 			expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
-				version: 1,
+				version: 2,
 				profile: profileFor(planModel, "high"),
 			});
 			expect(readdirSync(directory)).toEqual(["plan-mode-profile.json"]);
@@ -762,19 +766,27 @@ describe("Plan Mode profile schema", () => {
 		}
 	});
 
-	it("accepts a versioned model and thinking profile", () => {
+	it("accepts current profiles and legacy v1 profiles without context", () => {
 		expect(parsePlanModeProfileDocument({
-			version: 1,
+			version: 2,
 			profile: profileFor(planModel, "xhigh"),
 		})).toEqual(profileFor(planModel, "xhigh"));
+		expect(parsePlanModeProfileDocument({
+			version: 1,
+			profile: { provider: planModel.provider, modelId: planModel.id, thinkingLevel: "high" },
+		})).toEqual({ provider: planModel.provider, modelId: planModel.id, thinkingLevel: "high" });
 	});
 
-	it("rejects malformed versions and thinking levels", () => {
-		expect(() => parsePlanModeProfileDocument({ version: 2, profile: profileFor(planModel, "high") }))
+	it("rejects malformed versions, thinking levels, and contexts", () => {
+		expect(() => parsePlanModeProfileDocument({ version: 3, profile: profileFor(planModel, "high") }))
 			.toThrow("unsupported version");
 		expect(() => parsePlanModeProfileDocument({
-			version: 1,
+			version: 2,
 			profile: { ...profileFor(planModel, "high"), thinkingLevel: "turbo" },
 		})).toThrow("thinkingLevel is not supported");
+		expect(() => parsePlanModeProfileDocument({
+			version: 2,
+			profile: { ...profileFor(planModel, "high"), contextWindow: 0 },
+		})).toThrow("contextWindow must be a positive integer");
 	});
 });
