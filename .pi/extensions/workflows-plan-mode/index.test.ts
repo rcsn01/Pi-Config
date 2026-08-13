@@ -54,6 +54,7 @@ function createHarness(options: HarnessOptions = {}) {
 	const commands = new Map<string, any>();
 	const shortcuts = new Map<string, any>();
 	const renderers = new Map<string, any>();
+	const entryRenderers = new Map<string, any>();
 	const timeline: string[] = [];
 	let currentModel = options.model;
 	let thinkingLevel = options.thinkingLevel ?? "medium";
@@ -161,6 +162,7 @@ function createHarness(options: HarnessOptions = {}) {
 		},
 		registerTool: vi.fn(),
 		registerMessageRenderer: (customType: string, renderer: any) => renderers.set(customType, renderer),
+		registerEntryRenderer: (customType: string, renderer: any) => entryRenderers.set(customType, renderer),
 		registerCommand: (name: string, definition: any) => commands.set(name, definition),
 		registerShortcut: (shortcut: string, definition: any) => shortcuts.set(shortcut, definition),
 		appendEntry,
@@ -185,6 +187,7 @@ function createHarness(options: HarnessOptions = {}) {
 		commands,
 		shortcuts,
 		renderers,
+		entryRenderers,
 		timeline,
 		appendedEntries,
 		custom,
@@ -210,9 +213,9 @@ function createHarness(options: HarnessOptions = {}) {
 	};
 }
 
-async function initializeAndExtract(harness: ReturnType<typeof createHarness>, plan: string): Promise<void> {
+async function initializeAndExtract(harness: ReturnType<typeof createHarness>, plan: string): Promise<any[]> {
 	await harness.emit("session_start", { type: "session_start", reason: "startup" });
-	await harness.emit("message_end", { type: "message_end", message: assistantWithPlan(plan) });
+	return harness.emit("message_end", { type: "message_end", message: assistantWithPlan(plan) });
 }
 
 const actionLabels = PLAN_REVIEW_ACTIONS.map((action) => action.label);
@@ -260,12 +263,13 @@ function createProfileDependencies(initial?: ModeModelProfile) {
 }
 
 describe("simple plan review UI", () => {
-	it("renders the plan in chat before opening Pi's built-in selector", async () => {
+	it("keeps the finalized plan in chat before opening Pi's built-in selector", async () => {
 		const plan = "# Exact Plan\n\n1. First\n2. Second";
 		const harness = createHarness();
-		await initializeAndExtract(harness, plan);
-		await harness.emit("message_end", { type: "message_end", message: assistantWithPlan(plan) });
+		const [result] = await initializeAndExtract(harness, plan);
 
+		expect(result.message.content[0].text).toContain(plan);
+		expect(result.message.content[0].text).not.toContain("<proposed_plan>");
 		expect(harness.sendMessage).not.toHaveBeenCalled();
 		expect(harness.select).not.toHaveBeenCalled();
 		await harness.emit("agent_end", { type: "agent_end", messages: [] });
@@ -273,15 +277,43 @@ describe("simple plan review UI", () => {
 		expect(harness.select).not.toHaveBeenCalled();
 
 		await harness.emit("agent_settled");
-		expect(harness.sendMessage).toHaveBeenCalledTimes(1);
-		expect(harness.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ customType: "proposed-plan", content: plan, display: true }),
-			{ triggerTurn: false },
-		);
+		expect(harness.sendMessage).not.toHaveBeenCalled();
 		expect(harness.select).toHaveBeenCalledWith("A proposed plan is ready for review.", actionLabels);
-		expect(harness.timeline.slice(-2)).toEqual(["message:proposed-plan", "select"]);
+		expect(harness.timeline.at(-1)).toBe("select");
 		expect(harness.custom).not.toHaveBeenCalled();
 		expect(harness.renderers.has("proposed-plan")).toBe(true);
+		expect(harness.entryRenderers.has("proposed-plan-display")).toBe(true);
+	});
+
+	it("keeps only the last complete plan block when the model emits replacements", async () => {
+		const harness = createHarness();
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		const [result] = await harness.emit("message_end", {
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{
+					type: "text",
+					text: "<proposed_plan>Old plan</proposed_plan>\n<proposed_plan>Final plan</proposed_plan>",
+				}],
+			},
+		});
+
+		expect(result.message.content[0].text).toBe("Final plan");
+		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({ latestPlan: "Final plan" });
+	});
+
+	it("shows the current plan with a transcript-only entry", async () => {
+		const plan = "# Show Me";
+		const harness = createHarness();
+		await initializeAndExtract(harness, plan);
+		await harness.commands.get("plan").handler("show", harness.ctx);
+
+		expect(harness.appendedEntries.at(-1)).toEqual({
+			customType: "proposed-plan-display",
+			data: expect.objectContaining({ content: plan }),
+		});
+		expect(harness.sendMessage).not.toHaveBeenCalled();
 	});
 
 	it("implements the current plan when selected", async () => {
@@ -361,22 +393,18 @@ describe("plan review lifecycle", () => {
 		await initializeAndExtract(harness, "# Plan One\n\nFirst version");
 		await harness.emit("agent_settled");
 		await harness.emit("agent_settled");
-		expect(harness.sendMessage).toHaveBeenCalledTimes(1);
+		expect(harness.sendMessage).not.toHaveBeenCalled();
 		expect(harness.select).toHaveBeenCalledTimes(1);
 
 		const revised = "# Plan Two\n\nMaterially revised version";
 		await harness.emit("message_end", { type: "message_end", message: assistantWithPlan(revised) });
 		await harness.emit("agent_settled");
-		expect(harness.sendMessage).toHaveBeenCalledTimes(2);
+		expect(harness.sendMessage).not.toHaveBeenCalled();
 		expect(harness.select).toHaveBeenCalledTimes(2);
-		expect(harness.sendMessage).toHaveBeenLastCalledWith(
-			expect.objectContaining({ content: revised }),
-			{ triggerTurn: false },
-		);
 		expect(harness.custom).not.toHaveBeenCalled();
 	});
 
-	it("prints the current plan before re-prompting for ambiguous or repeated input", async () => {
+	it("re-prompts for ambiguous or repeated input without injecting the plan into model context", async () => {
 		const plan = "# Current Plan\n\nKeep this exact proposal.";
 		const harness = createHarness();
 		await initializeAndExtract(harness, plan);
@@ -387,23 +415,23 @@ describe("plan review lifecycle", () => {
 			text: "continue",
 			source: "interactive",
 		});
-		expect(harness.timeline.slice(-2)).toEqual(["message:proposed-plan", "select"]);
+		expect(harness.timeline.at(-1)).toBe("select");
 
 		const repeated = await harness.emit("input", {
 			type: "input",
 			text: plan,
 			source: "interactive",
 		});
-		expect(harness.timeline.slice(-2)).toEqual(["message:proposed-plan", "select"]);
+		expect(harness.timeline.at(-1)).toBe("select");
 
 		expect(ambiguous).toEqual([{ action: "handled" }]);
 		expect(repeated).toEqual([{ action: "handled" }]);
-		expect(harness.sendMessage).toHaveBeenCalledTimes(3);
+		expect(harness.sendMessage).not.toHaveBeenCalled();
 		expect(harness.select).toHaveBeenCalledTimes(3);
 		expect(harness.custom).not.toHaveBeenCalled();
 	});
 
-	it("appends the plan but never opens approval UI outside TUI mode", async () => {
+	it("keeps the plan in the assistant message but never opens approval UI outside TUI mode", async () => {
 		const stderr = vi.spyOn(process.stderr, "write").mockImplementation((() => true) as any);
 		try {
 			const harness = createHarness({ mode: "print" });
@@ -411,7 +439,7 @@ describe("plan review lifecycle", () => {
 			await harness.emit("agent_settled");
 			await harness.emit("agent_settled");
 
-			expect(harness.sendMessage).toHaveBeenCalledTimes(1);
+			expect(harness.sendMessage).not.toHaveBeenCalled();
 			expect(harness.select).not.toHaveBeenCalled();
 			expect(harness.custom).not.toHaveBeenCalled();
 			expect(stderr).toHaveBeenCalledTimes(1);
@@ -427,18 +455,13 @@ describe("plan review lifecycle", () => {
 		const plan = "# Durable Plan\n\nPersist me.";
 		const branch = [
 			{
-				type: "custom_message",
-				customType: "proposed-plan",
-				content: plan,
-				details: { signature: "durable-signature" },
-			},
-			{
 				type: "custom",
 				customType: "plan-mode-state",
 				data: {
 					active: true,
 					phase: "awaiting_review",
 					setAt: 1,
+					latestPlan: plan,
 					latestPlanSignature: "durable-signature",
 					promptedPlanSignature: "durable-signature",
 				},
