@@ -38,6 +38,7 @@ interface PlanState {
 	prompt?: string;
 	setAt: number;
 	latestPlanSignature?: string;
+	latestPlan?: string;
 	promptedPlanSignature?: string;
 	normalProfile?: ModeModelProfile;
 }
@@ -95,7 +96,9 @@ function createPlanMarkdownTheme(theme: Theme): MarkdownTheme {
 }
 
 const PLAN_CUSTOM_TYPE = "plan-mode-state";
+// Kept for rendering/reconstructing messages written by older versions.
 const PROPOSED_PLAN_CUSTOM_TYPE = "proposed-plan";
+const PROPOSED_PLAN_ENTRY_TYPE = "proposed-plan-display";
 
 const PROPOSED_PLAN_OPEN = "<proposed_plan>";
 const PROPOSED_PLAN_CLOSE = "</proposed_plan>";
@@ -278,11 +281,25 @@ function extractProposedPlan(text: string): string | undefined {
 	return plan;
 }
 
-function stripProposedPlanBlocks(text: string): string {
-	return text
-		.replace(/\n?\s*<proposed_plan>\s*[\s\S]*?\s*<\/proposed_plan>\s*/g, "\n")
-		.replace(/\n{3,}/g, "\n\n")
-		.trim();
+function replaceProposedPlanBlocks(text: string, plan: string): string {
+	// Keep only the last complete block, which extractProposedPlan treats as the
+	// authoritative plan. Besides being durable, keeping it in the assistant
+	// message preserves it in model context without injecting a second message.
+	const pattern = /<proposed_plan>\s*[\s\S]*?\s*<\/proposed_plan>/g;
+	const matches = [...text.matchAll(pattern)];
+	if (matches.length === 0) return plan;
+
+	let cursor = 0;
+	let result = "";
+	for (let index = 0; index < matches.length; index++) {
+		const match = matches[index];
+		const start = match.index;
+		result += text.slice(cursor, start);
+		if (index === matches.length - 1) result += plan;
+		cursor = start + match[0].length;
+	}
+	result += text.slice(cursor);
+	return result.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function replaceAssistantText(message: any, text: string): any {
@@ -387,17 +404,6 @@ function customMessageText(content: unknown): string {
 	return "";
 }
 
-function rememberOnce(seen: Set<string>, key: string, limit = 50): boolean {
-	if (seen.has(key)) return false;
-	seen.add(key);
-	while (seen.size > limit) {
-		const first = seen.values().next().value;
-		if (first === undefined) break;
-		seen.delete(first);
-	}
-	return true;
-}
-
 function profileLabel(profile: Pick<ModeModelProfile, "provider" | "modelId" | "thinkingLevel" | "contextWindow">): string {
 	const context = profile.contextWindow === undefined ? "legacy context" : `${profile.contextWindow.toLocaleString()} ctx`;
 	return `${profile.provider}/${profile.modelId} · ${profile.thinkingLevel} · ${context}`;
@@ -485,8 +491,6 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	let latestProposedPlan: string | undefined;
 	let latestProposedPlanKey: string | undefined;
 	let pendingFreshImplementationPlan: string | undefined;
-	let pendingProposedPlanRender: { plan: string; key: string; createdAt: number } | undefined;
-	const renderedPlanKeys = new Set<string>();
 
 	// ── Plan Mode clarification tool ───────────────────────────────────────
 
@@ -597,8 +601,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 
 	// ── Custom proposed-plan rendering ──────────────────────────────────────
 
-	pi.registerMessageRenderer<ProposedPlanDetails>(PROPOSED_PLAN_CUSTOM_TYPE, (message, { expanded }, theme) => {
-		const content = typeof message.content === "string" ? message.content : "";
+	function renderProposedPlan(content: string, createdAt: number | undefined, expanded: boolean, theme: Theme) {
 		const box = new Box(1, 1, (value) => theme.bg("customMessageBg", value));
 		box.addChild(new Text(`${theme.fg("accent", theme.bold("Proposed Plan"))}\n`, 0, 0));
 		box.addChild(
@@ -610,12 +613,21 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 				{ color: (text) => theme.fg("customMessageText", text) },
 			),
 		);
-		if (expanded && message.details?.createdAt) {
-			box.addChild(
-				new Text(theme.fg("dim", `\ncreated ${new Date(message.details.createdAt).toLocaleString()}`), 0, 0),
-			);
+		if (expanded && createdAt) {
+			box.addChild(new Text(theme.fg("dim", `\ncreated ${new Date(createdAt).toLocaleString()}`), 0, 0));
 		}
 		return box;
+	}
+
+	// Backward compatibility for durable custom messages created by older versions.
+	pi.registerMessageRenderer<ProposedPlanDetails>(PROPOSED_PLAN_CUSTOM_TYPE, (message, { expanded }, theme) =>
+		renderProposedPlan(typeof message.content === "string" ? message.content : "", message.details?.createdAt, expanded, theme)
+	);
+
+	// Explicit /plan show output is transcript-only and must not be fed back to the model.
+	pi.registerEntryRenderer(PROPOSED_PLAN_ENTRY_TYPE, (entry, { expanded }, theme) => {
+		const data = entry.data as { content?: string; createdAt?: number } | undefined;
+		return renderProposedPlan(data?.content ?? "", data?.createdAt, expanded, theme);
 	});
 
 	// ── State Reconstruction ──────────────────────────────────────────────
@@ -627,8 +639,6 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		normalGlobalDefaults = undefined;
 		latestProposedPlan = undefined;
 		latestProposedPlanKey = undefined;
-		renderedPlanKeys.clear();
-		pendingProposedPlanRender = undefined;
 
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === PLAN_CUSTOM_TYPE) {
@@ -643,6 +653,10 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 						ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
 					}
 					planState = { ...data, normalProfile };
+					if (typeof data.latestPlan === "string" && data.latestPlan.trim()) {
+						latestProposedPlan = data.latestPlan.trim();
+						latestProposedPlanKey = data.latestPlanSignature || planSignature(latestProposedPlan);
+					}
 				}
 				continue;
 			}
@@ -654,7 +668,6 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 					const key = custom.details?.signature || planSignature(plan);
 					latestProposedPlan = plan;
 					latestProposedPlanKey = key;
-					renderedPlanKeys.add(key);
 				}
 			}
 		}
@@ -745,6 +758,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			phase: active ? "planning" : undefined,
 			setAt: Date.now(),
 			latestPlanSignature: active ? latestProposedPlanKey : undefined,
+			latestPlan: active ? latestProposedPlan : undefined,
 			promptedPlanSignature: active ? planState.promptedPlanSignature : undefined,
 			normalProfile: active ? planState.normalProfile : undefined,
 		};
@@ -933,30 +947,11 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	function showLatestPlan(ctx: ExtensionContext): void {
 		const plan = requireLatestPlan(ctx);
 		if (!plan) return;
-		pi.sendMessage<ProposedPlanDetails>(
-			{
-				customType: PROPOSED_PLAN_CUSTOM_TYPE,
-				content: plan,
-				display: true,
-				details: { createdAt: Date.now(), signature: latestProposedPlanKey },
-			},
-			{ triggerTurn: false },
-		);
-	}
-
-	function flushPendingProposedPlanRender(): void {
-		const pending = pendingProposedPlanRender;
-		if (!pending) return;
-		pendingProposedPlanRender = undefined;
-		pi.sendMessage<ProposedPlanDetails>(
-			{
-				customType: PROPOSED_PLAN_CUSTOM_TYPE,
-				content: pending.plan,
-				display: true,
-				details: { createdAt: pending.createdAt, signature: pending.key },
-			},
-			{ triggerTurn: false },
-		);
+		pi.appendEntry(PROPOSED_PLAN_ENTRY_TYPE, {
+			content: plan,
+			createdAt: Date.now(),
+			signature: latestProposedPlanKey,
+		});
 	}
 
 	function printPlanReviewInstructions(ctx: ExtensionContext, reason: string): void {
@@ -995,7 +990,6 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	async function promptForPlanReviewAction(ctx: ExtensionContext, reason: string): Promise<void> {
 		const plan = requireLatestPlan(ctx);
 		if (!plan) return;
-		showLatestPlan(ctx);
 		await handlePlanReviewAction(ctx, plan, reason);
 	}
 
@@ -1103,26 +1097,21 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		const plan = extractProposedPlan(text);
 		if (!plan) return;
 
-		const visibleText = stripProposedPlanBlocks(text);
+		const visibleText = replaceProposedPlanBlocks(text, plan);
 		const key = planSignature(plan);
 		latestProposedPlan = plan;
 		latestProposedPlanKey = key;
-		planState = { ...planState, phase: "awaiting_review", latestPlanSignature: key };
+		planState = {
+			...planState,
+			phase: "awaiting_review",
+			latestPlanSignature: key,
+			latestPlan: plan,
+		};
 		persist();
 
-		// Deduplicate by plan content, not assistant-message timestamp. If the model
-		// repeats the same plan in a later turn, keep the transcript clean and avoid
-		// prompting the user to review the same plan again.
-		//
-		// Do not call pi.sendMessage() from message_end: while the agent is still
-		// streaming, pi treats that as a steer message and feeds the custom plan
-		// back into the active agent. That skips the review prompt and can cause the
-		// model to repeat the same <proposed_plan> block. Defer display until
-		// agent_settled, where sendMessage({ triggerTurn: false }) is append-only.
-		if (rememberOnce(renderedPlanKeys, key)) {
-			pendingProposedPlanRender = { plan, key, createdAt: Date.now() };
-		}
-
+		// The streamed tags are normalized only after completion. Most importantly,
+		// the plan remains part of this assistant message instead of disappearing
+		// and being re-injected later as an extension message.
 		return { message: replaceAssistantText(event.message, visibleText) };
 	});
 
@@ -1131,10 +1120,6 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (!planState.active) return;
 
-		// Append the durable transcript message before opening Pi's built-in selector.
-		// This keeps the complete plan in chat and the approval controls in the
-		// normal editor area.
-		flushPendingProposedPlanRender();
 		if (!latestProposedPlan || !latestProposedPlanKey) return;
 		if (planState.promptedPlanSignature === latestProposedPlanKey) return;
 
@@ -1262,7 +1247,14 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 				if (planState.active || await enterPlanMode(ctx, trimmed)) {
 					latestProposedPlan = undefined;
 					latestProposedPlanKey = undefined;
-					planState = { ...planState, prompt: trimmed, phase: "planning" };
+					planState = {
+						...planState,
+						prompt: trimmed,
+						phase: "planning",
+						latestPlan: undefined,
+						latestPlanSignature: undefined,
+						promptedPlanSignature: undefined,
+					};
 					persist();
 					updateStatus(ctx, planState);
 					ctx.ui.notify("📋 Plan mode active", "info");
