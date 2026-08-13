@@ -14,6 +14,33 @@ export interface ContextWindowChoice {
 
 export type SessionStartReason = "startup" | "reload" | "new" | "resume" | "fork";
 
+export const MODEL_THINKING_LEVELS = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const;
+
+export type StoredThinkingLevel = typeof MODEL_THINKING_LEVELS[number];
+
+export type ModelSelectionMode = "normal" | "plan";
+
+export interface ModelSelectionSettings {
+	provider: string;
+	modelId: string;
+	thinkingLevel: StoredThinkingLevel;
+	contextWindow: number;
+}
+
+export interface ProjectModelPreferences {
+	profiles: Partial<Record<ModelSelectionMode, ModelSelectionSettings>>;
+	/** Legacy model-keyed contexts, read only as a migration fallback. */
+	contextWindows: Record<string, number>;
+}
+
 export const GPT_56_SHORT_CONTEXT = 272_000;
 export const GPT_56_LONG_CONTEXT = 1_050_000;
 
@@ -132,37 +159,112 @@ export function filterModels<T extends ModelChoiceLike>(models: readonly T[], qu
 		.map((entry) => entry.model);
 }
 
-/** Return a cloned models.json document with one contextWindow override changed. */
-export function mergeContextWindowOverride(
-	config: unknown,
-	providerId: string,
-	modelId: string,
-	contextWindow: number,
+function requiredNonEmptyString(value: unknown, label: string): string {
+	if (typeof value !== "string" || !value.trim()) throw new Error(`${label} must be a non-empty string.`);
+	return value;
+}
+
+function validateContextWindow(value: unknown, label: string): number {
+	if (!Number.isInteger(value) || (value as number) <= 0) {
+		throw new Error(`${label} must be a positive integer.`);
+	}
+	return value as number;
+}
+
+function validateContextWindows(value: unknown): Record<string, number> {
+	if (value === undefined) return {};
+	if (!isRecord(value)) throw new Error("uiModelSelector.contextWindows must be a JSON object.");
+
+	const result: Record<string, number> = {};
+	for (const [key, contextWindow] of Object.entries(value)) {
+		if (!key.trim()) throw new Error("uiModelSelector.contextWindows keys must not be empty.");
+		result[key] = validateContextWindow(contextWindow, `Context window for ${key}`);
+	}
+	return result;
+}
+
+function validateSelection(value: unknown, label: string): ModelSelectionSettings {
+	if (!isRecord(value)) throw new Error(`${label} must be a JSON object.`);
+	const thinkingLevel = value.thinkingLevel;
+	if (typeof thinkingLevel !== "string" || !MODEL_THINKING_LEVELS.includes(thinkingLevel as StoredThinkingLevel)) {
+		throw new Error(`${label}.thinkingLevel is not supported.`);
+	}
+	return {
+		provider: requiredNonEmptyString(value.provider, `${label}.provider`),
+		modelId: requiredNonEmptyString(value.modelId, `${label}.modelId`),
+		thinkingLevel: thinkingLevel as StoredThinkingLevel,
+		contextWindow: validateContextWindow(value.contextWindow, `${label}.contextWindow`),
+	};
+}
+
+function validateProfiles(value: unknown): Partial<Record<ModelSelectionMode, ModelSelectionSettings>> {
+	if (value === undefined) return {};
+	if (!isRecord(value)) throw new Error("uiModelSelector.profiles must be a JSON object.");
+	for (const key of Object.keys(value)) {
+		if (key !== "normal" && key !== "plan") throw new Error(`Unsupported uiModelSelector profile: ${key}.`);
+	}
+	return {
+		normal: value.normal === undefined ? undefined : validateSelection(value.normal, "uiModelSelector.profiles.normal"),
+		plan: value.plan === undefined ? undefined : validateSelection(value.plan, "uiModelSelector.profiles.plan"),
+	};
+}
+
+export function parseProjectModelPreferences(settings: unknown): ProjectModelPreferences {
+	if (!isRecord(settings)) throw new Error("Project settings must contain a JSON object.");
+	const selector = nestedRecord(settings, "uiModelSelector", "uiModelSelector");
+	return {
+		profiles: validateProfiles(selector.profiles),
+		contextWindows: validateContextWindows(selector.contextWindows),
+	};
+}
+
+/** Return a cloned project settings document with one mode's complete model selection merged in. */
+export function mergeProjectModelSelection(
+	settings: unknown,
+	mode: ModelSelectionMode,
+	selection: ModelSelectionSettings,
 ): Record<string, unknown> {
-	if (!Number.isInteger(contextWindow) || contextWindow <= 0) {
+	if (!isRecord(settings)) throw new Error("Project settings must contain a JSON object.");
+	parseProjectModelPreferences(settings);
+	const provider = requiredNonEmptyString(selection.provider, "provider");
+	const modelId = requiredNonEmptyString(selection.modelId, "modelId");
+	if (!MODEL_THINKING_LEVELS.includes(selection.thinkingLevel)) {
+		throw new Error("thinkingLevel is not supported.");
+	}
+	if (!Number.isInteger(selection.contextWindow) || selection.contextWindow <= 0) {
 		throw new Error("contextWindow must be a positive integer.");
 	}
-	if (!isRecord(config)) throw new Error("models.json must contain a JSON object.");
 
-	const providers = nestedRecord(config, "providers", "models.json providers");
-	const provider = nestedRecord(providers, providerId, `Provider ${providerId}`);
-	const overrides = nestedRecord(provider, "modelOverrides", `Provider ${providerId} modelOverrides`);
-	const existingOverride = nestedRecord(overrides, modelId, `Override for ${providerId}/${modelId}`);
-
+	const selector = nestedRecord(settings, "uiModelSelector", "uiModelSelector");
+	const profiles = validateProfiles(selector.profiles);
+	const {
+		defaultProvider: _legacyDefaultProvider,
+		defaultModel: _legacyDefaultModel,
+		defaultThinkingLevel: _legacyDefaultThinkingLevel,
+		...settingsWithoutLegacyDefaults
+	} = settings;
 	return {
-		...config,
-		providers: {
-			...providers,
-			[providerId]: {
-				...provider,
-				modelOverrides: {
-					...overrides,
-					[modelId]: {
-						...existingOverride,
-						contextWindow,
-					},
-				},
+		...settingsWithoutLegacyDefaults,
+		uiModelSelector: {
+			...selector,
+			profiles: {
+				...profiles,
+				[mode]: { provider, modelId, thinkingLevel: selection.thinkingLevel, contextWindow: selection.contextWindow },
 			},
 		},
 	};
+}
+
+export function applySavedContext<T extends ModelChoiceLike>(
+	model: T,
+	mode: ModelSelectionMode,
+	preferences: Pick<ProjectModelPreferences, "profiles" | "contextWindows">,
+): T {
+	const profile = preferences.profiles[mode];
+	const contextWindow = profile?.provider === model.provider && profile.modelId === model.id
+		? profile.contextWindow
+		: preferences.contextWindows[`${model.provider}/${model.id}`];
+	return contextWindow === undefined || contextWindow === model.contextWindow
+		? model
+		: { ...model, contextWindow };
 }

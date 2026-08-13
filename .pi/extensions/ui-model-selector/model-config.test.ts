@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -5,17 +8,20 @@ import {
 	installModelCommandHandler,
 	parseModelCommand,
 } from "../_shared/model-command-routing.ts";
-import modelSelectorExtension from "./index.ts";
+import { createModelSelectorExtension, selectionModeFromEntries } from "./index.ts";
 import {
+	applySavedContext,
 	filterModels,
 	findExactModel,
 	getContextWindowChoices,
 	GPT_56_LONG_CONTEXT,
 	GPT_56_SHORT_CONTEXT,
 	hasExplicitModelArgument,
-	mergeContextWindowOverride,
+	mergeProjectModelSelection,
+	parseProjectModelPreferences,
 	shouldOpenStartupModelSelector,
 } from "./model-config.ts";
+import { createProjectSettingsStore } from "./settings-store.ts";
 
 afterEach(() => {
 	const clearActiveHandler = installModelCommandHandler(async () => {});
@@ -100,9 +106,19 @@ describe("startup model selection", () => {
 
 function createLifecycleHarness(options: {
 	cancel?: boolean;
+	contextWindows?: Record<string, number>;
+	planActive?: boolean;
+	profiles?: Record<string, {
+		provider: string;
+		modelId: string;
+		thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+		contextWindow: number;
+	}>;
+	effectiveThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	hasConversationHistory?: boolean;
 	mode?: "tui" | "print" | "json" | "rpc";
 	refreshError?: Error;
+	selectedModel?: (typeof models)[number];
 	setModelResult?: boolean;
 } = {}) {
 	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => unknown>();
@@ -115,12 +131,14 @@ function createLifecycleHarness(options: {
 			message: { role: "user", content: [{ type: "text", text: "Existing conversation" }] },
 		}]
 		: [];
-	const selectedModel = models[1] as any;
+	const selectedModel = (options.selectedModel ?? models[1]) as any;
 	const custom = vi.fn(async () => options.cancel ? undefined : selectedModel);
 	const setModel = vi.fn(async () => options.setModelResult ?? true);
 	const setThinkingLevel = vi.fn();
 	const setEditorComponent = vi.fn();
 	const notify = vi.fn();
+	const save = vi.fn(async () => {});
+	const load = vi.fn(async () => ({ profiles: options.profiles ?? {}, contextWindows: options.contextWindows ?? {} }));
 	const ctx = {
 		mode: options.mode ?? "tui",
 		model: selectedModel,
@@ -132,8 +150,8 @@ function createLifecycleHarness(options: {
 					? new Map([[selectedModel.provider, options.refreshError]])
 					: new Map(),
 			})),
-			getAvailable: vi.fn(() => [selectedModel]),
-			find: vi.fn(() => selectedModel),
+			getAvailable: vi.fn(() => models),
+			find: vi.fn((provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id)),
 		},
 		ui: {
 			custom,
@@ -146,16 +164,19 @@ function createLifecycleHarness(options: {
 		compact: vi.fn(),
 		sessionManager: {
 			getEntries: vi.fn(() => entries),
+			getBranch: vi.fn(() => options.planActive
+				? [...entries, { type: "custom", customType: "plan-mode-state", data: { active: true } }]
+				: entries),
 			getLeafId: vi.fn(() => entries.at(-1)?.id),
 		},
 	} as unknown as ExtensionContext;
 	const pi = {
 		on: (event: string, handler: (event: any, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
 		setModel,
-		getThinkingLevel: vi.fn(() => "medium"),
+		getThinkingLevel: vi.fn(() => options.effectiveThinkingLevel ?? "medium"),
 		setThinkingLevel,
 	} as unknown as ExtensionAPI;
-	modelSelectorExtension(pi);
+	createModelSelectorExtension({ load, save })(pi);
 
 	return {
 		custom,
@@ -163,6 +184,8 @@ function createLifecycleHarness(options: {
 		setThinkingLevel,
 		setEditorComponent,
 		notify,
+		load,
+		save,
 		emit: async (reason: "startup" | "reload" | "new" | "resume" | "fork") => {
 			await handlers.get("session_start")?.({ type: "session_start", reason }, ctx);
 		},
@@ -194,6 +217,36 @@ describe("model selector lifecycle", () => {
 		expect(harness.setModel).not.toHaveBeenCalled();
 	});
 
+	it("uses the complete normal profile as the fresh-session startup default", async () => {
+		const harness = createLifecycleHarness({
+			cancel: true,
+			profiles: {
+				normal: {
+					provider: "github-copilot",
+					modelId: "gpt-5.6-sol",
+					thinkingLevel: "xhigh",
+					contextWindow: GPT_56_SHORT_CONTEXT,
+				},
+			},
+		});
+		await harness.emit("startup");
+		expect(harness.setModel).toHaveBeenCalledOnce();
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			provider: "github-copilot",
+			id: "gpt-5.6-sol",
+			contextWindow: GPT_56_SHORT_CONTEXT,
+		}));
+		expect(harness.setThinkingLevel).toHaveBeenCalledWith("xhigh");
+		expect(harness.custom).not.toHaveBeenCalled();
+		expect(harness.save).not.toHaveBeenCalled();
+	});
+
+	it("falls back to the selector when no normal startup profile exists", async () => {
+		const harness = createLifecycleHarness();
+		await harness.emit("startup");
+		expect(harness.custom).toHaveBeenCalledOnce();
+	});
+
 	it("does not apply a model when selection is cancelled", async () => {
 		const harness = createLifecycleHarness({ cancel: true });
 		await harness.emit("startup");
@@ -213,15 +266,69 @@ describe("model selector lifecycle", () => {
 		expect(harness.setModel).not.toHaveBeenCalled();
 	});
 
-	it("does not apply thinking when Pi rejects model authentication", async () => {
+	it("does not persist or apply thinking when Pi rejects model authentication", async () => {
 		const harness = createLifecycleHarness({ setModelResult: false });
 		await harness.emit("startup");
 		expect(harness.setModel).toHaveBeenCalledTimes(1);
 		expect(harness.setThinkingLevel).not.toHaveBeenCalled();
+		expect(harness.save).not.toHaveBeenCalled();
 		expect(harness.notify).toHaveBeenCalledWith(
 			expect.stringContaining("No configured authentication"),
 			"error",
 		);
+	});
+
+	it("persists the effective thinking level after Pi clamps it", async () => {
+		const harness = createLifecycleHarness({ effectiveThinkingLevel: "high" });
+		await harness.emit("startup");
+		expect(harness.save).toHaveBeenCalledWith("normal", {
+			provider: "anthropic",
+			modelId: "claude-sonnet-4.6",
+			thinkingLevel: "high",
+			contextWindow: 1_000_000,
+		});
+	});
+
+	it("persists Plan Mode selections under the plan profile instead of normal defaults", async () => {
+		const harness = createLifecycleHarness({ planActive: true, effectiveThinkingLevel: "xhigh" });
+		await harness.emit("startup");
+		expect(harness.save).toHaveBeenCalledWith("plan", {
+			provider: "anthropic",
+			modelId: "claude-sonnet-4.6",
+			thinkingLevel: "xhigh",
+			contextWindow: 1_000_000,
+		});
+	});
+
+	it("applies a saved context to an exact fresh selection", async () => {
+		const harness = createLifecycleHarness({
+			cancel: true,
+			hasConversationHistory: true,
+			contextWindows: { "github-copilot/gpt-5.6-sol": GPT_56_SHORT_CONTEXT },
+		});
+		await harness.emit("startup");
+		await getModelCommandHandler()?.("github-copilot/gpt-5.6-sol");
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			id: "gpt-5.6-sol",
+			contextWindow: GPT_56_SHORT_CONTEXT,
+		}));
+		expect(harness.save).toHaveBeenCalledWith("normal", expect.objectContaining({
+			contextWindow: GPT_56_SHORT_CONTEXT,
+		}));
+	});
+
+	it("restores a saved context for an existing session", async () => {
+		const harness = createLifecycleHarness({
+			hasConversationHistory: true,
+			selectedModel: models[0],
+			contextWindows: { "github-copilot/gpt-5.6-sol": GPT_56_SHORT_CONTEXT },
+		});
+		await harness.emit("startup");
+		expect(harness.setModel).toHaveBeenCalledOnce();
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			contextWindow: GPT_56_SHORT_CONTEXT,
+		}));
+		expect(harness.save).not.toHaveBeenCalled();
 	});
 
 	it.each(["print", "json", "rpc"] as const)("does not install or open selector UI in %s mode", async (mode) => {
@@ -234,6 +341,17 @@ describe("model selector lifecycle", () => {
 });
 
 describe("model selection helpers", () => {
+	it("detects normal and Plan Mode from durable session state", () => {
+		expect(selectionModeFromEntries([])).toBe("normal");
+		expect(selectionModeFromEntries([
+			{ type: "custom", customType: "plan-mode-state", data: { active: true } },
+		])).toBe("plan");
+		expect(selectionModeFromEntries([
+			{ type: "custom", customType: "plan-mode-state", data: { active: true } },
+			{ type: "custom", customType: "plan-mode-state", data: { active: false } },
+		])).toBe("normal");
+	});
+
 	it("offers short and long context profiles for GPT-5.6", () => {
 		expect(getContextWindowChoices(models[0]!).map((choice) => choice.value)).toEqual([
 			GPT_56_SHORT_CONTEXT,
@@ -253,47 +371,100 @@ describe("model selection helpers", () => {
 	});
 });
 
-describe("models.json context overrides", () => {
-	it("merges an override without discarding existing provider settings", () => {
-		const result = mergeContextWindowOverride(
-			{
-				providers: {
-					"github-copilot": {
-						headers: { "x-test": "kept" },
-						modelOverrides: {
-							"gpt-5.6-sol": { name: "Sol custom" },
-						},
-					},
-					anthropic: { baseUrl: "https://example.test" },
-				},
+describe("project model settings", () => {
+	it("removes legacy default fields while preserving unrelated settings", () => {
+		const result = mergeProjectModelSelection({
+			defaultThinkingLevel: "medium",
+			theme: "dark",
+			uiModelSelector: {
+				label: "kept",
+				contextWindows: { "github-copilot/gpt-5.6-terra": GPT_56_LONG_CONTEXT },
 			},
-			"github-copilot",
-			"gpt-5.6-sol",
-			GPT_56_SHORT_CONTEXT,
-		);
+		}, "normal", {
+			provider: "github-copilot",
+			modelId: "gpt-5.6-sol",
+			thinkingLevel: "xhigh",
+			contextWindow: GPT_56_SHORT_CONTEXT,
+		});
 
 		expect(result).toEqual({
-			providers: {
-				"github-copilot": {
-					headers: { "x-test": "kept" },
-					modelOverrides: {
-						"gpt-5.6-sol": {
-							name: "Sol custom",
-							contextWindow: GPT_56_SHORT_CONTEXT,
-						},
+			theme: "dark",
+			uiModelSelector: {
+				label: "kept",
+				contextWindows: { "github-copilot/gpt-5.6-terra": GPT_56_LONG_CONTEXT },
+				profiles: {
+					normal: {
+						provider: "github-copilot",
+						modelId: "gpt-5.6-sol",
+						thinkingLevel: "xhigh",
+						contextWindow: GPT_56_SHORT_CONTEXT,
 					},
 				},
-				anthropic: { baseUrl: "https://example.test" },
 			},
 		});
 	});
 
-	it("rejects malformed structures instead of overwriting them", () => {
-		expect(() => mergeContextWindowOverride(
-			{ providers: { "github-copilot": [] } },
-			"github-copilot",
-			"gpt-5.6-sol",
-			GPT_56_SHORT_CONTEXT,
-		)).toThrow("Provider github-copilot must be a JSON object");
+	it("keeps normal and Plan profiles independent without native defaults", () => {
+		const normal = mergeProjectModelSelection({}, "normal", {
+			provider: "anthropic",
+			modelId: "claude-sonnet-4.6",
+			thinkingLevel: "medium",
+			contextWindow: 1_000_000,
+		});
+		const result = mergeProjectModelSelection(normal, "plan", {
+			provider: "github-copilot",
+			modelId: "gpt-5.6-sol",
+			thinkingLevel: "xhigh",
+			contextWindow: GPT_56_SHORT_CONTEXT,
+		});
+		expect(result).toMatchObject({
+			uiModelSelector: {
+				profiles: {
+					normal: { provider: "anthropic", contextWindow: 1_000_000 },
+					plan: { provider: "github-copilot", contextWindow: GPT_56_SHORT_CONTEXT },
+				},
+			},
+		});
+	});
+
+	it("parses and applies a saved context without mutating the catalogue model", () => {
+		const preferences = parseProjectModelPreferences({
+			uiModelSelector: { contextWindows: { "github-copilot/gpt-5.6-sol": GPT_56_SHORT_CONTEXT } },
+		});
+		const configured = applySavedContext(models[0]!, "normal", preferences);
+		expect(configured.contextWindow).toBe(GPT_56_SHORT_CONTEXT);
+		expect(models[0]!.contextWindow).toBe(GPT_56_LONG_CONTEXT);
+	});
+
+	it.each([
+		{ uiModelSelector: [] },
+		{ uiModelSelector: { contextWindows: [] } },
+		{ uiModelSelector: { contextWindows: { "github-copilot/gpt-5.6-sol": 0 } } },
+		{ uiModelSelector: { profiles: { normal: { provider: "test", modelId: "model", thinkingLevel: "ultra", contextWindow: 1 } } } },
+	])("rejects malformed settings %#", (settings) => {
+		expect(() => parseProjectModelPreferences(settings)).toThrow();
+	});
+
+	it.each([
+		["malformed JSON", "{ not valid json\n"],
+		["an invalid saved context", JSON.stringify({
+			uiModelSelector: { contextWindows: { "github-copilot/gpt-5.6-sol": -1 } },
+		})],
+	])("atomically preserves the file when %s prevents a save", async (_label, original) => {
+		const directory = mkdtempSync(join(tmpdir(), "ui-model-selector-"));
+		const path = join(directory, "settings.json");
+		writeFileSync(path, original, "utf-8");
+		try {
+			const store = createProjectSettingsStore(path);
+			await expect(store.save("normal", {
+				provider: "github-copilot",
+				modelId: "gpt-5.6-sol",
+				thinkingLevel: "xhigh",
+				contextWindow: GPT_56_LONG_CONTEXT,
+			})).rejects.toThrow("Cannot read");
+			expect(readFileSync(path, "utf-8")).toBe(original);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 });

@@ -11,10 +11,12 @@ export interface ModeModelProfile {
 	provider: string;
 	modelId: string;
 	thinkingLevel: ModelThinkingLevel;
+	/** Optional only while reading legacy v1/session state; all newly captured profiles include it. */
+	contextWindow?: number;
 }
 
 interface PlanModeProfileDocument {
-	version: 1;
+	version: 2;
 	profile: ModeModelProfile;
 }
 
@@ -55,16 +57,22 @@ export function validateModeModelProfile(value: unknown, label = "Plan Mode prof
 	if (typeof value.thinkingLevel !== "string" || !THINKING_LEVELS.has(value.thinkingLevel as ModelThinkingLevel)) {
 		throw new Error(`${label} thinkingLevel is not supported.`);
 	}
+	if (value.contextWindow !== undefined && (!Number.isInteger(value.contextWindow) || (value.contextWindow as number) <= 0)) {
+		throw new Error(`${label} contextWindow must be a positive integer.`);
+	}
 	return {
 		provider: value.provider,
 		modelId: value.modelId,
 		thinkingLevel: value.thinkingLevel as ModelThinkingLevel,
+		contextWindow: value.contextWindow as number | undefined,
 	};
 }
 
 export function parsePlanModeProfileDocument(value: unknown): ModeModelProfile {
 	if (!isRecord(value)) throw new Error("Plan Mode profile file must contain a JSON object.");
-	if (value.version !== 1) throw new Error("Plan Mode profile file has an unsupported version.");
+	if (value.version !== 1 && value.version !== 2) {
+		throw new Error("Plan Mode profile file has an unsupported version.");
+	}
 	return validateModeModelProfile(value.profile);
 }
 
@@ -81,8 +89,11 @@ export function createPlanModeProfileStore(path = PLAN_MODE_PROFILE_PATH): PlanM
 
 		async save(profile) {
 			const validated = validateModeModelProfile(profile);
+			if (validated.contextWindow === undefined) {
+				throw new Error("Plan Mode profile contextWindow must be a positive integer.");
+			}
 			await withFileMutationQueue(path, async () => {
-				const document: PlanModeProfileDocument = { version: 1, profile: validated };
+				const document: PlanModeProfileDocument = { version: 2, profile: validated };
 				mkdirSync(dirname(path), { recursive: true });
 				const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
 				try {
@@ -112,6 +123,7 @@ export function createNormalDefaultsStore(agentDir = getAgentDir()): NormalDefau
 				provider: hasConfiguredModel ? settings.defaultProvider! : validatedFallback.provider,
 				modelId: hasConfiguredModel ? settings.defaultModel! : validatedFallback.modelId,
 				thinkingLevel: settings.defaultThinkingLevel ?? validatedFallback.thinkingLevel,
+				contextWindow: validatedFallback.contextWindow,
 			};
 		},
 

@@ -8,8 +8,8 @@
  * Plan mode asks the model to explore non-mutatingly and finalize plans in a
  * <proposed_plan> block. The extension extracts that block into a custom
  * rendered message and blocks common mutating tools while plan mode is active.
- * It also keeps a global Plan Mode model/thinking profile while preserving each
- * conversation's normal profile and Pi's native normal defaults.
+ * It also keeps a global Plan Mode provider/model/thinking/context profile while
+ * preserving each conversation's complete normal profile and Pi's native defaults.
  */
 
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -398,8 +398,9 @@ function rememberOnce(seen: Set<string>, key: string, limit = 50): boolean {
 	return true;
 }
 
-function profileLabel(profile: Pick<ModeModelProfile, "provider" | "modelId" | "thinkingLevel">): string {
-	return `${profile.provider}/${profile.modelId} · ${profile.thinkingLevel}`;
+function profileLabel(profile: Pick<ModeModelProfile, "provider" | "modelId" | "thinkingLevel" | "contextWindow">): string {
+	const context = profile.contextWindow === undefined ? "legacy context" : `${profile.contextWindow.toLocaleString()} ctx`;
+	return `${profile.provider}/${profile.modelId} · ${profile.thinkingLevel} · ${context}`;
 }
 
 function profileFromCurrentSession(pi: ExtensionAPI, ctx: ExtensionContext): ModeModelProfile | undefined {
@@ -408,6 +409,7 @@ function profileFromCurrentSession(pi: ExtensionAPI, ctx: ExtensionContext): Mod
 		provider: ctx.model.provider,
 		modelId: ctx.model.id,
 		thinkingLevel: pi.getThinkingLevel() as ModelThinkingLevel,
+		contextWindow: ctx.model.contextWindow,
 	};
 }
 
@@ -713,11 +715,18 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	}
 
 	async function applySessionProfile(ctx: ExtensionContext, profile: ModeModelProfile): Promise<ModeModelProfile> {
-		const model = await resolveProfileModel(ctx, profile);
+		const catalogueModel = await resolveProfileModel(ctx, profile);
+		const model = profile.contextWindow === undefined
+			? catalogueModel
+			: { ...catalogueModel, contextWindow: profile.contextWindow };
 		const changed = await pi.setModel(model);
 		if (!changed) throw new Error(`No configured authentication for ${profile.provider}/${profile.modelId}.`);
 		pi.setThinkingLevel(profile.thinkingLevel);
-		return { ...profile, thinkingLevel: pi.getThinkingLevel() as ModelThinkingLevel };
+		return {
+			...profile,
+			thinkingLevel: pi.getThinkingLevel() as ModelThinkingLevel,
+			contextWindow: model.contextWindow,
+		};
 	}
 
 	async function preserveNormalGlobalDefaults(
@@ -1036,6 +1045,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			provider: event.model.provider,
 			modelId: event.model.id,
 			thinkingLevel: pi.getThinkingLevel() as ModelThinkingLevel,
+			contextWindow: event.model.contextWindow,
 		};
 		const generation = lifecycleGeneration;
 		const defaults = normalGlobalDefaults;
