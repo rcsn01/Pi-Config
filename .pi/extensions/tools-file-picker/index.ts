@@ -73,13 +73,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "list_files",
 		label: "List Files",
-		description:
-			"Search for files in the workspace by name (fuzzy matching). " +
-			"Useful for finding files when you need to reference them.",
-		promptSnippet: "Search workspace files by name (fuzzy match)",
-		promptGuidelines: [
-			"Use list_files when you need to find files by name before reading or editing them.",
-		],
+		description: "Fuzzy-search workspace filenames.",
+		promptSnippet: "Find files",
 		parameters: Type.Object({
 			query: Type.String({ description: "Search query for file name (fuzzy match)" }),
 			max_results: Type.Optional(

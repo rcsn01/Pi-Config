@@ -1505,14 +1505,12 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description:
-			"Run a subagent to complete a task. Subagents have NO context from the current conversation — include all necessary context in the task description.",
-		promptSnippet: "Run subagents for delegated tasks",
+		description: "Delegate a task to an isolated subagent; include all needed context.",
+		promptSnippet: "Delegate tasks",
 		promptGuidelines: [
 			"Parallel tool calls are your primary parallelism mechanism — put multiple independent read/fetch/search calls in one function_calls block. Don't use subagents to parallelize simple I/O.",
-			"Use subagent to delegate only when it materially improves progress: explorer for read-only codebase investigation, worker for bounded implementation or verification, default for small general tasks, researcher for web research.",
+			"Use subagents to isolate context-heavy, bounded work: explorer for read-only codebase investigation, worker for bounded implementation or verification, default for small general tasks, and researcher for web research. Keep low-context operations local.",
 			"For multiple independent subagent tasks, use parallel mode with tasks[] array",
-			"Subagents have NO context from the current conversation — include ALL necessary context in the task description",
 		],
 		parameters: Type.Object({
 			agent: Type.Optional(

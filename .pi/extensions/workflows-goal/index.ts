@@ -220,15 +220,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "goal",
 		label: "Goal",
-		description:
-			"Check goal status, report a checkpoint with progress, or mark the goal as complete. " +
-			"Use checkpoints to track progress through multi-step goals. " +
-			"Only mark complete when the objective is fully achieved.",
-		promptSnippet: "Check or update goal status (status, checkpoint, complete)",
-		promptGuidelines: [
-			"Use the goal tool to report checkpoints as you make progress toward the current goal. Each checkpoint should name what was verified and what remains.",
-			"Use the goal tool with action=complete ONLY when you are confident the goal objective is fully achieved. Include a summary of what was accomplished.",
-		],
+		description: "Check or update a persistent goal's progress.",
+		promptSnippet: "Track goal progress",
 		parameters: GoalToolParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {

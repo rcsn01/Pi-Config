@@ -312,9 +312,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description:
-			"Track multi-step work. Each call replaces the full todo list; pass an empty list to clear it.",
-		promptSnippet: "Update todo list",
+		description: "Track multi-step work.",
+		promptSnippet: "Track tasks",
 		promptGuidelines: [
 			"For non-trivial work with at least three distinct steps, create a todo list before implementation.",
 			"On updates, send the full list and reuse item IDs. Keep exactly one item in_progress; complete items only after implementation and verification.",

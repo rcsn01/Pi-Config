@@ -111,13 +111,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "ddg_search",
 		label: "DuckDuckGo Search",
-		description:
-			"Search the web using DuckDuckGo (no API key required) or local Ollama. Returns title, URL, and snippet.",
-		promptSnippet: "Search the web via DuckDuckGo (no API key)",
-		promptGuidelines: [
-			"Use ddg_search as a backup when web_search is unavailable or for no-API-key searches.",
-			"Make one search per query. If results aren't helpful, refine your query and try again.",
-		],
+		description: "Search DuckDuckGo or local Ollama and return titles, URLs, and snippets.",
+		promptSnippet: "Search the web",
 
 		parameters: Type.Object({
 			query: Type.String({ description: "Search query" }),
