@@ -499,8 +499,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		label: "Plan Question",
 		description:
 			"Plan Mode only. Ask the user 1-3 concise multiple-choice clarification questions before finalizing a proposed plan.",
-		promptSnippet:
-			"plan_question: in Plan Mode, ask 1-3 multiple-choice clarification questions when important ambiguity remains after exploration.",
+		promptSnippet: "Ask planning questions",
 		parameters: PlanQuestionParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

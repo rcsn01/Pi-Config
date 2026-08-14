@@ -108,16 +108,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "code_review",
 		label: "Code Review",
-		description:
-			"Get a git diff for code review. Supports: base (against a branch), uncommitted (working tree changes), " +
-			"commit (specific commit), or custom (staged+unstaged with focus instructions). " +
-			"Returns the diff and a structured review checklist.",
-		promptSnippet: "Get git diff for code review (base|uncommitted|commit|custom)",
-		promptGuidelines: [
-			"Use code_review when the user asks to review code, check changes before committing, or audit a PR.",
-			"After calling code_review, provide a thorough review covering correctness, design, security, performance, style, testing, and documentation.",
-			"Be specific in your review: reference file paths and line numbers from the diff, and suggest concrete fixes.",
-		],
+		description: "Collect a git diff and return structured review instructions.",
+		promptSnippet: "Review code",
 		parameters: ReviewToolParams,
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {

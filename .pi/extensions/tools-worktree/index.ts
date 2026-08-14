@@ -287,11 +287,7 @@ export default function (pi: ExtensionAPI) {
 		name: "worktree_create",
 		label: "Create Worktree",
 		description: "Create an isolated git worktree under .pi/worktrees/<branch_id> with a new branch based on current HEAD.",
-		promptSnippet: "Create git worktree for fleet/minion work",
-		promptGuidelines: [
-			"Use worktree_create before assigning separate agents/minions to implementation tasks so they do not edit the same checkout.",
-			"worktree_create creates branches from current HEAD by default and does not run git pull.",
-		],
+		promptSnippet: "Create worktree",
 		parameters: CreateParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
@@ -308,8 +304,7 @@ export default function (pi: ExtensionAPI) {
 		name: "worktree_list",
 		label: "List Worktrees",
 		description: "List git worktrees and identify those managed under .pi/worktrees/.",
-		promptSnippet: "List managed git worktrees",
-		promptGuidelines: ["Use worktree_list before creating or removing fleet worktrees to avoid collisions."],
+		promptSnippet: "List worktrees",
 		parameters: ListParams,
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			try {
@@ -326,8 +321,7 @@ export default function (pi: ExtensionAPI) {
 		name: "worktree_remove",
 		label: "Remove Worktree",
 		description: "Remove a managed git worktree under .pi/worktrees/<branch_id>. Does not delete the branch.",
-		promptSnippet: "Remove managed git worktree",
-		promptGuidelines: ["Use worktree_remove only when the user asks to remove a fleet worktree; it does not delete branches."],
+		promptSnippet: "Remove worktree",
 		parameters: RemoveParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
