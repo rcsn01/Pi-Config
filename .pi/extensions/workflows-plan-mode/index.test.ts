@@ -490,6 +490,40 @@ describe("plan review lifecycle", () => {
 	});
 });
 
+describe("Plan Mode tool policy integration", () => {
+	it("uses the Bash policy only while Plan Mode is active", async () => {
+		const active = createHarness();
+		await active.emit("session_start", { type: "session_start", reason: "startup" });
+		const [blocked] = await active.emit("tool_call", {
+			type: "tool_call",
+			toolName: "bash",
+			input: { command: "rg foo; touch changed" },
+		});
+		expect(blocked).toEqual({
+			block: true,
+			reason: expect.stringContaining('Plan Mode blocked command 2: "touch"'),
+		});
+
+		const inactive = createHarness({ branch: [] });
+		await inactive.emit("session_start", { type: "session_start", reason: "startup" });
+		const [allowed] = await inactive.emit("tool_call", {
+			type: "tool_call",
+			toolName: "bash",
+			input: { command: "touch changed" },
+		});
+		expect(allowed).toBeUndefined();
+	});
+
+	it("continues blocking non-Bash mutating tools while planning", async () => {
+		const harness = createHarness();
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		const [blocked] = await harness.emit("tool_call", {
+			type: "tool_call", toolName: "write", input: { path: "file" },
+		});
+		expect(blocked).toMatchObject({ block: true, reason: expect.stringContaining("write is disabled") });
+	});
+});
+
 describe("Plan Mode model and thinking profiles", () => {
 	it("initializes the first profile from the current session", async () => {
 		const stores = createProfileDependencies();

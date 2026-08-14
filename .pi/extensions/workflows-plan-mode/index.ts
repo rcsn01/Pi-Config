@@ -21,6 +21,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text, type EditorComponent, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { evaluatePlanBash } from "./bash-policy.ts";
 import {
 	createNormalDefaultsStore,
 	createPlanModeProfileStore,
@@ -147,6 +148,9 @@ Allowed non-mutating actions include:
 - Reading or searching files, configs, schemas, types, manifests, docs, and logs
 - Static analysis, repository exploration, and dry-run style commands
 - Tests, builds, or checks when their purpose is to validate feasibility and they do not edit repo-tracked files
+- Simple approved Bash inspection commands, including safe pipelines/sequences and standalone local scalar path variables
+
+Plan Mode Bash rejects redirection, shell substitutions, background jobs, arbitrary interpreters, and unsupported shell syntax. If its policy rejects a complex command, split the inspection into simpler commands or use native \`read\`, \`grep\`, \`find\`, and \`ls\` tools.
 
 Not allowed:
 - Editing or writing files
@@ -210,57 +214,6 @@ const MUTATING_TOOLS = new Set([
 	"plane_upsert_work_item",
 ]);
 
-const READ_ONLY_BASH_PREFIXES = [
-	"awk ",
-	"bun --check ",
-	"bun test",
-	"cargo check",
-	"cargo test",
-	"cat ",
-	"deno check ",
-	"du ",
-	"file ",
-	"find ",
-	"git branch",
-	"git diff",
-	"git grep",
-	"git log",
-	"git ls-files",
-	"git show",
-	"git status",
-	"go test",
-	"grep ",
-	"head ",
-	"ls",
-	"npm test",
-	"npm run build",
-	"npm run check",
-	"npm run lint",
-	"npm run test",
-	"npm run typecheck",
-	"pnpm test",
-	"pnpm run build",
-	"pnpm run check",
-	"pnpm run lint",
-	"pnpm run test",
-	"pnpm run typecheck",
-	"pwd",
-	"python -m pytest",
-	"pytest",
-	"rg ",
-	"sed ",
-	"tail ",
-	"tree",
-	"tsc",
-	"wc ",
-	"yarn test",
-	"yarn build",
-	"yarn lint",
-	"yarn typecheck",
-];
-
-const OBVIOUSLY_MUTATING_BASH = /(^|\s)(>|>>|tee\b|rm\b|mv\b|cp\b|mkdir\b|touch\b|chmod\b|chown\b|install\b|apply_patch\b|git\s+(add|commit|checkout|switch|merge|rebase|reset|clean|stash|apply|am|cherry-pick|worktree)\b|npm\s+install\b|pnpm\s+(add|install)\b|yarn\s+(add|install)\b|bun\s+(add|install)\b|cargo\s+(fix|fmt)\b)/;
-
 function extractText(message: any): string {
 	if (!Array.isArray(message.content)) return typeof message.content === "string" ? message.content : "";
 	return message.content
@@ -320,13 +273,6 @@ function replaceAssistantText(message: any, text: string): any {
 
 	if (!inserted && text) content.push({ type: "text", text });
 	return { ...message, content };
-}
-
-function isReadOnlyBash(command: string): boolean {
-	const trimmed = command.trim();
-	if (!trimmed) return true;
-	if (OBVIOUSLY_MUTATING_BASH.test(trimmed)) return false;
-	return READ_ONLY_BASH_PREFIXES.some((prefix) => trimmed === prefix.trim() || trimmed.startsWith(prefix));
 }
 
 function planSignature(plan: string): string {
@@ -1143,12 +1089,8 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 
 		if (event.toolName === "bash") {
 			const command = typeof event.input.command === "string" ? event.input.command : "";
-			if (!isReadOnlyBash(command)) {
-				return {
-					block: true,
-					reason: "Plan Mode only allows non-mutating exploration commands. Avoid shell commands that may change files or external state.",
-				};
-			}
+			const policy = evaluatePlanBash(command);
+			if (!policy.allowed) return { block: true, reason: policy.reason };
 		}
 	});
 

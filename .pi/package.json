@@ -5,6 +5,7 @@
 	"dependencies": {
 		"@mozilla/readability": "^0.5.0",
 		"linkedom": "^0.16.0",
+		"shell-quote": "^1.10.0",
 		"turndown": "^7.2.0",
 		"unpdf": "^1.4.0"
 	},
@@ -25,7 +26,7 @@
 		"test:core": "vitest run extensions/_shared",
 		"test:features": "vitest run extensions/system-feature-flags/catalog.test.ts extensions/ui-model-selector/model-config.test.ts extensions/ui-context/context-model.test.ts",
 		"test:todos": "vitest run extensions/tools-todo/todo-state.test.ts extensions/tools-todo/todo-prompt.test.ts",
-		"test:plan": "vitest run extensions/workflows-plan-mode/index.test.ts",
+		"test:plan": "vitest run extensions/workflows-plan-mode",
 		"test:workflows": "node --test extensions/workflows-runtime/tests/*.test.mjs",
 		"test:integrations": "vitest run extensions-disabled/integration-plane/lib/plane/client.test.ts"
 	}
