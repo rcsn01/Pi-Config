@@ -22,6 +22,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { buildActiveTodoPrompt } from "./todo-prompt.ts";
 import {
 	applyTodoUpdate,
 	reconstructTodoState,
@@ -296,21 +297,13 @@ export default function (pi: ExtensionAPI) {
 	// This ensures the LLM always has access to its todo state,
 	// even after context compaction removes earlier conversation.
 	pi.on("before_agent_start", async (event, _ctx) => {
-		const active = todos.filter((t) => t.status !== "cancelled");
-		const uncompleted = active.filter((t) => t.status !== "completed");
-
-		let todoReminder: string;
-
-		if (uncompleted.length > 0) {
-			// Active todos exist — inject full state so the agent stays on track
-			todoReminder = buildActiveTodoPrompt(todos);
-		} else {
-			// No active todos — nudge the agent to create one if the task is multi-step
-			todoReminder = "If the current task involves multiple steps, create a todo list before starting work. Use the todo tool to track progress.";
-		}
+		const unfinished = todos.filter((todo) =>
+			todo.status === "pending" || todo.status === "in_progress"
+		);
+		if (unfinished.length === 0) return;
 
 		return {
-			systemPrompt: event.systemPrompt + "\n\n" + todoReminder,
+			systemPrompt: `${event.systemPrompt}\n\n${buildActiveTodoPrompt(unfinished)}`,
 		};
 	});
 
@@ -320,22 +313,12 @@ export default function (pi: ExtensionAPI) {
 		name: "todo",
 		label: "Todo",
 		description:
-			"Manage a structured todo list. Always pass the full list of todos. " +
-			"Use to: create a new list, update statuses (pending → in_progress → completed), " +
-			"add items (include existing + new), or delete all (pass empty array).",
+			"Track multi-step work. Each call replaces the full todo list; pass an empty list to clear it.",
 		promptSnippet: "Update todo list",
 		promptGuidelines: [
-			"Create a todo list for any multi-step task. Do not begin work without one when the task involves 3+ distinct steps, is non-trivial, or the user provides multiple tasks.",
-			"Always pass the FULL list of todos every time you call this tool — including unchanged items.",
-			"To create a new list: pass all items as pending. To add items: include existing items + new ones.",
-			"To update status: pass the full list with the changed statuses. Mark exactly one item as in_progress while work remains.",
-			"Status flow: pending → in_progress → completed. Use cancelled for items no longer needed.",
-			"Only one item can be in_progress at a time. Setting an item in_progress auto-demotes the previous one to pending.",
-			"Mark completed only after the work is actually done, including verification. Never based on intent.",
-			"Update status in real time; do not batch completions. Each completed step should be marked immediately.",
-			"Preserve user-provided commands verbatim in todo text (flags, args, order).",
-			"Break large work into smaller, specific, actionable steps. Avoid vague items like 'make it work'.",
-			"Pass an empty todos array to clear all items.",
+			"For non-trivial work with at least three distinct steps, create a todo list before implementation.",
+			"On updates, send the full list and reuse item IDs. Keep exactly one item in_progress; complete items only after implementation and verification.",
+			"Keep items specific, preserve user commands verbatim, and clear the list when work ends.",
 		],
 		parameters: TodoParams,
 
@@ -432,35 +415,4 @@ export default function (pi: ExtensionAPI) {
 			});
 		},
 	});
-}
-
-// ─── System Prompt Builder ───────────────────────────────────────────────────
-
-function buildActiveTodoPrompt(todos: Todo[]): string {
-	const counts = {
-		in_progress: todos.filter((t) => t.status === "in_progress").length,
-		pending: todos.filter((t) => t.status === "pending").length,
-		completed: todos.filter((t) => t.status === "completed").length,
-		cancelled: todos.filter((t) => t.status === "cancelled").length,
-	};
-
-	const parts: string[] = [];
-	if (counts.in_progress) parts.push(`${counts.in_progress} in_progress`);
-	if (counts.pending) parts.push(`${counts.pending} pending`);
-	if (counts.completed) parts.push(`${counts.completed} completed`);
-	if (counts.cancelled) parts.push(`${counts.cancelled} cancelled`);
-
-	let prompt = `## Active Todo List\n${parts.join(", ")}\n\n`;
-
-	for (const t of todos) {
-		if (t.status === "cancelled") continue; // skip cancelled in system prompt
-		const icon = statusIcon(t.status);
-		let line = `${icon} #${t.id} ${t.text} (${t.status})`;
-		if (t.explanation) line += ` — ${t.explanation}`;
-		prompt += line + "\n";
-	}
-
-	prompt += `\nContinue working on the in_progress item. Mark items completed as you finish them. Use the todo tool to update the full list.`;
-
-	return prompt;
 }

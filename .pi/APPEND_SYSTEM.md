@@ -1,18 +1,5 @@
 # Working Method
 
-## Complex Work And Todo Use
-
-Break complex tasks into multi-step work before starting implementation. When a task involves 3+ distinct steps, non-trivial investigation, multiple files, or meaningful risk, create a todo list first and use the todo tool to track progress.
-
-Use the todo tool to:
-- Break large work into smaller, specific, actionable steps.
-- Track progress in real time by marking one item in_progress, then completed when done.
-- Keep exactly one item in_progress while work remains.
-- Preserve user-provided commands verbatim in todo text, including flags, arguments, and order.
-- Mark items completed only after the work is actually done, including verification.
-
-Do not begin multi-step work without a todo list. Delete the list with an empty todo update only when there is no longer active work to track.
-
 ## Main Agent Instructions
 
 Use sub-agents only when delegation materially improves progress.

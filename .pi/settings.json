@@ -2,7 +2,7 @@
   "uiModelSelector": {
     "profiles": {
       "normal": {
-        "provider": "github-copilot",
+        "provider": "openai-codex",
         "modelId": "gpt-5.6-sol",
         "thinkingLevel": "medium",
         "contextWindow": 272000

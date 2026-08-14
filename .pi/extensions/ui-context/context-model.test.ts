@@ -1,17 +1,24 @@
-import type { SessionEntry, Skill, ToolInfo } from "@earendil-works/pi-coding-agent";
+import type { SessionEntry, Skill, Theme, ToolInfo } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import {
 	allocateMeter,
 	calculateCapacity,
 	calculateContextDiagnostics,
 	classifyActiveToolTokens,
+	collectRawExtensionTools,
+	collectRawSystemPromptDetails,
 	estimateRawCategories,
+	estimateToolTokens,
 	formatContextFilesForPrompt,
 	formatPercent,
 	formatTokenCount,
 	reconcileCategories,
+	reconcileExtensionTools,
+	type ContextDiagnostics,
 	type ContextModelInput,
 } from "./context-model.ts";
+import { ContextDiagnosticsComponent, formatBreakdownValue } from "./index.ts";
 
 const builtin = {
 	name: "read",
@@ -113,6 +120,86 @@ describe("context category accounting", () => {
 		const withoutInactive = classifyActiveToolTokens(["read", "search"], [builtin, extension]);
 		expect(active).toEqual(withoutInactive);
 	});
+
+	it("includes active extension tools individually and excludes built-in and inactive tools", () => {
+		const details = collectRawExtensionTools(["read", "search"], [builtin, extension, inactive]);
+		expect(details).toEqual([{
+			name: "search",
+			tokens: expect.any(Number),
+			sourcePath: "/extensions/search.ts",
+		}]);
+	});
+
+	it("does not double-count prompt guidelines in tool-schema estimates", () => {
+		const withoutGuidelines = { ...extension, promptGuidelines: [] } as ToolInfo;
+		const withLongGuidelines = {
+			...extension,
+			promptGuidelines: ["A very long guideline ".repeat(100)],
+		} as ToolInfo;
+		expect(estimateToolTokens(withLongGuidelines)).toBe(estimateToolTokens(withoutGuidelines));
+	});
+
+	it("attributes and exactly reconciles system prompt sources", () => {
+		const customPrompt = "Custom role and behavior ".repeat(20);
+		const appended = "Large appended policy ".repeat(80);
+		const result = calculateContextDiagnostics(input({
+			systemPrompt: `${customPrompt}\n\n- Use search carefully\n\n${appended}\nCurrent working directory: /repo`,
+			systemPromptOptions: {
+				customPrompt,
+				selectedTools: ["search"],
+				toolSnippets: { search: "Search current information" },
+				promptGuidelines: ["Use search carefully"],
+				appendSystemPrompt: appended,
+				cwd: "/repo",
+			},
+		}));
+		expect(result.systemPromptDetails.reduce((sum, detail) => sum + detail.tokens, 0))
+			.toBe(result.categories.systemPrompt);
+		expect(result.systemPromptDetails.map((detail) => detail.label)).toEqual(expect.arrayContaining([
+			"Custom system prompt",
+			"Appended instructions",
+			"Working directory",
+		]));
+		expect(result.systemPromptDetails.some((detail) => detail.label.startsWith("Tool guideline"))).toBe(false);
+		expect(result.systemPromptDetails[0]?.label).toBe("Appended instructions");
+		const raw = collectRawSystemPromptDetails(input({
+			systemPrompt: "Pi core\n- search: Search current information\n- Use search carefully\nCurrent working directory: /repo",
+			systemPromptOptions: {
+				selectedTools: ["search"],
+				toolSnippets: { search: "Search current information" },
+				promptGuidelines: ["Use search carefully"],
+				cwd: "/repo",
+			},
+		}));
+		expect(raw.map((detail) => detail.label)).toEqual(expect.arrayContaining([
+			"Pi core instructions",
+			"Tool summary: search",
+			"Tool guideline 1",
+		]));
+	});
+
+	it("reconciles tool details exactly and orders them largest-first with deterministic ties", () => {
+		const alpha = { ...extension, name: "alpha", description: "short" } as ToolInfo;
+		const gamma = { ...extension, name: "gamma", description: "short" } as ToolInfo;
+		const largest = { ...extension, name: "largest", description: "long ".repeat(100) } as ToolInfo;
+		const result = calculateContextDiagnostics(input({
+			activeToolNames: ["gamma", "largest", "alpha"],
+			allTools: [gamma, largest, alpha],
+		}));
+		expect(result.extensionTools.reduce((sum, tool) => sum + tool.tokens, 0))
+			.toBe(result.categories.extensionTools);
+		expect(result.extensionTools[0]?.name).toBe("largest");
+		const tied = reconcileExtensionTools([
+			{ name: "gamma", tokens: 10, sourcePath: "/gamma.ts" },
+			{ name: "alpha", tokens: 10, sourcePath: "/alpha.ts" },
+		], 20);
+		expect(tied.map((tool) => tool.name)).toEqual(["alpha", "gamma"]);
+		const zeroRaw = reconcileExtensionTools([
+			{ name: "beta", tokens: 0, sourcePath: "/beta.ts" },
+			{ name: "alpha", tokens: 0, sourcePath: "/alpha.ts" },
+		], 5);
+		expect(zeroRaw.reduce((sum, tool) => sum + tool.tokens, 0)).toBe(5);
+	});
 });
 
 describe("capacity arithmetic", () => {
@@ -165,6 +252,204 @@ describe("display helpers", () => {
 		expect(formatTokenCount(1_250)).toBe("1.3k");
 		expect(formatTokenCount(125_000)).toBe("125k");
 		expect(formatTokenCount(1_250_000)).toBe("1.25m");
+	});
+
+	it("formats breakdown values as a percentage of the full context window", () => {
+		expect(formatBreakdownValue(12_500, 270_000)).toBe("13k (4.6%)");
+		expect(formatBreakdownValue(12_500, 0)).toBe("13k (n/a)");
+	});
+
+	it("keeps percentage breakdowns within narrow and wide modal layouts", () => {
+		const diagnostics: ContextDiagnostics = {
+			modelId: "test/model",
+			contextWindow: 1_000,
+			usedTokens: 400,
+			usedIsEstimated: false,
+			percent: 40,
+			categories: {
+				systemPrompt: 100,
+				builtinTools: 50,
+				extensionTools: 50,
+				contextFiles: 25,
+				skills: 25,
+				messages: 150,
+			},
+			systemPromptDetails: [{
+				label: "Pi core instructions",
+				tokens: 100,
+				description: "Role and standard guidelines",
+			}],
+			extensionTools: [{
+				name: "search",
+				tokens: 50,
+				sourcePath: "/extensions/search.ts",
+			}],
+			freeSpace: 500,
+			compactionReserve: 100,
+			compactionThreshold: 900,
+			compactionEnabled: true,
+		};
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as unknown as Theme;
+		const keybindings = {
+			matches: (data: string, binding: string) => ({
+				up: "tui.select.up",
+				down: "tui.select.down",
+				enter: "tui.select.confirm",
+				escape: "tui.select.cancel",
+			}[data] === binding),
+		};
+		const component = new ContextDiagnosticsComponent(
+			diagnostics,
+			theme,
+			keybindings,
+			() => {},
+			() => {},
+		);
+
+		for (const width of [50, 90]) {
+			const lines = component.render(width);
+			expect(lines.some((line) => line.includes("System prompt") && line.includes("100 (10%)"))).toBe(true);
+			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+		}
+
+		const expanded = new ContextDiagnosticsComponent(
+			diagnostics,
+			theme,
+			keybindings,
+			() => {},
+			() => {},
+			() => 30,
+		);
+		expect(expanded.render(90)).toHaveLength(30);
+	});
+
+	it("opens the selected System prompt row and shows attributed sources", () => {
+		const customPrompt = "Custom behavior ".repeat(30);
+		const appended = "Project policy ".repeat(50);
+		const diagnostics = calculateContextDiagnostics(input({
+			systemPrompt: `${customPrompt}\n${appended}\nCurrent working directory: /repo`,
+			systemPromptOptions: {
+				customPrompt,
+				selectedTools: ["search"],
+				toolSnippets: { search: "Search a service" },
+				promptGuidelines: ["Use search for current facts"],
+				appendSystemPrompt: appended,
+				cwd: "/repo",
+			},
+		}));
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as unknown as Theme;
+		const keybindings = {
+			matches: (data: string, binding: string) => ({
+				u: "tui.select.up",
+				e: "tui.select.confirm",
+				x: "tui.select.cancel",
+			}[data] === binding),
+		};
+		let rerenders = 0;
+		const component = new ContextDiagnosticsComponent(
+			diagnostics,
+			theme,
+			keybindings,
+			() => {},
+			() => rerenders++,
+		);
+		component.handleInput("u");
+		component.handleInput("u");
+		component.handleInput("e");
+		expect(rerenders).toBe(3);
+		const lines = component.render(100);
+		expect(lines.some((line) => line.includes("System Prompt"))).toBe(true);
+		expect(lines.some((line) => line.includes("Appended instructions"))).toBe(true);
+		expect(lines.some((line) => line.includes("Custom system prompt"))).toBe(true);
+		expect(lines.every((line) => visibleWidth(line) <= 100)).toBe(true);
+		component.handleInput("x");
+		expect(component.render(80).some((line) => line.includes("Context Usage"))).toBe(true);
+	});
+
+	it("supports extension-tool drill-down, back navigation, closing, and rerender requests", () => {
+		const tools = Array.from({ length: 10 }, (_, index) => ({
+			...extension,
+			name: `tool-${String(index).padStart(2, "0")}-${"very-long-name-".repeat(4)}`,
+			description: `description ${"x".repeat(index * 10)}`,
+			sourceInfo: {
+				...extension.sourceInfo,
+				path: `/very/long/path/${"nested/".repeat(8)}tool-${index}.ts`,
+			},
+		})) as ToolInfo[];
+		const diagnostics = calculateContextDiagnostics(input({
+			model: { provider: "test", id: "unknown-window", contextWindow: 0 },
+			usage: { tokens: 400, contextWindow: 0, percent: 0 },
+			activeToolNames: tools.map((tool) => tool.name),
+			allTools: tools,
+		}));
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as unknown as Theme;
+		const keybindings = {
+			matches: (data: string, binding: string) => ({
+				u: "tui.select.up",
+				d: "tui.select.down",
+				e: "tui.select.confirm",
+				x: "tui.select.cancel",
+			}[data] === binding),
+		};
+		let closes = 0;
+		let rerenders = 0;
+		const component = new ContextDiagnosticsComponent(
+			diagnostics,
+			theme,
+			keybindings,
+			() => closes++,
+			() => rerenders++,
+		);
+
+		expect(component.render(80).some((line) => line.includes("Extension tools"))).toBe(true);
+		component.handleInput("e");
+		expect(rerenders).toBe(1);
+		expect(component.render(100).some((line) => line.includes("Extension Tools"))).toBe(true);
+		expect(component.render(100).some((line) => line.includes("n/a"))).toBe(true);
+		expect(component.render(100).some((line) => line.includes("tool-09") && line.includes("/very/long/path"))).toBe(true);
+		for (let index = 0; index < 9; index++) component.handleInput("d");
+		expect(rerenders).toBe(10);
+		expect(component.render(80).some((line) => line.includes("of 10"))).toBe(true);
+
+		for (const width of [32, 100]) {
+			expect(component.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
+		}
+
+		component.handleInput("x");
+		expect(rerenders).toBe(11);
+		expect(component.render(80).some((line) => line.includes("Context Usage"))).toBe(true);
+		expect(closes).toBe(0);
+		component.handleInput("x");
+		expect(closes).toBe(1);
+
+		const closeWithQ = new ContextDiagnosticsComponent(
+			diagnostics,
+			theme,
+			keybindings,
+			() => closes++,
+			() => rerenders++,
+		);
+		closeWithQ.handleInput("q");
+		expect(closes).toBe(2);
+		const closeDetailWithQ = new ContextDiagnosticsComponent(
+			diagnostics,
+			theme,
+			keybindings,
+			() => closes++,
+			() => rerenders++,
+		);
+		closeDetailWithQ.handleInput("e");
+		closeDetailWithQ.handleInput("q");
+		expect(closes).toBe(3);
 	});
 
 	it("allocates narrow and wide meters without exceeding 100 cells", () => {
