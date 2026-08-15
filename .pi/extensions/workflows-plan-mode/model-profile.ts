@@ -1,10 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	getAgentDir,
 	SettingsManager,
 	withFileMutationQueue,
+	type ExtensionAPI,
+	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
 export interface ModeModelProfile {
@@ -31,6 +33,95 @@ export interface NormalDefaultsStore {
 }
 
 export const PLAN_MODE_PROFILE_PATH = join(getAgentDir(), "plan-mode-profile.json");
+
+export function profileLabel(
+	profile: Pick<ModeModelProfile, "provider" | "modelId" | "thinkingLevel" | "contextWindow">,
+): string {
+	const context = profile.contextWindow === undefined
+		? "legacy context"
+		: `${profile.contextWindow.toLocaleString()} ctx`;
+	return `${profile.provider}/${profile.modelId} · ${profile.thinkingLevel} · ${context}`;
+}
+
+export function profileFromCurrentSession(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+): ModeModelProfile | undefined {
+	if (!ctx.model) return undefined;
+	return {
+		provider: ctx.model.provider,
+		modelId: ctx.model.id,
+		thinkingLevel: pi.getThinkingLevel() as ModelThinkingLevel,
+		contextWindow: ctx.model.contextWindow,
+	};
+}
+
+export async function resolveProfileModel(
+	ctx: ExtensionContext,
+	profile: ModeModelProfile,
+): Promise<Model<any>> {
+	const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false, providers: [profile.provider] });
+	if (refresh.aborted) throw new Error(`Refreshing ${profile.provider} was aborted.`);
+	const refreshError = refresh.errors.get(profile.provider);
+	if (refreshError) throw refreshError;
+	const model = ctx.modelRegistry.find(profile.provider, profile.modelId);
+	if (!model) throw new Error(`Plan Mode model ${profile.provider}/${profile.modelId} is unavailable.`);
+	if (
+		ctx.scopedModels.length > 0 &&
+		!ctx.scopedModels.some((entry) =>
+			entry.model.provider === profile.provider && entry.model.id === profile.modelId
+		)
+	) {
+		throw new Error(`Plan Mode model ${profile.provider}/${profile.modelId} is outside this session's model scope.`);
+	}
+	return model;
+}
+
+export async function applySessionProfile(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	profile: ModeModelProfile,
+): Promise<ModeModelProfile> {
+	const currentModel = ctx.model;
+	const sameModel = currentModel?.provider === profile.provider && currentModel.id === profile.modelId;
+	let model: Model<any>;
+	let shouldSetModel = false;
+
+	if (sameModel) {
+		model = profile.contextWindow === undefined || profile.contextWindow === currentModel.contextWindow
+			? currentModel
+			: { ...currentModel, contextWindow: profile.contextWindow };
+		shouldSetModel = model.contextWindow !== currentModel.contextWindow;
+	} else {
+		const catalogueModel = await resolveProfileModel(ctx, profile);
+		model = profile.contextWindow === undefined
+			? catalogueModel
+			: { ...catalogueModel, contextWindow: profile.contextWindow };
+		shouldSetModel = true;
+	}
+
+	if (shouldSetModel) {
+		const changed = await pi.setModel(model);
+		if (!changed) throw new Error(`No configured authentication for ${profile.provider}/${profile.modelId}.`);
+	}
+	if (pi.getThinkingLevel() !== profile.thinkingLevel) pi.setThinkingLevel(profile.thinkingLevel);
+	return {
+		...profile,
+		thinkingLevel: pi.getThinkingLevel() as ModelThinkingLevel,
+		contextWindow: model.contextWindow,
+	};
+}
+
+export async function preserveNormalGlobalDefaults(
+	ctx: ExtensionContext,
+	defaults: ModeModelProfile | undefined,
+	waitForNativePersistence: () => Promise<void>,
+	normalDefaultsStore: NormalDefaultsStore,
+): Promise<void> {
+	if (!defaults) return;
+	await waitForNativePersistence();
+	await normalDefaultsStore.restore(ctx.cwd, defaults);
+}
 
 const THINKING_LEVELS = new Set<ModelThinkingLevel>([
 	"off",

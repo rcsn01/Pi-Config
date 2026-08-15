@@ -9,4 +9,3 @@ For genuinely small tasks, act directly without workflow ceremony. For non-trivi
 - Prefer one consolidated review. Review again only when unresolved findings or substantial subsequent edits justify it.
 - After two failed attempts with the same approach, stop and reassess rather than repeating it.
 - Do not reread unchanged files or rerun equivalent commands without a concrete reason.
-- Treat efficiency-checkpoint messages as instructions to pause, reassess and narrow the remaining approach, batch actions, and complete the requested outcome with the minimum necessary work.
