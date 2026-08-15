@@ -22,8 +22,16 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text, type EditorComponent, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	createPlanRuntimeCoordinator,
+	type PlanRuntimeStatus,
+} from "./plan-runtime.ts";
 import { createPlanSandboxController, type PlanSandboxController } from "./plan-sandbox.ts";
-import { createPlanWorkspace, type PlanWorkspace } from "./plan-workspace.ts";
+import {
+	createPlanWorkspace,
+	type PlanWorkspace,
+	type PlanWorkspaceOptions,
+} from "./plan-workspace.ts";
 import {
 	createNormalDefaultsStore,
 	createPlanModeProfileStore,
@@ -51,7 +59,7 @@ export interface PlanModeDependencies {
 	profileStore?: PlanModeProfileStore;
 	normalDefaultsStore?: NormalDefaultsStore;
 	waitForNativePersistence?: () => Promise<void>;
-	createWorkspace?: (hostRoot: string) => Promise<PlanWorkspace>;
+	createWorkspace?: (hostRoot: string, options?: PlanWorkspaceOptions) => Promise<PlanWorkspace>;
 	createSandbox?: (workspace: PlanWorkspace) => PlanSandboxController;
 }
 
@@ -74,8 +82,8 @@ interface PlanQuestionDetails {
 }
 
 export const PLAN_REVIEW_ACTIONS = [
-	{ value: "implement", label: "Implement current plan" },
-	{ value: "fresh", label: "Clear context and implement" },
+	{ value: "fresh", label: "Clear context and implement (recommended)" },
+	{ value: "implement", label: "Implement in current session" },
 	{ value: "revise", label: "Revise current plan" },
 	{ value: "stay", label: "Stay in Plan Mode" },
 ] as const;
@@ -440,18 +448,50 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	let normalGlobalDefaults: ModeModelProfile | undefined;
 	let profileTransitionDepth = 0;
 	let profileEventQueue = Promise.resolve();
+	let lifecycleQueue = Promise.resolve();
 	let lifecycleGeneration = 0;
 	let latestProposedPlan: string | undefined;
 	let latestProposedPlanKey: string | undefined;
 	let pendingFreshImplementationPlan: string | undefined;
-	let planWorkspace: PlanWorkspace | undefined;
-	let planSandbox: PlanSandboxController | undefined;
+	let modeTransition: "entering" | "exiting" | undefined;
+	let modeTransitionPromise: Promise<boolean> | undefined;
+	let runtimeContext: ExtensionContext | undefined;
+
+	function updateRuntimeStatus(status: PlanRuntimeStatus): void {
+		const ctx = runtimeContext;
+		if (!ctx) return;
+		if (status.phase === "warming") {
+			ctx.ui.setStatus("plan-runtime", "⏳ sandbox");
+			return;
+		}
+		if (status.phase === "disposing") {
+			ctx.ui.setStatus("plan-runtime", "⏳ sandbox cleanup");
+			return;
+		}
+		if (status.phase === "failed") {
+			ctx.ui.setStatus("plan-runtime", "⚠ sandbox");
+			if (planState.active) {
+				ctx.ui.notify(
+					`Plan Mode remains active, but isolated command execution is unavailable: ${status.error instanceof Error ? status.error.message : String(status.error)}`,
+					"error",
+				);
+			}
+			return;
+		}
+		ctx.ui.setStatus("plan-runtime", undefined);
+	}
+
+	const planRuntime = createPlanRuntimeCoordinator({
+		createWorkspace: (hostRoot, options) => workspaceFactory(hostRoot, options),
+		createSandbox: (workspace) => sandboxFactory(workspace),
+		onStatus: updateRuntimeStatus,
+	});
 
 	const planBash = createBashTool(process.cwd(), {
 		operations: {
-			exec(command, cwd, options) {
-				if (!planSandbox) throw new Error("Plan Bash is unavailable because its sandbox is not initialized.");
-				return planSandbox.operations.exec(command, cwd, options);
+			async exec(command, cwd, options) {
+				const sandbox = await planRuntime.require(options.signal);
+				return sandbox.operations.exec(command, cwd, options);
 			},
 		},
 	});
@@ -610,11 +650,11 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		return [...new Set(names)];
 	}
 
-	function planToolSet(normalTools: string[], sandboxReady: boolean): string[] {
+	function planToolSet(normalTools: string[]): string[] {
 		const retained = normalTools.filter((name) =>
 			name !== "bash" && name !== "plan_bash" && !MUTATING_TOOLS.has(name)
 		);
-		return uniqueTools([...retained, "plan_question", ...(sandboxReady ? ["plan_bash"] : [])]);
+		return uniqueTools([...retained, "plan_question", "plan_bash"]);
 	}
 
 	function restoreNormalTools(fallback?: string[]): void {
@@ -627,61 +667,38 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		pi.setActiveTools(uniqueTools([...current, "bash"]));
 	}
 
-	async function disposePlanRuntime(): Promise<void> {
-		const sandbox = planSandbox;
-		const workspace = planWorkspace;
-		planSandbox = undefined;
-		planWorkspace = undefined;
-		let firstError: unknown;
-		try {
-			await sandbox?.dispose();
-		} catch (error) {
-			firstError = error;
-		}
-		try {
-			await workspace?.dispose();
-		} catch (error) {
-			firstError ??= error;
-		}
-		if (firstError) throw firstError;
+	function enqueueLifecycle<T>(task: () => Promise<T>): Promise<T> {
+		const result = lifecycleQueue.then(task, task);
+		lifecycleQueue = result.then(() => undefined, () => undefined);
+		return result;
 	}
 
-	async function initializePlanRuntime(ctx: ExtensionContext): Promise<void> {
-		if (planSandbox && planWorkspace) {
-			pi.setActiveTools(planToolSet(planState.normalTools ?? pi.getActiveTools(), true));
-			return;
-		}
-		const workspace = await workspaceFactory(ctx.cwd);
-		const sandbox = sandboxFactory(workspace);
-		try {
-			await sandbox.initialize();
-			planWorkspace = workspace;
-			planSandbox = sandbox;
-			pi.setActiveTools(planToolSet(planState.normalTools ?? pi.getActiveTools(), true));
-		} catch (error) {
-			try { await sandbox.dispose(); } catch { /* preserve initialization error */ }
-			try { await workspace.dispose(); } catch { /* preserve initialization error */ }
-			pi.setActiveTools(planToolSet(planState.normalTools ?? pi.getActiveTools(), false));
-			throw error;
-		}
+	function warmPlanRuntime(ctx: ExtensionContext): void {
+		runtimeContext = ctx;
+		planRuntime.warm(ctx.cwd);
 	}
 
 	async function refreshPlanRuntime(ctx: ExtensionContext): Promise<void> {
-		await disposePlanRuntime();
-		await initializePlanRuntime(ctx);
+		await enqueueLifecycle(async () => {
+			runtimeContext = ctx;
+			await planRuntime.refresh(ctx.cwd);
+		});
 	}
 
 	// ── State Reconstruction ──────────────────────────────────────────────
 
-	const reconstruct = async (ctx: ExtensionContext) => {
-		const generation = ++lifecycleGeneration;
+	const reconstructState = async (ctx: ExtensionContext, generation: number) => {
 		const toolsAtStart = pi.getActiveTools();
 		const previousNormalTools = planState.normalTools;
+		runtimeContext = ctx;
 		try {
-			await disposePlanRuntime();
+			await planRuntime.dispose();
 		} catch (error) {
-			ctx.ui.notify(`Could not clean up the previous Plan Bash sandbox: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			if (generation === lifecycleGeneration) {
+				ctx.ui.notify(`Could not clean up the previous Plan Bash sandbox: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			}
 		}
+		if (generation !== lifecycleGeneration) return;
 		planState = { active: false, setAt: Date.now() };
 		activePlanProfile = undefined;
 		normalGlobalDefaults = undefined;
@@ -741,23 +758,26 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			if (fallback) {
 				try {
 					const defaults = await normalDefaultsStore.capture(ctx.cwd, fallback);
-					if (generation === lifecycleGeneration) normalGlobalDefaults = defaults;
+					if (generation !== lifecycleGeneration) return;
+					normalGlobalDefaults = defaults;
 				} catch (error) {
+					if (generation !== lifecycleGeneration) return;
 					ctx.ui.notify(`Could not read Pi's normal defaults: ${error instanceof Error ? error.message : String(error)}`, "error");
 				}
 			}
-			try {
-				await initializePlanRuntime(ctx);
-			} catch (error) {
-				ctx.ui.notify(
-					`Plan Mode remains active, but isolated command execution is unavailable: ${error instanceof Error ? error.message : String(error)}`,
-					"error",
-				);
-			}
+			if (generation !== lifecycleGeneration) return;
+			pi.setActiveTools(planToolSet(planState.normalTools));
+			warmPlanRuntime(ctx);
 		} else {
+			ctx.ui.setStatus("plan-runtime", undefined);
 			pi.setActiveTools(previousNormalTools ?? toolsAtStart.filter((name) => name !== "plan_bash"));
 		}
-		if (generation === lifecycleGeneration) updateStatus(ctx, planState);
+		if (generation === lifecycleGeneration && !modeTransition) updateStatus(ctx, planState);
+	};
+
+	const reconstruct = (ctx: ExtensionContext): Promise<void> => {
+		const generation = ++lifecycleGeneration;
+		return enqueueLifecycle(() => reconstructState(ctx, generation));
 	};
 
 	const persist = () => {
@@ -787,13 +807,29 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	}
 
 	async function applySessionProfile(ctx: ExtensionContext, profile: ModeModelProfile): Promise<ModeModelProfile> {
-		const catalogueModel = await resolveProfileModel(ctx, profile);
-		const model = profile.contextWindow === undefined
-			? catalogueModel
-			: { ...catalogueModel, contextWindow: profile.contextWindow };
-		const changed = await pi.setModel(model);
-		if (!changed) throw new Error(`No configured authentication for ${profile.provider}/${profile.modelId}.`);
-		pi.setThinkingLevel(profile.thinkingLevel);
+		const currentModel = ctx.model;
+		const sameModel = currentModel?.provider === profile.provider && currentModel.id === profile.modelId;
+		let model: Model<any>;
+		let shouldSetModel = false;
+
+		if (sameModel) {
+			model = profile.contextWindow === undefined || profile.contextWindow === currentModel.contextWindow
+				? currentModel
+				: { ...currentModel, contextWindow: profile.contextWindow };
+			shouldSetModel = model.contextWindow !== currentModel.contextWindow;
+		} else {
+			const catalogueModel = await resolveProfileModel(ctx, profile);
+			model = profile.contextWindow === undefined
+				? catalogueModel
+				: { ...catalogueModel, contextWindow: profile.contextWindow };
+			shouldSetModel = true;
+		}
+
+		if (shouldSetModel) {
+			const changed = await pi.setModel(model);
+			if (!changed) throw new Error(`No configured authentication for ${profile.provider}/${profile.modelId}.`);
+		}
+		if (pi.getThinkingLevel() !== profile.thinkingLevel) pi.setThinkingLevel(profile.thinkingLevel);
 		return {
 			...profile,
 			thinkingLevel: pi.getThinkingLevel() as ModelThinkingLevel,
@@ -823,6 +859,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			normalTools: active ? planState.normalTools : undefined,
 		};
 		if (!active) {
+			ctx.ui.setStatus("plan-runtime", undefined);
 			latestProposedPlan = undefined;
 			latestProposedPlanKey = undefined;
 			activePlanProfile = undefined;
@@ -832,7 +869,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		updateStatus(ctx, planState);
 	}
 
-	async function enterPlanMode(ctx: ExtensionContext, prompt?: string): Promise<boolean> {
+	async function enterPlanModeInternal(ctx: ExtensionContext, prompt?: string): Promise<boolean> {
 		if (planState.active) return true;
 		const normalProfile = profileFromCurrentSession(pi, ctx);
 		if (!normalProfile) {
@@ -849,8 +886,9 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			if (!storedProfile) {
 				await profileStore.save(normalProfile);
 				activePlanProfile = normalProfile;
-				await initializePlanRuntime(ctx);
+				pi.setActiveTools(planToolSet(normalTools));
 				commitPlanState(ctx, true, prompt);
+				warmPlanRuntime(ctx);
 				return true;
 			}
 
@@ -863,8 +901,9 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			} finally {
 				profileTransitionDepth--;
 			}
-			await initializePlanRuntime(ctx);
+			pi.setActiveTools(planToolSet(normalTools));
 			commitPlanState(ctx, true, prompt);
+			warmPlanRuntime(ctx);
 			return true;
 		} catch (error) {
 			let rollbackError: unknown;
@@ -879,7 +918,6 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 					profileTransitionDepth--;
 				}
 			}
-			try { await disposePlanRuntime(); } catch { /* preserve entry error */ }
 			pi.setActiveTools(normalTools);
 			activePlanProfile = undefined;
 			normalGlobalDefaults = undefined;
@@ -895,8 +933,20 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		}
 	}
 
-	async function exitPlanMode(ctx: ExtensionContext): Promise<boolean> {
+	async function exitPlanModeInternal(ctx: ExtensionContext): Promise<boolean> {
 		if (!planState.active) return true;
+		const normalTools = planState.normalTools;
+		runtimeContext = ctx;
+		try {
+			await planRuntime.dispose();
+		} catch (error) {
+			ctx.ui.notify(
+				`Could not exit Plan Mode because the Plan Bash sandbox could not be cleaned up: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+			return false;
+		}
+
 		const normalProfile = planState.normalProfile;
 		if (normalProfile) {
 			let restoredSessionProfile = false;
@@ -922,20 +972,57 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 					`Could not exit Plan Mode: ${error instanceof Error ? error.message : String(error)}${rollbackNote}`,
 					"error",
 				);
+				warmPlanRuntime(ctx);
 				return false;
 			} finally {
 				profileTransitionDepth--;
 			}
 		}
-		const normalTools = planState.normalTools;
-		try {
-			await disposePlanRuntime();
-		} catch (error) {
-			ctx.ui.notify(`Could not fully clean up the Plan Bash sandbox: ${error instanceof Error ? error.message : String(error)}`, "warning");
-		}
 		restoreNormalTools(normalTools);
 		commitPlanState(ctx, false, undefined);
 		return true;
+	}
+
+	async function enterPlanMode(ctx: ExtensionContext, prompt?: string): Promise<boolean> {
+		if (planState.active) return true;
+		if (modeTransition) {
+			ctx.ui.notify(`Plan Mode is already ${modeTransition}.`, "info");
+			return false;
+		}
+		modeTransition = "entering";
+		ctx.ui.setStatus("plan", "📋 PLAN STARTING");
+		const transition = enqueueLifecycle(() => enterPlanModeInternal(ctx, prompt));
+		modeTransitionPromise = transition;
+		try {
+			return await transition;
+		} finally {
+			if (modeTransitionPromise === transition) {
+				modeTransition = undefined;
+				modeTransitionPromise = undefined;
+				updateStatus(ctx, planState);
+			}
+		}
+	}
+
+	async function exitPlanMode(ctx: ExtensionContext): Promise<boolean> {
+		if (!planState.active) return true;
+		if (modeTransition) {
+			ctx.ui.notify(`Plan Mode is already ${modeTransition}.`, "info");
+			return false;
+		}
+		modeTransition = "exiting";
+		ctx.ui.setStatus("plan", "📋 PLAN EXITING");
+		const transition = enqueueLifecycle(() => exitPlanModeInternal(ctx));
+		modeTransitionPromise = transition;
+		try {
+			return await transition;
+		} finally {
+			if (modeTransitionPromise === transition) {
+				modeTransition = undefined;
+				modeTransitionPromise = undefined;
+				updateStatus(ctx, planState);
+			}
+		}
 	}
 
 	async function sendPlanImplementation(ctx: ExtensionContext, plan: string): Promise<void> {
@@ -1027,7 +1114,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	}
 
 	function printPlanReviewInstructions(ctx: ExtensionContext, reason: string): void {
-		const instructions = `${reason}\n\nUse /plan implement, /plan fresh, /plan revise, or /plan show.`;
+		const instructions = `${reason}\n\nUse /plan fresh (recommended), /plan implement, /plan revise, or /plan show.`;
 		if (ctx.hasUI) {
 			ctx.ui.notify(instructions, "info");
 			return;
@@ -1069,12 +1156,15 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
 	pi.on("session_shutdown", async (_event, ctx) => {
 		lifecycleGeneration++;
-		try {
-			await disposePlanRuntime();
-		} catch (error) {
-			ctx.ui.notify(`Could not clean up the Plan Bash sandbox: ${error instanceof Error ? error.message : String(error)}`, "warning");
-		}
-		if (planState.active) restoreNormalTools();
+		await enqueueLifecycle(async () => {
+			runtimeContext = ctx;
+			try {
+				await planRuntime.dispose();
+			} catch (error) {
+				ctx.ui.notify(`Could not clean up the Plan Bash sandbox: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			}
+			if (planState.active) restoreNormalTools();
+		});
 	});
 
 	function enqueueProfileEvent(task: () => Promise<void>): Promise<void> {
@@ -1097,14 +1187,17 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		} catch (error) {
 			persistenceError = error;
 		}
+		if (generation !== lifecycleGeneration || !planState.active) return;
 		try {
 			await preserveNormalGlobalDefaults(ctx, defaults);
 		} catch (error) {
+			if (generation !== lifecycleGeneration || !planState.active) return;
 			ctx.ui.notify(
 				`Could not preserve Pi's normal defaults: ${error instanceof Error ? error.message : String(error)}`,
 				"error",
 			);
 		}
+		if (generation !== lifecycleGeneration || !planState.active) return;
 		if (persistenceError) {
 			ctx.ui.notify(
 				`Could not save the Plan Mode profile: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}`,
@@ -1230,12 +1323,6 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			};
 		}
 
-		if (event.toolName === "plan_bash" && !planSandbox) {
-			return {
-				block: true,
-				reason: "plan_bash is unavailable because the Plan Mode sandbox failed to initialize.",
-			};
-		}
 	});
 
 	// ── Command: /plan ────────────────────────────────────────────────────
@@ -1262,7 +1349,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		if (!(await enterPlanMode(ctx, prompt))) return false;
 		ctx.ui.notify(
 			activePlanProfile
-				? `📋 Plan mode active: ${profileLabel(activePlanProfile)}. Normal on exit: ${profileLabel(planState.normalProfile!)}`
+				? `📋 Plan mode active: ${profileLabel(activePlanProfile)}`
 				: "📋 Plan mode active.",
 			"info",
 		);
@@ -1279,7 +1366,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	pi.registerCommand("plan", {
 		description: "Toggle plan mode, or use /plan <task|implement|fresh|revise|show|refresh|exit>",
 		getArgumentCompletions: (prefix: string) => {
-			const items = ["implement", "accept", "fresh", "revise ", "show", "refresh", "status", "exit"];
+			const items = ["fresh", "implement", "accept", "revise ", "show", "refresh", "status", "exit"];
 			return items.filter((item) => item.startsWith(prefix)).map((value) => ({ value, label: value }));
 		},
 		handler: async (args, ctx) => {

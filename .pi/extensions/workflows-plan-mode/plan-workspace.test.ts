@@ -1,10 +1,41 @@
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createPlanWorkspace } from "./plan-workspace.ts";
 
 describe("createPlanWorkspace", () => {
+	it("provides canonical disposable paths", async () => {
+		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
+		const workspace = await createPlanWorkspace(hostRoot);
+		try {
+			expect(workspace.root).toBe(realpathSync(workspace.root));
+			for (const child of [workspace.sandboxRoot, workspace.tempRoot]) {
+				const childPath = relative(workspace.root, child);
+				expect(isAbsolute(childPath)).toBe(false);
+				expect(childPath.startsWith("..")).toBe(false);
+			}
+		} finally {
+			await workspace.dispose();
+			rmSync(hostRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("cancels copying and removes its partial disposable root", async () => {
+		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
+		writeFileSync(join(hostRoot, "tracked.txt"), "host\n");
+		const before = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("pi-plan-workspace-")));
+		const controller = new AbortController();
+		controller.abort();
+
+		await expect(createPlanWorkspace(hostRoot, { signal: controller.signal }))
+			.rejects.toMatchObject({ name: "AbortError" });
+
+		const after = readdirSync(tmpdir()).filter((name) => name.startsWith("pi-plan-workspace-"));
+		expect(after.filter((name) => !before.has(name))).toEqual([]);
+		rmSync(hostRoot, { recursive: true, force: true });
+	});
+
 	it("provides a disposable copy without linking mutable host files", async () => {
 		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
 		writeFileSync(join(hostRoot, "tracked.txt"), "host\n");
