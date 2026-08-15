@@ -1,3 +1,9 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import type { AgentConfig } from "../_shared/subagent-service.ts";
+
 export const MAIN_MODEL_SETTING = "main";
 export const LEGACY_MAIN_MODEL_SETTING = "default";
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -26,6 +32,20 @@ export interface ResolveLaunchOptions extends ResolveModelOptions {
 export interface ResolvedLaunchConfiguration {
 	model: string;
 	thinkingLevel?: SubagentThinkingLevel;
+}
+
+export interface ExtensionConfig extends ModelConfiguration {
+	maxConcurrency?: number;
+}
+
+export interface SubagentConfigStore {
+	readonly configPath: string;
+	readDocument(): Record<string, unknown>;
+	load(): ExtensionConfig;
+	update(update: (document: Record<string, unknown>) => Record<string, unknown>): Promise<Record<string, unknown>>;
+	rememberMainModel(model: { provider: unknown; id: unknown } | undefined): void;
+	getMainModel(): string | undefined;
+	resolveLaunch(agent: AgentConfig, explicitModel?: string, explicitThinkingLevel?: SubagentThinkingLevel): ResolvedLaunchConfiguration;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -286,3 +306,71 @@ export function appendChildThinkingArgument(
 		? [...args]
 		: [...args, "--thinking", normalizeThinkingLevel(thinkingLevel, "resolved child thinking level")];
 }
+
+export function createSubagentConfigStore(configPath: string): SubagentConfigStore {
+	let activeMainModel: string | undefined;
+
+	function readDocument(): Record<string, unknown> {
+		if (!fs.existsSync(configPath)) return {};
+		try {
+			const value = JSON.parse(fs.readFileSync(configPath, "utf-8")) as unknown;
+			if (typeof value !== "object" || value === null || Array.isArray(value)) {
+				throw new Error("the root value must be a JSON object");
+			}
+			return value as Record<string, unknown>;
+		} catch (error) {
+			throw new Error(`Cannot read subagent config ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	function load(): ExtensionConfig {
+		const document = readDocument();
+		const modelConfig = parseModelConfiguration(document);
+		const maxConcurrency = document.maxConcurrency;
+		if (maxConcurrency !== undefined && (!Number.isInteger(maxConcurrency) || (maxConcurrency as number) < 1)) {
+			throw new Error("Subagent config maxConcurrency must be a positive integer.");
+		}
+		return { ...modelConfig, maxConcurrency: maxConcurrency as number | undefined };
+	}
+
+	async function update(
+		mutate: (document: Record<string, unknown>) => Record<string, unknown>,
+	): Promise<Record<string, unknown>> {
+		return withFileMutationQueue(configPath, async () => {
+			const next = mutate(readDocument());
+			parseModelConfiguration(next);
+			const temporaryPath = `${configPath}.${process.pid}.${Date.now()}.tmp`;
+			try {
+				await fs.promises.writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
+				await fs.promises.rename(temporaryPath, configPath);
+			} finally {
+				await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined);
+			}
+			return next;
+		});
+	}
+
+	return {
+		configPath,
+		readDocument,
+		load,
+		update,
+		rememberMainModel(model) {
+			activeMainModel = model ? canonicalMainModel(model) : undefined;
+		},
+		getMainModel: () => activeMainModel,
+		resolveLaunch(agent, explicitModel, explicitThinkingLevel) {
+			return resolveLaunchConfiguration({
+				agentName: agent.name,
+				config: readDocument(),
+				explicitModel,
+				explicitThinkingLevel,
+				frontmatterModel: agent.model,
+				mainModel: activeMainModel,
+			});
+		},
+	};
+}
+
+const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
+export const subagentConfig = createSubagentConfigStore(path.join(EXT_DIR, "config.json"));

@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	appendChildModelArgument,
 	appendChildThinkingArgument,
 	canonicalMainModel,
 	clearAllThinkingAssignments,
+	createSubagentConfigStore,
 	parseModelConfiguration,
 	removeAgentModelAssignment,
 	removeAgentThinkingAssignment,
@@ -15,9 +19,22 @@ import {
 	setAllModelAssignments,
 	setAllThinkingAssignments,
 	splitModelThinkingSetting,
-} from "./model-config.ts";
+} from "./config.ts";
 
 const mainModel = { provider: "anthropic", id: "claude-sonnet-4-6" };
+const roots: string[] = [];
+
+afterEach(() => {
+	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function configFile(content?: string): string {
+	const root = mkdtempSync(join(tmpdir(), "subagent-config-"));
+	roots.push(root);
+	const configPath = join(root, "config.json");
+	if (content !== undefined) writeFileSync(configPath, content);
+	return configPath;
+}
 
 describe("subagent model resolution", () => {
 	it("resolves main to the current main provider/model", () => {
@@ -197,6 +214,39 @@ describe("subagent model configuration updates", () => {
 		expect(() => parseModelConfiguration({ agentThinkingLevels: [] })).toThrow(/agentThinkingLevels must be a JSON object/);
 		expect(() => parseModelConfiguration({ agentThinkingLevels: { worker: 42 } })).toThrow(/must be one of/);
 		expect(() => parseModelConfiguration([])).toThrow(/must contain a JSON object/);
+	});
+});
+
+describe("subagent config store", () => {
+	it("loads missing files and validates root values and concurrency", () => {
+		expect(createSubagentConfigStore(configFile()).load()).toEqual({
+			agentModels: {}, agentThinkingLevels: {}, maxConcurrency: undefined,
+		});
+		expect(() => createSubagentConfigStore(configFile("[]")).load()).toThrow(/root value must be a JSON object/);
+		expect(() => createSubagentConfigStore(configFile("{" )).load()).toThrow(/Cannot read subagent config/);
+		expect(() => createSubagentConfigStore(configFile('{"maxConcurrency":0}')).load()).toThrow(/positive integer/);
+		expect(() => createSubagentConfigStore(configFile('{"maxConcurrency":1.5}')).load()).toThrow(/positive integer/);
+	});
+
+	it("updates atomically while preserving unknown fields", async () => {
+		const configPath = configFile('{"maxConcurrency":3,"custom":true,"defaultModel":"main"}');
+		const store = createSubagentConfigStore(configPath);
+		await store.update((document) => setAgentModelAssignment(document, "worker", "openai/test"));
+		expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
+			maxConcurrency: 3,
+			custom: true,
+			defaultModel: "main",
+			agentModels: { worker: "openai/test" },
+		});
+	});
+
+	it("tracks the main model dynamically when resolving launches", () => {
+		const store = createSubagentConfigStore(configFile('{"defaultModel":"main","defaultThinkingLevel":"low"}'));
+		const worker = { name: "worker", model: "", description: "", tools: [], systemPrompt: "", filePath: "" };
+		store.rememberMainModel({ provider: "openai", id: "first" });
+		expect(store.resolveLaunch(worker)).toEqual({ model: "openai/first", thinkingLevel: "low" });
+		store.rememberMainModel({ provider: "anthropic", id: "second" });
+		expect(store.resolveLaunch(worker)).toEqual({ model: "anthropic/second", thinkingLevel: "low" });
 	});
 });
 
