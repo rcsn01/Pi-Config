@@ -11,12 +11,15 @@ import {
 import { createModelSelectorExtension, selectionModeFromEntries } from "./index.ts";
 import {
 	applySavedContext,
+	calculateCompactionReserveTokens,
+	DEFAULT_COMPACTION_THRESHOLD,
 	filterModels,
 	findExactModel,
 	getContextWindowChoices,
 	GPT_56_LONG_CONTEXT,
 	GPT_56_SHORT_CONTEXT,
 	hasExplicitModelArgument,
+	mergeProjectCompactionSettings,
 	mergeProjectModelSelection,
 	parseProjectModelPreferences,
 	shouldOpenStartupModelSelector,
@@ -115,6 +118,7 @@ function createLifecycleHarness(options: {
 		contextWindow: number;
 	}>;
 	effectiveThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+	compactionThreshold?: number;
 	hasConversationHistory?: boolean;
 	mode?: "tui" | "print" | "json" | "rpc";
 	refreshError?: Error;
@@ -138,7 +142,12 @@ function createLifecycleHarness(options: {
 	const setEditorComponent = vi.fn();
 	const notify = vi.fn();
 	const save = vi.fn(async () => {});
-	const load = vi.fn(async () => ({ profiles: options.profiles ?? {}, contextWindows: options.contextWindows ?? {} }));
+	const syncCompaction = vi.fn(async () => {});
+	const load = vi.fn(async () => ({
+		profiles: options.profiles ?? {},
+		contextWindows: options.contextWindows ?? {},
+		compactionThreshold: options.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD,
+	}));
 	const ctx = {
 		mode: options.mode ?? "tui",
 		model: selectedModel,
@@ -176,7 +185,7 @@ function createLifecycleHarness(options: {
 		getThinkingLevel: vi.fn(() => options.effectiveThinkingLevel ?? "medium"),
 		setThinkingLevel,
 	} as unknown as ExtensionAPI;
-	createModelSelectorExtension({ load, save })(pi);
+	createModelSelectorExtension({ load, save, syncCompaction })(pi);
 
 	return {
 		custom,
@@ -186,6 +195,7 @@ function createLifecycleHarness(options: {
 		notify,
 		load,
 		save,
+		syncCompaction,
 		emit: async (reason: "startup" | "reload" | "new" | "resume" | "fork") => {
 			await handlers.get("session_start")?.({ type: "session_start", reason }, ctx);
 		},
@@ -237,6 +247,7 @@ describe("model selector lifecycle", () => {
 			contextWindow: GPT_56_SHORT_CONTEXT,
 		}));
 		expect(harness.setThinkingLevel).toHaveBeenCalledWith("xhigh");
+		expect(harness.syncCompaction).toHaveBeenCalledWith(GPT_56_SHORT_CONTEXT);
 		expect(harness.custom).not.toHaveBeenCalled();
 		expect(harness.save).not.toHaveBeenCalled();
 	});
@@ -328,6 +339,7 @@ describe("model selector lifecycle", () => {
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
 			contextWindow: GPT_56_SHORT_CONTEXT,
 		}));
+		expect(harness.syncCompaction).toHaveBeenCalledWith(GPT_56_SHORT_CONTEXT);
 		expect(harness.save).not.toHaveBeenCalled();
 	});
 
@@ -372,6 +384,35 @@ describe("model selection helpers", () => {
 });
 
 describe("project model settings", () => {
+	it("defaults the compaction threshold and calculates a 10% reserve", () => {
+		expect(parseProjectModelPreferences({}).compactionThreshold).toBe(DEFAULT_COMPACTION_THRESHOLD);
+		expect(calculateCompactionReserveTokens(GPT_56_SHORT_CONTEXT)).toBe(27_200);
+		expect(calculateCompactionReserveTokens(GPT_56_LONG_CONTEXT)).toBe(105_000);
+		expect(calculateCompactionReserveTokens(101, 0.1)).toBe(11);
+	});
+
+	it("reads a manually configured compaction threshold", () => {
+		expect(parseProjectModelPreferences({ compaction: { threshold: 0.2 } }).compactionThreshold).toBe(0.2);
+		expect(calculateCompactionReserveTokens(100_000, 0.2)).toBe(20_000);
+	});
+
+	it("merges context-sized compaction settings without discarding existing settings", () => {
+		expect(mergeProjectCompactionSettings({
+			theme: "dark",
+			compaction: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 20_000 },
+			uiModelSelector: { label: "kept" },
+		}, GPT_56_LONG_CONTEXT)).toEqual({
+			theme: "dark",
+			compaction: {
+				enabled: true,
+				reserveTokens: 105_000,
+				keepRecentTokens: 20_000,
+				threshold: DEFAULT_COMPACTION_THRESHOLD,
+			},
+			uiModelSelector: { label: "kept" },
+		});
+	});
+
 	it("removes legacy default fields while preserving unrelated settings", () => {
 		const result = mergeProjectModelSelection({
 			defaultThinkingLevel: "medium",
@@ -441,8 +482,48 @@ describe("project model settings", () => {
 		{ uiModelSelector: { contextWindows: [] } },
 		{ uiModelSelector: { contextWindows: { "github-copilot/gpt-5.6-sol": 0 } } },
 		{ uiModelSelector: { profiles: { normal: { provider: "test", modelId: "model", thinkingLevel: "ultra", contextWindow: 1 } } } },
+		{ compaction: [] },
+		{ compaction: { threshold: 0 } },
+		{ compaction: { threshold: 1 } },
 	])("rejects malformed settings %#", (settings) => {
 		expect(() => parseProjectModelPreferences(settings)).toThrow();
+	});
+
+	it("persists the threshold and updates reserves for both context profiles", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "ui-model-selector-"));
+		const path = join(directory, "settings.json");
+		writeFileSync(path, JSON.stringify({
+			theme: "dark",
+			compaction: { enabled: true, reserveTokens: 27_200, keepRecentTokens: 20_000 },
+			uiModelSelector: {},
+		}), "utf-8");
+		try {
+			const store = createProjectSettingsStore(path);
+			await store.save("normal", {
+				provider: "github-copilot",
+				modelId: "gpt-5.6-sol",
+				thinkingLevel: "xhigh",
+				contextWindow: GPT_56_LONG_CONTEXT,
+			});
+			let settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, any>;
+			expect(settings).toMatchObject({
+				theme: "dark",
+				compaction: {
+					enabled: true,
+					reserveTokens: 105_000,
+					keepRecentTokens: 20_000,
+					threshold: DEFAULT_COMPACTION_THRESHOLD,
+				},
+			});
+			expect(settings.uiModelSelector.profiles.normal.contextWindow).toBe(GPT_56_LONG_CONTEXT);
+
+			await store.syncCompaction(GPT_56_SHORT_CONTEXT);
+			settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, any>;
+			expect(settings.compaction.reserveTokens).toBe(27_200);
+			expect(settings.compaction.threshold).toBe(DEFAULT_COMPACTION_THRESHOLD);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	it.each([

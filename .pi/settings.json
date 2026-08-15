@@ -1,6 +1,7 @@
 {
   "compaction": {
     "enabled": true,
+    "threshold": 0.1,
     "reserveTokens": 27200,
     "keepRecentTokens": 20000
   },

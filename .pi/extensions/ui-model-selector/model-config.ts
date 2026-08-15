@@ -28,6 +28,9 @@ export type StoredThinkingLevel = typeof MODEL_THINKING_LEVELS[number];
 
 export type ModelSelectionMode = "normal" | "plan";
 
+/** Fraction of each model context window reserved for the response before compaction. */
+export const DEFAULT_COMPACTION_THRESHOLD = 0.1;
+
 export interface ModelSelectionSettings {
 	provider: string;
 	modelId: string;
@@ -39,6 +42,8 @@ export interface ProjectModelPreferences {
 	profiles: Partial<Record<ModelSelectionMode, ModelSelectionSettings>>;
 	/** Legacy model-keyed contexts, read only as a migration fallback. */
 	contextWindows: Record<string, number>;
+	/** Fraction of the active context window reserved for the model response. */
+	compactionThreshold: number;
 }
 
 export const GPT_56_SHORT_CONTEXT = 272_000;
@@ -183,6 +188,23 @@ function validateContextWindows(value: unknown): Record<string, number> {
 	return result;
 }
 
+function validateCompactionThreshold(value: unknown): number {
+	if (value === undefined) return DEFAULT_COMPACTION_THRESHOLD;
+	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value >= 1) {
+		throw new Error("compaction.threshold must be a finite number greater than 0 and less than 1.");
+	}
+	return value;
+}
+
+export function calculateCompactionReserveTokens(
+	contextWindow: number,
+	threshold = DEFAULT_COMPACTION_THRESHOLD,
+): number {
+	const validatedContextWindow = validateContextWindow(contextWindow, "contextWindow");
+	const validatedThreshold = validateCompactionThreshold(threshold);
+	return Math.ceil(validatedContextWindow * validatedThreshold);
+}
+
 function validateSelection(value: unknown, label: string): ModelSelectionSettings {
 	if (!isRecord(value)) throw new Error(`${label} must be a JSON object.`);
 	const thinkingLevel = value.thinkingLevel;
@@ -212,9 +234,11 @@ function validateProfiles(value: unknown): Partial<Record<ModelSelectionMode, Mo
 export function parseProjectModelPreferences(settings: unknown): ProjectModelPreferences {
 	if (!isRecord(settings)) throw new Error("Project settings must contain a JSON object.");
 	const selector = nestedRecord(settings, "uiModelSelector", "uiModelSelector");
+	const compaction = nestedRecord(settings, "compaction", "compaction");
 	return {
 		profiles: validateProfiles(selector.profiles),
 		contextWindows: validateContextWindows(selector.contextWindows),
+		compactionThreshold: validateCompactionThreshold(compaction.threshold),
 	};
 }
 
@@ -251,6 +275,24 @@ export function mergeProjectModelSelection(
 				...profiles,
 				[mode]: { provider, modelId, thinkingLevel: selection.thinkingLevel, contextWindow: selection.contextWindow },
 			},
+		},
+	};
+}
+
+/** Return a cloned project settings document with compaction aligned to a context window. */
+export function mergeProjectCompactionSettings(
+	settings: unknown,
+	contextWindow: number,
+): Record<string, unknown> {
+	if (!isRecord(settings)) throw new Error("Project settings must contain a JSON object.");
+	const preferences = parseProjectModelPreferences(settings);
+	const compaction = nestedRecord(settings, "compaction", "compaction");
+	return {
+		...settings,
+		compaction: {
+			...compaction,
+			threshold: preferences.compactionThreshold,
+			reserveTokens: calculateCompactionReserveTokens(contextWindow, preferences.compactionThreshold),
 		},
 	};
 }

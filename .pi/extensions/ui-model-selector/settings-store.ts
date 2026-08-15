@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
+	mergeProjectCompactionSettings,
 	mergeProjectModelSelection,
 	parseProjectModelPreferences,
 	type ModelSelectionMode,
@@ -13,6 +14,7 @@ import {
 export interface ProjectSettingsStore {
 	load(): Promise<ProjectModelPreferences>;
 	save(mode: ModelSelectionMode, selection: ModelSelectionSettings): Promise<void>;
+	syncCompaction(contextWindow: number): Promise<void>;
 }
 
 const EXTENSION_DIRECTORY = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +31,17 @@ function readSettingsDocument(path: string): Record<string, unknown> {
 	}
 }
 
+function writeSettingsDocument(path: string, settings: Record<string, unknown>): void {
+	mkdirSync(dirname(path), { recursive: true });
+	const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+	try {
+		writeFileSync(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
+		renameSync(temporaryPath, path);
+	} finally {
+		if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+	}
+}
+
 export function createProjectSettingsStore(path = PROJECT_SETTINGS_PATH): ProjectSettingsStore {
 	return {
 		async load() {
@@ -37,15 +50,16 @@ export function createProjectSettingsStore(path = PROJECT_SETTINGS_PATH): Projec
 
 		async save(mode, selection) {
 			await withFileMutationQueue(path, async () => {
-				const settings = mergeProjectModelSelection(readSettingsDocument(path), mode, selection);
-				mkdirSync(dirname(path), { recursive: true });
-				const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-				try {
-					writeFileSync(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
-					renameSync(temporaryPath, path);
-				} finally {
-					if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
-				}
+				const selectionSettings = mergeProjectModelSelection(readSettingsDocument(path), mode, selection);
+				const settings = mergeProjectCompactionSettings(selectionSettings, selection.contextWindow);
+				writeSettingsDocument(path, settings);
+			});
+		},
+
+		async syncCompaction(contextWindow) {
+			await withFileMutationQueue(path, async () => {
+				const settings = mergeProjectCompactionSettings(readSettingsDocument(path), contextWindow);
+				writeSettingsDocument(path, settings);
 			});
 		},
 	};
