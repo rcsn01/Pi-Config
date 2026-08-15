@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SettingsManager, type BashOperations, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import planModeExtension, {
 	createPlanModeExtension,
@@ -29,6 +29,8 @@ interface HarnessOptions {
 	thinkingLevel?: ModelThinkingLevel;
 	availableModels?: any[];
 	setModelResult?: boolean;
+	activeTools?: string[];
+	sandboxInitializeError?: Error;
 	dependencies?: PlanModeDependencies;
 }
 
@@ -55,7 +57,9 @@ function createHarness(options: HarnessOptions = {}) {
 	const shortcuts = new Map<string, any>();
 	const renderers = new Map<string, any>();
 	const entryRenderers = new Map<string, any>();
+	const tools = new Map<string, any>();
 	const timeline: string[] = [];
+	let activeTools = [...(options.activeTools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"] )];
 	let currentModel = options.model;
 	let thinkingLevel = options.thinkingLevel ?? "medium";
 	const appendedEntries: Array<{ customType: string; data: any }> = [];
@@ -126,6 +130,7 @@ function createHarness(options: HarnessOptions = {}) {
 		sessionManager: {
 			getBranch: () => branch,
 			getSessionFile: () => undefined,
+			getSessionId: () => "test-session",
 		},
 		isIdle: () => true,
 		hasPendingMessages: () => false,
@@ -154,13 +159,38 @@ function createHarness(options: HarnessOptions = {}) {
 		timeline.push(`setThinking:${level}`);
 		thinkingLevel = level;
 	});
+	const sandboxExec = vi.fn(async (..._args: Parameters<BashOperations["exec"]>): Promise<{ exitCode: number | null }> => ({ exitCode: 0 }));
+	const sandboxDispose = vi.fn(async () => {});
+	const workspaceDispose = vi.fn(async () => {});
+	const runtimeDependencies: PlanModeDependencies = {
+		...options.dependencies,
+		createWorkspace: vi.fn(async (hostRoot: string) => ({
+			root: "/tmp/plan",
+			hostRoot,
+			sandboxRoot: "/tmp/plan/project",
+			tempRoot: "/tmp/plan/tmp",
+			dispose: workspaceDispose,
+		})),
+		createSandbox: vi.fn(() => ({
+			operations: { exec: sandboxExec },
+			initialize: vi.fn(async () => {
+				if (options.sandboxInitializeError) throw options.sandboxInitializeError;
+			}),
+			dispose: sandboxDispose,
+		})),
+	};
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
 			const eventHandlers = handlers.get(event) ?? [];
 			eventHandlers.push(handler);
 			handlers.set(event, eventHandlers);
 		},
-		registerTool: vi.fn(),
+		registerTool: vi.fn((definition: any) => tools.set(definition.name, definition)),
+		getActiveTools: vi.fn(() => [...activeTools]),
+		setActiveTools: vi.fn((names: string[]) => {
+			activeTools = [...names];
+			timeline.push(`setActiveTools:${names.join(",")}`);
+		}),
 		registerMessageRenderer: (customType: string, renderer: any) => renderers.set(customType, renderer),
 		registerEntryRenderer: (customType: string, renderer: any) => entryRenderers.set(customType, renderer),
 		registerCommand: (name: string, definition: any) => commands.set(name, definition),
@@ -173,7 +203,7 @@ function createHarness(options: HarnessOptions = {}) {
 		setThinkingLevel,
 	} as unknown as ExtensionAPI;
 
-	(options.dependencies ? createPlanModeExtension(options.dependencies) : planModeExtension)(pi);
+	createPlanModeExtension(runtimeDependencies)(pi);
 
 	async function emit(event: string, payload: any = { type: event }): Promise<any[]> {
 		const results = [];
@@ -186,6 +216,11 @@ function createHarness(options: HarnessOptions = {}) {
 		emit,
 		commands,
 		shortcuts,
+		tools,
+		getActiveToolNames: () => [...activeTools],
+		sandboxExec,
+		sandboxDispose,
+		workspaceDispose,
 		renderers,
 		entryRenderers,
 		timeline,
@@ -491,7 +526,7 @@ describe("plan review lifecycle", () => {
 });
 
 describe("Plan Mode tool policy integration", () => {
-	it("uses the Bash policy only while Plan Mode is active", async () => {
+	it("blocks host Bash only while Plan Mode is active", async () => {
 		const active = createHarness();
 		await active.emit("session_start", { type: "session_start", reason: "startup" });
 		const [blocked] = await active.emit("tool_call", {
@@ -501,7 +536,7 @@ describe("Plan Mode tool policy integration", () => {
 		});
 		expect(blocked).toEqual({
 			block: true,
-			reason: expect.stringContaining('Plan Mode blocked command 2: "touch"'),
+			reason: expect.stringContaining("Use plan_bash"),
 		});
 
 		const inactive = createHarness({ branch: [] });
@@ -521,6 +556,58 @@ describe("Plan Mode tool policy integration", () => {
 			type: "tool_call", toolName: "write", input: { path: "file" },
 		});
 		expect(blocked).toMatchObject({ block: true, reason: expect.stringContaining("write is disabled") });
+	});
+});
+
+describe("Plan Mode isolated Bash lifecycle", () => {
+	it("routes arbitrary commands through plan_bash and restores the exact normal tools on exit", async () => {
+		const stores = createProfileDependencies();
+		const initialTools = ["read", "bash", "edit", "write", "grep", "custom_tool"];
+		const harness = createHarness({
+			branch: [], model: normalModel, thinkingLevel: "medium",
+			availableModels: [normalModel], activeTools: initialTools,
+			dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("plan").handler("", harness.ctx);
+
+		expect(harness.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "grep", "custom_tool", "plan_bash", "plan_question"]));
+		expect(harness.getActiveToolNames()).not.toEqual(expect.arrayContaining(["bash", "edit", "write"]));
+
+		const planBash = harness.tools.get("plan_bash");
+		await planBash.execute(
+			"tool-1",
+			{ command: `npm --prefix apps/Amove run test:e2e -- --grep "navigation"` },
+			undefined,
+			undefined,
+			harness.ctx,
+		);
+		expect(harness.sandboxExec).toHaveBeenCalledWith(
+			expect.stringContaining("npm --prefix apps/Amove"),
+			expect.any(String),
+			expect.any(Object),
+		);
+
+		await harness.commands.get("plan").handler("exit", harness.ctx);
+		expect(harness.getActiveToolNames()).toEqual(initialTools);
+		expect(harness.sandboxDispose).toHaveBeenCalled();
+		expect(harness.workspaceDispose).toHaveBeenCalled();
+	});
+
+	it("keeps reconstructed Plan Mode fail-closed when sandbox initialization fails", async () => {
+		const harness = createHarness({
+			model: normalModel,
+			availableModels: [normalModel],
+			sandboxInitializeError: new Error("sandbox unavailable"),
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "reload" });
+
+		expect(harness.getActiveToolNames()).not.toEqual(expect.arrayContaining(["bash", "edit", "write", "plan_bash"]));
+		expect(harness.notify).toHaveBeenCalledWith(expect.stringContaining("sandbox unavailable"), "error");
+		const [blocked] = await harness.emit("tool_call", {
+			type: "tool_call", toolName: "bash", input: { command: "pytest" },
+		});
+		expect(blocked).toMatchObject({ block: true, reason: expect.stringContaining("plan_bash") });
 	});
 });
 
@@ -562,9 +649,10 @@ describe("Plan Mode model and thinking profiles", () => {
 		);
 
 		await harness.commands.get("plan").handler("exit", harness.ctx);
-		expect(harness.timeline.slice(-2)).toEqual([
+		expect(harness.timeline.slice(-3)).toEqual([
 			"setModel:anthropic/claude-sonnet-4.6",
 			"setThinking:medium",
+			"setActiveTools:read,bash,edit,write,grep,find,ls",
 		]);
 		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({ active: false });
 		expect(harness.appendedEntries.at(-1)?.data.normalProfile).toBeUndefined();
@@ -728,9 +816,10 @@ describe("Plan Mode model and thinking profiles", () => {
 		});
 		await shortcutHarness.emit("session_start", { type: "session_start", reason: "reload" });
 		await shortcutHarness.shortcuts.get("shift+tab").handler(shortcutHarness.ctx);
-		expect(shortcutHarness.timeline.slice(-2)).toEqual([
+		expect(shortcutHarness.timeline.slice(-3)).toEqual([
 			"setModel:anthropic/claude-sonnet-4.6",
 			"setThinking:medium",
+			"setActiveTools:read,bash,edit,write,grep,find,ls",
 		]);
 
 		const freshStores = createProfileDependencies(profileFor(planModel, "high"));
