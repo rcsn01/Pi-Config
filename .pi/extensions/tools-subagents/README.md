@@ -221,7 +221,7 @@ The central `agentModels` map resolves dynamically registered agents by name exa
 
 ### 3. Map custom tools
 
-Custom child tools must be mapped in `CUSTOM_TOOL_EXTENSIONS` in `index.ts`:
+Custom child tools must be mapped in `CUSTOM_TOOL_EXTENSIONS` in `subagent-runner.ts`:
 
 ```typescript
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
@@ -237,9 +237,15 @@ Built-in tools (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`) need no m
 
 ```text
 tools-subagents/
-├── index.ts                 # Extension entry point and child runner
-├── model-config.ts          # Model parsing, resolution, and update helpers
-├── model-config.test.ts     # Focused model configuration tests
+├── index.ts                 # Extension composition and Pi adaptation
+├── agent-registry.ts        # Agent discovery, registration, and lookup
+├── config.ts                # Configuration storage, validation, and launch resolution
+├── subagent-runner.ts       # Single child process execution and stream parsing
+├── parallel-runner.ts       # Ordered concurrency and parallel execution
+├── progress-renderer.ts     # Tool call and progress presentation
+├── model-commands.ts        # /subagents command and interactive configuration
+├── formatting.ts            # Token, duration, preview, and width formatting
+├── test-harness.ts          # Shared focused-test adapters
 ├── config.json              # Concurrency and model assignments
 ├── agents/                  # Bundled agent definitions
 └── tools/
