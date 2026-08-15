@@ -13,6 +13,7 @@
  */
 
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { createBashTool } from "@earendil-works/pi-coding-agent";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -21,7 +22,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text, type EditorComponent, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { evaluatePlanBash } from "./bash-policy.ts";
+import { createPlanSandboxController, type PlanSandboxController } from "./plan-sandbox.ts";
+import { createPlanWorkspace, type PlanWorkspace } from "./plan-workspace.ts";
 import {
 	createNormalDefaultsStore,
 	createPlanModeProfileStore,
@@ -42,12 +44,15 @@ interface PlanState {
 	latestPlan?: string;
 	promptedPlanSignature?: string;
 	normalProfile?: ModeModelProfile;
+	normalTools?: string[];
 }
 
 export interface PlanModeDependencies {
 	profileStore?: PlanModeProfileStore;
 	normalDefaultsStore?: NormalDefaultsStore;
 	waitForNativePersistence?: () => Promise<void>;
+	createWorkspace?: (hostRoot: string) => Promise<PlanWorkspace>;
+	createSandbox?: (workspace: PlanWorkspace) => PlanSandboxController;
 }
 
 interface ProposedPlanDetails {
@@ -147,10 +152,10 @@ You may explore and execute **non-mutating** actions that improve the plan. You 
 Allowed non-mutating actions include:
 - Reading or searching files, configs, schemas, types, manifests, docs, and logs
 - Static analysis, repository exploration, and dry-run style commands
-- Tests, builds, or checks when their purpose is to validate feasibility and they do not edit repo-tracked files
-- Simple approved Bash inspection commands, including safe pipelines/sequences and standalone local scalar path variables
+- Tests, builds, or checks when their purpose is to validate feasibility
+- Arbitrary shell commands through \`plan_bash\`, which runs in a disposable isolated copy of the workspace
 
-Plan Mode Bash rejects redirection, shell substitutions, background jobs, arbitrary interpreters, and unsupported shell syntax. If its policy rejects a complex command, split the inspection into simpler commands or use native \`read\`, \`grep\`, \`find\`, and \`ls\` tools.
+\`plan_bash\` cannot modify the host workspace or external filesystem state. Its generated files are discarded when Plan Mode exits. Native \`read\`, \`grep\`, \`find\`, and \`ls\` tools continue to inspect the live host workspace. If the host changes while planning, use \`/plan refresh\` to rebuild the disposable copy. External network access is unavailable; use dedicated research tools instead.
 
 Not allowed:
 - Editing or writing files
@@ -427,6 +432,8 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	const normalDefaultsStore = dependencies.normalDefaultsStore ?? createNormalDefaultsStore();
 	const waitForNativePersistence = dependencies.waitForNativePersistence ??
 		(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+	const workspaceFactory = dependencies.createWorkspace ?? createPlanWorkspace;
+	const sandboxFactory = dependencies.createSandbox ?? createPlanSandboxController;
 
 	let planState: PlanState = { active: false, setAt: Date.now() };
 	let activePlanProfile: ModeModelProfile | undefined;
@@ -437,6 +444,28 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	let latestProposedPlan: string | undefined;
 	let latestProposedPlanKey: string | undefined;
 	let pendingFreshImplementationPlan: string | undefined;
+	let planWorkspace: PlanWorkspace | undefined;
+	let planSandbox: PlanSandboxController | undefined;
+
+	const planBash = createBashTool(process.cwd(), {
+		operations: {
+			exec(command, cwd, options) {
+				if (!planSandbox) throw new Error("Plan Bash is unavailable because its sandbox is not initialized.");
+				return planSandbox.operations.exec(command, cwd, options);
+			},
+		},
+	});
+	pi.registerTool({
+		...planBash,
+		name: "plan_bash",
+		label: "Plan Bash (isolated)",
+		description:
+			"Plan Mode only. Execute any shell command in a disposable, network-restricted copy of the workspace. Host files are not modified.",
+		promptSnippet: "Execute arbitrary checks in an isolated disposable workspace",
+		promptGuidelines: [
+			"Use plan_bash for tests, builds, and shell exploration while Plan Mode is active; its filesystem changes are discarded.",
+		],
+	});
 
 	// ── Plan Mode clarification tool ───────────────────────────────────────
 
@@ -575,10 +604,84 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		return renderProposedPlan(data?.content ?? "", data?.createdAt, expanded, theme);
 	});
 
+	// ── Isolated Plan Bash lifecycle ──────────────────────────────────────
+
+	function uniqueTools(names: string[]): string[] {
+		return [...new Set(names)];
+	}
+
+	function planToolSet(normalTools: string[], sandboxReady: boolean): string[] {
+		const retained = normalTools.filter((name) =>
+			name !== "bash" && name !== "plan_bash" && !MUTATING_TOOLS.has(name)
+		);
+		return uniqueTools([...retained, "plan_question", ...(sandboxReady ? ["plan_bash"] : [])]);
+	}
+
+	function restoreNormalTools(fallback?: string[]): void {
+		const normalTools = planState.normalTools ?? fallback;
+		if (normalTools) {
+			pi.setActiveTools(normalTools);
+			return;
+		}
+		const current = pi.getActiveTools().filter((name) => name !== "plan_bash");
+		pi.setActiveTools(uniqueTools([...current, "bash"]));
+	}
+
+	async function disposePlanRuntime(): Promise<void> {
+		const sandbox = planSandbox;
+		const workspace = planWorkspace;
+		planSandbox = undefined;
+		planWorkspace = undefined;
+		let firstError: unknown;
+		try {
+			await sandbox?.dispose();
+		} catch (error) {
+			firstError = error;
+		}
+		try {
+			await workspace?.dispose();
+		} catch (error) {
+			firstError ??= error;
+		}
+		if (firstError) throw firstError;
+	}
+
+	async function initializePlanRuntime(ctx: ExtensionContext): Promise<void> {
+		if (planSandbox && planWorkspace) {
+			pi.setActiveTools(planToolSet(planState.normalTools ?? pi.getActiveTools(), true));
+			return;
+		}
+		const workspace = await workspaceFactory(ctx.cwd);
+		const sandbox = sandboxFactory(workspace);
+		try {
+			await sandbox.initialize();
+			planWorkspace = workspace;
+			planSandbox = sandbox;
+			pi.setActiveTools(planToolSet(planState.normalTools ?? pi.getActiveTools(), true));
+		} catch (error) {
+			try { await sandbox.dispose(); } catch { /* preserve initialization error */ }
+			try { await workspace.dispose(); } catch { /* preserve initialization error */ }
+			pi.setActiveTools(planToolSet(planState.normalTools ?? pi.getActiveTools(), false));
+			throw error;
+		}
+	}
+
+	async function refreshPlanRuntime(ctx: ExtensionContext): Promise<void> {
+		await disposePlanRuntime();
+		await initializePlanRuntime(ctx);
+	}
+
 	// ── State Reconstruction ──────────────────────────────────────────────
 
 	const reconstruct = async (ctx: ExtensionContext) => {
 		const generation = ++lifecycleGeneration;
+		const toolsAtStart = pi.getActiveTools();
+		const previousNormalTools = planState.normalTools;
+		try {
+			await disposePlanRuntime();
+		} catch (error) {
+			ctx.ui.notify(`Could not clean up the previous Plan Bash sandbox: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
 		planState = { active: false, setAt: Date.now() };
 		activePlanProfile = undefined;
 		normalGlobalDefaults = undefined;
@@ -632,6 +735,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		}
 
 		if (planState.active) {
+			planState.normalTools ??= previousNormalTools ?? toolsAtStart.filter((name) => name !== "plan_bash");
 			activePlanProfile = profileFromCurrentSession(pi, ctx);
 			const fallback = planState.normalProfile ?? activePlanProfile;
 			if (fallback) {
@@ -642,6 +746,16 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 					ctx.ui.notify(`Could not read Pi's normal defaults: ${error instanceof Error ? error.message : String(error)}`, "error");
 				}
 			}
+			try {
+				await initializePlanRuntime(ctx);
+			} catch (error) {
+				ctx.ui.notify(
+					`Plan Mode remains active, but isolated command execution is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+					"error",
+				);
+			}
+		} else {
+			pi.setActiveTools(previousNormalTools ?? toolsAtStart.filter((name) => name !== "plan_bash"));
 		}
 		if (generation === lifecycleGeneration) updateStatus(ctx, planState);
 	};
@@ -706,6 +820,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			latestPlan: active ? latestProposedPlan : undefined,
 			promptedPlanSignature: active ? planState.promptedPlanSignature : undefined,
 			normalProfile: active ? planState.normalProfile : undefined,
+			normalTools: active ? planState.normalTools : undefined,
 		};
 		if (!active) {
 			latestProposedPlan = undefined;
@@ -726,13 +841,15 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		}
 
 		let switchedSessionProfile = false;
+		const normalTools = pi.getActiveTools().filter((name) => name !== "plan_bash");
 		try {
 			normalGlobalDefaults = await normalDefaultsStore.capture(ctx.cwd, normalProfile);
 			const storedProfile = await profileStore.load();
-			planState = { ...planState, normalProfile };
+			planState = { ...planState, normalProfile, normalTools };
 			if (!storedProfile) {
 				await profileStore.save(normalProfile);
 				activePlanProfile = normalProfile;
+				await initializePlanRuntime(ctx);
 				commitPlanState(ctx, true, prompt);
 				return true;
 			}
@@ -746,6 +863,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			} finally {
 				profileTransitionDepth--;
 			}
+			await initializePlanRuntime(ctx);
 			commitPlanState(ctx, true, prompt);
 			return true;
 		} catch (error) {
@@ -761,9 +879,11 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 					profileTransitionDepth--;
 				}
 			}
+			try { await disposePlanRuntime(); } catch { /* preserve entry error */ }
+			pi.setActiveTools(normalTools);
 			activePlanProfile = undefined;
 			normalGlobalDefaults = undefined;
-			planState = { ...planState, normalProfile: undefined };
+			planState = { ...planState, normalProfile: undefined, normalTools: undefined };
 			const rollbackNote = rollbackError
 				? ` Rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
 				: "";
@@ -807,6 +927,13 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 				profileTransitionDepth--;
 			}
 		}
+		const normalTools = planState.normalTools;
+		try {
+			await disposePlanRuntime();
+		} catch (error) {
+			ctx.ui.notify(`Could not fully clean up the Plan Bash sandbox: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+		restoreNormalTools(normalTools);
 		commitPlanState(ctx, false, undefined);
 		return true;
 	}
@@ -940,6 +1067,15 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 
 	pi.on("session_start", async (_event, ctx) => reconstruct(ctx));
 	pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
+	pi.on("session_shutdown", async (_event, ctx) => {
+		lifecycleGeneration++;
+		try {
+			await disposePlanRuntime();
+		} catch (error) {
+			ctx.ui.notify(`Could not clean up the Plan Bash sandbox: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+		if (planState.active) restoreNormalTools();
+	});
 
 	function enqueueProfileEvent(task: () => Promise<void>): Promise<void> {
 		const result = profileEventQueue.then(task, task);
@@ -1088,9 +1224,17 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		}
 
 		if (event.toolName === "bash") {
-			const command = typeof event.input.command === "string" ? event.input.command : "";
-			const policy = evaluatePlanBash(command);
-			if (!policy.allowed) return { block: true, reason: policy.reason };
+			return {
+				block: true,
+				reason: "Host bash is disabled in Plan Mode. Use plan_bash so command effects stay inside the disposable workspace.",
+			};
+		}
+
+		if (event.toolName === "plan_bash" && !planSandbox) {
+			return {
+				block: true,
+				reason: "plan_bash is unavailable because the Plan Mode sandbox failed to initialize.",
+			};
 		}
 	});
 
@@ -1133,9 +1277,9 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	});
 
 	pi.registerCommand("plan", {
-		description: "Toggle plan mode, or use /plan <task|implement|fresh|revise|show|exit>",
+		description: "Toggle plan mode, or use /plan <task|implement|fresh|revise|show|refresh|exit>",
 		getArgumentCompletions: (prefix: string) => {
-			const items = ["implement", "accept", "fresh", "revise ", "show", "status", "exit"];
+			const items = ["implement", "accept", "fresh", "revise ", "show", "refresh", "status", "exit"];
 			return items.filter((item) => item.startsWith(prefix)).map((value) => ({ value, label: value }));
 		},
 		handler: async (args, ctx) => {
@@ -1163,6 +1307,23 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 
 			if (subcommand === "show") {
 				showLatestPlan(ctx);
+				return;
+			}
+
+			if (subcommand === "refresh") {
+				if (!planState.active) {
+					ctx.ui.notify("Plan mode is inactive; there is no disposable workspace to refresh.", "warning");
+					return;
+				}
+				try {
+					await refreshPlanRuntime(ctx);
+					ctx.ui.notify("Plan Bash disposable workspace refreshed from the host.", "info");
+				} catch (error) {
+					ctx.ui.notify(
+						`Could not refresh Plan Bash; isolated command execution is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+						"error",
+					);
+				}
 				return;
 			}
 
