@@ -19,6 +19,7 @@ import {
 } from "../_shared/model-command-routing.ts";
 import {
 	applySavedContext,
+	calculateCompactionReserveTokens,
 	filterModels,
 	findExactModel,
 	formatTokenCount,
@@ -32,8 +33,6 @@ import {
 	createProjectSettingsStore,
 	type ProjectSettingsStore,
 } from "./settings-store.ts";
-
-const COMPACTION_RESERVE = 16_384;
 
 const THINKING_DESCRIPTIONS: Record<ModelThinkingLevel, string> = {
 	off: "No extended thinking",
@@ -206,6 +205,7 @@ async function applyStoredProfile(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	profile: ModelSelectionSettings,
+	settingsStore: ProjectSettingsStore,
 ): Promise<void> {
 	const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false, providers: [profile.provider] });
 	if (refresh.aborted) throw new Error(`Refreshing ${profile.provider} was aborted.`);
@@ -224,6 +224,7 @@ async function applyStoredProfile(
 		throw new Error(`No configured authentication for ${profile.provider}/${profile.modelId}.`);
 	}
 	pi.setThinkingLevel(profile.thinkingLevel);
+	await settingsStore.syncCompaction(model.contextWindow);
 }
 
 async function applySelection(
@@ -232,12 +233,14 @@ async function applySelection(
 	selectedModel: Model<Api>,
 	thinkingLevel: ModelThinkingLevel,
 	contextWindow: number,
+	compactionThreshold: number,
 	mode: ModelSelectionMode,
 	settingsStore: ProjectSettingsStore,
 ): Promise<void> {
+	const compactionReserve = calculateCompactionReserveTokens(contextWindow, compactionThreshold);
 	const usage = ctx.getContextUsage();
 	const needsCompaction = usage?.tokens !== null && usage?.tokens !== undefined &&
-		usage.tokens > Math.max(1, contextWindow - COMPACTION_RESERVE);
+		usage.tokens > Math.max(1, contextWindow - compactionReserve);
 
 	if (needsCompaction) {
 		const approved = await ctx.ui.confirm(
@@ -324,7 +327,16 @@ async function runModelControl(
 	if (!contextWindow) return;
 
 	try {
-		await applySelection(pi, ctx, selectedModel, thinkingLevel, contextWindow, mode, settingsStore);
+		await applySelection(
+			pi,
+			ctx,
+			selectedModel,
+			thinkingLevel,
+			contextWindow,
+			preferences.compactionThreshold,
+			mode,
+			settingsStore,
+		);
 	} catch (error) {
 		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 	}
@@ -366,7 +378,7 @@ export function createModelSelectorExtension(
 				try {
 					const preferences = await settingsStore.load();
 					if (preferences.profiles.normal) {
-						await applyStoredProfile(pi, ctx, preferences.profiles.normal);
+						await applyStoredProfile(pi, ctx, preferences.profiles.normal, settingsStore);
 						appliedNormalProfile = true;
 					}
 				} catch (error) {
@@ -384,6 +396,8 @@ export function createModelSelectorExtension(
 					const restoredModel = applySavedContext(ctx.model, currentSelectionMode(ctx), preferences);
 					if (restoredModel !== ctx.model && !(await pi.setModel(restoredModel))) {
 						ctx.ui.notify(`No configured authentication for ${modelKey(restoredModel)}`, "error");
+					} else {
+						await settingsStore.syncCompaction(restoredModel.contextWindow);
 					}
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
