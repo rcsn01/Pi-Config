@@ -22,13 +22,6 @@
 			"requires": [],
 			"conflicts": []
 		},
-		"observability-efficiency": {
-			"displayName": "Session Efficiency Guardrails",
-			"pack": "observability",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
 		"observability-usage": {
 			"displayName": "Provider Usage",
 			"pack": "observability",
