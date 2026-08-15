@@ -45,3 +45,9 @@ jobs:
 
       - name: Test extensions
         run: pnpm test
+
+      - name: Test Plan Bash OS sandbox
+        if: runner.os == 'macOS'
+        env:
+          RUN_PLAN_SANDBOX_INTEGRATION: "1"
+        run: pnpm vitest run extensions/workflows-plan-mode/plan-sandbox.integration.test.ts

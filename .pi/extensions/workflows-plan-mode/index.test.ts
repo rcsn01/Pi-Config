@@ -19,6 +19,16 @@ import {
 
 type EventHandler = (event: any, ctx: ExtensionContext) => unknown;
 
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, resolve, reject };
+}
+
 interface HarnessOptions {
 	mode?: "tui" | "rpc" | "json" | "print";
 	branch?: any[];
@@ -162,22 +172,24 @@ function createHarness(options: HarnessOptions = {}) {
 	const sandboxExec = vi.fn(async (..._args: Parameters<BashOperations["exec"]>): Promise<{ exitCode: number | null }> => ({ exitCode: 0 }));
 	const sandboxDispose = vi.fn(async () => {});
 	const workspaceDispose = vi.fn(async () => {});
+	const defaultCreateWorkspace = vi.fn(async (hostRoot: string) => ({
+		root: "/tmp/plan",
+		hostRoot,
+		sandboxRoot: "/tmp/plan/project",
+		tempRoot: "/tmp/plan/tmp",
+		dispose: workspaceDispose,
+	}));
+	const defaultCreateSandbox = vi.fn(() => ({
+		operations: { exec: sandboxExec },
+		initialize: vi.fn(async () => {
+			if (options.sandboxInitializeError) throw options.sandboxInitializeError;
+		}),
+		dispose: sandboxDispose,
+	}));
 	const runtimeDependencies: PlanModeDependencies = {
 		...options.dependencies,
-		createWorkspace: vi.fn(async (hostRoot: string) => ({
-			root: "/tmp/plan",
-			hostRoot,
-			sandboxRoot: "/tmp/plan/project",
-			tempRoot: "/tmp/plan/tmp",
-			dispose: workspaceDispose,
-		})),
-		createSandbox: vi.fn(() => ({
-			operations: { exec: sandboxExec },
-			initialize: vi.fn(async () => {
-				if (options.sandboxInitializeError) throw options.sandboxInitializeError;
-			}),
-			dispose: sandboxDispose,
-		})),
+		createWorkspace: options.dependencies?.createWorkspace ?? defaultCreateWorkspace,
+		createSandbox: options.dependencies?.createSandbox ?? defaultCreateSandbox,
 	};
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
@@ -313,6 +325,16 @@ describe("simple plan review UI", () => {
 
 		await harness.emit("agent_settled");
 		expect(harness.sendMessage).not.toHaveBeenCalled();
+		expect(actionLabels.slice(0, 2)).toEqual([
+			"Clear context and implement (recommended)",
+			"Implement in current session",
+		]);
+		expect(harness.commands.get("plan").getArgumentCompletions("").slice(0, 3))
+			.toEqual([
+				{ value: "fresh", label: "fresh" },
+				{ value: "implement", label: "implement" },
+				{ value: "accept", label: "accept" },
+			]);
 		expect(harness.select).toHaveBeenCalledWith("A proposed plan is ready for review.", actionLabels);
 		expect(harness.timeline.at(-1)).toBe("select");
 		expect(harness.custom).not.toHaveBeenCalled();
@@ -353,7 +375,7 @@ describe("simple plan review UI", () => {
 
 	it("implements the current plan when selected", async () => {
 		const plan = "# Implement Me";
-		const harness = createHarness({ selection: "Implement current plan" });
+		const harness = createHarness({ selection: "Implement in current session" });
 		await initializeAndExtract(harness, plan);
 		await harness.emit("agent_settled");
 
@@ -362,7 +384,7 @@ describe("simple plan review UI", () => {
 	});
 
 	it("starts a fresh implementation automatically when selected", async () => {
-		const harness = createHarness({ selection: "Clear context and implement" });
+		const harness = createHarness({ selection: "Clear context and implement (recommended)" });
 		await initializeAndExtract(harness, "# Fresh Plan");
 		await harness.emit("agent_settled");
 
@@ -378,7 +400,7 @@ describe("simple plan review UI", () => {
 
 	it("falls back to prefilling the command when automatic submission is unavailable", async () => {
 		const harness = createHarness({
-			selection: "Clear context and implement",
+			selection: "Clear context and implement (recommended)",
 			editorSubmitAvailable: false,
 		});
 		await initializeAndExtract(harness, "# Fallback Plan");
@@ -479,7 +501,7 @@ describe("plan review lifecycle", () => {
 			expect(harness.custom).not.toHaveBeenCalled();
 			expect(stderr).toHaveBeenCalledTimes(1);
 			expect(String(stderr.mock.calls[0]?.[0])).toContain(
-				"Use /plan implement, /plan fresh, /plan revise, or /plan show.",
+				"Use /plan fresh (recommended), /plan implement, /plan revise, or /plan show.",
 			);
 		} finally {
 			stderr.mockRestore();
@@ -516,7 +538,7 @@ describe("plan review lifecycle", () => {
 	it("shows only the Plan Mode phase in the bottom status bar", async () => {
 		const harness = createHarness();
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		expect(harness.setStatus).toHaveBeenLastCalledWith("plan", "📋 PLAN");
+		expect(harness.setStatus).toHaveBeenCalledWith("plan", "📋 PLAN");
 
 		await initializeAndExtract(harness, "# Status Bar Plan");
 		await harness.emit("turn_end");
@@ -560,6 +582,171 @@ describe("Plan Mode tool policy integration", () => {
 });
 
 describe("Plan Mode isolated Bash lifecycle", () => {
+	it("reconstructs active Plan Mode without waiting for background workspace preparation", async () => {
+		const pendingWorkspace = deferred<any>();
+		const createWorkspace = vi.fn(() => pendingWorkspace.promise);
+		const harness = createHarness({
+			model: normalModel,
+			availableModels: [normalModel],
+			dependencies: { createWorkspace },
+		});
+
+		let reconstructionSettled = false;
+		const reconstruction = harness.emit("session_start", {
+			type: "session_start", reason: "resume",
+		}).then(() => {
+			reconstructionSettled = true;
+		});
+		await vi.waitFor(() => expect(createWorkspace).toHaveBeenCalledOnce());
+		await Promise.resolve();
+		expect(reconstructionSettled).toBe(true);
+
+		pendingWorkspace.resolve({
+			root: "/tmp/plan",
+			hostRoot: "/test/project",
+			sandboxRoot: "/tmp/plan/project",
+			tempRoot: "/tmp/plan/tmp",
+			dispose: vi.fn(async () => {}),
+		});
+		await reconstruction;
+		await vi.waitFor(() => expect(harness.setStatus).toHaveBeenCalledWith("plan-runtime", undefined));
+	});
+
+	it("activates before background workspace preparation finishes and makes plan_bash await it", async () => {
+		const stores = createProfileDependencies();
+		const pendingWorkspace = deferred<any>();
+		const createWorkspace = vi.fn(() => pendingWorkspace.promise);
+		const harness = createHarness({
+			branch: [], model: normalModel, thinkingLevel: "medium",
+			availableModels: [normalModel],
+			dependencies: { ...stores.dependencies, createWorkspace },
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		let activationSettled = false;
+		const activation = harness.shortcuts.get("shift+tab").handler(harness.ctx).then(() => {
+			activationSettled = true;
+		});
+		await vi.waitFor(() => expect(createWorkspace).toHaveBeenCalledOnce());
+		await Promise.resolve();
+
+		expect(activationSettled).toBe(true);
+		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({ active: true });
+		expect(harness.getActiveToolNames()).toContain("plan_bash");
+		expect(harness.setStatus).toHaveBeenCalledWith("plan-runtime", "⏳ sandbox");
+
+		const execution = harness.tools.get("plan_bash").execute(
+			"tool-1", { command: "pwd" }, undefined, undefined, harness.ctx,
+		);
+		await Promise.resolve();
+		expect(harness.sandboxExec).not.toHaveBeenCalled();
+
+		pendingWorkspace.resolve({
+			root: "/tmp/plan",
+			hostRoot: "/test/project",
+			sandboxRoot: "/tmp/plan/project",
+			tempRoot: "/tmp/plan/tmp",
+			dispose: vi.fn(async () => {}),
+		});
+		await activation;
+		await execution;
+		expect(harness.sandboxExec).toHaveBeenCalledOnce();
+		expect(harness.setStatus).toHaveBeenCalledWith("plan-runtime", undefined);
+	});
+
+	it("serializes branch reconstruction with an overlapping Plan Mode exit", async () => {
+		const sandboxDisposals: Array<ReturnType<typeof vi.fn>> = [];
+		const createWorkspace = vi.fn(async (hostRoot: string) => ({
+			root: `/tmp/plan-${createWorkspace.mock.calls.length}`,
+			hostRoot,
+			sandboxRoot: `/tmp/plan-${createWorkspace.mock.calls.length}/project`,
+			tempRoot: `/tmp/plan-${createWorkspace.mock.calls.length}/tmp`,
+			dispose: vi.fn(async () => {}),
+		}));
+		const createSandbox = vi.fn(() => {
+			const dispose = vi.fn(async () => {});
+			sandboxDisposals.push(dispose);
+			return {
+				operations: { exec: vi.fn() },
+				initialize: vi.fn(async () => {}),
+				dispose,
+			};
+		});
+		const harness = createHarness({
+			model: normalModel,
+			availableModels: [normalModel],
+			dependencies: { createWorkspace, createSandbox },
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await vi.waitFor(() => expect(createWorkspace).toHaveBeenCalledTimes(1));
+
+		const reconstruction = harness.emit("session_tree", { type: "session_tree" });
+		const exiting = harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		await Promise.all([reconstruction, exiting]);
+
+		expect(createWorkspace).toHaveBeenCalledTimes(2);
+		expect(sandboxDisposals).toHaveLength(2);
+		expect(sandboxDisposals.every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
+		expect(harness.getActiveToolNames()).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+		await harness.commands.get("plan").handler("status", harness.ctx);
+		expect(harness.notify).toHaveBeenLastCalledWith("Plan mode inactive.", "info");
+	});
+
+	it("cancels background workspace preparation on session shutdown", async () => {
+		const stores = createProfileDependencies();
+		let copySignal: AbortSignal | undefined;
+		const createWorkspace = vi.fn((_root: string, options?: { signal?: AbortSignal }) => {
+			copySignal = options?.signal;
+			return new Promise<any>((_resolve, reject) => {
+				copySignal?.addEventListener("abort", () => {
+					const error = new Error("aborted");
+					error.name = "AbortError";
+					reject(error);
+				}, { once: true });
+			});
+		});
+		const harness = createHarness({
+			branch: [], model: normalModel, thinkingLevel: "medium",
+			availableModels: [normalModel],
+			dependencies: { ...stores.dependencies, createWorkspace },
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+
+		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+
+		expect(copySignal?.aborted).toBe(true);
+		expect(harness.getActiveToolNames()).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+	});
+
+	it("ignores repeated Shift+Tab while the same entry transition is in progress", async () => {
+		const pendingProfile = deferred<ModeModelProfile | undefined>();
+		const load = vi.fn(() => pendingProfile.promise);
+		const stores = createProfileDependencies();
+		const harness = createHarness({
+			branch: [], model: normalModel, thinkingLevel: "medium",
+			availableModels: [normalModel],
+			dependencies: {
+				...stores.dependencies,
+				profileStore: { load, save: stores.save },
+			},
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		const first = harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+		const second = harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		await Promise.resolve();
+		expect(load).toHaveBeenCalledOnce();
+
+		pendingProfile.resolve(undefined);
+		await Promise.all([first, second]);
+		const activeEntries = harness.appendedEntries.filter(
+			(entry) => entry.customType === "plan-mode-state" && entry.data.active,
+		);
+		expect(activeEntries).toHaveLength(1);
+	});
+
 	it("routes arbitrary commands through plan_bash and restores the exact normal tools on exit", async () => {
 		const stores = createProfileDependencies();
 		const initialTools = ["read", "bash", "edit", "write", "grep", "custom_tool"];
@@ -602,8 +789,14 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 		});
 		await harness.emit("session_start", { type: "session_start", reason: "reload" });
 
-		expect(harness.getActiveToolNames()).not.toEqual(expect.arrayContaining(["bash", "edit", "write", "plan_bash"]));
-		expect(harness.notify).toHaveBeenCalledWith(expect.stringContaining("sandbox unavailable"), "error");
+		expect(harness.getActiveToolNames()).not.toEqual(expect.arrayContaining(["bash", "edit", "write"]));
+		expect(harness.getActiveToolNames()).toContain("plan_bash");
+		await vi.waitFor(() => {
+			expect(harness.notify).toHaveBeenCalledWith(expect.stringContaining("sandbox unavailable"), "error");
+		});
+		await expect(harness.tools.get("plan_bash").execute(
+			"tool-1", { command: "pytest" }, undefined, undefined, harness.ctx,
+		)).rejects.toThrow("sandbox unavailable");
 		const [blocked] = await harness.emit("tool_call", {
 			type: "tool_call", toolName: "bash", input: { command: "pytest" },
 		});
@@ -612,6 +805,38 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 });
 
 describe("Plan Mode model and thinking profiles", () => {
+	it("skips model refresh and selection when only the thinking level changes", async () => {
+		const stores = createProfileDependencies(profileFor(normalModel, "xhigh"));
+		const harness = createHarness({
+			branch: [], model: normalModel, thinkingLevel: "medium",
+			availableModels: [normalModel], dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("plan").handler("", harness.ctx);
+
+		expect((harness.ctx as any).modelRegistry.refresh).not.toHaveBeenCalled();
+		expect(harness.setModel).not.toHaveBeenCalled();
+		expect(harness.setThinkingLevel).toHaveBeenCalledWith("xhigh");
+	});
+
+	it("reuses the current model definition when only its context changes", async () => {
+		const contextProfile = { ...profileFor(normalModel, "medium"), contextWindow: 500_000 };
+		const stores = createProfileDependencies(contextProfile);
+		const harness = createHarness({
+			branch: [], model: normalModel, thinkingLevel: "medium",
+			availableModels: [normalModel], dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("plan").handler("", harness.ctx);
+
+		expect((harness.ctx as any).modelRegistry.refresh).not.toHaveBeenCalled();
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			provider: normalModel.provider,
+			id: normalModel.id,
+			contextWindow: 500_000,
+		}));
+	});
+
 	it("initializes the first profile from the current session", async () => {
 		const stores = createProfileDependencies();
 		const harness = createHarness({
@@ -644,7 +869,7 @@ describe("Plan Mode model and thinking profiles", () => {
 		]));
 		expect(stores.restore).toHaveBeenCalledWith("/test/project", profileFor(normalModel, "medium"));
 		expect(harness.notify).toHaveBeenLastCalledWith(
-			"📋 Plan mode active: github-copilot/gpt-5.6-sol · high · 1,050,000 ctx. Normal on exit: anthropic/claude-sonnet-4.6 · medium · 1,000,000 ctx",
+			"📋 Plan mode active: github-copilot/gpt-5.6-sol · high · 1,050,000 ctx",
 			"info",
 		);
 
@@ -672,7 +897,7 @@ describe("Plan Mode model and thinking profiles", () => {
 		}];
 		const harness = createHarness({
 			branch, model: planModel, thinkingLevel: "high",
-			selection: "Implement current plan",
+			selection: "Implement in current session",
 			availableModels: [normalModel, planModel], dependencies: stores.dependencies,
 		});
 		await initializeAndExtract(harness, "# Restore Then Implement");
@@ -756,7 +981,7 @@ describe("Plan Mode model and thinking profiles", () => {
 		}];
 		const harness = createHarness({
 			branch, model: planModel, thinkingLevel: "high", setModelResult: false,
-			selection: "Implement current plan",
+			selection: "Implement in current session",
 			availableModels: [normalModel, planModel], dependencies: stores.dependencies,
 		});
 		await initializeAndExtract(harness, "# Do Not Implement Yet");
@@ -824,7 +1049,7 @@ describe("Plan Mode model and thinking profiles", () => {
 
 		const freshStores = createProfileDependencies(profileFor(planModel, "high"));
 		const freshHarness = createHarness({
-			branch, model: planModel, thinkingLevel: "high", selection: "Clear context and implement",
+			branch, model: planModel, thinkingLevel: "high", selection: "Clear context and implement (recommended)",
 			availableModels: [normalModel, planModel], dependencies: freshStores.dependencies,
 		});
 		await initializeAndExtract(freshHarness, "# Fresh With Normal Model");

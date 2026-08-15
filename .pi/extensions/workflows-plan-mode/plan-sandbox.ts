@@ -123,9 +123,9 @@ function sandboxConfig(workspace: PlanWorkspace): SandboxRuntimeConfig {
 	const home = homedir();
 	return {
 		network: {
-			allowedDomains: ["localhost", "127.0.0.1", "[::1]"],
+			allowedDomains: [],
 			deniedDomains: [],
-			allowLocalBinding: true,
+			allowLocalBinding: false,
 		},
 		filesystem: {
 			denyRead: [resolve(home, ".ssh"), resolve(home, ".aws"), resolve(home, ".gnupg")],
@@ -135,49 +135,100 @@ function sandboxConfig(workspace: PlanWorkspace): SandboxRuntimeConfig {
 	};
 }
 
+function quotePosixShell(value: string): string {
+	return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function commandWithDisposableEnvironment(
+	command: string,
+	workspace: PlanWorkspace,
+	platform: NodeJS.Platform,
+): string {
+	if (platform === "win32") {
+		const escapeCmdValue = (value: string) => value.replaceAll("%", "%%");
+		const assignments = [
+			`set "TMPDIR=${escapeCmdValue(workspace.tempRoot)}"`,
+			`set "TEMP=${escapeCmdValue(workspace.tempRoot)}"`,
+			`set "TMP=${escapeCmdValue(workspace.tempRoot)}"`,
+			`set "PI_PLAN_WORKSPACE=${escapeCmdValue(workspace.sandboxRoot)}"`,
+		];
+		// The Windows sandbox child gets a fresh profile environment; the broker
+		// spawn env is not inherited, so set disposable paths inside cmd.exe.
+		return `${assignments.join(" && ")} && ${command}`;
+	}
+	const assignments = [
+		`TMPDIR=${quotePosixShell(workspace.tempRoot)}`,
+		`TEMP=${quotePosixShell(workspace.tempRoot)}`,
+		`TMP=${quotePosixShell(workspace.tempRoot)}`,
+		`PI_PLAN_WORKSPACE=${quotePosixShell(workspace.sandboxRoot)}`,
+	];
+	// sandbox-runtime injects its own TMPDIR before invoking the shell on POSIX.
+	// Export inside that shell so temp files stay in this disposable workspace.
+	return `export ${assignments.join(" ")}\n${command}`;
+}
+
 export function createPlanSandboxController(
 	workspace: PlanWorkspace,
-	dependencies: { runtime?: SandboxRuntime; run?: RunSandboxed } = {},
+	dependencies: { runtime?: SandboxRuntime; run?: RunSandboxed; platform?: NodeJS.Platform } = {},
 ): PlanSandboxController {
 	const runtime = dependencies.runtime ?? SandboxManager;
 	const run = dependencies.run ?? runSandboxed;
+	const platform = dependencies.platform ?? process.platform;
 	let initialized = false;
 	let initializationAttempted = false;
+	let disposing = false;
 	let disposed = false;
+	let disposePromise: Promise<void> | undefined;
+	const activeExecutions = new Set<{ controller: AbortController; promise: Promise<unknown> }>();
 
 	const operations: BashOperations = {
 		async exec(command, cwd, options) {
-			if (!initialized || disposed) throw new Error("Plan Bash sandbox is not initialized.");
+			if (!initialized || disposing || disposed) throw new Error("Plan Bash sandbox is not initialized.");
 			const sandboxCwd = mapWorkingDirectory(workspace, cwd);
 			const commandId = `plan-bash-${randomUUID()}`;
+			const controller = new AbortController();
+			const onCallerAbort = () => controller.abort();
+			if (options.signal?.aborted) controller.abort();
+			else options.signal?.addEventListener("abort", onCallerAbort, { once: true });
+
+			const promise = (async () => {
+				try {
+					const wrapped = await runtime.wrapWithSandboxArgv(
+						commandWithDisposableEnvironment(command, workspace, platform),
+						undefined,
+						undefined,
+						controller.signal,
+						sandboxCwd,
+						{ commandId, commandText: command },
+					);
+					const result = await run(wrapped.argv, {
+						cwd: sandboxCwd,
+						env: {
+							...wrapped.env,
+							...options.env,
+							TMPDIR: workspace.tempRoot,
+							TEMP: workspace.tempRoot,
+							TMP: workspace.tempRoot,
+							PI_PLAN_WORKSPACE: workspace.sandboxRoot,
+						},
+						onData: options.onData,
+						signal: controller.signal,
+						timeout: options.timeout,
+					});
+					const annotated = runtime.annotateStderrWithSandboxFailures(commandId, result.stderr);
+					if (annotated !== result.stderr) options.onData(Buffer.from(`\n${annotated}\n`));
+					return { exitCode: result.exitCode };
+				} finally {
+					runtime.cleanupAfterCommand();
+				}
+			})();
+			const active = { controller, promise };
+			activeExecutions.add(active);
 			try {
-				const wrapped = await runtime.wrapWithSandboxArgv(
-					command,
-					undefined,
-					undefined,
-					options.signal,
-					sandboxCwd,
-					{ commandId, commandText: command },
-				);
-				const result = await run(wrapped.argv, {
-					cwd: sandboxCwd,
-					env: {
-						...wrapped.env,
-						...options.env,
-						TMPDIR: workspace.tempRoot,
-						TEMP: workspace.tempRoot,
-						TMP: workspace.tempRoot,
-						PI_PLAN_WORKSPACE: workspace.sandboxRoot,
-					},
-					onData: options.onData,
-					signal: options.signal,
-					timeout: options.timeout,
-				});
-				const annotated = runtime.annotateStderrWithSandboxFailures(commandId, result.stderr);
-				if (annotated !== result.stderr) options.onData(Buffer.from(`\n${annotated}\n`));
-				return { exitCode: result.exitCode };
+				return await promise;
 			} finally {
-				runtime.cleanupAfterCommand();
+				options.signal?.removeEventListener("abort", onCallerAbort);
+				activeExecutions.delete(active);
 			}
 		},
 	};
@@ -186,6 +237,7 @@ export function createPlanSandboxController(
 		operations,
 		async initialize() {
 			if (initialized) return;
+			if (disposing || disposed) throw new Error("Plan Bash sandbox has been disposed.");
 			if (runtime.isSupportedPlatform && !runtime.isSupportedPlatform()) {
 				throw new Error(`Plan Bash sandbox is not supported on ${process.platform}.`);
 			}
@@ -194,18 +246,30 @@ export function createPlanSandboxController(
 				await runtime.initialize(sandboxConfig(workspace));
 				initialized = true;
 			} catch (error) {
-				initializationAttempted = false;
-				try { await runtime.reset(); } catch { /* preserve initialization error */ }
+				initialized = false;
+				try {
+					await runtime.reset();
+					initializationAttempted = false;
+				} catch { /* keep reset retryable while preserving initialization error */ }
 				throw error;
 			}
 		},
-		async dispose() {
-			if (disposed) return;
-			disposed = true;
-			if (!initializationAttempted && !initialized) return;
-			initialized = false;
-			initializationAttempted = false;
-			await runtime.reset();
+		dispose() {
+			if (disposePromise) return disposePromise;
+			if (disposed || (!initializationAttempted && !initialized)) return Promise.resolve();
+			disposing = true;
+			disposePromise = (async () => {
+				for (const execution of activeExecutions) execution.controller.abort();
+				await Promise.allSettled([...activeExecutions].map((execution) => execution.promise));
+				await runtime.reset();
+				initialized = false;
+				initializationAttempted = false;
+				disposed = true;
+			})().catch((error) => {
+				disposePromise = undefined;
+				throw error;
+			});
+			return disposePromise;
 		},
 	};
 }
