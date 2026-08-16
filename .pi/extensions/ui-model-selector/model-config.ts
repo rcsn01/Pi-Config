@@ -6,12 +6,6 @@ export interface ModelChoiceLike {
 	reasoning: boolean;
 }
 
-export interface ContextWindowChoice {
-	label: string;
-	value: number;
-	description: string;
-}
-
 export type SessionStartReason = "startup" | "reload" | "new" | "resume" | "fork";
 
 export const MODEL_THINKING_LEVELS = [
@@ -46,14 +40,19 @@ export interface ProjectModelPreferences {
 	compactionThreshold: number;
 }
 
-export const GPT_56_SHORT_CONTEXT = 272_000;
-export const GPT_56_LONG_CONTEXT = 1_050_000;
+export const MAX_CONTEXT_WINDOW = 200_000;
 
-const GPT_56_DUAL_CONTEXT_IDS = new Set([
-	"gpt-5.6-sol",
-	"gpt-5.6-terra",
-	"gpt-5.6-luna",
-]);
+/** pi's fallback context window applied when a model entry declares none. */
+export const PI_DEFAULT_CONTEXT_WINDOW = 128_000;
+
+export function resolveContextWindow(contextWindow: number): number {
+	// pi assigns this sentinel when a model declares no contextWindow; treat that
+	// as "unspecified" and default it to the full capped window instead of 128K.
+	if (contextWindow === PI_DEFAULT_CONTEXT_WINDOW) {
+		return MAX_CONTEXT_WINDOW;
+	}
+	return Math.min(contextWindow, MAX_CONTEXT_WINDOW);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -82,10 +81,6 @@ export function formatTokenCount(tokens: number): string {
 	return String(tokens);
 }
 
-export function supportsContextProfiles(modelId: string): boolean {
-	return GPT_56_DUAL_CONTEXT_IDS.has(modelId.toLowerCase());
-}
-
 export function hasExplicitModelArgument(argv: readonly string[]): boolean {
 	return argv.some((argument) => argument === "--model" || argument.startsWith("--model="));
 }
@@ -98,29 +93,6 @@ export function shouldOpenStartupModelSelector(
 	if (hasExplicitModelArgument(argv)) return false;
 	if (reason === "new") return true;
 	return reason === "startup" && !hasConversationHistory;
-}
-
-export function getContextWindowChoices(model: Pick<ModelChoiceLike, "id" | "contextWindow">): ContextWindowChoice[] {
-	if (!supportsContextProfiles(model.id)) {
-		return [{
-			label: formatTokenCount(model.contextWindow),
-			value: model.contextWindow,
-			description: "Context window supplied by the model catalogue",
-		}];
-	}
-
-	return [
-		{
-			label: "272K",
-			value: GPT_56_SHORT_CONTEXT,
-			description: "Short-context profile; compacts before the long-context range",
-		},
-		{
-			label: "1.05M",
-			value: GPT_56_LONG_CONTEXT,
-			description: "Long-context profile; allows up to 1.05M tokens",
-		},
-	];
 }
 
 export function findExactModel<T extends ModelChoiceLike>(models: readonly T[], reference: string): T | undefined {
@@ -297,16 +269,7 @@ export function mergeProjectCompactionSettings(
 	};
 }
 
-export function applySavedContext<T extends ModelChoiceLike>(
-	model: T,
-	mode: ModelSelectionMode,
-	preferences: Pick<ProjectModelPreferences, "profiles" | "contextWindows">,
-): T {
-	const profile = preferences.profiles[mode];
-	const contextWindow = profile?.provider === model.provider && profile.modelId === model.id
-		? profile.contextWindow
-		: preferences.contextWindows[`${model.provider}/${model.id}`];
-	return contextWindow === undefined || contextWindow === model.contextWindow
-		? model
-		: { ...model, contextWindow };
+export function resolveModelContext<T extends ModelChoiceLike>(model: T): T {
+	const contextWindow = resolveContextWindow(model.contextWindow);
+	return contextWindow === model.contextWindow ? model : { ...model, contextWindow };
 }

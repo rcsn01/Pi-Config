@@ -2,10 +2,11 @@
  * Custom /model selector.
  *
  * Applies the saved normal profile silently on fresh-session startup and routes
- * the built-in command through a searchable model picker with thinking and (for
- * GPT-5.6) 272K or 1.05M context choices. Explicit --model startup overrides
- * and resumed sessions preserve their session profile. Normal and Plan Mode
- * selections are persisted separately in .pi/settings.json.
+ * the built-in command through a searchable model picker with thinking choices.
+ * The context window is hard-coded to the model's catalogue value capped at 200K.
+ * Explicit --model startup overrides and resumed sessions preserve their session
+ * profile. Normal and Plan Mode selections are persisted separately in
+ * .pi/settings.json.
  */
 
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -18,16 +19,15 @@ import {
 	ModelCommandRoutingEditor,
 } from "../_shared/model-command-routing.ts";
 import {
-	applySavedContext,
 	calculateCompactionReserveTokens,
 	filterModels,
 	findExactModel,
 	formatTokenCount,
-	getContextWindowChoices,
+	resolveContextWindow,
+	resolveModelContext,
 	shouldOpenStartupModelSelector,
 	type ModelSelectionMode,
 	type ModelSelectionSettings,
-	type ProjectModelPreferences,
 } from "./model-config.ts";
 import {
 	createProjectSettingsStore,
@@ -62,18 +62,14 @@ function currentSelectionMode(ctx: ExtensionContext): ModelSelectionMode {
 	return selectionModeFromEntries(ctx.sessionManager.getBranch());
 }
 
-function availableModels(
-	ctx: ExtensionContext,
-	preferences: ProjectModelPreferences,
-	mode: ModelSelectionMode,
-): Model<Api>[] {
+function availableModels(ctx: ExtensionContext): Model<Api>[] {
 	const models = ctx.scopedModels.length > 0
 		? ctx.scopedModels.map((entry) =>
 			ctx.modelRegistry.find(entry.model.provider, entry.model.id) ?? entry.model)
 		: ctx.modelRegistry.getAvailable();
 	const unique = new Map<string, Model<Api>>();
 	for (const model of models) {
-		const configured = applySavedContext(model, mode, preferences);
+		const configured = resolveModelContext(model);
 		unique.set(modelKey(configured), configured);
 	}
 	return [...unique.values()];
@@ -182,25 +178,6 @@ async function selectThinkingLevel(
 	return ordered[choices.indexOf(selected)];
 }
 
-async function selectContextWindow(
-	ctx: ExtensionContext,
-	model: Model<Api>,
-): Promise<number | undefined> {
-	const options = getContextWindowChoices(model);
-	if (options.length === 1) return options[0]?.value;
-
-	const ordered = [
-		...options.filter((option) => option.value === model.contextWindow),
-		...options.filter((option) => option.value !== model.contextWindow),
-	];
-	const choices = ordered.map((option) =>
-		`${option.value === model.contextWindow ? "●" : "○"} ${option.label} — ${option.description}${option.value === model.contextWindow ? " (current)" : ""}`,
-	);
-	const selected = await ctx.ui.select(`Context Window · ${modelKey(model)}`, choices);
-	if (!selected) return undefined;
-	return ordered[choices.indexOf(selected)]?.value;
-}
-
 async function applyStoredProfile(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -219,7 +196,7 @@ async function applyStoredProfile(
 	) {
 		throw new Error(`Normal profile model ${profile.provider}/${profile.modelId} is outside this session's model scope.`);
 	}
-	const model = { ...catalogueModel, contextWindow: profile.contextWindow };
+	const model = { ...catalogueModel, contextWindow: resolveContextWindow(catalogueModel.contextWindow) };
 	if (!(await pi.setModel(model))) {
 		throw new Error(`No configured authentication for ${profile.provider}/${profile.modelId}.`);
 	}
@@ -306,7 +283,7 @@ async function runModelControl(
 
 	const mode = currentSelectionMode(ctx);
 	const preferences = await settingsStore.load();
-	const models = availableModels(ctx, preferences, mode);
+	const models = availableModels(ctx);
 	if (models.length === 0) {
 		ctx.ui.notify("No authenticated models are available.", "error");
 		return;
@@ -323,8 +300,7 @@ async function runModelControl(
 	);
 	if (!thinkingLevel) return;
 
-	const contextWindow = await selectContextWindow(ctx, selectedModel);
-	if (!contextWindow) return;
+	const contextWindow = resolveContextWindow(selectedModel.contextWindow);
 
 	try {
 		await applySelection(
@@ -392,8 +368,7 @@ export function createModelSelectorExtension(
 				if (!appliedNormalProfile) await handler("");
 			} else if (ctx.model && (hasConversationHistory || ["reload", "resume", "fork"].includes(event.reason))) {
 				try {
-					const preferences = await settingsStore.load();
-					const restoredModel = applySavedContext(ctx.model, currentSelectionMode(ctx), preferences);
+					const restoredModel = resolveModelContext(ctx.model);
 					if (restoredModel !== ctx.model && !(await pi.setModel(restoredModel))) {
 						ctx.ui.notify(`No configured authentication for ${modelKey(restoredModel)}`, "error");
 					} else {

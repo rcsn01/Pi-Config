@@ -10,18 +10,18 @@ import {
 } from "../_shared/model-command-routing.ts";
 import { createModelSelectorExtension, selectionModeFromEntries } from "./index.ts";
 import {
-	applySavedContext,
 	calculateCompactionReserveTokens,
 	DEFAULT_COMPACTION_THRESHOLD,
 	filterModels,
 	findExactModel,
-	getContextWindowChoices,
-	GPT_56_LONG_CONTEXT,
-	GPT_56_SHORT_CONTEXT,
 	hasExplicitModelArgument,
+	MAX_CONTEXT_WINDOW,
 	mergeProjectCompactionSettings,
 	mergeProjectModelSelection,
 	parseProjectModelPreferences,
+	PI_DEFAULT_CONTEXT_WINDOW,
+	resolveContextWindow,
+	resolveModelContext,
 	shouldOpenStartupModelSelector,
 } from "./model-config.ts";
 import { createProjectSettingsStore } from "./settings-store.ts";
@@ -36,7 +36,7 @@ const models = [
 		provider: "github-copilot",
 		id: "gpt-5.6-sol",
 		name: "GPT 5.6 Sol",
-		contextWindow: GPT_56_LONG_CONTEXT,
+		contextWindow: 1_050_000,
 		reasoning: true,
 	},
 	{
@@ -217,14 +217,20 @@ describe("model selector lifecycle", () => {
 		const harness = createLifecycleHarness({ hasConversationHistory: true });
 		await harness.emit("startup");
 		expect(harness.custom).not.toHaveBeenCalled();
-		expect(harness.setModel).not.toHaveBeenCalled();
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			id: "claude-sonnet-4.6",
+			contextWindow: MAX_CONTEXT_WINDOW,
+		}));
 	});
 
 	it.each(["reload", "resume", "fork"] as const)("does not invoke the selector for %s", async (reason) => {
 		const harness = createLifecycleHarness();
 		await harness.emit(reason);
 		expect(harness.custom).not.toHaveBeenCalled();
-		expect(harness.setModel).not.toHaveBeenCalled();
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			id: "claude-sonnet-4.6",
+			contextWindow: MAX_CONTEXT_WINDOW,
+		}));
 	});
 
 	it("uses the complete normal profile as the fresh-session startup default", async () => {
@@ -235,7 +241,7 @@ describe("model selector lifecycle", () => {
 					provider: "github-copilot",
 					modelId: "gpt-5.6-sol",
 					thinkingLevel: "xhigh",
-					contextWindow: GPT_56_SHORT_CONTEXT,
+					contextWindow: MAX_CONTEXT_WINDOW,
 				},
 			},
 		});
@@ -244,10 +250,10 @@ describe("model selector lifecycle", () => {
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
 			provider: "github-copilot",
 			id: "gpt-5.6-sol",
-			contextWindow: GPT_56_SHORT_CONTEXT,
+			contextWindow: MAX_CONTEXT_WINDOW,
 		}));
 		expect(harness.setThinkingLevel).toHaveBeenCalledWith("xhigh");
-		expect(harness.syncCompaction).toHaveBeenCalledWith(GPT_56_SHORT_CONTEXT);
+		expect(harness.syncCompaction).toHaveBeenCalledWith(MAX_CONTEXT_WINDOW);
 		expect(harness.custom).not.toHaveBeenCalled();
 		expect(harness.save).not.toHaveBeenCalled();
 	});
@@ -296,7 +302,7 @@ describe("model selector lifecycle", () => {
 			provider: "anthropic",
 			modelId: "claude-sonnet-4.6",
 			thinkingLevel: "high",
-			contextWindow: 1_000_000,
+			contextWindow: MAX_CONTEXT_WINDOW,
 		});
 	});
 
@@ -307,7 +313,7 @@ describe("model selector lifecycle", () => {
 			provider: "anthropic",
 			modelId: "claude-sonnet-4.6",
 			thinkingLevel: "xhigh",
-			contextWindow: 1_000_000,
+			contextWindow: MAX_CONTEXT_WINDOW,
 		});
 	});
 
@@ -315,16 +321,16 @@ describe("model selector lifecycle", () => {
 		const harness = createLifecycleHarness({
 			cancel: true,
 			hasConversationHistory: true,
-			contextWindows: { "github-copilot/gpt-5.6-sol": GPT_56_SHORT_CONTEXT },
+			contextWindows: { "github-copilot/gpt-5.6-sol": 272_000 },
 		});
 		await harness.emit("startup");
 		await getModelCommandHandler()?.("github-copilot/gpt-5.6-sol");
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
 			id: "gpt-5.6-sol",
-			contextWindow: GPT_56_SHORT_CONTEXT,
+			contextWindow: MAX_CONTEXT_WINDOW,
 		}));
 		expect(harness.save).toHaveBeenCalledWith("normal", expect.objectContaining({
-			contextWindow: GPT_56_SHORT_CONTEXT,
+			contextWindow: MAX_CONTEXT_WINDOW,
 		}));
 	});
 
@@ -332,14 +338,14 @@ describe("model selector lifecycle", () => {
 		const harness = createLifecycleHarness({
 			hasConversationHistory: true,
 			selectedModel: models[0],
-			contextWindows: { "github-copilot/gpt-5.6-sol": GPT_56_SHORT_CONTEXT },
+			contextWindows: { "github-copilot/gpt-5.6-sol": 272_000 },
 		});
 		await harness.emit("startup");
 		expect(harness.setModel).toHaveBeenCalledOnce();
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
-			contextWindow: GPT_56_SHORT_CONTEXT,
+			contextWindow: MAX_CONTEXT_WINDOW,
 		}));
-		expect(harness.syncCompaction).toHaveBeenCalledWith(GPT_56_SHORT_CONTEXT);
+		expect(harness.syncCompaction).toHaveBeenCalledWith(MAX_CONTEXT_WINDOW);
 		expect(harness.save).not.toHaveBeenCalled();
 	});
 
@@ -364,17 +370,18 @@ describe("model selection helpers", () => {
 		])).toBe("normal");
 	});
 
-	it("offers short and long context profiles for GPT-5.6", () => {
-		expect(getContextWindowChoices(models[0]!).map((choice) => choice.value)).toEqual([
-			GPT_56_SHORT_CONTEXT,
-			GPT_56_LONG_CONTEXT,
-		]);
+	it("caps the context window at 200K", () => {
+		expect(resolveContextWindow(1_050_000)).toBe(MAX_CONTEXT_WINDOW);
+		expect(resolveContextWindow(1_000_000)).toBe(MAX_CONTEXT_WINDOW);
 	});
 
-	it("keeps catalogue context fixed for other models", () => {
-		expect(getContextWindowChoices(models[1]!)).toEqual([
-			expect.objectContaining({ value: 1_000_000 }),
-		]);
+	it("defaults undeclared-context models (pi's 128K fallback) to 200K", () => {
+		expect(resolveContextWindow(PI_DEFAULT_CONTEXT_WINDOW)).toBe(MAX_CONTEXT_WINDOW);
+	});
+
+	it("passes context windows below 200K through unchanged", () => {
+		expect(resolveContextWindow(100_000)).toBe(100_000);
+		expect(resolveContextWindow(MAX_CONTEXT_WINDOW)).toBe(MAX_CONTEXT_WINDOW);
 	});
 
 	it("finds canonical references and filters by model name", () => {
@@ -386,8 +393,8 @@ describe("model selection helpers", () => {
 describe("project model settings", () => {
 	it("defaults the compaction threshold and calculates a 10% reserve", () => {
 		expect(parseProjectModelPreferences({}).compactionThreshold).toBe(DEFAULT_COMPACTION_THRESHOLD);
-		expect(calculateCompactionReserveTokens(GPT_56_SHORT_CONTEXT)).toBe(27_200);
-		expect(calculateCompactionReserveTokens(GPT_56_LONG_CONTEXT)).toBe(105_000);
+		expect(calculateCompactionReserveTokens(272_000)).toBe(27_200);
+		expect(calculateCompactionReserveTokens(1_050_000)).toBe(105_000);
 		expect(calculateCompactionReserveTokens(101, 0.1)).toBe(11);
 	});
 
@@ -401,7 +408,7 @@ describe("project model settings", () => {
 			theme: "dark",
 			compaction: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 20_000 },
 			uiModelSelector: { label: "kept" },
-		}, GPT_56_LONG_CONTEXT)).toEqual({
+		}, 1_050_000)).toEqual({
 			theme: "dark",
 			compaction: {
 				enabled: true,
@@ -419,26 +426,26 @@ describe("project model settings", () => {
 			theme: "dark",
 			uiModelSelector: {
 				label: "kept",
-				contextWindows: { "github-copilot/gpt-5.6-terra": GPT_56_LONG_CONTEXT },
+				contextWindows: { "github-copilot/gpt-5.6-terra": 1_050_000 },
 			},
 		}, "normal", {
 			provider: "github-copilot",
 			modelId: "gpt-5.6-sol",
 			thinkingLevel: "xhigh",
-			contextWindow: GPT_56_SHORT_CONTEXT,
+			contextWindow: 272_000,
 		});
 
 		expect(result).toEqual({
 			theme: "dark",
 			uiModelSelector: {
 				label: "kept",
-				contextWindows: { "github-copilot/gpt-5.6-terra": GPT_56_LONG_CONTEXT },
+				contextWindows: { "github-copilot/gpt-5.6-terra": 1_050_000 },
 				profiles: {
 					normal: {
 						provider: "github-copilot",
 						modelId: "gpt-5.6-sol",
 						thinkingLevel: "xhigh",
-						contextWindow: GPT_56_SHORT_CONTEXT,
+						contextWindow: 272_000,
 					},
 				},
 			},
@@ -456,25 +463,22 @@ describe("project model settings", () => {
 			provider: "github-copilot",
 			modelId: "gpt-5.6-sol",
 			thinkingLevel: "xhigh",
-			contextWindow: GPT_56_SHORT_CONTEXT,
+			contextWindow: 272_000,
 		});
 		expect(result).toMatchObject({
 			uiModelSelector: {
 				profiles: {
 					normal: { provider: "anthropic", contextWindow: 1_000_000 },
-					plan: { provider: "github-copilot", contextWindow: GPT_56_SHORT_CONTEXT },
+					plan: { provider: "github-copilot", contextWindow: 272_000 },
 				},
 			},
 		});
 	});
 
-	it("parses and applies a saved context without mutating the catalogue model", () => {
-		const preferences = parseProjectModelPreferences({
-			uiModelSelector: { contextWindows: { "github-copilot/gpt-5.6-sol": GPT_56_SHORT_CONTEXT } },
-		});
-		const configured = applySavedContext(models[0]!, "normal", preferences);
-		expect(configured.contextWindow).toBe(GPT_56_SHORT_CONTEXT);
-		expect(models[0]!.contextWindow).toBe(GPT_56_LONG_CONTEXT);
+	it("caps a model's context window without mutating the catalogue model", () => {
+		const configured = resolveModelContext(models[0]!);
+		expect(configured.contextWindow).toBe(MAX_CONTEXT_WINDOW);
+		expect(models[0]!.contextWindow).toBe(1_050_000);
 	});
 
 	it.each([
@@ -503,7 +507,7 @@ describe("project model settings", () => {
 				provider: "github-copilot",
 				modelId: "gpt-5.6-sol",
 				thinkingLevel: "xhigh",
-				contextWindow: GPT_56_LONG_CONTEXT,
+				contextWindow: 1_050_000,
 			});
 			let settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, any>;
 			expect(settings).toMatchObject({
@@ -515,9 +519,9 @@ describe("project model settings", () => {
 					threshold: DEFAULT_COMPACTION_THRESHOLD,
 				},
 			});
-			expect(settings.uiModelSelector.profiles.normal.contextWindow).toBe(GPT_56_LONG_CONTEXT);
+			expect(settings.uiModelSelector.profiles.normal.contextWindow).toBe(1_050_000);
 
-			await store.syncCompaction(GPT_56_SHORT_CONTEXT);
+			await store.syncCompaction(272_000);
 			settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, any>;
 			expect(settings.compaction.reserveTokens).toBe(27_200);
 			expect(settings.compaction.threshold).toBe(DEFAULT_COMPACTION_THRESHOLD);
@@ -541,7 +545,7 @@ describe("project model settings", () => {
 				provider: "github-copilot",
 				modelId: "gpt-5.6-sol",
 				thinkingLevel: "xhigh",
-				contextWindow: GPT_56_LONG_CONTEXT,
+				contextWindow: 1_050_000,
 			})).rejects.toThrow("Cannot read");
 			expect(readFileSync(path, "utf-8")).toBe(original);
 		} finally {
