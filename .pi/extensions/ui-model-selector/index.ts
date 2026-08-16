@@ -196,7 +196,7 @@ async function applyStoredProfile(
 	) {
 		throw new Error(`Normal profile model ${profile.provider}/${profile.modelId} is outside this session's model scope.`);
 	}
-	const model = { ...catalogueModel, contextWindow: resolveContextWindow(catalogueModel.contextWindow) };
+	const model = resolveModelContext(catalogueModel);
 	if (!(await pi.setModel(model))) {
 		throw new Error(`No configured authentication for ${profile.provider}/${profile.modelId}.`);
 	}
