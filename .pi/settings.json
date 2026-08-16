@@ -9,8 +9,8 @@
     "profiles": {
       "normal": {
         "provider": "ollama",
-        "modelId": "deepseek-v4-flash:0731-cloud",
-        "thinkingLevel": "xhigh",
+        "modelId": "deepseek-v4-pro:cloud",
+        "thinkingLevel": "max",
         "contextWindow": 200000
       },
       "plan": {
