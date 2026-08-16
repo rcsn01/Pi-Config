@@ -1,9 +1,13 @@
+import type { ThinkingLevelMap } from "@earendil-works/pi-ai";
+import { matchFamily } from "./model-families.ts";
+
 export interface ModelChoiceLike {
 	provider: string;
 	id: string;
 	name: string;
 	contextWindow: number;
 	reasoning: boolean;
+	thinkingLevelMap?: ThinkingLevelMap;
 }
 
 export type SessionStartReason = "startup" | "reload" | "new" | "resume" | "fork";
@@ -269,7 +273,23 @@ export function mergeProjectCompactionSettings(
 	};
 }
 
+/**
+ * Apply a family-level thinkingLevelMap when a reasoning model declares none of
+ * its own. Models reporting their own levels (even an empty-looking map) are
+ * left untouched, as are non-reasoning models.
+ */
+export function applyFamilyThinkingLevel<T extends ModelChoiceLike>(model: T): T {
+	if (!model.reasoning) return model;
+	if (model.thinkingLevelMap && Object.keys(model.thinkingLevelMap).length > 0) return model;
+	const familyLevels = matchFamily(model.id);
+	if (!familyLevels) return model;
+	return { ...model, thinkingLevelMap: familyLevels };
+}
+
 export function resolveModelContext<T extends ModelChoiceLike>(model: T): T {
-	const contextWindow = resolveContextWindow(model.contextWindow);
-	return contextWindow === model.contextWindow ? model : { ...model, contextWindow };
+	const withFamilyLevels = applyFamilyThinkingLevel(model);
+	const contextWindow = resolveContextWindow(withFamilyLevels.contextWindow);
+	return contextWindow === withFamilyLevels.contextWindow
+		? withFamilyLevels
+		: { ...withFamilyLevels, contextWindow };
 }
