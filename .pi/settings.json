@@ -2,22 +2,22 @@
   "compaction": {
     "enabled": true,
     "threshold": 0.1,
-    "reserveTokens": 27200,
+    "reserveTokens": 20000,
     "keepRecentTokens": 20000
   },
   "uiModelSelector": {
     "profiles": {
       "normal": {
-        "provider": "openai-codex",
-        "modelId": "gpt-5.6-sol",
-        "thinkingLevel": "medium",
-        "contextWindow": 272000
+        "provider": "ollama",
+        "modelId": "deepseek-v4-flash:0731-cloud",
+        "thinkingLevel": "xhigh",
+        "contextWindow": 200000
       },
       "plan": {
-        "provider": "github-copilot",
-        "modelId": "gpt-5.6-sol",
+        "provider": "ollama",
+        "modelId": "deepseek-v4-flash:0731-cloud",
         "thinkingLevel": "xhigh",
-        "contextWindow": 1050000
+        "contextWindow": 200000
       }
     }
   }

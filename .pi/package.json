@@ -22,9 +22,9 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
-		"test": "pnpm test:core && pnpm test:features && pnpm test:todos && pnpm test:web-fetch && pnpm test:plan && pnpm test:workflows && pnpm test:integrations",
+		"test": "pnpm test:core && pnpm test:features && pnpm test:safety && pnpm test:todos && pnpm test:web-fetch && pnpm test:plan && pnpm test:workflows && pnpm test:integrations",
 		"test:core": "vitest run extensions/_shared",
-		"test:features": "vitest run extensions/system-feature-flags/catalog.test.ts extensions/ui-model-selector/model-config.test.ts extensions/ui-context/context-model.test.ts",
+		"test:safety": "vitest run extensions/safety-permissions",		"test:features": "vitest run extensions/system-feature-flags/catalog.test.ts extensions/ui-model-selector/model-config.test.ts extensions/ui-context/context-model.test.ts",
 		"test:todos": "vitest run extensions/tools-todo/todo-state.test.ts extensions/tools-todo/todo-prompt.test.ts",
 		"test:web-fetch": "vitest run extensions/tools-web-fetch",
 		"test:plan": "vitest run extensions/workflows-plan-mode",
