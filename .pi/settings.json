@@ -20,5 +20,32 @@
         "contextWindow": 200000
       }
     }
+  },
+  "subagents": {
+    "maxConcurrency": 4,
+    "defaultModel": "ollama/deepseek-v4-pro:cloud",
+    "agentModels": {
+      "default": "ollama/deepseek-v4-pro:cloud",
+      "explorer": "ollama/deepseek-v4-pro:cloud",
+      "worker": "ollama/deepseek-v4-pro:cloud",
+      "researcher": "ollama/deepseek-v4-pro:cloud",
+      "judge": "ollama/deepseek-v4-pro:cloud"
+    },
+    "defaultThinkingLevel": "high",
+    "agentThinkingLevels": {
+      "default": "high",
+      "explorer": "high",
+      "worker": "high",
+      "researcher": "high",
+      "judge": "high"
+    },
+    "defaultContextWindow": 200000,
+    "agentContextWindows": {
+      "default": 200000,
+      "explorer": 200000,
+      "worker": 200000,
+      "researcher": 200000,
+      "judge": 200000
+    }
   }
 }

@@ -1,7 +1,0 @@
-{
-  "maxConcurrency": 4,
-  "defaultModel": "ollama/deepseek-v4-pro:cloud",
-  "agentModels": {},
-  "agentThinkingLevels": {},
-  "defaultThinkingLevel": "high"
-}

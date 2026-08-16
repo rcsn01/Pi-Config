@@ -35,27 +35,36 @@ Each subagent receives only its task and agent system prompt; it does not inheri
 
 ## Model and Thinking Configuration
 
-`config.json` next to `index.ts` controls concurrency, models, and thinking levels:
+The subagent model and thinking configuration lives in the project-level `settings.json` under a top-level `subagents` key (alongside `compaction` and `uiModelSelector`):
 
 ```json
 {
-  "maxConcurrency": 4,
-  "defaultModel": "main",
-  "agentModels": {
-    "worker": "anthropic/claude-sonnet-4-6",
-    "researcher": "main"
-  },
-  "defaultThinkingLevel": "medium",
-  "agentThinkingLevels": {
-    "worker": "high"
+  "subagents": {
+    "maxConcurrency": 4,
+    "defaultModel": "main",
+    "agentModels": {
+      "worker": "anthropic/claude-sonnet-4-6",
+      "researcher": "main"
+    },
+    "defaultThinkingLevel": "medium",
+    "agentThinkingLevels": {
+      "worker": "high"
+    },
+    "defaultContextWindow": 200000,
+    "agentContextWindows": {
+      "explorer": 131072
+    }
   }
 }
 ```
 
+- `maxConcurrency` caps how many child processes run at once (default 4).
 - `defaultModel` applies to every agent without an individual model override.
 - `agentModels.<agent>` overrides `defaultModel` for that agent.
 - `defaultThinkingLevel` applies when an agent has no individual thinking override. Omit it to let Pi choose its default.
 - `agentThinkingLevels.<agent>` overrides the global thinking level for that agent.
+- `defaultContextWindow` is the intended context window (tokens) for agents without an individual override.
+- `agentContextWindows.<agent>` overrides the intended context window for one agent.
 - Thinking levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the UI only offers levels supported by the selected model.
 - `main` means the main Pi session's active `provider/model` at the moment the child is launched.
 - Legacy `default` remains accepted as an alias for `main`.
@@ -64,7 +73,9 @@ Each subagent receives only its task and agent system prompt; it does not inheri
 - Missing model configuration ultimately falls back to `main`.
 - Empty or malformed settings are configuration errors rather than silent fallbacks.
 
-Unknown fields in `config.json` are preserved by slash-command updates. Direct edits are read on subsequent launches.
+The configured context window is stored, validated, and shown by `/subagents status` and `/subagents models`. Pi itself derives a child process's actual context window from the model's `contextWindow` in the model catalogue (`models.json`), which defaults to `128000` when a model declares none; pi exposes no per-launch context-window override, so the value here expresses the intended window and must match the underlying model's declared `contextWindow` to be enforced.
+
+Unknown fields inside `subagents` are preserved by slash-command updates. Direct edits to `settings.json` are read on subsequent launches. On first run after upgrading, a legacy `config.json` next to `index.ts` is automatically migrated into the `subagents` key and then deleted.
 
 ### Resolution precedence
 
@@ -123,7 +134,7 @@ Only model identity is inherited from `main`. Configure thinking separately in `
 - `thinking all <level>` sets `defaultThinkingLevel` and clears individual thinking overrides; `default` removes explicit thinking settings.
 - `thinking <agent> <level>` creates or replaces one thinking override; `inherit` removes it.
 
-Specific models entered through the command must be present in Pi's authenticated available-model catalogue. Invalid agents and unavailable models do not change the file. Successful changes update `config.json` atomically through Pi's file-mutation queue and take effect without `/reload`.
+Specific models entered through the command must be present in Pi's authenticated available-model catalogue. Invalid agents and unavailable models do not change the file. Successful changes update the `subagents` key in `settings.json` atomically through Pi's file-mutation queue and take effect without `/reload`.
 
 ## Child Pi Selection
 
@@ -246,7 +257,6 @@ tools-subagents/
 ├── model-commands.ts        # /subagents command and interactive configuration
 ├── formatting.ts            # Token, duration, preview, and width formatting
 ├── test-harness.ts          # Shared focused-test adapters
-├── config.json              # Concurrency and model assignments
 ├── agents/                  # Bundled agent definitions
 └── tools/
     └── safe-bash.ts         # Restricted child bash extension
