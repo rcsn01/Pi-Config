@@ -1,10 +1,7 @@
 /**
  * Local Web Search Extension - No API key required
  *
- * Searches the web using DuckDuckGo's free API or uses the local
- * Ollama web_search tool if available.
- *
- * Falls back: DuckDuckGo HTML scrape → Ollama web_search → Local cache
+ * Searches the web using DuckDuckGo's free HTML API.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -69,37 +66,6 @@ function parseDDGResults(html: string, count: number): SearchResult[] {
 	return results;
 }
 
-async function ollamaWebSearch(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]> {
-	try {
-		const timeoutSignal = AbortSignal.timeout(10000);
-		const resp = await fetch("http://localhost:11434/api/web_search", {
-			method: "POST",
-			signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ query }),
-		});
-
-		if (!resp.ok) return [];
-
-		const data = await resp.json() as any;
-		const results: SearchResult[] = [];
-
-		if (data.results && Array.isArray(data.results)) {
-			for (const r of data.results) {
-				results.push({
-					title: r.title || "",
-					url: r.url || r.link || "",
-					snippet: r.snippet || r.description || r.content || "",
-				});
-			}
-		}
-
-		return results.slice(0, count);
-	} catch {
-		return [];
-	}
-}
-
 function formatResults(results: SearchResult[]): string {
 	if (results.length === 0) return "No results found.";
 	return results
@@ -111,7 +77,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "ddg_search",
 		label: "DuckDuckGo Search",
-		description: "Search DuckDuckGo or local Ollama and return titles, URLs, and snippets.",
+		description: "Search DuckDuckGo and return titles, URLs, and snippets.",
 		promptSnippet: "Search the web",
 
 		parameters: Type.Object({
@@ -132,13 +98,7 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			// Try Ollama first (local, no API key)
-			let results = await ollamaWebSearch(params.query, maxResults, signal);
-
-			// Fall back to DuckDuckGo
-			if (results.length === 0) {
-				results = await duckDuckGoSearch(params.query, maxResults, signal);
-			}
+			const results = await duckDuckGoSearch(params.query, maxResults, signal);
 			searchCache.set(cacheKey, { at: Date.now(), results });
 
 			return {
