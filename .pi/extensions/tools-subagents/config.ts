@@ -1,8 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../_shared/subagent-service.ts";
+import {
+	createSubagentsSettingsStore,
+	PROJECT_SETTINGS_PATH,
+	SUBAGENTS_SETTINGS_KEY,
+	type SubagentsSettingsStore,
+} from "./settings-store.ts";
 
 export const MAIN_MODEL_SETTING = "main";
 export const LEGACY_MAIN_MODEL_SETTING = "default";
@@ -15,6 +20,8 @@ export interface ModelConfiguration {
 	agentModels: Record<string, string>;
 	defaultThinkingLevel?: SubagentThinkingLevel;
 	agentThinkingLevels: Record<string, SubagentThinkingLevel>;
+	defaultContextWindow?: number;
+	agentContextWindows: Record<string, number>;
 }
 
 export interface ResolveModelOptions {
@@ -27,11 +34,13 @@ export interface ResolveModelOptions {
 
 export interface ResolveLaunchOptions extends ResolveModelOptions {
 	explicitThinkingLevel?: unknown;
+	explicitContextWindow?: unknown;
 }
 
 export interface ResolvedLaunchConfiguration {
 	model: string;
 	thinkingLevel?: SubagentThinkingLevel;
+	contextWindow?: number;
 }
 
 export interface ExtensionConfig extends ModelConfiguration {
@@ -93,6 +102,14 @@ export function normalizeThinkingLevel(value: unknown, label = "thinking level")
 	return normalized as SubagentThinkingLevel;
 }
 
+/** Validate a configured context window (positive integer tokens). */
+export function validateContextWindow(value: unknown, label = "context window"): number {
+	if (!Number.isInteger(value) || (value as number) <= 0) {
+		throw new Error(`Subagent ${label} must be a positive integer.`);
+	}
+	return value as number;
+}
+
 /** Split Pi's optional provider/model:thinking shorthand into independent settings. */
 export function splitModelThinkingSetting(value: unknown): { model: string; thinkingLevel?: SubagentThinkingLevel } {
 	const setting = normalizeModelSetting(value);
@@ -107,7 +124,7 @@ export function splitModelThinkingSetting(value: unknown): { model: string; thin
 /** Parse only the model-related portion of config.json while rejecting malformed settings. */
 export function parseModelConfiguration(value: unknown): ModelConfiguration {
 	const document = requireDocument(value);
-	const parsed: ModelConfiguration = { agentModels: {}, agentThinkingLevels: {} };
+	const parsed: ModelConfiguration = { agentModels: {}, agentThinkingLevels: {}, agentContextWindows: {} };
 
 	if (Object.hasOwn(document, "defaultModel")) {
 		parsed.defaultModel = normalizeModelSetting(document.defaultModel, "config defaultModel");
@@ -134,6 +151,20 @@ export function parseModelConfiguration(value: unknown): ModelConfiguration {
 		for (const [agentName, level] of Object.entries(document.agentThinkingLevels)) {
 			if (!agentName.trim()) throw new Error("Subagent config agentThinkingLevels cannot contain an empty agent name.");
 			parsed.agentThinkingLevels[agentName] = normalizeThinkingLevel(level, `config agentThinkingLevels.${agentName}`);
+		}
+	}
+
+	if (Object.hasOwn(document, "defaultContextWindow")) {
+		parsed.defaultContextWindow = validateContextWindow(document.defaultContextWindow, "config defaultContextWindow");
+	}
+
+	if (Object.hasOwn(document, "agentContextWindows")) {
+		if (!isRecord(document.agentContextWindows)) {
+			throw new Error("Subagent config agentContextWindows must be a JSON object mapping agent names to context windows.");
+		}
+		for (const [agentName, contextWindow] of Object.entries(document.agentContextWindows)) {
+			if (!agentName.trim()) throw new Error("Subagent config agentContextWindows cannot contain an empty agent name.");
+			parsed.agentContextWindows[agentName] = validateContextWindow(contextWindow, `config agentContextWindows.${agentName}`);
 		}
 	}
 
@@ -191,6 +222,20 @@ export function selectThinkingLevelSetting(
 	return config.defaultThinkingLevel;
 }
 
+/** Select the optional context window according to explicit > agent > global precedence. */
+export function selectContextWindowSetting(
+	options: Pick<ResolveLaunchOptions, "agentName" | "config" | "explicitContextWindow">,
+): number | undefined {
+	if (options.explicitContextWindow !== undefined) {
+		return validateContextWindow(options.explicitContextWindow, "invocation context window override");
+	}
+	const config = parseModelConfiguration(options.config ?? {});
+	if (Object.hasOwn(config.agentContextWindows, options.agentName)) {
+		return config.agentContextWindows[options.agentName];
+	}
+	return config.defaultContextWindow;
+}
+
 /** Resolve model identity and thinking independently for child Pi CLI arguments. */
 export function resolveLaunchConfiguration(options: ResolveLaunchOptions): ResolvedLaunchConfiguration {
 	const resolved = splitModelThinkingSetting(resolveModelAssignment(options));
@@ -206,6 +251,11 @@ export function resolveLaunchConfiguration(options: ResolveLaunchOptions): Resol
 		thinkingLevel: options.explicitThinkingLevel !== undefined
 			? normalizeThinkingLevel(options.explicitThinkingLevel, "invocation thinking level override")
 			: explicitModelThinking ?? agentThinking ?? resolved.thinkingLevel ?? config.defaultThinkingLevel,
+		contextWindow: selectContextWindowSetting({
+			agentName: options.agentName,
+			config: options.config,
+			explicitContextWindow: options.explicitContextWindow,
+		}),
 	};
 }
 
@@ -288,6 +338,50 @@ export function removeAgentThinkingAssignment(document: unknown, agentName: stri
 	return { ...config, agentThinkingLevels };
 }
 
+/** Set one context window for every agent and clear individual context overrides. */
+export function setAllContextWindows(document: unknown, contextWindow: unknown): Record<string, unknown> {
+	const config = requireDocument(document);
+	parseModelConfiguration(config);
+	return {
+		...config,
+		defaultContextWindow: validateContextWindow(contextWindow, "default context window"),
+		agentContextWindows: {},
+	};
+}
+
+/** Remove global context-window settings so every agent falls back to the model/Pi default. */
+export function clearAllContextWindows(document: unknown): Record<string, unknown> {
+	const config = requireDocument(document);
+	parseModelConfiguration(config);
+	const next: Record<string, unknown> = { ...config, agentContextWindows: {} };
+	delete next.defaultContextWindow;
+	return next;
+}
+
+/** Set one agent's context window while preserving every other setting. */
+export function setAgentContextWindow(document: unknown, agentName: string, contextWindow: unknown): Record<string, unknown> {
+	const config = requireDocument(document);
+	const parsed = parseModelConfiguration(config);
+	if (!agentName.trim()) throw new Error("Subagent agent name cannot be empty.");
+	return {
+		...config,
+		agentContextWindows: {
+			...parsed.agentContextWindows,
+			[agentName]: validateContextWindow(contextWindow, `context window for ${agentName}`),
+		},
+	};
+}
+
+/** Remove one context override so the agent inherits the global/model default. */
+export function removeAgentContextWindow(document: unknown, agentName: string): Record<string, unknown> {
+	const config = requireDocument(document);
+	const parsed = parseModelConfiguration(config);
+	if (!agentName.trim()) throw new Error("Subagent agent name cannot be empty.");
+	const agentContextWindows = { ...parsed.agentContextWindows };
+	delete agentContextWindows[agentName];
+	return { ...config, agentContextWindows };
+}
+
 /** Add the CLI option that actually selects the child model. */
 export function appendChildModelArgument(args: readonly string[], resolvedModel: string): string[] {
 	const model = normalizeModelSetting(resolvedModel, "resolved child model");
@@ -307,20 +401,42 @@ export function appendChildThinkingArgument(
 		: [...args, "--thinking", normalizeThinkingLevel(thinkingLevel, "resolved child thinking level")];
 }
 
-export function createSubagentConfigStore(configPath: string): SubagentConfigStore {
+export interface SubagentConfigStoreOptions {
+	settingsPath?: string;
+	/** Optional path to a legacy config.json whose model settings are honored until settings.json gains a subagents key. */
+	legacyConfigPath?: string;
+}
+
+export function createSubagentConfigStore(options: SubagentConfigStoreOptions = {}): SubagentConfigStore {
+	const settingsStore: SubagentsSettingsStore = createSubagentsSettingsStore(options.settingsPath);
+	const legacyPath = options.legacyConfigPath;
+	const configPath = settingsStore.settingsPath;
 	let activeMainModel: string | undefined;
 
-	function readDocument(): Record<string, unknown> {
-		if (!fs.existsSync(configPath)) return {};
+	/** Read the legacy config.json as a namespace, or undefined when absent/malformed. */
+	function readLegacyDocument(): Record<string, unknown> | undefined {
+		if (!legacyPath || !fs.existsSync(legacyPath)) return undefined;
 		try {
-			const value = JSON.parse(fs.readFileSync(configPath, "utf-8")) as unknown;
-			if (typeof value !== "object" || value === null || Array.isArray(value)) {
-				throw new Error("the root value must be a JSON object");
-			}
+			const value = JSON.parse(fs.readFileSync(legacyPath, "utf-8")) as unknown;
+			if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
 			return value as Record<string, unknown>;
-		} catch (error) {
-			throw new Error(`Cannot read subagent config ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
+		} catch {
+			return undefined;
 		}
+	}
+
+	function readDocument(): Record<string, unknown> {
+		const document = settingsStore.readDocument();
+		if (Object.hasOwn(document, SUBAGENTS_SETTINGS_KEY)) {
+			const namespace = document[SUBAGENTS_SETTINGS_KEY];
+			if (typeof namespace !== "object" || namespace === null || Array.isArray(namespace)) {
+				throw new Error(`Subagent settings "${SUBAGENTS_SETTINGS_KEY}" must be a JSON object.`);
+			}
+			return namespace as Record<string, unknown>;
+		}
+		// Legacy fallback: honor config.json until settings.json gains a subagents key,
+		// so existing values apply even before the async migration writes complete.
+		return readLegacyDocument() ?? {};
 	}
 
 	function load(): ExtensionConfig {
@@ -336,18 +452,14 @@ export function createSubagentConfigStore(configPath: string): SubagentConfigSto
 	async function update(
 		mutate: (document: Record<string, unknown>) => Record<string, unknown>,
 	): Promise<Record<string, unknown>> {
-		return withFileMutationQueue(configPath, async () => {
-			const next = mutate(readDocument());
+		// Base on readDocument (which includes the legacy fallback) so the first write
+		// to settings.json carries existing values forward instead of dropping them.
+		const base = readDocument();
+		return settingsStore.updateNamespace((namespace) => {
+			const next = mutate(namespace);
 			parseModelConfiguration(next);
-			const temporaryPath = `${configPath}.${process.pid}.${Date.now()}.tmp`;
-			try {
-				await fs.promises.writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
-				await fs.promises.rename(temporaryPath, configPath);
-			} finally {
-				await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined);
-			}
 			return next;
-		});
+		}, base);
 	}
 
 	return {
@@ -373,4 +485,41 @@ export function createSubagentConfigStore(configPath: string): SubagentConfigSto
 }
 
 const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
-export const subagentConfig = createSubagentConfigStore(path.join(EXT_DIR, "config.json"));
+export const LEGACY_CONFIG_PATH = path.join(EXT_DIR, "config.json");
+export const subagentConfig = createSubagentConfigStore({
+	settingsPath: PROJECT_SETTINGS_PATH,
+	legacyConfigPath: LEGACY_CONFIG_PATH,
+});
+
+/**
+ * One-time migration: copy a legacy config.json into settings.json's "subagents" key,
+ * then remove config.json. No-op when settings.json already has a subagents key or when
+ * the legacy file is absent/malformed. Returns whether a migration was performed.
+ */
+export async function migrateSubagentConfigLegacy(
+	settingsPath: string,
+	legacyPath: string,
+): Promise<boolean> {
+	const settingsStore = createSubagentsSettingsStore(settingsPath);
+	if (Object.hasOwn(settingsStore.readDocument(), SUBAGENTS_SETTINGS_KEY)) return false;
+	if (!fs.existsSync(legacyPath)) return false;
+
+	let legacy: Record<string, unknown>;
+	try {
+		const value = JSON.parse(fs.readFileSync(legacyPath, "utf-8")) as unknown;
+		if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+		legacy = value as Record<string, unknown>;
+	} catch {
+		return false;
+	}
+
+	try {
+		parseModelConfiguration(legacy);
+	} catch {
+		return false;
+	}
+
+	await settingsStore.writeNamespace(legacy);
+	await fs.promises.rm(legacyPath, { force: true }).catch(() => undefined);
+	return true;
+}

@@ -70,6 +70,15 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		return selected.thinkingLevel ?? config.defaultThinkingLevel;
 	}
 
+	function effectiveContextWindowForAgent(agent: AgentConfig, config: ModelConfiguration): number | undefined {
+		if (Object.hasOwn(config.agentContextWindows, agent.name)) return config.agentContextWindows[agent.name];
+		return config.defaultContextWindow;
+	}
+
+	function contextDisplay(contextWindow: number | undefined): string {
+		return contextWindow === undefined ? "Pi default" : formatContextWindow(contextWindow);
+	}
+
 	function modelDisplay(setting: string, resolved: string): string {
 		return setting === resolved ? resolved : `${setting} → ${resolved}`;
 	}
@@ -96,6 +105,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			lines.push(`- ${agent.name}: ${agent.description || "(no description)"}`);
 			lines.push(`  model: ${modelDisplay(effective.setting, effective.resolved)}`);
 			lines.push(`  thinking: ${thinkingDisplay(effectiveThinkingForAgent(agent, config))}`);
+			lines.push(`  context: ${contextDisplay(effectiveContextWindowForAgent(agent, config))}`);
 			lines.push(`  tools: ${agent.tools.join(", ") || "none"}`);
 			if (missing.length) lines.push(`  missing: ${missing.join(", ")}`);
 		}
@@ -106,11 +116,13 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		const config = configStore.load();
 		const modelOverrides = Object.entries(config.agentModels);
 		const thinkingOverrides = Object.entries(config.agentThinkingLevels);
+		const contextOverrides = Object.entries(config.agentContextWindows);
 		const lines = [
 			"Subagent model and thinking configuration:",
 			`Main model: ${canonicalMainModel(configStore.getMainModel())}`,
 			`Global model: ${config.defaultModel ?? "(unset; frontmatter/main fallback)"}`,
 			`Global thinking: ${thinkingDisplay(config.defaultThinkingLevel)}`,
+			`Global context: ${contextDisplay(config.defaultContextWindow)}`,
 			"Individual model overrides:",
 			...(modelOverrides.length > 0
 				? modelOverrides.sort(([left], [right]) => left.localeCompare(right)).map(([name, model]) => `- ${name}: ${model}`)
@@ -119,12 +131,16 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			...(thinkingOverrides.length > 0
 				? thinkingOverrides.sort(([left], [right]) => left.localeCompare(right)).map(([name, level]) => `- ${name}: ${level}`)
 				: ["- (none)"]),
+			"Individual context overrides:",
+			...(contextOverrides.length > 0
+				? contextOverrides.sort(([left], [right]) => left.localeCompare(right)).map(([name, contextWindow]) => `- ${name}: ${formatContextWindow(contextWindow)}`)
+				: ["- (none)"]),
 			"",
 			"Effective assignments:",
 		];
 		for (const agent of availableAgents) {
 			const effective = effectiveModelForAgent(agent, config);
-			lines.push(`- ${agent.name}: ${modelDisplay(effective.setting, effective.resolved)} · thinking ${thinkingDisplay(effectiveThinkingForAgent(agent, config))}`);
+			lines.push(`- ${agent.name}: ${modelDisplay(effective.setting, effective.resolved)} · thinking ${thinkingDisplay(effectiveThinkingForAgent(agent, config))} · context ${contextDisplay(effectiveContextWindowForAgent(agent, config))}`);
 		}
 		return lines;
 	}

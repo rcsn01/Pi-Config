@@ -21,7 +21,8 @@ import {
 	unregisterAgent,
 	type AgentRegistry,
 } from "./agent-registry.ts";
-import { subagentConfig, type SubagentConfigStore } from "./config.ts";
+import { LEGACY_CONFIG_PATH, migrateSubagentConfigLegacy, subagentConfig, type SubagentConfigStore } from "./config.ts";
+import { PROJECT_SETTINGS_PATH } from "./settings-store.ts";
 import { createSubagentsCommand } from "./model-commands.ts";
 import {
 	createParallelRunner,
@@ -78,7 +79,11 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		const maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 		registry.initialize();
 
-		pi.on("session_start", (_event, ctx) => configStore.rememberMainModel(ctx.model));
+		pi.on("session_start", async (_event, ctx) => {
+			configStore.rememberMainModel(ctx.model);
+			// One-time migration: carry a legacy config.json into settings.json, then delete it.
+			await migrateSubagentConfigLegacy(PROJECT_SETTINGS_PATH, LEGACY_CONFIG_PATH);
+		});
 		pi.on("model_select", (event) => configStore.rememberMainModel(event.model));
 
 		pi.registerCommand("subagents", createSubagentsCommand({ registry, config: configStore }));

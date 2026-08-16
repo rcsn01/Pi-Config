@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,19 +6,26 @@ import {
 	appendChildModelArgument,
 	appendChildThinkingArgument,
 	canonicalMainModel,
+	clearAllContextWindows,
 	clearAllThinkingAssignments,
 	createSubagentConfigStore,
+	migrateSubagentConfigLegacy,
 	parseModelConfiguration,
+	removeAgentContextWindow,
 	removeAgentModelAssignment,
 	removeAgentThinkingAssignment,
 	resolveLaunchConfiguration,
 	resolveModelAssignment,
+	selectContextWindowSetting,
 	selectModelSetting,
+	setAgentContextWindow,
 	setAgentModelAssignment,
 	setAgentThinkingAssignment,
+	setAllContextWindows,
 	setAllModelAssignments,
 	setAllThinkingAssignments,
 	splitModelThinkingSetting,
+	validateContextWindow,
 } from "./config.ts";
 
 const mainModel = { provider: "anthropic", id: "claude-sonnet-4-6" };
@@ -28,12 +35,17 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function configFile(content?: string): string {
+function configHarness(
+	settingsContent?: string,
+	legacyContent?: string,
+): { settingsPath: string; legacyPath: string } {
 	const root = mkdtempSync(join(tmpdir(), "subagent-config-"));
 	roots.push(root);
-	const configPath = join(root, "config.json");
-	if (content !== undefined) writeFileSync(configPath, content);
-	return configPath;
+	const settingsPath = join(root, "settings.json");
+	const legacyPath = join(root, "config.json");
+	if (settingsContent !== undefined) writeFileSync(settingsPath, settingsContent);
+	if (legacyContent !== undefined) writeFileSync(legacyPath, legacyContent);
+	return { settingsPath, legacyPath };
 }
 
 describe("subagent model resolution", () => {
@@ -126,7 +138,32 @@ describe("subagent model resolution", () => {
 			explicitThinkingLevel: "off",
 			config: { agentThinkingLevels: { worker: "low" } },
 			mainModel,
-		})).toEqual({ model: "openai/gpt-5.4", thinkingLevel: "off" });
+		})).toEqual({ model: "openai/gpt-5.4", thinkingLevel: "off", contextWindow: undefined });
+	});
+
+	it("resolves context windows by explicit > agent > global precedence", () => {
+		expect(selectContextWindowSetting({
+			agentName: "worker",
+			config: { defaultContextWindow: 200000, agentContextWindows: { worker: 131072 } },
+		})).toBe(131072);
+		expect(selectContextWindowSetting({
+			agentName: "explorer",
+			config: { defaultContextWindow: 200000, agentContextWindows: { worker: 131072 } },
+		})).toBe(200000);
+		expect(selectContextWindowSetting({
+			agentName: "explorer",
+			explicitContextWindow: 64000,
+			config: { defaultContextWindow: 200000 },
+		})).toBe(64000);
+		expect(selectContextWindowSetting({ agentName: "explorer", config: {} })).toBeUndefined();
+	});
+
+	it("carries the resolved context window through resolveLaunchConfiguration", () => {
+		expect(resolveLaunchConfiguration({
+			agentName: "worker",
+			config: { defaultContextWindow: 200000, agentContextWindows: { worker: 131072 } },
+			mainModel,
+		})).toEqual({ model: "anthropic/claude-sonnet-4-6", contextWindow: 131072 });
 	});
 });
 
@@ -213,35 +250,110 @@ describe("subagent model configuration updates", () => {
 		expect(() => parseModelConfiguration({ defaultThinkingLevel: "ultra" })).toThrow(/must be one of/);
 		expect(() => parseModelConfiguration({ agentThinkingLevels: [] })).toThrow(/agentThinkingLevels must be a JSON object/);
 		expect(() => parseModelConfiguration({ agentThinkingLevels: { worker: 42 } })).toThrow(/must be one of/);
+		expect(() => parseModelConfiguration({ defaultContextWindow: 0 })).toThrow(/positive integer/);
+		expect(() => parseModelConfiguration({ defaultContextWindow: 1.5 })).toThrow(/positive integer/);
+		expect(() => parseModelConfiguration({ agentContextWindows: [] })).toThrow(/agentContextWindows must be a JSON object/);
+		expect(() => parseModelConfiguration({ agentContextWindows: { worker: "200k" } })).toThrow(/positive integer/);
 		expect(() => parseModelConfiguration([])).toThrow(/must contain a JSON object/);
+	});
+
+	it("validates context windows as positive integers", () => {
+		expect(validateContextWindow(200000)).toBe(200000);
+		expect(() => validateContextWindow(0)).toThrow(/positive integer/);
+		expect(() => validateContextWindow(-1)).toThrow(/positive integer/);
+		expect(() => validateContextWindow(1.5)).toThrow(/positive integer/);
+		expect(() => validateContextWindow("200k")).toThrow(/positive integer/);
+	});
+
+	it("sets, removes, and clears context windows without discarding other settings", () => {
+		const all = setAllContextWindows({
+			defaultModel: "main",
+			defaultContextWindow: 131072,
+			agentContextWindows: { worker: 200000 },
+		}, 262144);
+		expect(all).toEqual({
+			defaultModel: "main",
+			defaultContextWindow: 262144,
+			agentContextWindows: {},
+		});
+
+		const withAgent = setAgentContextWindow(all, "worker", 131072);
+		expect(withAgent).toEqual(expect.objectContaining({ agentContextWindows: { worker: 131072 } }));
+		expect(removeAgentContextWindow(withAgent, "worker")).toEqual(expect.objectContaining({
+			defaultContextWindow: 262144,
+			agentContextWindows: {},
+		}));
+		expect(clearAllContextWindows(withAgent)).toEqual({
+			defaultModel: "main",
+			agentContextWindows: {},
+		});
+		expect(() => setAgentContextWindow({}, "worker", -5)).toThrow(/positive integer/);
 	});
 });
 
 describe("subagent config store", () => {
-	it("loads missing files and validates root values and concurrency", () => {
-		expect(createSubagentConfigStore(configFile()).load()).toEqual({
-			agentModels: {}, agentThinkingLevels: {}, maxConcurrency: undefined,
+	it("loads missing settings and validates root values and concurrency", () => {
+		const { settingsPath } = configHarness();
+		expect(createSubagentConfigStore({ settingsPath }).load()).toEqual({
+			agentModels: {}, agentThinkingLevels: {}, agentContextWindows: {}, maxConcurrency: undefined,
 		});
-		expect(() => createSubagentConfigStore(configFile("[]")).load()).toThrow(/root value must be a JSON object/);
-		expect(() => createSubagentConfigStore(configFile("{" )).load()).toThrow(/Cannot read subagent config/);
-		expect(() => createSubagentConfigStore(configFile('{"maxConcurrency":0}')).load()).toThrow(/positive integer/);
-		expect(() => createSubagentConfigStore(configFile('{"maxConcurrency":1.5}')).load()).toThrow(/positive integer/);
+		expect(() => createSubagentConfigStore({ settingsPath: configHarness("[]").settingsPath }).load())
+			.toThrow(/root value must be a JSON object/);
+		expect(() => createSubagentConfigStore({ settingsPath: configHarness("{").settingsPath }).load())
+			.toThrow(/Cannot read/);
+		expect(() => createSubagentConfigStore({ settingsPath: configHarness('{"subagents":{"maxConcurrency":0}}').settingsPath }).load())
+			.toThrow(/positive integer/);
+		expect(() => createSubagentConfigStore({ settingsPath: configHarness('{"subagents":{"maxConcurrency":1.5}}').settingsPath }).load())
+			.toThrow(/positive integer/);
 	});
 
-	it("updates atomically while preserving unknown fields", async () => {
-		const configPath = configFile('{"maxConcurrency":3,"custom":true,"defaultModel":"main"}');
-		const store = createSubagentConfigStore(configPath);
+	it("updates atomically while preserving unknown settings keys", async () => {
+		const { settingsPath } = configHarness(
+			'{"compaction":{"threshold":0.1},"subagents":{"maxConcurrency":3,"custom":true,"defaultModel":"main"}}',
+		);
+		const store = createSubagentConfigStore({ settingsPath });
 		await store.update((document) => setAgentModelAssignment(document, "worker", "openai/test"));
-		expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
-			maxConcurrency: 3,
-			custom: true,
-			defaultModel: "main",
-			agentModels: { worker: "openai/test" },
+		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
+			compaction: { threshold: 0.1 },
+			subagents: {
+				maxConcurrency: 3,
+				custom: true,
+				defaultModel: "main",
+				agentModels: { worker: "openai/test" },
+			},
 		});
+	});
+
+	it("honors a legacy config.json until settings.json gains a subagents key", () => {
+		const { settingsPath, legacyPath } = configHarness(
+			undefined,
+			'{"maxConcurrency":4,"defaultModel":"main","defaultThinkingLevel":"low"}',
+		);
+		const store = createSubagentConfigStore({ settingsPath, legacyConfigPath: legacyPath });
+		expect(store.load()).toEqual({
+			defaultModel: "main",
+			defaultThinkingLevel: "low",
+			agentModels: {},
+			agentThinkingLevels: {},
+			agentContextWindows: {},
+			maxConcurrency: 4,
+		});
+	});
+
+	it("migrates a legacy config.json into settings.json and removes it", async () => {
+		const { settingsPath, legacyPath } = configHarness(undefined, '{"maxConcurrency":4,"defaultModel":"main"}');
+		expect(await migrateSubagentConfigLegacy(settingsPath, legacyPath)).toBe(true);
+		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
+			subagents: { maxConcurrency: 4, defaultModel: "main" },
+		});
+		expect(existsSync(legacyPath)).toBe(false);
+		// No-op once settings.json already has a subagents key.
+		expect(await migrateSubagentConfigLegacy(settingsPath, legacyPath)).toBe(false);
 	});
 
 	it("tracks the main model dynamically when resolving launches", () => {
-		const store = createSubagentConfigStore(configFile('{"defaultModel":"main","defaultThinkingLevel":"low"}'));
+		const { settingsPath } = configHarness('{"subagents":{"defaultModel":"main","defaultThinkingLevel":"low"}}');
+		const store = createSubagentConfigStore({ settingsPath });
 		const worker = { name: "worker", model: "", description: "", tools: [], systemPrompt: "", filePath: "" };
 		store.rememberMainModel({ provider: "openai", id: "first" });
 		expect(store.resolveLaunch(worker)).toEqual({ model: "openai/first", thinkingLevel: "low" });
