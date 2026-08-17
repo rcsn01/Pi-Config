@@ -201,7 +201,7 @@
 			"displayName": "Plan Mode",
 			"pack": "planning",
 			"defaultEnabled": false,
-			"requires": ["safety-permissions"],
+			"requires": ["safety-permissions", "tools-ask-user"],
 			"conflicts": []
 		},
 		"workflows-runtime": {

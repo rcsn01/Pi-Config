@@ -31,7 +31,6 @@ import {
 	profileLabel,
 	validateModeModelProfile,
 } from "./model-profile.ts";
-import { createPlanQuestionTool } from "./plan-question.ts";
 import { buildPlanModeSystemPrompt } from "./plan-prompt.ts";
 import { registerPlanRenderers, updatePlanStatus } from "./plan-renderer.ts";
 import {
@@ -161,7 +160,6 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			"Use plan_bash for tests, builds, and shell exploration while Plan Mode is active; its filesystem changes are discarded.",
 		],
 	});
-	pi.registerTool(createPlanQuestionTool(() => isPlanMode(planState)));
 	registerPlanRenderers(pi);
 
 	function uniqueTools(names: string[]): string[] {
@@ -172,7 +170,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		const retained = normalTools.filter((name) =>
 			name !== "bash" && name !== "plan_bash" && !MUTATING_TOOLS.has(name)
 		);
-		return uniqueTools([...retained, "plan_question", "plan_bash"]);
+		return uniqueTools([...retained, "plan_bash"]);
 	}
 
 	function restoreNormalTools(fallback?: string[]): void {
