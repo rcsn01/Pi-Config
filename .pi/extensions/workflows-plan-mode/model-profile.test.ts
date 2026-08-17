@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	createNormalDefaultsStore,
 	createPlanModeProfileStore,
-	parsePlanModeProfileDocument,
+	validateModeModelProfile,
 } from "./model-profile.ts";
 import {
 	createHarness,
@@ -167,7 +167,7 @@ describe("Plan Mode model and thinking profiles", () => {
 		expect(stores.save).not.toHaveBeenCalled();
 	});
 
-	it("does not let restored historical models redefine the global preference", async () => {
+	it("does not let restored historical models redefine the project preference", async () => {
 		const stores = createProfileDependencies(profileFor(planModel, "high"));
 		const branch = [{
 			type: "custom",
@@ -336,45 +336,54 @@ describe("Plan Mode profile schema", () => {
 		}
 	});
 
-	it("round-trips the versioned profile through one atomic target file", async () => {
+	it("round-trips the Plan profile through the project settings file without replacing other settings", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "pi-plan-profile-"));
-		const path = join(directory, "plan-mode-profile.json");
+		const path = join(directory, "settings.json");
+		const initialSettings = {
+			compaction: { enabled: true, threshold: 0.1 },
+			uiModelSelector: {
+				label: "preserved",
+				profiles: { normal: profileFor(normalModel, "medium") },
+			},
+		};
+		writeFileSync(path, `${JSON.stringify(initialSettings, null, 2)}\n`, "utf-8");
 		try {
 			const store = createPlanModeProfileStore(path);
 			expect(await store.load()).toBeUndefined();
 			await store.save(profileFor(planModel, "high"));
 			expect(await store.load()).toEqual(profileFor(planModel, "high"));
 			expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
-				version: 2,
-				profile: profileFor(planModel, "high"),
+				...initialSettings,
+				uiModelSelector: {
+					...initialSettings.uiModelSelector,
+					profiles: {
+						...initialSettings.uiModelSelector.profiles,
+						plan: profileFor(planModel, "high"),
+					},
+				},
 			});
-			expect(readdirSync(directory)).toEqual(["plan-mode-profile.json"]);
+			expect(readdirSync(directory)).toEqual(["settings.json"]);
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
 
-	it("accepts current profiles and legacy v1 profiles without context", () => {
-		expect(parsePlanModeProfileDocument({
-			version: 2,
-			profile: profileFor(planModel, "xhigh"),
-		})).toEqual(profileFor(planModel, "xhigh"));
-		expect(parsePlanModeProfileDocument({
-			version: 1,
-			profile: { provider: planModel.provider, modelId: planModel.id, thinkingLevel: "high" },
+	it("accepts current profiles and legacy session profiles without context", () => {
+		expect(validateModeModelProfile(profileFor(planModel, "xhigh")))
+			.toEqual(profileFor(planModel, "xhigh"));
+		expect(validateModeModelProfile({
+			provider: planModel.provider,
+			modelId: planModel.id,
+			thinkingLevel: "high",
 		})).toEqual({ provider: planModel.provider, modelId: planModel.id, thinkingLevel: "high" });
 	});
 
-	it("rejects malformed versions, thinking levels, and contexts", () => {
-		expect(() => parsePlanModeProfileDocument({ version: 3, profile: profileFor(planModel, "high") }))
-			.toThrow("unsupported version");
-		expect(() => parsePlanModeProfileDocument({
-			version: 2,
-			profile: { ...profileFor(planModel, "high"), thinkingLevel: "turbo" },
+	it("rejects malformed thinking levels and contexts", () => {
+		expect(() => validateModeModelProfile({
+			...profileFor(planModel, "high"), thinkingLevel: "turbo",
 		})).toThrow("thinkingLevel is not supported");
-		expect(() => parsePlanModeProfileDocument({
-			version: 2,
-			profile: { ...profileFor(planModel, "high"), contextWindow: 0 },
+		expect(() => validateModeModelProfile({
+			...profileFor(planModel, "high"), contextWindow: 0,
 		})).toThrow("contextWindow must be a positive integer");
 	});
 });

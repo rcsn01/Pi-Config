@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	getAgentDir,
@@ -8,6 +9,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { parseProjectModelPreferences } from "../ui-model-selector/model-config.ts";
 
 export interface ModeModelProfile {
 	provider: string;
@@ -15,11 +17,6 @@ export interface ModeModelProfile {
 	thinkingLevel: ModelThinkingLevel;
 	/** Optional only while reading legacy v1/session state; all newly captured profiles include it. */
 	contextWindow?: number;
-}
-
-interface PlanModeProfileDocument {
-	version: 2;
-	profile: ModeModelProfile;
 }
 
 export interface PlanModeProfileStore {
@@ -32,7 +29,8 @@ export interface NormalDefaultsStore {
 	restore(cwd: string, profile: ModeModelProfile): Promise<void>;
 }
 
-export const PLAN_MODE_PROFILE_PATH = join(getAgentDir(), "plan-mode-profile.json");
+const EXTENSION_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+export const PLAN_MODE_SETTINGS_PATH = join(EXTENSION_DIRECTORY, "..", "..", "settings.json");
 
 export function profileLabel(
 	profile: Pick<ModeModelProfile, "provider" | "modelId" | "thinkingLevel" | "contextWindow">,
@@ -159,22 +157,37 @@ export function validateModeModelProfile(value: unknown, label = "Plan Mode prof
 	};
 }
 
-export function parsePlanModeProfileDocument(value: unknown): ModeModelProfile {
-	if (!isRecord(value)) throw new Error("Plan Mode profile file must contain a JSON object.");
-	if (value.version !== 1 && value.version !== 2) {
-		throw new Error("Plan Mode profile file has an unsupported version.");
+function readProjectSettings(path: string): Record<string, unknown> {
+	if (!existsSync(path)) return {};
+	let document: unknown;
+	try {
+		document = JSON.parse(readFileSync(path, "utf-8"));
+	} catch (error) {
+		throw new Error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	return validateModeModelProfile(value.profile);
+	if (!isRecord(document)) throw new Error(`Cannot read ${path}: the root value must be a JSON object`);
+	return document;
 }
 
-export function createPlanModeProfileStore(path = PLAN_MODE_PROFILE_PATH): PlanModeProfileStore {
+function writeProjectSettings(path: string, document: Record<string, unknown>): void {
+	mkdirSync(dirname(path), { recursive: true });
+	const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+	try {
+		writeFileSync(temporaryPath, `${JSON.stringify(document, null, 2)}\n`, "utf-8");
+		renameSync(temporaryPath, path);
+	} finally {
+		if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
+	}
+}
+
+export function createPlanModeProfileStore(path = PLAN_MODE_SETTINGS_PATH): PlanModeProfileStore {
 	return {
 		async load() {
-			if (!existsSync(path)) return undefined;
 			try {
-				return parsePlanModeProfileDocument(JSON.parse(readFileSync(path, "utf-8")));
+				const profile = parseProjectModelPreferences(readProjectSettings(path)).profiles.plan;
+				return profile ? validateModeModelProfile(profile) : undefined;
 			} catch (error) {
-				throw new Error(`Cannot load ${path}: ${error instanceof Error ? error.message : String(error)}`);
+				throw new Error(`Cannot load the Plan Mode profile from ${path}: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		},
 
@@ -184,15 +197,20 @@ export function createPlanModeProfileStore(path = PLAN_MODE_PROFILE_PATH): PlanM
 				throw new Error("Plan Mode profile contextWindow must be a positive integer.");
 			}
 			await withFileMutationQueue(path, async () => {
-				const document: PlanModeProfileDocument = { version: 2, profile: validated };
-				mkdirSync(dirname(path), { recursive: true });
-				const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-				try {
-					writeFileSync(temporaryPath, `${JSON.stringify(document, null, 2)}\n`, "utf-8");
-					renameSync(temporaryPath, path);
-				} finally {
-					if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
-				}
+				const settings = readProjectSettings(path);
+				parseProjectModelPreferences(settings);
+				const selector = isRecord(settings.uiModelSelector) ? settings.uiModelSelector : {};
+				const profiles = isRecord(selector.profiles) ? selector.profiles : {};
+				writeProjectSettings(path, {
+					...settings,
+					uiModelSelector: {
+						...selector,
+						profiles: {
+							...profiles,
+							plan: { ...validated, contextWindow: validated.contextWindow! },
+						},
+					},
+				});
 			});
 		},
 	};
