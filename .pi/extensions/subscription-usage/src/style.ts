@@ -4,12 +4,11 @@
 // reset at the end of each rendered line, and measures styled text width
 // correctly (see pi's tui.md). Applied rules:
 // - header lines (ChatGPT Codex / Ollama Cloud): bold bright white
-// - the usage bar `[████░░░░]`: bold bright yellow
+// - the usage bar `[████░░░░]`: bold bright white
 // - the "N% used" share: bold
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
 const BRIGHT_WHITE = "\x1b[97m";
-const BRIGHT_YELLOW = "\x1b[93m";
 
 const BAR = /\[[█░]+\]/g;
 const HEADER = /^(ChatGPT Codex|Ollama Cloud)/;
@@ -21,7 +20,7 @@ export function styleUsageText(text: string): string {
 
 function styleLine(line: string): string {
 	let styled = line;
-	styled = styled.replace(BAR, (bar) => `${BRIGHT_YELLOW}${BOLD}${bar}${RESET}`);
+	styled = styled.replace(BAR, (bar) => `${BRIGHT_WHITE}${BOLD}${bar}${RESET}`);
 	styled = styled.replace(PERCENT, (share) => `${BOLD}${share}${RESET}`);
 	if (HEADER.test(styled)) {
 		styled = `${BRIGHT_WHITE}${BOLD}${styled}${RESET}`;
