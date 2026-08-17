@@ -1,28 +1,7 @@
 import { isSnapshotStale } from "./quota.ts";
 import { usageBar } from "./bar.ts";
+import { resetsInText } from "./countdown.ts";
 import type { QuotaSnapshot } from "./types.ts";
-
-const MONTH_ABBREVIATIONS = [
-	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-] as const;
-
-function sameLocalDate(a: Date, b: Date): boolean {
-	return a.getFullYear() === b.getFullYear()
-		&& a.getMonth() === b.getMonth()
-		&& a.getDate() === b.getDate();
-}
-
-// Port of codex `format_reset_timestamp` (codex-rs/tui/src/status/helpers.rs):
-// `HH:MM` when the reset falls on the same local day as the capture time,
-// otherwise `HH:MM on %-d %b` (e.g. "14:30 on 24 Aug").
-export function formatResetTimestamp(resetsAt: string, now: Date): string {
-	const reset = new Date(resetsAt);
-	if (!Number.isFinite(reset.getTime())) return "";
-	const time = `${String(reset.getHours()).padStart(2, "0")}:${String(reset.getMinutes()).padStart(2, "0")}`;
-	if (sameLocalDate(reset, now)) return time;
-	return `${time} on ${reset.getDate()} ${MONTH_ABBREVIATIONS[reset.getMonth()]}`;
-}
 
 export function formatQuotaText(snapshot: QuotaSnapshot, now = new Date()): string {
 	const header = snapshot.plan ? `ChatGPT Codex · Plan: ${snapshot.plan}` : "ChatGPT Codex";
@@ -30,7 +9,7 @@ export function formatQuotaText(snapshot: QuotaSnapshot, now = new Date()): stri
 	if (snapshot.weekly) {
 		const used = `${Math.round(snapshot.weekly.usedPercent)}% used`;
 		const resets = snapshot.weekly.resetsAt
-			? ` · resets ${formatResetTimestamp(snapshot.weekly.resetsAt, now)}`
+			? ` · ${resetsInText(new Date(snapshot.weekly.resetsAt), now)}`
 			: "";
 		lines.push(`Weekly limit: ${usageBar(snapshot.weekly.usedPercent)} ${used}${resets}`);
 	} else {
