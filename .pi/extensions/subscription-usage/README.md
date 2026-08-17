@@ -25,4 +25,23 @@ If authentication is missing, invalid, expired, or rejected, run:
 codex login
 ```
 
-The analytics endpoint is intentionally not guessed. It will be added after capturing the Fetch/XHR request made by the Analytics page.
+## Step 2: endpoint probe
+
+An isolated browser capture confirmed that the Analytics page makes authenticated `GET` requests to:
+
+- `/backend-api/wham/usage`
+- `/backend-api/wham/usage/daily-token-usage-breakdown`
+- `/backend-api/wham/analytics/daily-workspace-usage-counts`
+- `/backend-api/wham/analytics/daily-skill-usage-metrics`
+- `/backend-api/wham/analytics/daily-plugin-usage-metrics`
+- `/backend-api/wham/usage/credit-usage-events`
+
+The dated endpoints use an inclusive 30-day UTC range and `group_by=day`; workspace, skill, and plugin requests use `workspace_user=true`. The Codex CLI bearer token and account ID are sufficient—browser cookies and browser profile access are not required after discovery.
+
+Run:
+
+```text
+/usage probe
+```
+
+The probe reports authentication rejection, endpoint availability, invalid JSON, oversized responses, or an unrecognized response contract without including credentials or response bodies in errors.
