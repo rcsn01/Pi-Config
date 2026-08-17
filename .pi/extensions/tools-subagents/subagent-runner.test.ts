@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import { deriveSubagentSessionId } from "./cache-affinity.ts";
 import { createSubagentRunner } from "./subagent-runner.ts";
 import {
 	agent,
@@ -25,6 +26,7 @@ describe("single subagent runner", () => {
 			agent: "worker",
 			task: "Inspect code",
 			cwd: "/workspace",
+			cacheAffinitySeed: "main-session-123",
 			onProgress: (event) => { progress.push(event); },
 			onUpdate: (update) => updates.push({ ...update }),
 		});
@@ -51,9 +53,10 @@ describe("single subagent runner", () => {
 		const [command, args, options] = spawn.spawnProcess.mock.calls[0];
 		expect(command).toBe(process.execPath);
 		expect(args).toEqual(expect.arrayContaining([
-			"--mode", "json", "--no-session", "--no-skills", "--no-extensions",
-			"--tools", "read", "--model", "openai/test-model", "--thinking", "minimal",
-			"Task: Inspect code",
+			"--mode", "json", "--no-session", "--session-id",
+			deriveSubagentSessionId("main-session-123", "openai/test-model"),
+			"--no-skills", "--no-extensions", "--tools", "read",
+			"--model", "openai/test-model", "--thinking", "minimal", "Task: Inspect code",
 		]));
 		expect(args.some((value) => value.endsWith("tools/safe-bash.ts"))).toBe(true);
 		expect(options.cwd).toBe("/workspace");
@@ -66,6 +69,18 @@ describe("single subagent runner", () => {
 		});
 		expect(progress.map((event) => event.type)).toEqual(["started", "tool_call", "tool_result", "message", "completed"]);
 		expect(updates.length).toBeGreaterThan(0);
+	});
+
+	it("keeps legacy ephemeral behavior when no cache-affinity seed is supplied", async () => {
+		const child = fakeProcess();
+		const spawnProcess = vi.fn((_command: string, args: string[]) => {
+			expect(args).toContain("--no-session");
+			expect(args).not.toContain("--session-id");
+			queueMicrotask(() => child.emit("close", 0));
+			return child as any;
+		});
+		const run = createSubagentRunner({ registry: memoryRegistry(), config: memoryConfigStore(), spawnProcess: spawnProcess as any });
+		await run({ agent: "worker", task: "inspect", cwd: process.cwd() });
 	});
 
 	it("writes long tasks to a private temporary file and cleans it after execution", async () => {

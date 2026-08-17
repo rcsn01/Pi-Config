@@ -275,6 +275,7 @@ export class WorkflowRun {
 					model: options.model,
 					timeoutMs: options.timeoutMs,
 					maxOutputBytes: options.maxOutputBytes,
+					cacheAffinitySeed: this.commandCtx.sessionManager.getSessionId(),
 					onProgress: async (event) => this.recordAgentProgress(options.key, event),
 				});
 				if (result.exitCode !== 0 || result.progress?.error) {

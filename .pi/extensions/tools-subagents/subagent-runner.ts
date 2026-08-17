@@ -19,6 +19,7 @@ import {
 	type ResolvedLaunchConfiguration,
 	type SubagentConfigStore,
 } from "./config.ts";
+import { deriveSubagentSessionId } from "./cache-affinity.ts";
 import { formatToolArgsPreview } from "./formatting.ts";
 
 const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -63,6 +64,7 @@ async function buildPiArgs(
 	task: string,
 	cwd: string,
 	launch: ResolvedLaunchConfiguration,
+	sessionId?: string,
 ): Promise<{ args: string[]; tempDir: string }> {
 	const piBin = resolvePiBinary();
 	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sub-"));
@@ -74,6 +76,7 @@ async function buildPiArgs(
 	});
 
 	let args = [...piBin.baseArgs, "--mode", "json", "-p", "--no-session", "--no-skills"];
+	if (sessionId) args.push("--session-id", sessionId);
 
 	// Separate builtin tools from custom tools
 	const builtinTools: string[] = [];
@@ -167,7 +170,10 @@ async function executeSubagent(
 	const launch = config.resolveLaunch(agent, options.model, options.thinkingLevel);
 	const { signal, cleanup } = withTimeoutSignal(options.signal, options.timeoutMs);
 	await options.onProgress?.({ type: "started", agent: agent.name, task });
-	const { args, tempDir } = await buildPiArgs(agent, task, options.cwd, launch);
+	const cacheSessionId = options.cacheAffinitySeed
+		? deriveSubagentSessionId(options.cacheAffinitySeed, launch.model)
+		: undefined;
+	const { args, tempDir } = await buildPiArgs(agent, task, options.cwd, launch, cacheSessionId);
 	const command = args[0];
 	const spawnArgs = args.slice(1);
 

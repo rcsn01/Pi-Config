@@ -56,6 +56,7 @@ describe("parallel subagent runner", () => {
 			maxConcurrency: 2,
 			timeoutMs: 50,
 			maxOutputBytes: 100,
+			cacheAffinitySeed: "main-session-123",
 			tasks: [
 				{ agent: "slow", prompt: "first", cwd: "/one", model: "openai/one", thinkingLevel: "high" },
 				{ agent: "fast", task: "second" },
@@ -72,8 +73,8 @@ describe("parallel subagent runner", () => {
 			["fast", 0, "Done"],
 		]);
 		expect(calls).toEqual([
-			expect.objectContaining({ task: "first", cwd: "/one", timeoutMs: 50, maxOutputBytes: 100, model: "openai/one", thinkingLevel: "high" }),
-			expect.objectContaining({ task: "second", cwd: "/root", timeoutMs: 50, maxOutputBytes: 100 }),
+			expect.objectContaining({ task: "first", cwd: "/one", timeoutMs: 50, maxOutputBytes: 100, model: "openai/one", thinkingLevel: "high", cacheAffinitySeed: "main-session-123" }),
+			expect.objectContaining({ task: "second", cwd: "/root", timeoutMs: 50, maxOutputBytes: 100, cacheAffinitySeed: "main-session-123" }),
 		]);
 		expect(progress).toEqual([[0, "message"], [1, "message"]]);
 		expect(updates).toEqual(expect.arrayContaining([[0, "slow"], [1, "fast"]]));

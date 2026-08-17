@@ -38,6 +38,7 @@ function extensionHarness(runSingle = vi.fn(async (options: any) => agentResult(
 	const ctx = {
 		cwd: "/workspace",
 		model: { provider: "anthropic", id: "main" },
+		sessionManager: { getSessionId: () => "main-session-123" },
 		mode: "print",
 		ui: { notify: vi.fn() },
 		modelRegistry: { refresh: vi.fn(), getAvailable: vi.fn(() => []), find: vi.fn() },
@@ -109,7 +110,12 @@ describe("subagent tool adaptation", () => {
 			"call", { agent: "worker", task: "Do work", cwd: "/task" }, undefined,
 			(update: any) => updates.push(update), harness.ctx,
 		);
-		expect(runSingle).toHaveBeenCalledWith(expect.objectContaining({ agent: expect.objectContaining({ name: "worker" }), task: "Do work", cwd: "/task" }));
+		expect(runSingle).toHaveBeenCalledWith(expect.objectContaining({
+			agent: expect.objectContaining({ name: "worker" }),
+			task: "Do work",
+			cwd: "/task",
+			cacheAffinitySeed: "main-session-123",
+		}));
 		expect(updates[0]).toMatchObject({ content: [{ text: "(running...)" }], details: { mode: "single" } });
 		expect(result).toMatchObject({
 			content: [{ type: "text", text: "partial" }],
@@ -135,6 +141,10 @@ describe("subagent tool adaptation", () => {
 		expect(result.details.results.map((item: any) => item.agent)).toEqual(["worker", "explorer"]);
 		expect(result).not.toHaveProperty("isError");
 		expect(runSingle.mock.calls[1][0].cwd).toBe("/other");
+		expect(runSingle.mock.calls.map(([options]) => options.cacheAffinitySeed)).toEqual([
+			"main-session-123",
+			"main-session-123",
+		]);
 	});
 
 	it("preserves invalid invocation and unknown-agent errors", async () => {
