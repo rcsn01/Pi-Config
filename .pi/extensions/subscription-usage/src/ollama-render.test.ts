@@ -56,8 +56,8 @@ describe("ollama usage rendering with countdowns", () => {
 
 	it("renders computed countdowns for the live contract", () => {
 		const text = formatUsageText(snapshot, local(2026, 7, 17, 21, 20));
-		expect(text).toContain("Session usage: [██░░░░░░░░] 16% used · resets in 40 minutes");
-		expect(text).toContain("Weekly usage: [░░░░░░░░░░] 3% used · resets in 6 days");
+		expect(text).toContain("Session usage: [███░░░░░░░░░░░░░░░░░] 16% used · resets in 40 minutes");
+		expect(text).toContain("Weekly usage: [█░░░░░░░░░░░░░░░░░░░] 3% used · resets in 6 days");
 		expect(text).not.toContain("(stale)");
 	});
 
@@ -66,7 +66,7 @@ describe("ollama usage rendering with countdowns", () => {
 			{ ...snapshot, weekStartsAt: "2026-07-27T00:00:00.000Z" },
 			new Date("2026-08-17T11:20:00.000Z"),
 		);
-		expect(text).toContain("Weekly usage: [░░░░░░░░░░] 3% used · resets in 6 days");
+		expect(text).toContain("Weekly usage: [█░░░░░░░░░░░░░░░░░░░] 3% used · resets in 6 days");
 	});
 
 	it("prefers an explicit resets_in when present", () => {
@@ -75,8 +75,8 @@ describe("ollama usage rendering with countdowns", () => {
 			session: { usedPercent: 5, resetsIn: "5 hours" },
 			weekly: { usedPercent: 50, resetsIn: "4 days" },
 		}, local(2026, 7, 17, 21, 20));
-		expect(text).toContain("Session usage: [█░░░░░░░░░] 5% used · resets in 5 hours");
-		expect(text).toContain("Weekly usage: [█████░░░░░] 50% used · resets in 4 days");
+		expect(text).toContain("Session usage: [█░░░░░░░░░░░░░░░░░░░] 5% used · resets in 5 hours");
+		expect(text).toContain("Weekly usage: [██████████░░░░░░░░░░] 50% used · resets in 4 days");
 	});
 
 	it("marks stale snapshots and omits absent rows", () => {
