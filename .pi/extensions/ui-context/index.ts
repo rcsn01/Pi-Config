@@ -11,9 +11,11 @@ import {
 	visibleWidth,
 	type Component,
 } from "@earendil-works/pi-tui";
+import { collectSessionUsage, collectSubagentUsage } from "../_shared/usage.ts";
 import {
 	allocateMeter,
 	calculateContextDiagnostics,
+	formatExactTokenCount,
 	formatPercent,
 	formatTokenCount,
 	type ContextDiagnostics,
@@ -72,10 +74,41 @@ export function formatBreakdownValue(tokens: number, contextWindow: number): str
 	return `${formatTokenCount(tokens)} (${percent})`;
 }
 
+function usageBlockLines(
+	title: string,
+	usage: ContextDiagnostics["sessionUsage"],
+	theme: Theme,
+): string[] {
+	return [
+		theme.fg("muted", title),
+		`  ${"Input".padEnd(12)} ${formatExactTokenCount(usage.input)}`,
+		`  ${"Cache input".padEnd(12)} ${formatExactTokenCount(usage.cacheRead)}`,
+		`  ${"Output".padEnd(12)} ${formatExactTokenCount(usage.output)}`,
+	];
+}
+
+function cumulativeUsageLines(
+	diagnostics: ContextDiagnostics,
+	theme: Theme,
+	width: number,
+): string[] {
+	const session = usageBlockLines("Current context token usage", diagnostics.sessionUsage, theme);
+	const subagents = usageBlockLines("Subagent usage in context", diagnostics.subagentUsage, theme);
+	if (width < 72) return [...session, "", ...subagents];
+
+	const gap = 3;
+	const leftWidth = Math.floor((width - gap) / 2);
+	const rightWidth = Math.max(1, width - gap - leftWidth);
+	return session.map((line, index) =>
+		`${pad(line, leftWidth)}${" ".repeat(gap)}${fit(subagents[index] ?? "", rightWidth)}`,
+	);
+}
+
 function breakdownLines(
 	diagnostics: ContextDiagnostics,
 	theme: Theme,
 	selectedIndex: number,
+	width: number,
 ): string[] {
 	const window = diagnostics.contextWindow > 0 ? formatTokenCount(diagnostics.contextWindow) : "unknown";
 	const estimated = diagnostics.usedIsEstimated ? " estimated" : "";
@@ -93,6 +126,8 @@ function breakdownLines(
 		"",
 		`  ${"Free space".padEnd(18)} ${value(diagnostics.freeSpace)}`,
 		`  ${"Compaction buffer".padEnd(18)} ${value(diagnostics.compactionReserve)}${diagnostics.compactionEnabled ? "" : " (disabled)"}`,
+		"",
+		...cumulativeUsageLines(diagnostics, theme, width),
 	];
 }
 
@@ -183,27 +218,26 @@ export class ContextDiagnosticsComponent implements Component {
 
 		if (this.view !== "summary") {
 			body = this.detailLines(innerWidth, detailRows).map((line) => `  ${line}`);
+		} else if (innerWidth >= 72) {
+			const meterWidth = 10;
+			const gap = 3;
+			const detailWidth = Math.max(1, innerWidth - meterWidth - gap);
+			const details = breakdownLines(this.diagnostics, this.theme, this.summarySelection, detailWidth);
+			const meter = renderMeter(this.diagnostics, this.theme, meterWidth);
+			const rows = Math.max(meter.length, details.length);
+			body = Array.from({ length: rows }, (_, index) => {
+				const left = pad(meter[index] ?? "", meterWidth);
+				const right = fit(details[index] ?? "", detailWidth);
+				return `  ${left}${" ".repeat(gap)}${right}`;
+			});
 		} else {
-			const details = breakdownLines(this.diagnostics, this.theme, this.summarySelection);
-			if (innerWidth >= 72) {
-				const meterWidth = 10;
-				const gap = 3;
-				const detailWidth = Math.max(1, innerWidth - meterWidth - gap);
-				const meter = renderMeter(this.diagnostics, this.theme, meterWidth);
-				const rows = Math.max(meter.length, details.length);
-				body = Array.from({ length: rows }, (_, index) => {
-					const left = pad(meter[index] ?? "", meterWidth);
-					const right = fit(details[index] ?? "", detailWidth);
-					return `  ${left}${" ".repeat(gap)}${right}`;
-				});
-			} else {
-				const meterWidth = Math.max(1, Math.min(100, innerWidth));
-				body = [
-					...renderMeter(this.diagnostics, this.theme, meterWidth).map((line) => `  ${line}`),
-					"",
-					...details.map((line) => `  ${line}`),
-				];
-			}
+			const meterWidth = Math.max(1, Math.min(100, innerWidth));
+			const details = breakdownLines(this.diagnostics, this.theme, this.summarySelection, innerWidth);
+			body = [
+				...renderMeter(this.diagnostics, this.theme, meterWidth).map((line) => `  ${line}`),
+				"",
+				...details.map((line) => `  ${line}`),
+			];
 		}
 
 		const hintText = this.view === "summary"
@@ -281,8 +315,23 @@ function loadCompactionSettings(ctx: ExtensionCommandContext): { enabled: boolea
 	}
 }
 
+export function collectCurrentContextUsage(
+	sessionManager: Pick<ExtensionCommandContext["sessionManager"], "buildContextEntries">,
+) {
+	// Use Pi's active, compaction-aware branch rather than the append-only
+	// session history. Summarized and abandoned subagent calls are not present in
+	// the model's current context and must not contribute to these diagnostics.
+	const contextEntries = sessionManager.buildContextEntries();
+	return {
+		contextEntries,
+		sessionUsage: collectSessionUsage(contextEntries),
+		subagentUsage: collectSubagentUsage(contextEntries),
+	};
+}
+
 function collectDiagnostics(pi: ExtensionAPI, ctx: ExtensionCommandContext): ContextDiagnostics {
 	const options = ctx.getSystemPromptOptions();
+	const { contextEntries, sessionUsage, subagentUsage } = collectCurrentContextUsage(ctx.sessionManager);
 	return calculateContextDiagnostics({
 		model: ctx.model,
 		usage: ctx.getContextUsage(),
@@ -292,15 +341,31 @@ function collectDiagnostics(pi: ExtensionAPI, ctx: ExtensionCommandContext): Con
 		skills: options.skills,
 		activeToolNames: pi.getActiveTools(),
 		allTools: pi.getAllTools(),
-		contextEntries: ctx.sessionManager.buildContextEntries(),
+		contextEntries,
+		sessionUsage: {
+			input: sessionUsage.input,
+			cacheRead: sessionUsage.cacheRead,
+			output: sessionUsage.output,
+		},
+		subagentUsage: {
+			input: subagentUsage.input,
+			cacheRead: subagentUsage.cacheRead,
+			output: subagentUsage.output,
+		},
 		compaction: loadCompactionSettings(ctx),
 	});
 }
 
-function textualSummary(diagnostics: ContextDiagnostics): string {
+export function textualSummary(diagnostics: ContextDiagnostics): string {
 	const marker = diagnostics.usedIsEstimated ? "estimated " : "";
 	const window = diagnostics.contextWindow > 0 ? formatTokenCount(diagnostics.contextWindow) : "unknown";
-	return `${diagnostics.modelId}: ${marker}${formatTokenCount(diagnostics.usedTokens)} / ${window} tokens (${formatPercent(diagnostics.percent)})`;
+	const usage = diagnostics.sessionUsage;
+	const subagents = diagnostics.subagentUsage;
+	return [
+		`${diagnostics.modelId}: ${marker}${formatTokenCount(diagnostics.usedTokens)} / ${window} tokens (${formatPercent(diagnostics.percent)})`,
+		`Current context token usage: Input ${formatExactTokenCount(usage.input)} · Cache input ${formatExactTokenCount(usage.cacheRead)} · Output ${formatExactTokenCount(usage.output)}`,
+		`Subagent usage in context: Input ${formatExactTokenCount(subagents.input)} · Cache input ${formatExactTokenCount(subagents.cacheRead)} · Output ${formatExactTokenCount(subagents.output)}`,
+	].join("\n");
 }
 
 export default function contextDiagnosticsExtension(pi: ExtensionAPI): void {

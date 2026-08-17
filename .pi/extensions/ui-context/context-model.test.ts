@@ -1,6 +1,6 @@
 import type { SessionEntry, Skill, Theme, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	allocateMeter,
 	calculateCapacity,
@@ -11,6 +11,7 @@ import {
 	estimateRawCategories,
 	estimateToolTokens,
 	formatContextFilesForPrompt,
+	formatExactTokenCount,
 	formatPercent,
 	formatTokenCount,
 	reconcileCategories,
@@ -18,7 +19,12 @@ import {
 	type ContextDiagnostics,
 	type ContextModelInput,
 } from "./context-model.ts";
-import { ContextDiagnosticsComponent, formatBreakdownValue } from "./index.ts";
+import {
+	collectCurrentContextUsage,
+	ContextDiagnosticsComponent,
+	formatBreakdownValue,
+	textualSummary,
+} from "./index.ts";
 
 const builtin = {
 	name: "read",
@@ -71,10 +77,36 @@ function input(overrides: Partial<ContextModelInput> = {}): ContextModelInput {
 		activeToolNames: ["read", "search"],
 		allTools: [builtin, extension, inactive],
 		contextEntries: [messageEntry("Conversation message")],
+		sessionUsage: { input: 12_345, cacheRead: 67_890, output: 2_345 },
+		subagentUsage: { input: 1_234, cacheRead: 5_678, output: 345 },
 		compaction: { enabled: true, reserveTokens: 100 },
 		...overrides,
 	};
 }
+
+describe("current context usage scope", () => {
+	it("reads only the compaction-aware context projection", () => {
+		const retained = [{
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolName: "subagent",
+				usage: { input: 7, output: 2, cacheRead: 11 },
+			},
+		}] as unknown as SessionEntry[];
+		const getEntries = vi.fn(() => {
+			throw new Error("append-only history must not be read");
+		});
+		const buildContextEntries = vi.fn(() => retained);
+
+		const result = collectCurrentContextUsage({ buildContextEntries, getEntries } as any);
+		expect(buildContextEntries).toHaveBeenCalledOnce();
+		expect(getEntries).not.toHaveBeenCalled();
+		expect(result.contextEntries).toBe(retained);
+		expect(result.subagentUsage).toMatchObject({ input: 7, output: 2, cacheRead: 11 });
+		expect(result.sessionUsage).toMatchObject({ input: 7, output: 2, cacheRead: 11 });
+	});
+});
 
 describe("context category accounting", () => {
 	it("reconciles category estimates to the authoritative reported total", () => {
@@ -82,6 +114,19 @@ describe("context category accounting", () => {
 		expect(Object.values(result.categories).reduce((sum, value) => sum + value, 0)).toBe(400);
 		expect(result.usedTokens).toBe(400);
 		expect(result.usedIsEstimated).toBe(false);
+	});
+
+	it("propagates and independently normalizes current-context usage without affecting context arithmetic", () => {
+		const result = calculateContextDiagnostics(input({
+			sessionUsage: { input: 123_456, cacheRead: 78_901, output: 23_456 },
+			subagentUsage: { input: 12_345.4, cacheRead: -8, output: Number.NaN },
+		}));
+		expect(result.sessionUsage).toEqual({ input: 123_456, cacheRead: 78_901, output: 23_456 });
+		expect(result.subagentUsage).toEqual({ input: 12_345, cacheRead: 0, output: 0 });
+		expect(result.usedTokens).toBe(400);
+		expect(Object.values(result.categories).reduce((sum, value) => sum + value, 0)).toBe(400);
+		expect(result.freeSpace).toBe(500);
+		expect(result.compactionReserve).toBe(100);
 	});
 
 	it("preserves an exact target even when all raw estimates are zero", () => {
@@ -252,6 +297,7 @@ describe("display helpers", () => {
 		expect(formatTokenCount(1_250)).toBe("1.3k");
 		expect(formatTokenCount(125_000)).toBe("125k");
 		expect(formatTokenCount(1_250_000)).toBe("1.25m");
+		expect(formatExactTokenCount(1_250_000)).toBe("1,250,000");
 	});
 
 	it("formats breakdown values as a percentage of the full context window", () => {
@@ -284,6 +330,8 @@ describe("display helpers", () => {
 				tokens: 50,
 				sourcePath: "/extensions/search.ts",
 			}],
+			sessionUsage: { input: 1_234_567, cacheRead: 2_345_678, output: 345_678 },
+			subagentUsage: { input: 123_456, cacheRead: 234_567, output: 34_567 },
 			freeSpace: 500,
 			compactionReserve: 100,
 			compactionThreshold: 900,
@@ -312,8 +360,27 @@ describe("display helpers", () => {
 		for (const width of [50, 90]) {
 			const lines = component.render(width);
 			expect(lines.some((line) => line.includes("System prompt") && line.includes("100 (10%)"))).toBe(true);
+			expect(lines.some((line) => line.includes("Current context token usage"))).toBe(true);
+			expect(lines.some((line) => line.includes("Subagent usage in context"))).toBe(true);
+			for (const value of ["1,234,567", "2,345,678", "345,678", "123,456", "234,567", "34,567"]) {
+				expect(lines.some((line) => line.includes(value))).toBe(true);
+			}
 			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 		}
+
+		const narrowLines = component.render(50);
+		expect(narrowLines.findIndex((line) => line.includes("Subagent usage in context")))
+			.toBeGreaterThan(narrowLines.findIndex((line) => line.includes("Current context token usage")));
+		const wideLines = component.render(90);
+		expect(wideLines.some((line) => line.includes("Current context token usage") && line.includes("Subagent usage in context"))).toBe(true);
+
+		const text = textualSummary(diagnostics);
+		expect(text).toContain(
+			"Current context token usage: Input 1,234,567 · Cache input 2,345,678 · Output 345,678",
+		);
+		expect(text).toContain(
+			"Subagent usage in context: Input 123,456 · Cache input 234,567 · Output 34,567",
+		);
 
 		const expanded = new ContextDiagnosticsComponent(
 			diagnostics,
