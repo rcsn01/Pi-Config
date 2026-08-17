@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { stripAnsi } from "./style.ts";
 import {
 	createSubscriptionUsageExtension,
 	formatAuthStatus,
@@ -85,11 +86,11 @@ describe("/usage (unified) and the usage tools", () => {
 		expect(probe).toHaveBeenCalledTimes(1);
 		expect(probeOllama).toHaveBeenCalledTimes(1);
 		const [text, level] = notify.mock.calls[0];
-		expect(text).toContain("ChatGPT Codex · Plan: Pro");
-		expect(text).toContain("Weekly limit: [██████▱▱▱▱] 58% used");
-		expect(text).toContain("Ollama Cloud");
-		expect(text).toContain("Session usage: [██▱▱▱▱▱▱▱▱] 16% used · resets in 40 minutes");
-		expect(text).toContain("Weekly usage: [▱▱▱▱▱▱▱▱▱▱] 3% used · resets in 6 days");
+		expect(stripAnsi(text)).toContain("ChatGPT Codex · Plan: Pro");
+		expect(stripAnsi(text)).toContain("Weekly limit: [██████░░░░] 58% used");
+		expect(stripAnsi(text)).toContain("Ollama Cloud");
+		expect(stripAnsi(text)).toContain("Session usage: [██░░░░░░░░] 16% used · resets in 40 minutes");
+		expect(stripAnsi(text)).toContain("Weekly usage: [░░░░░░░░░░] 3% used · resets in 6 days");
 		expect(level).toBe("info");
 	});
 
@@ -231,7 +232,7 @@ describe("/usage (unified) and the usage tools", () => {
 		const result = await tool.execute("call", { action: "status" }, ctx.signal);
 		expect(probeOllama).toHaveBeenCalledTimes(before);
 		expect(result.content[0].text).toContain("Ollama Cloud");
-		expect(result.content[0].text).toContain("Weekly usage: [▱▱▱▱▱▱▱▱▱▱] 3% used");
+		expect(result.content[0].text).toContain("Weekly usage: [░░░░░░░░░░] 3% used");
 		expect(result.details).toMatchObject({ session: { usedPercent: 16.2 } });
 	});
 
