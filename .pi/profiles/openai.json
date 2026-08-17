@@ -10,12 +10,12 @@
       "normal": {
         "provider": "github-copilot",
         "modelId": "gpt-5.6-sol",
-        "thinkingLevel": "xhigh",
+        "thinkingLevel": "medium",
         "contextWindow": 256000
       },
       "plan": {
-        "provider": "github-copilot",
-        "modelId": "gpt-5.6-sol",
+        "provider": "ollama",
+        "modelId": "deepseek-v4-flash:0731-cloud",
         "thinkingLevel": "xhigh",
         "contextWindow": 256000
       }
@@ -37,6 +37,6 @@
     }
   },
   "configProfiles": {
-    "active": "work"
+    "active": "default"
   }
 }
