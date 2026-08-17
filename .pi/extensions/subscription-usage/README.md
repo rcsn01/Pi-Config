@@ -1,6 +1,6 @@
-# ChatGPT Codex Analytics for Pi
+# ChatGPT Codex Quota for Pi
 
-This extension will read the authenticated JSON request behind [ChatGPT Codex Analytics](https://chatgpt.com/codex/cloud/settings/analytics) and expose it through `/usage`.
+A minimal extension that shows the ChatGPT Codex plan and weekly rate-limit usage through `/usage`. It reads the authenticated JSON request behind Codex's own `/status` card: a single `GET /backend-api/wham/usage` (the same endpoint Codex's `BackendClient` uses) rendered as **Plan, Weekly limit (+ reset time), and rate-limit reset credits**.
 
 ## Step 1: authentication
 
@@ -17,45 +17,38 @@ Run:
 /usage auth status
 ```
 
-The command checks that the file and required fields exist, detects an expired JWT when possible, and validates the credential against ChatGPT's authenticated Codex quota endpoint. That endpoint is used only as an authentication smoke test, not as the analytics data source.
-
-If authentication is missing, invalid, expired, or rejected, run:
+The command inspects the auth file only (no network): it checks that the file and required fields exist and detects an expired JWT when possible. Live validation happens when `/usage` actually fetches. If authentication is missing, invalid, expired, or rejected, run:
 
 ```bash
 codex login
 ```
 
-## Step 2: endpoint probe
-
-An isolated browser capture confirmed that the Analytics page makes authenticated `GET` requests to:
-
-- `/backend-api/wham/usage`
-- `/backend-api/wham/usage/daily-token-usage-breakdown`
-- `/backend-api/wham/analytics/daily-workspace-usage-counts`
-- `/backend-api/wham/analytics/daily-skill-usage-metrics`
-- `/backend-api/wham/analytics/daily-plugin-usage-metrics`
-- `/backend-api/wham/usage/credit-usage-events`
-
-The dated endpoints use an inclusive 30-day UTC range and `group_by=day`; workspace, skill, and plugin requests use `workspace_user=true`. The Codex CLI bearer token and account ID are sufficient—browser cookies and browser profile access are not required after discovery.
-
-Run:
-
-```text
-/usage probe
-```
-
-The probe reports authentication rejection, endpoint availability, invalid JSON, oversized responses, or an unrecognized response contract without including credentials or response bodies in errors.
-
 ## Usage
 
 ```text
-/usage                 # refresh and show the last 30 inclusive UTC days
-/usage 7               # refresh and show the last 7 days
-/usage refresh 90      # refresh and show the last 90 days
-/usage probe           # check all captured endpoint contracts
-/usage auth status     # validate the Codex CLI credential
+/usage               # show the cached quota if fresh (<15 min), else fetch and show
+/usage refresh       # always fetch from ChatGPT and show
+/usage probe         # single-endpoint contract check (diagnostic if the contract drifts)
+/usage auth status   # inspect the Codex CLI auth file (no network)
 ```
 
-The dashboard includes the subscription plan and quota windows, credit balance, aggregate token/thread/turn usage, usage by model and client, product surfaces, skills, plugins, daily workspace totals, and credit events returned by ChatGPT. Empty sections are shown explicitly rather than guessed.
+The output is compact, mirroring Codex's own display semantics:
 
-The `subscription_usage` tool exposes the same normalized, identity-free analytics to the agent. `status` reuses the latest in-memory snapshot when one exists; `refresh` queries ChatGPT. No raw response, account ID, user ID, email, browser cookie, access token, or refresh token is persisted or returned.
+```text
+ChatGPT Codex · Plan: Pro
+Weekly limit: 58% used · resets 14:30 on 24 Aug
+Rate-limit reset credits: 1 available
+```
+
+- The weekly window is the one Codex labels `weekly` (primary or secondary), falling back to the secondary window; a snapshot older than 15 minutes is marked `(stale)`.
+- Reset times use Codex's format: `HH:MM` when the reset falls today, otherwise `HH:MM on %-d %b`.
+- Plan names are remapped like Codex's status card (Team → Business, Business → Enterprise, Pro Lite, Enterprise (Automation)).
+- Rows are omitted when absent: no window renders `Weekly limit: unavailable`, and no reset-credits field omits the row.
+
+The `subscription_usage` tool exposes the same quota to the agent. `status` reuses the latest in-memory snapshot when it is fresh; `refresh` queries ChatGPT. No raw response, account ID, user ID, email, browser cookie, access token, or refresh token is persisted or returned.
+
+## Scope
+
+Kept: plan, weekly limit + reset time, rate-limit reset credits, 15-minute staleness, cache-or-refresh.
+
+Dropped: daily-token/workspace/skill/plugin analytics, credit events, 30-day history, credits balance, spend control, additional rate limits, and the 5h/daily window rows.
