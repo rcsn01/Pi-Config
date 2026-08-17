@@ -26,3 +26,18 @@ Run the setup script and enter the path to each project you want to link:
 - Windows: `.\setup-projects.ps1`
 
 This links the project's `.pi` directory to this repo's `.pi`, so it picks up the shared configuration.
+
+## Settings profiles
+
+Complete project settings profiles live at `.pi/profiles/<name>.json`. A profile is a full settings document: switching profiles replaces `.pi/settings.json` rather than merging keys from multiple files.
+
+Use:
+
+- `/profile` to choose a profile interactively.
+- `/profile <name>` to switch directly.
+
+To create a profile, copy an existing file in `.pi/profiles`, rename the copy, and edit its settings. Edit the active profile through `.pi/settings.json`; changes made there—including changes from `/model`, `/subagents`, and `/settings`—are automatically written back to the active profile. Inactive profile files may be edited directly.
+
+The `configProfiles.active` field is reserved for the profile extension. It identifies the active profile and is normalized during a switch while other settings and other fields under `configProfiles` are preserved.
+
+Switching writes back the outgoing settings, replaces the complete active document, and reloads Pi's resources while retaining the current conversation. The model already selected in the current session remains session-bound; a switched profile's startup model applies to fresh sessions.

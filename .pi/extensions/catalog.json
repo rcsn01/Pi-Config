@@ -1,6 +1,13 @@
 {
 	"version": 1,
 	"extensions": {
+		"config-profiles": {
+			"displayName": "Settings Profiles",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"config-personality": {
 			"displayName": "Personality",
 			"pack": "extras",
