@@ -25,6 +25,7 @@ export interface RunSubagentOptions {
 	thinkingLevel?: AgentThinkingLevel;
 	timeoutMs?: number;
 	maxOutputBytes?: number;
+	cacheAffinitySeed?: string;
 	onProgress?: (event: WorkflowSubagentProgressEvent, progress?: AgentProgress) => void | Promise<void>;
 }
 
@@ -35,6 +36,7 @@ export interface RunSubagentsParallelOptions {
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	maxOutputBytes?: number;
+	cacheAffinitySeed?: string;
 	onProgress?: (index: number, event: WorkflowSubagentProgressEvent, progress?: AgentProgress) => void | Promise<void>;
 }
 
@@ -58,7 +60,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<AgentRes
 	let recentToolCount = 0;
 	let lastMessage = "";
 	try {
-		const result = await requireSubagentService().runSubagent({ agent, task: options.prompt, cwd: options.cwd, signal: options.signal, model: options.model, thinkingLevel: options.thinkingLevel, timeoutMs: options.timeoutMs, maxOutputBytes: options.maxOutputBytes, onUpdate: (progress) => {
+		const result = await requireSubagentService().runSubagent({ agent, task: options.prompt, cwd: options.cwd, signal: options.signal, model: options.model, thinkingLevel: options.thinkingLevel, timeoutMs: options.timeoutMs, maxOutputBytes: options.maxOutputBytes, cacheAffinitySeed: options.cacheAffinitySeed, onUpdate: (progress) => {
 			if (progress.currentTool && (progress.currentTool !== lastTool || progress.currentToolArgs !== lastToolArgs)) {
 				lastTool = progress.currentTool;
 				lastToolArgs = progress.currentToolArgs;
@@ -95,6 +97,7 @@ export async function runSubagentsParallel(options: RunSubagentsParallelOptions)
 		signal: options.signal,
 		timeoutMs: options.timeoutMs,
 		maxOutputBytes: options.maxOutputBytes,
+		cacheAffinitySeed: options.cacheAffinitySeed,
 		onUpdate: (index, result) => {
 			void options.onProgress?.(index, { type: result.exitCode === 0 ? "completed" : "failed", agent: result.agent, result, error: result.progress?.error || result.output } as any, result.progress);
 		},

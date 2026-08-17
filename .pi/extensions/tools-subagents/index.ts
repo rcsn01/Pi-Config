@@ -118,6 +118,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const cwd = ctx.cwd;
+			const cacheAffinitySeed = ctx.sessionManager.getSessionId();
 			configStore.rememberMainModel(ctx.model);
 			const agents = registry.load();
 
@@ -172,6 +173,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 						task: t.task,
 						cwd: t.cwd ?? cwd,
 						signal,
+						cacheAffinitySeed,
 						onUpdate: (progress) => {
 							allResults[idx].progress = progress;
 							fireParallelUpdate();
@@ -219,6 +221,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 					task: params.task,
 					cwd: params.cwd ?? cwd,
 					signal,
+					cacheAffinitySeed,
 					onUpdate: (progress) => {
 						liveResult.progress = progress;
 						onUpdate?.({

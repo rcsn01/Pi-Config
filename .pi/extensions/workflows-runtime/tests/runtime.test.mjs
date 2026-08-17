@@ -44,7 +44,7 @@ function registerFakeSubagents(respond) {
     async runSubagent(options) {
       const agent = typeof options.agent === 'string' ? options.agent : options.agent.name;
       const task = options.task || options.prompt || '';
-      calls.push({ agent, task });
+      calls.push({ agent, task, cacheAffinitySeed: options.cacheAffinitySeed });
       const output = await respond({ agent, task, cwd: options.cwd, calls });
       const progress = {
         agent,
@@ -86,7 +86,7 @@ async function runBundledWorkflow(cwd, runId, workflow) {
   const state = await store.initialize(entry, 'verify this subject', path.join(cwd, `${workflow.name}.ts`));
   const result = await runner.runPreparedWorkflow(
     {},
-    { cwd, signal: new AbortController().signal, ui: { setStatus() {} } },
+    { cwd, signal: new AbortController().signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } },
     { entry, workflow, store, state, resume: false },
   );
   return { result, store, state: await runStore.readRunState(cwd, runId) };
@@ -256,7 +256,7 @@ test('resume records replay, reuses completed keys, and restart invalidates depe
       },
     });
     const state = await store.initialize(entry, 'args', path.join(cwd, 'source.ts'));
-    const context = { cwd, signal: new AbortController().signal, ui: { setStatus() {} } };
+    const context = { cwd, signal: new AbortController().signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } };
     const prepared = { entry, workflow, store, state, resume: false };
     assert.equal(await runner.runPreparedWorkflow({}, context, prepared), 1);
     assert.equal(await runner.runPreparedWorkflow({}, context, { ...prepared, state: await runStore.readRunState(cwd, store.runId), resume: true }), 1);
@@ -301,7 +301,7 @@ test('abort marks the run stopped and preserves completed keyed results', async 
     const state = await store.initialize(entry, 'args', path.join(cwd, 'source.ts'));
     const running = runner.runPreparedWorkflow(
       {},
-      { cwd, signal: controller.signal, ui: { setStatus() {} } },
+      { cwd, signal: controller.signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } },
       { entry, workflow, store, state, resume: false },
     );
     await waitingStepStarted;
@@ -336,6 +336,7 @@ test('fan-out workflow plans independent work, runs workers, verifies, and synth
     assert.equal(run.result, 'Synthesized verified answer');
     assert.equal(run.state.status, 'completed');
     assert.equal(run.state.agentsCompleted, 5);
+    assert.ok(fake.calls.every((call) => call.cacheAffinitySeed === 'workflow-main-session'));
     assert.deepEqual(Object.keys(run.state.agents).sort(), [
       'plan-work-items',
       'synthesize-final',

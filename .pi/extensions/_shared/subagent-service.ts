@@ -61,6 +61,8 @@ export interface RunSubagentOptions {
 	maxOutputBytes?: number;
 	model?: string;
 	thinkingLevel?: AgentThinkingLevel;
+	/** Main-session namespace used only to derive an isolated child cache-affinity ID. */
+	cacheAffinitySeed?: string;
 	onUpdate?: (progress: AgentProgress) => void;
 	onProgress?: (event: SubagentProgressEvent, progress?: AgentProgress) => void | Promise<void>;
 }
@@ -72,6 +74,8 @@ export interface RunSubagentsParallelOptions {
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	maxOutputBytes?: number;
+	/** Main-session namespace shared by every child in this parallel invocation. */
+	cacheAffinitySeed?: string;
 	onUpdate?: (index: number, result: AgentResult) => void;
 	onProgress?: (index: number, event: SubagentProgressEvent, progress?: AgentProgress) => void | Promise<void>;
 }

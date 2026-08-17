@@ -54,6 +54,7 @@ export function createParallelRunner(dependencies: ParallelRunnerDependencies = 
 				signal: options.signal,
 				timeoutMs: options.timeoutMs,
 				maxOutputBytes: options.maxOutputBytes,
+				cacheAffinitySeed: options.cacheAffinitySeed,
 				model: task.model,
 				thinkingLevel: task.thinkingLevel,
 				onProgress: (event, progress) => options.onProgress?.(index, event, progress),
