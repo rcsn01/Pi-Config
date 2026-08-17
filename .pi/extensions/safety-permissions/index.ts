@@ -21,6 +21,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { loadExecPolicy } from "../_shared/command-policy.ts";
+import { createProfileStore } from "../config-profiles/profile-store.ts";
 import { createApprovalService } from "./approvals.ts";
 import { registerPermissionCommands, type CommandService, type DeniedAction } from "./commands.ts";
 import {
@@ -66,6 +67,8 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Status display ─────────────────────────────────────────────────
 
+	const profileStore = createProfileStore();
+
 	function updateStatus(ctx: ExtensionContext) {
 		const modeLabels: Record<string, string> = {
 			"read-only": "READ-ONLY",
@@ -73,7 +76,14 @@ export default function (pi: ExtensionAPI) {
 			"auto-review": "AUTO-REVIEW",
 			"full-access": "FULL ACCESS",
 		};
-		ctx.ui.setStatus("approval-mode", modeLabels[mode.mode]);
+		let label = modeLabels[mode.mode];
+		try {
+			const profile = profileStore.getActiveProfile();
+			if (profile) label = `${profile} · ${label}`;
+		} catch {
+			// settings.json may be temporarily invalid; show the mode alone.
+		}
+		ctx.ui.setStatus("approval-mode", label);
 	}
 
 	// ── Approval service (user + guardian flows) ───────────────────────
