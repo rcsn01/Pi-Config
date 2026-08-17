@@ -86,9 +86,9 @@ describe("/usage (unified) and the usage tools", () => {
 		expect(probeOllama).toHaveBeenCalledTimes(1);
 		const [text, level] = notify.mock.calls[0];
 		expect(text).toContain("ChatGPT Codex · Plan: Pro");
-		expect(text).toContain("Weekly limit: [▰▰▰▰▰▰▱▱▱▱] 58% used");
+		expect(text).toContain("Weekly limit: [██████▱▱▱▱] 58% used");
 		expect(text).toContain("Ollama Cloud");
-		expect(text).toContain("Session usage: [▰▰▱▱▱▱▱▱▱▱] 16% used · resets in 40 minutes");
+		expect(text).toContain("Session usage: [██▱▱▱▱▱▱▱▱] 16% used · resets in 40 minutes");
 		expect(text).toContain("Weekly usage: [▱▱▱▱▱▱▱▱▱▱] 3% used · resets in 6 days");
 		expect(level).toBe("info");
 	});

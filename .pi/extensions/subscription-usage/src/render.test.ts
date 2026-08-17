@@ -25,7 +25,7 @@ describe("compact quota rendering", () => {
 	it("renders plan, weekly limit with reset, and reset credits", () => {
 		const text = formatQuotaText(snapshot, new Date("2026-08-17T10:00:00.000Z"));
 		expect(text).toContain("ChatGPT Codex · Plan: Pro");
-		expect(text).toContain("Weekly limit: [▰▰▰▰▰▰▱▱▱▱] 58% used");
+		expect(text).toContain("Weekly limit: [██████▱▱▱▱] 58% used");
 		expect(text).toContain("resets ");
 		expect(text).toContain("Rate-limit reset credits: 1 available · 2 applicable");
 		expect(text).not.toContain("(stale)");

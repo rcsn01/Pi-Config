@@ -40,11 +40,11 @@ Plain `/usage` shows both, one block per provider; a failing provider is reporte
 
 ```text
 ChatGPT Codex · Plan: Pro
-Weekly limit: [▰▰▰▰▰▰▱▱▱▱] 58% used · resets 14:30 on 24 Aug
+Weekly limit: [██████▱▱▱▱] 58% used · resets 14:30 on 24 Aug
 Rate-limit reset credits: 1 available
 
 Ollama Cloud
-Session usage: [▰▰▱▱▱▱▱▱▱▱] 16% used · resets in 40 minutes
+Session usage: [██▱▱▱▱▱▱▱▱] 16% used · resets in 40 minutes
 Weekly usage: [▱▱▱▱▱▱▱▱▱▱] 3% used · resets in 6 days
 ```
 
