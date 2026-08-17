@@ -50,10 +50,10 @@ Weekly usage: [░░░░░░░░░░] 3% used · resets in 6 days
 
 Usage bars use solid boxes (`█`) for the filled share and light-shade boxes
 (`░`) for the empty track. At the notify boundary the output is ANSI-styled
-for the TUI: header lines render bold bright white, bars bold bright yellow,
-and the `N% used` share bold. The plain-text render functions and the
-LLM-facing tools (`subscription_usage`, `ollama_usage`) are unaffected;
-`stripAnsi()` in `style.ts` recovers the unstyled text.
+for the TUI: header lines and bars render bold bright white, and the
+`N% used` share bold. The plain-text render functions and the LLM-facing
+tools (`subscription_usage`, `ollama_usage`) are unaffected; `stripAnsi()`
+in `style.ts` recovers the unstyled text.
 
 - Codex semantics mirror Codex's own display: the weekly window is the one Codex labels `weekly` (primary or secondary), falling back to the secondary window; reset times use `HH:MM` today, otherwise `HH:MM on %-d %b`; plan names are remapped like Codex's status card (Team → Business, Business → Enterprise, Pro Lite, Enterprise (Automation)).
 - Ollama semantics mirror the live `/api/usage` contract: `limits.session.usage` / `limits.weekly.usage` are fractions of the window limit (`0.162` → `16%`); the `session_usage`/`weekly_usage` shape proposed in ollama/ollama#16448 is still accepted defensively. The endpoint exposes no reset timestamps, so the countdowns are derived from real anchors where possible: the **weekly** countdown is computed relative to the API's own week boundary — `activity.period.starting_at` (Monday 00:00 UTC in practice), with boundaries repeating every 7 days from that instant — falling back to local Monday 00:00 when the anchor is absent. The **session** countdown mirrors the web UI's observed full-hour alignment (40 minutes at twenty past the hour) and is computed at render time. A proposal-shape `resets_in` value wins when present.

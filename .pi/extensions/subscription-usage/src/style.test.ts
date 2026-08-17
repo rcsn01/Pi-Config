@@ -15,7 +15,7 @@ describe("usage text styling", () => {
 	it("styles headers, bars, and percents without changing the plain text", () => {
 		const styled = styleUsageText(SAMPLE);
 		expect(styled).toContain("\x1b[97m\x1b[1mChatGPT Codex · Plan: Pro\x1b[0m");
-		expect(styled).toContain("\x1b[93m\x1b[1m[██████░░░░]\x1b[0m");
+		expect(styled).toContain("\x1b[97m\x1b[1m[██████░░░░]\x1b[0m");
 		expect(styled).toContain("\x1b[1m58% used\x1b[0m");
 		expect(styled).toContain("\x1b[1m16% used\x1b[0m");
 		expect(styled).toContain("\x1b[1m3% used\x1b[0m");
