@@ -157,8 +157,8 @@ describe("Ollama usage request contract", () => {
 			state: "ok",
 			fetchedAt: "2026-08-17T12:00:00.000Z",
 			snapshot: {
-				session: { usedPercent: 16.1 },
-				weekly: { usedPercent: 2.8 },
+				session: { usedPercent: 16.1, resetsIn: "~5 hours" },
+				weekly: { usedPercent: 2.8, resetsIn: "7 days" },
 				fetchedAt: "2026-08-17T12:00:00.000Z",
 			},
 		});

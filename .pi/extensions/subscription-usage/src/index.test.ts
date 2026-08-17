@@ -37,8 +37,8 @@ const okOllamaResult: Extract<UsageProbeResult, { state: "ok" }> = {
 	state: "ok",
 	fetchedAt: "2026-08-17T12:00:00.000Z",
 	snapshot: {
-		session: { usedPercent: 16.2 },
-		weekly: { usedPercent: 2.9 },
+		session: { usedPercent: 16.2, resetsIn: "~5 hours" },
+		weekly: { usedPercent: 2.9, resetsIn: "7 days" },
 		fetchedAt: "2026-08-17T12:00:00.000Z",
 	},
 };
@@ -78,8 +78,8 @@ describe("/usage (unified) and the usage tools", () => {
 		expect(text).toContain("ChatGPT Codex · Plan: Pro");
 		expect(text).toContain("Weekly limit: 58% used");
 		expect(text).toContain("Ollama Cloud");
-		expect(text).toContain("Session usage: 16% used");
-		expect(text).toContain("Weekly usage: 3% used");
+		expect(text).toContain("Session usage: 16% used · resets in ~5 hours");
+		expect(text).toContain("Weekly usage: 3% used · resets in 7 days");
 		expect(level).toBe("info");
 	});
 
