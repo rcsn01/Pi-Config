@@ -45,3 +45,17 @@ Run:
 ```
 
 The probe reports authentication rejection, endpoint availability, invalid JSON, oversized responses, or an unrecognized response contract without including credentials or response bodies in errors.
+
+## Usage
+
+```text
+/usage                 # refresh and show the last 30 inclusive UTC days
+/usage 7               # refresh and show the last 7 days
+/usage refresh 90      # refresh and show the last 90 days
+/usage probe           # check all captured endpoint contracts
+/usage auth status     # validate the Codex CLI credential
+```
+
+The dashboard includes the subscription plan and quota windows, credit balance, aggregate token/thread/turn usage, usage by model and client, product surfaces, skills, plugins, daily workspace totals, and credit events returned by ChatGPT. Empty sections are shown explicitly rather than guessed.
+
+The `subscription_usage` tool exposes the same normalized, identity-free analytics to the agent. `status` reuses the latest in-memory snapshot when one exists; `refresh` queries ChatGPT. No raw response, account ID, user ID, email, browser cookie, access token, or refresh token is persisted or returned.
