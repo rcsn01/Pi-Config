@@ -9,6 +9,13 @@ A runtime mode of default means Plan Mode is inactive.
 When asked about the current mode, answer from the final runtime marker.
 </plan_mode_policy>`;
 
+export const DEFAULT_MODE_PROMPT = `
+
+<default_mode>
+Plan Mode is inactive for this turn. Normal execution is allowed.
+Do not refuse work on the grounds that Plan Mode is active.
+</default_mode>`;
+
 export const PLAN_MODE_PROMPT = `
 
 <collaboration_mode>
@@ -96,9 +103,11 @@ export function runtimeModeMarker(state: AgentModeState): string {
 export function stripGeneratedModeContext(systemPrompt: string): string {
 	return systemPrompt
 		.replaceAll(MODE_POLICY_PROMPT, "")
+		.replaceAll(DEFAULT_MODE_PROMPT, "")
 		.replaceAll(PLAN_MODE_PROMPT, "")
 		.replace(/\n*<plan_mode_policy>[\s\S]*?<\/plan_mode_policy>/g, "")
 		.replace(/\n*<mode_policy>\s*The final runtime mode marker is authoritative[\s\S]*?<\/mode_policy>/g, "")
+		.replace(/\n*<default_mode>[\s\S]*?<\/default_mode>/g, "")
 		.replace(/\n*<collaboration_mode>\s*# Plan Mode \(Conversational\)[\s\S]*?<\/collaboration_mode>/g, "")
 		.replace(/\n*<plan_review_state>[\s\S]*?<\/plan_review_state>/g, "")
 		.replace(/\n*<plan_mode_state>[\s\S]*?<\/plan_mode_state>/g, "")
@@ -112,7 +121,7 @@ export interface PlanPromptSnapshot extends AgentModeState {
 /** Build the complete generated context with exactly one final runtime marker. */
 export function buildPlanModeSystemPrompt(systemPrompt: string, snapshot: PlanPromptSnapshot): string {
 	const stablePrompt = stripGeneratedModeContext(systemPrompt) + MODE_POLICY_PROMPT;
-	if (!isPlanMode(snapshot)) return stablePrompt + runtimeModeMarker(snapshot);
+	if (!isPlanMode(snapshot)) return stablePrompt + DEFAULT_MODE_PROMPT + runtimeModeMarker(snapshot);
 	const reviewPrompt = snapshot.phase === "awaiting_review" ? REVIEW_STATE_PROMPT : "";
 	return stablePrompt + PLAN_MODE_PROMPT + reviewPrompt + runtimeModeMarker(snapshot);
 }
