@@ -1,5 +1,5 @@
-import { isUsageStale } from "./usage.ts";
-import type { UsageSnapshot } from "./types.ts";
+import { isUsageStale } from "./ollama-usage.ts";
+import type { UsageSnapshot } from "./ollama-types.ts";
 
 function windowLine(label: string, window: { usedPercent: number; resetsIn?: string }): string {
 	const used = `${Math.round(window.usedPercent)}% used`;
