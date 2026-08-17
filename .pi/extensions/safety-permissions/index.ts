@@ -13,7 +13,7 @@
  * This module wires together the focused policy modules:
  *   - permission-policy.ts  — pure evaluateToolCall decision seam
  *   - path-policy.ts        — tool/path tables and extraction
- *   - guardian-runner.ts    — guardian subprocess + verdict parsing
+ *   - guardian-runner.ts    — guardian in-process session + verdict parsing
  *   - approvals.ts          — user + guardian approval flows
  *   - mode-store.ts         — approval-mode persistence
  *   - commands.ts           — /permissions, /approve, /execpolicy
