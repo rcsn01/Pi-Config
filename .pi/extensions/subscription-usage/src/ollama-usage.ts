@@ -46,13 +46,10 @@ function windowOf(value: unknown): UsageWindow | undefined {
 
 // The live contract exposes no reset timestamps (verified against the real
 // endpoint; see also ollama/ollama#16448 and fgrehm/pi-ollama-cloud#42). The
-// web UI instead shows the nominal window durations: the session window
-// resets roughly every 5 hours and the weekly window every 7 days. Those are
-// mirrored here; a proposal-shape `resets_in` value would take precedence.
-const SESSION_RESETS_IN = "~5 hours";
-const WEEKLY_RESETS_IN = "7 days";
-
-function limitsWindowOf(value: unknown, resetsIn: string): UsageWindow | undefined {
+// reset countdowns are instead derived from the web UI's observed alignment
+// in ollama-render.ts: session windows reset on the full hour, weekly windows
+// at the start of the local week.
+function limitsWindowOf(value: unknown): UsageWindow | undefined {
 	const source = record(value);
 	if (!source) return undefined;
 	const usage = finite(source.usage);
@@ -60,15 +57,15 @@ function limitsWindowOf(value: unknown, resetsIn: string): UsageWindow | undefin
 	// Live contract: usage is a fraction of the limit (0.161 → 16.1%).
 	// Values above 1 are treated as already-percentage defensively.
 	const usedPercent = usage <= 1 ? Math.round(usage * 100 * 10) / 10 : Math.round(usage * 10) / 10;
-	return { usedPercent, resetsIn };
+	return { usedPercent };
 }
 
 export function normalizeUsage(payload: unknown, fetchedAt: string): UsageSnapshot | undefined {
 	const root = record(payload);
 	if (!root) return undefined;
 	const limits = record(root.limits);
-	const session = windowOf(root.session_usage) ?? limitsWindowOf(limits?.session, SESSION_RESETS_IN);
-	const weekly = windowOf(root.weekly_usage) ?? limitsWindowOf(limits?.weekly, WEEKLY_RESETS_IN);
+	const session = windowOf(root.session_usage) ?? limitsWindowOf(limits?.session);
+	const weekly = windowOf(root.weekly_usage) ?? limitsWindowOf(limits?.weekly);
 	if (!session && !weekly) return undefined;
 	const plan = typeof root.plan === "string" && root.plan.trim() ? root.plan.trim() : undefined;
 	return {

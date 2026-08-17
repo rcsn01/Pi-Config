@@ -38,8 +38,8 @@ describe("usage snapshot normalization", () => {
 		}, "2026-08-17T12:00:00.000Z")!;
 
 		expect(snapshot).toEqual({
-			session: { usedPercent: 16.1, resetsIn: "~5 hours" },
-			weekly: { usedPercent: 2.8, resetsIn: "7 days" },
+			session: { usedPercent: 16.1 },
+			weekly: { usedPercent: 2.8 },
 			fetchedAt: "2026-08-17T12:00:00.000Z",
 		});
 		expect(JSON.stringify(snapshot)).not.toContain("deepseek");
@@ -50,7 +50,7 @@ describe("usage snapshot normalization", () => {
 		const snapshot = normalizeUsage({
 			limits: { weekly: { usage: 42 } },
 		}, "2026-08-17T12:00:00.000Z")!;
-		expect(snapshot.weekly).toEqual({ usedPercent: 42, resetsIn: "7 days" });
+		expect(snapshot.weekly).toEqual({ usedPercent: 42 });
 	});
 
 	it("omits rows for windows that lack a usable percentage", () => {
