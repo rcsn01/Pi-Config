@@ -57,7 +57,7 @@ function harness(options: {
 	const probeOllama = vi.fn(async (_options?: { signal?: AbortSignal }) => options.probeOllamaResult ?? okOllamaResult);
 	const inspect = vi.fn(async () => options.inspection ?? readyInspection);
 	const inspectOllama = vi.fn(async () => options.inspectionOllama ?? readyOllamaInspection);
-	createSubscriptionUsageExtension({ probe, probeOllama, inspect, inspectOllama, now: options.now })({
+	createSubscriptionUsageExtension({ probe, probeOllama, inspect, inspectOllama, now: options.now ?? FIXTURE_NOW })({
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		registerTool: (definition: any) => { tools.set(definition.name, definition); },
 	} as any);
@@ -68,6 +68,11 @@ function harness(options: {
 		ctx: { signal: controller.signal, mode: "rpc", hasUI: true, ui: { notify } },
 	};
 }
+
+// The probe fixtures carry a fixed fetchedAt (12:00:00Z); pin the default
+// clock to that instant so cache-freshness assertions are deterministic
+// instead of depending on the wall clock.
+const FIXTURE_NOW = () => new Date("2026-08-17T12:00:00.000Z");
 
 describe("/usage (unified) and the usage tools", () => {
 	it("shows both providers on a plain /usage", async () => {
@@ -81,10 +86,10 @@ describe("/usage (unified) and the usage tools", () => {
 		expect(probeOllama).toHaveBeenCalledTimes(1);
 		const [text, level] = notify.mock.calls[0];
 		expect(text).toContain("ChatGPT Codex · Plan: Pro");
-		expect(text).toContain("Weekly limit: 58% used");
-			expect(text).toContain("Ollama Cloud");
-		expect(text).toContain("Session usage: 16% used · resets in 40 minutes");
-		expect(text).toContain("Weekly usage: 3% used · resets in 6 days");
+		expect(text).toContain("Weekly limit: [██████░░░░] 58% used");
+		expect(text).toContain("Ollama Cloud");
+		expect(text).toContain("Session usage: [██░░░░░░░░] 16% used · resets in 40 minutes");
+		expect(text).toContain("Weekly usage: [░░░░░░░░░░] 3% used · resets in 6 days");
 		expect(level).toBe("info");
 	});
 
@@ -226,7 +231,7 @@ describe("/usage (unified) and the usage tools", () => {
 		const result = await tool.execute("call", { action: "status" }, ctx.signal);
 		expect(probeOllama).toHaveBeenCalledTimes(before);
 		expect(result.content[0].text).toContain("Ollama Cloud");
-		expect(result.content[0].text).toContain("Weekly usage: 3% used");
+		expect(result.content[0].text).toContain("Weekly usage: [░░░░░░░░░░] 3% used");
 		expect(result.details).toMatchObject({ session: { usedPercent: 16.2 } });
 	});
 

@@ -1,4 +1,5 @@
 import { isUsageStale } from "./ollama-usage.ts";
+import { usageBar } from "./bar.ts";
 import type { UsageSnapshot } from "./ollama-types.ts";
 
 // The /api/usage contract exposes no reset timestamps, so the countdowns
@@ -40,7 +41,7 @@ export function weeklyResetsIn(now = new Date(), weekStartsAt?: string): string 
 }
 
 function windowLine(label: string, usedPercent: number, resetsIn: string): string {
-	return `${label}: ${Math.round(usedPercent)}% used · resets in ${resetsIn}`;
+	return `${label}: ${usageBar(usedPercent)} ${Math.round(usedPercent)}% used · resets in ${resetsIn}`;
 }
 
 export function formatUsageText(snapshot: UsageSnapshot, now = new Date()): string {
