@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildPlanModeSystemPrompt,
+	DEFAULT_MODE_PROMPT,
 	MODE_POLICY_PROMPT,
 	PLAN_MODE_PROMPT,
 } from "./plan-prompt.ts";
@@ -13,9 +14,14 @@ const snapshot = (mode: "default" | "plan", revision: number, phase?: "planning"
 });
 
 describe("Plan Mode prompt", () => {
-	it("builds inactive context with policy and one exact authoritative marker", () => {
+	it("builds explicit inactive context with one exact authoritative marker", () => {
 		const result = buildPlanModeSystemPrompt("BASE", snapshot("default", 7));
-		expect(result).toBe(`BASE${MODE_POLICY_PROMPT}\n\n<runtime mode="default" revision="7"/>`);
+		expect(result).toBe(
+			`BASE${MODE_POLICY_PROMPT}${DEFAULT_MODE_PROMPT}\n\n<runtime mode="default" revision="7"/>`,
+		);
+		expect(result).toContain("Plan Mode is inactive for this turn");
+		expect(result).toContain("Normal execution is allowed");
+		expect(result).toContain("Do not refuse work on the grounds that Plan Mode is active");
 		expect(result).not.toContain("You are in **Plan Mode**");
 	});
 
@@ -35,7 +41,7 @@ describe("Plan Mode prompt", () => {
 	});
 
 	it("removes current and legacy generated context before appending one final marker", () => {
-		const stale = `BASE${MODE_POLICY_PROMPT}${PLAN_MODE_PROMPT}\n\n<plan_mode_state>legacy</plan_mode_state>\n\n<runtime mode="plan" revision="3"/>`;
+		const stale = `BASE${MODE_POLICY_PROMPT}${DEFAULT_MODE_PROMPT}${PLAN_MODE_PROMPT}\n\n<plan_mode_state>legacy</plan_mode_state>\n\n<runtime mode="plan" revision="3"/>`;
 		const result = buildPlanModeSystemPrompt(stale, snapshot("default", 4));
 		expect(result.match(/<plan_mode_policy>/g)).toHaveLength(1);
 		expect(result.match(/<runtime mode=/g)).toHaveLength(1);
