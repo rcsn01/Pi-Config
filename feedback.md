@@ -2,24 +2,20 @@
 
 Research notes on what users consistently praise about the three major terminal coding agents. Compiled from Hacker News threads, Reddit, and hands-on reviews (2025–2026). Useful as a reference for pi feature ideas.
 
+> Status: features pi already implements (built-in or as an extension) are removed from this list; partial implementations are annotated with a **Pi status** note; everything else remains an open feature idea.
+
 ## Claude Code
 
 **The pair programmer.** Users describe it as fast, steerable, and deeply configurable.
 
 ### What users love
 
-- **Plan mode** — read-only research and proposal before any edit. Repeatedly called the killer feature: "The ability to switch from plan mode to execution mode and back is huge." Users say it's why people fall in love with Claude Code.
-- **CLAUDE.md project memory** — persistent project context loaded every session. Practitioners report it works best as short, hard constraints ("never create a user without calling the provision step"), not architecture essays.
-- **Subagents with isolated context windows** — side work runs in a fresh window and only a summary returns. "Subagents are granted their own context window, so they don't spill over into your context window" — widely cited as the right pattern for keeping the main context clean.
 - **Hooks** — deterministic automation on lifecycle events (lint after edit, block commands). Valued because they're *enforced*, not advisory: "a hook is a rule that the system enforces."
-- **Skills** — portable markdown workflows with progressive disclosure. "Skills are the killer feature" — composable, shareable, and now an industry standard (adopted by Codex and others).
+  > **Pi status:** partial — the extension API exposes lifecycle events (`pi.on(...)`) and the bash tool has a `spawnHook` to adjust or block commands, but there is no declarative, user-configurable hooks mechanism (Claude-Code-style JSON hooks).
 - **Steerability / codebase adaptation** — "I am able to get it to write code mostly like I would've written it. It adapts to existing patterns, adjusts to the code style." Users can steer it mid-flight.
 - **Speed and interactive rhythm** — fast iteration, explain-then-act feel. "Claude Code feels like a pair programmer, whereas Codex feels like a tool you instruct precisely."
 - **Checkpoints / instant rewind** — every edit is reversible; double-Esc rewinds. Cited as a Claude Code exclusive that changes how boldly users prompt.
 - **Configurability as performance** — "the configurability of Claude Code *is* its performance advantage." Plugins, MCP, slash commands, output styles.
-- **Toggling thinking** — switch reasoning effort mid-session.
-- **`/btw`** — ask a side question while a task is running without interrupting it (users miss this most when they try Codex).
-- **Web research** — "CC seems to have better access to web and researching capabilities compared to Codex."
 
 ### Common complaints
 
@@ -35,9 +31,8 @@ Research notes on what users consistently praise about the three major terminal 
 ### What users love
 
 - **OS-level sandboxing** — Seatbelt/bubblewrap, not just app-layer guardrails. "The sandboxing story is best-in-class." Users report feeling safer running each command.
+  > **Pi status:** partial — `safety-permissions` gates risky commands, and isolated execution is documented (Gondolin micro-VM example extension, Docker, OpenShell), but no OS-level sandbox ships in this config.
 - **Token efficiency** — consistently reported at 2–4x fewer tokens than Claude Code for comparable work. "Burns roughly a quarter of the tokens Claude Code does on the same prompts."
-- **Hands-off autonomy** — long, undirected runs. "Codex is happier as a contractor you give a ticket to and check on later."
-- **`/review` built-in code reviewer** — a separate agent reviews your diff with prioritized findings. "One of those features you use once and then wire into your routine."
 - **Cloud handoff** — `codex cloud` with best-of-N attempts; the same model and AGENTS.md drive the GitHub app (auto PR review, `@codex` on issues). "The CLI-to-GitHub consistency is the piece reviewers most often single out as Codex's edge."
 - **Auto-PR creation** — clone, branch, change, test, open PR with summary. "I have not opened the GitHub web UI manually in two weeks."
 - **Value** — bundled with ChatGPT Plus; users rarely hit limits. "On Plus I can run Codex hard for an entire workday."
@@ -45,6 +40,7 @@ Research notes on what users consistently praise about the three major terminal 
 - **Pattern recognition on established codebases** — picks up middleware patterns, error handling, naming conventions without being told.
 - **Voice transcription** — hold spacebar to dictate in the TUI.
 - **Cached web search by default** — serves pre-indexed results to shrink the prompt-injection surface; a security-conscious default other agents don't ship.
+  > **Pi status:** partial — `tools-web-search` exists but queries live (DuckDuckGo); there is no cached/pre-indexed result layer.
 
 ### Common complaints
 
@@ -59,17 +55,12 @@ Research notes on what users consistently praise about the three major terminal 
 
 ### What users love
 
-- **Model freedom** — 75+ providers, switch mid-session without restarting. "True model freedom. No other terminal agent lets you swap between Claude, Gemini, DeepSeek, Qwen, or a local Ollama model mid-session." This is the defining advantage.
 - **TUI polish** — "the TUI is the repeated favorite in nearly every comparison thread." Non-flickering updates, independently scrolling sections, a sidebar with ongoing file changes, context/cost, and MCP status. "The first time I've not needed to worry about a custom statusline."
 - **Client/server architecture** — one backend drives TUI, desktop app, and IDE extensions; sessions survive terminal close; expose the server over tailscale and drive it from a phone. Multiple parallel sessions against the same project.
-- **Plan/Build mode separation** — Tab to switch; "the separation of intent and execution that Claude Code doesn't make as explicit."
-- **Custom commands with shell injection** — `!` prefix runs a shell command and injects the output into the prompt (`/review-changes`, `/pr-summary`, `/fix-types`). "The feature that made opencode feel like a tool I built for myself."
+  > **Pi status:** partial — headless RPC mode (`pi --mode rpc`, JSONL over stdin/stdout) and the `AgentSession` SDK exist, and sessions persist to disk, but there is no network-exposed daemon or shared multi-client backend.
 - **`/undo` and `/redo`** — walk back any number of agent steps. "The safety net changes how boldly I prompt."
 - **LSP integration** — loads language-server context automatically so the model knows types and errors before you explain them.
-- **Subagents and modes** — "Opencode has the best implementation of subagents and modes" — you can switch to a subagent definition as your primary mode.
 - **Local-first and inspectable** — open source, SQLite state, no company incentivized to increase token usage. "Its values align with many of my own regarding what constitutes good software."
-- **Cost control** — bring your own key, run local models at zero cost, or a $10/mo tier with open models.
-- **AGENTS.md as a cross-tool standard** — `/init` generates it; the same file works in Codex and Cursor.
 
 ### Common complaints
 
