@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isUsageStale, normalizeUsage } from "./usage.ts";
+import { isUsageStale, normalizeUsage } from "./ollama-usage.ts";
 
 describe("usage snapshot normalization", () => {
 	it("normalizes session and weekly windows with percentages and resets_in", () => {

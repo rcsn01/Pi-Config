@@ -1,6 +1,6 @@
 import { buildAuthorization, inspectOllamaAuth } from "./ollama-auth.ts";
-import { normalizeUsage } from "./usage.ts";
-import type { OllamaAuthInspection, UsageProbeResult } from "./types.ts";
+import { normalizeUsage } from "./ollama-usage.ts";
+import type { OllamaAuthInspection, UsageProbeResult } from "./ollama-types.ts";
 
 // The single usage endpoint behind the Ollama web UI's usage card.
 export const USAGE_ENDPOINT_URL = "https://ollama.com/api/usage";

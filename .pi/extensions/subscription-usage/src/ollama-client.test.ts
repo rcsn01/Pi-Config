@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { makeFixtureKey } from "./fixture-key.ts";
-import { probeUsage, USAGE_ENDPOINT_URL } from "./usage-client.ts";
-import type { OllamaAuthInspection } from "./types.ts";
+import { probeUsage, USAGE_ENDPOINT_URL } from "./ollama-client.ts";
+import type { OllamaAuthInspection } from "./ollama-types.ts";
 
 const fixture = makeFixtureKey();
 const ready: OllamaAuthInspection = {

@@ -1,4 +1,4 @@
-import type { UsageSnapshot, UsageWindow } from "./types.ts";
+import type { UsageSnapshot, UsageWindow } from "./ollama-types.ts";
 
 // Same staleness threshold pattern as the Codex quota card: a snapshot older
 // than 15 minutes is marked stale.

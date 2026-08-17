@@ -43,13 +43,6 @@
 			"requires": [],
 			"conflicts": []
 		},
-		"ollama-usage": {
-			"displayName": "Ollama Cloud Usage",
-			"pack": "observability",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
 		"safety-permissions": {
 			"displayName": "Safety Permissions",
 			"pack": "safety",

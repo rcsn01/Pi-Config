@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { OllamaAuthInspection } from "./types.ts";
+import type { OllamaAuthInspection } from "./ollama-types.ts";
 
 // The Ollama app signs ollama.com API requests with the Ed25519 key it
 // writes to ~/.ollama/id_ed25519 (ollama/auth/auth.go: defaultPrivateKey).
