@@ -20,6 +20,12 @@ export const CATEGORY_KEYS = [
 export type ContextCategory = (typeof CATEGORY_KEYS)[number];
 export type CategoryTokens = Record<ContextCategory, number>;
 
+export interface SessionTokenUsage {
+	input: number;
+	cacheRead: number;
+	output: number;
+}
+
 export interface ContextModelInput {
 	model?: { provider: string; id: string; contextWindow?: number };
 	usage?: ContextUsage;
@@ -29,6 +35,8 @@ export interface ContextModelInput {
 	activeToolNames: readonly string[];
 	allTools: readonly ToolInfo[];
 	contextEntries: readonly SessionEntry[];
+	sessionUsage: SessionTokenUsage;
+	subagentUsage: SessionTokenUsage;
 	compaction: { enabled: boolean; reserveTokens: number };
 	systemPromptOptions?: {
 		customPrompt?: string;
@@ -61,6 +69,8 @@ export interface ContextDiagnostics {
 	categories: CategoryTokens;
 	systemPromptDetails: PromptDetail[];
 	extensionTools: ExtensionToolDetail[];
+	sessionUsage: SessionTokenUsage;
+	subagentUsage: SessionTokenUsage;
 	freeSpace: number;
 	compactionReserve: number;
 	compactionThreshold: number;
@@ -319,6 +329,13 @@ export function calculateContextDiagnostics(input: ContextModelInput): ContextDi
 		categories.extensionTools,
 	);
 	const { freeSpace, compactionReserve } = calculateCapacity(contextWindow, usedTokens, input.compaction);
+	const normalizeTokenUsage = (usage: SessionTokenUsage): SessionTokenUsage => ({
+		input: safeTokenTotal(usage.input),
+		cacheRead: safeTokenTotal(usage.cacheRead),
+		output: safeTokenTotal(usage.output),
+	});
+	const sessionUsage = normalizeTokenUsage(input.sessionUsage);
+	const subagentUsage = normalizeTokenUsage(input.subagentUsage);
 	return {
 		modelId: input.model ? `${input.model.provider}/${input.model.id}` : "No active model",
 		contextWindow,
@@ -328,6 +345,8 @@ export function calculateContextDiagnostics(input: ContextModelInput): ContextDi
 		categories,
 		systemPromptDetails,
 		extensionTools,
+		sessionUsage,
+		subagentUsage,
 		freeSpace,
 		compactionReserve,
 		compactionThreshold: input.compaction.enabled
@@ -335,6 +354,14 @@ export function calculateContextDiagnostics(input: ContextModelInput): ContextDi
 			: contextWindow,
 		compactionEnabled: input.compaction.enabled,
 	};
+}
+
+function safeTokenTotal(tokens: number): number {
+	return Math.max(0, Math.round(Number.isFinite(tokens) ? tokens : 0));
+}
+
+export function formatExactTokenCount(tokens: number): string {
+	return safeTokenTotal(tokens).toLocaleString("en-US");
 }
 
 export function formatTokenCount(tokens: number): string {
