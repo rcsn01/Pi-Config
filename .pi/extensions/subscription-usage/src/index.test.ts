@@ -28,7 +28,7 @@ const okResult: Extract<QuotaProbeResult, { state: "ok" }> = {
 	fetchedAt: "2026-08-17T12:00:00.000Z",
 	snapshot: {
 		plan: "Pro",
-		weekly: { usedPercent: 58, windowMinutes: 10_080, resetsAt: "2026-08-24T14:30:00.000Z" },
+		weekly: { usedPercent: 58, windowMinutes: 10_080, resetsAt: new Date(2026, 7, 24, 14, 30).toISOString() },
 		resetCredits: { available: 1 },
 		fetchedAt: "2026-08-17T12:00:00.000Z",
 	},
@@ -87,10 +87,10 @@ describe("/usage (unified) and the usage tools", () => {
 		expect(probeOllama).toHaveBeenCalledTimes(1);
 		const [text, level] = notify.mock.calls[0];
 		expect(stripAnsi(text)).toContain("ChatGPT Codex · Plan: Pro");
-		expect(stripAnsi(text)).toContain("Weekly limit: [████████████░░░░░░░░] 58% used");
+		expect(stripAnsi(text)).toContain("Weekly limit: [████████████░░░░░░░░] 58% used · resets in 6d 17h on 24 Aug");
 		expect(stripAnsi(text)).toContain("Ollama Cloud");
-		expect(stripAnsi(text)).toContain("Session usage: [███░░░░░░░░░░░░░░░░░] 16% used · resets in 40 minutes");
-		expect(stripAnsi(text)).toContain("Weekly usage: [█░░░░░░░░░░░░░░░░░░░] 3% used · resets in 6 days");
+		expect(stripAnsi(text)).toContain("Session usage: [███░░░░░░░░░░░░░░░░░] 16% used · resets in 40m on 17 Aug");
+		expect(stripAnsi(text)).toContain("Weekly usage: [█░░░░░░░░░░░░░░░░░░░] 3% used · resets in 6d 12h on 24 Aug");
 		expect(level).toBe("info");
 	});
 
