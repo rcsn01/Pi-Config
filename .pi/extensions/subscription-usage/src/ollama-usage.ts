@@ -68,10 +68,17 @@ export function normalizeUsage(payload: unknown, fetchedAt: string): UsageSnapsh
 	const weekly = windowOf(root.weekly_usage) ?? limitsWindowOf(limits?.weekly);
 	if (!session && !weekly) return undefined;
 	const plan = typeof root.plan === "string" && root.plan.trim() ? root.plan.trim() : undefined;
+	// The activity period start is the API's own week boundary (Monday 00:00
+	// UTC in practice) and serves as the weekly reset anchor.
+	const activity = record(root.activity);
+	const period = record(activity?.period);
+	const startingAt = typeof period?.starting_at === "string" ? Date.parse(period.starting_at) : Number.NaN;
+	const weekStartsAt = Number.isFinite(startingAt) ? new Date(startingAt).toISOString() : undefined;
 	return {
 		...(plan !== undefined ? { plan } : {}),
 		...(session !== undefined ? { session } : {}),
 		...(weekly !== undefined ? { weekly } : {}),
+		...(weekStartsAt !== undefined ? { weekStartsAt } : {}),
 		fetchedAt,
 	};
 }

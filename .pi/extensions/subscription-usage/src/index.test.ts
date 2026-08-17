@@ -39,6 +39,7 @@ const okOllamaResult: Extract<UsageProbeResult, { state: "ok" }> = {
 	snapshot: {
 		session: { usedPercent: 16.2 },
 		weekly: { usedPercent: 2.9 },
+		weekStartsAt: "2026-07-27T00:00:00.000Z",
 		fetchedAt: "2026-08-17T12:00:00.000Z",
 	},
 };

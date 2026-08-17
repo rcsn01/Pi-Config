@@ -18,16 +18,32 @@ describe("session countdown (resets on the full hour)", () => {
 	});
 });
 
-describe("weekly countdown (resets at local Monday 00:00)", () => {
-	it("counts days to the next local Monday", () => {
+describe("weekly countdown (anchored to the API period start)", () => {
+	const anchor = "2026-07-27T00:00:00.000Z"; // Monday 00:00 UTC
+
+	it("counts days to the next 7-day boundary from the anchor", () => {
+		expect(weeklyResetsIn(new Date("2026-08-17T11:20:00.000Z"), anchor)).toBe("6 days"); // Monday
+		expect(weeklyResetsIn(new Date("2026-08-18T10:00:00.000Z"), anchor)).toBe("5 days"); // Tuesday
+		expect(weeklyResetsIn(new Date("2026-08-20T10:00:00.000Z"), anchor)).toBe("3 days"); // Thursday
+		expect(weeklyResetsIn(new Date("2026-08-23T23:59:00.000Z"), anchor)).toBe("1 day"); // Sunday
+	});
+
+	it("follows a non-Monday anchor and rolls over at the boundary", () => {
+		const wednesday = "2026-07-29T00:00:00.000Z";
+		expect(weeklyResetsIn(new Date("2026-08-17T11:20:00.000Z"), wednesday)).toBe("1 day"); // next Wed
+		expect(weeklyResetsIn(new Date("2026-08-19T00:00:00.000Z"), wednesday)).toBe("7 days"); // at the boundary
+	});
+
+	it("falls back to local Monday 00:00 without an anchor", () => {
 		expect(weeklyResetsIn(local(2026, 7, 17, 21, 20))).toBe("6 days"); // Monday
 		expect(weeklyResetsIn(local(2026, 7, 18, 10, 0))).toBe("5 days"); // Tuesday 10:00
 		expect(weeklyResetsIn(local(2026, 7, 20, 10, 0))).toBe("3 days"); // Thursday 10:00
 		expect(weeklyResetsIn(local(2026, 7, 23, 23, 59))).toBe("1 day"); // Sunday 23:59
 	});
 
-	it("uses the full week from Monday midnight", () => {
-		expect(weeklyResetsIn(local(2026, 7, 17, 0, 0))).toBe("7 days"); // Monday 00:00
+	it("uses the full week from the boundary instant", () => {
+		expect(weeklyResetsIn(new Date("2026-07-27T00:00:00.000Z"), anchor)).toBe("7 days");
+		expect(weeklyResetsIn(local(2026, 7, 17, 0, 0))).toBe("7 days"); // Monday 00:00, fallback
 	});
 });
 
@@ -43,6 +59,14 @@ describe("ollama usage rendering with countdowns", () => {
 		expect(text).toContain("Session usage: 16% used · resets in 40 minutes");
 		expect(text).toContain("Weekly usage: 3% used · resets in 6 days");
 		expect(text).not.toContain("(stale)");
+	});
+
+	it("computes the weekly countdown from the snapshot anchor", () => {
+		const text = formatUsageText(
+			{ ...snapshot, weekStartsAt: "2026-07-27T00:00:00.000Z" },
+			new Date("2026-08-17T11:20:00.000Z"),
+		);
+		expect(text).toContain("Weekly usage: 3% used · resets in 6 days");
 	});
 
 	it("prefers an explicit resets_in when present", () => {
