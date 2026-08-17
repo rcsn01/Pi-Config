@@ -1,4 +1,5 @@
 import { isSnapshotStale } from "./quota.ts";
+import { usageBar } from "./bar.ts";
 import type { QuotaSnapshot } from "./types.ts";
 
 const MONTH_ABBREVIATIONS = [
@@ -31,7 +32,7 @@ export function formatQuotaText(snapshot: QuotaSnapshot, now = new Date()): stri
 		const resets = snapshot.weekly.resetsAt
 			? ` · resets ${formatResetTimestamp(snapshot.weekly.resetsAt, now)}`
 			: "";
-		lines.push(`Weekly limit: ${used}${resets}`);
+		lines.push(`Weekly limit: ${usageBar(snapshot.weekly.usedPercent)} ${used}${resets}`);
 	} else {
 		lines.push("Weekly limit: unavailable");
 	}
