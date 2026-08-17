@@ -44,12 +44,12 @@ Weekly limit: 58% used · resets 14:30 on 24 Aug
 Rate-limit reset credits: 1 available
 
 Ollama Cloud
-Session usage: 16% used
-Weekly usage: 3% used
+Session usage: 16% used · resets in ~5 hours
+Weekly usage: 3% used · resets in 7 days
 ```
 
 - Codex semantics mirror Codex's own display: the weekly window is the one Codex labels `weekly` (primary or secondary), falling back to the secondary window; reset times use `HH:MM` today, otherwise `HH:MM on %-d %b`; plan names are remapped like Codex's status card (Team → Business, Business → Enterprise, Pro Lite, Enterprise (Automation)).
-- Ollama semantics mirror the live `/api/usage` contract: `limits.session.usage` / `limits.weekly.usage` are fractions of the window limit (`0.162` → `16%`); the `session_usage`/`weekly_usage` shape proposed in ollama/ollama#16448 is still accepted defensively.
+- Ollama semantics mirror the live `/api/usage` contract: `limits.session.usage` / `limits.weekly.usage` are fractions of the window limit (`0.162` → `16%`); the `session_usage`/`weekly_usage` shape proposed in ollama/ollama#16448 is still accepted defensively. The endpoint exposes no reset timestamps, so the Ollama rows show the nominal window durations the web UI uses (session resets roughly every 5 hours, weekly every 7 days); a proposal-shape `resets_in` value would take precedence when present.
 - A snapshot older than 15 minutes is marked `(stale)`; rows are omitted when absent.
 
 The `subscription_usage` and `ollama_usage` tools expose the same data to the agent; each `status` reuses its latest in-memory snapshot when fresh, `refresh` queries the provider. No raw response, account ID, user ID, email, cookie, access token, key material, or signature is persisted or returned.
@@ -58,4 +58,4 @@ The `subscription_usage` and `ollama_usage` tools expose the same data to the ag
 
 Kept: Codex plan/weekly limit/reset credits, Ollama session/weekly usage, 15-minute staleness, per-provider caches, cache-or-refresh, Bearer→bare auth fallback.
 
-Dropped: daily-token/workspace/skill/plugin analytics, credit events, 30-day history, spend control, Ollama activity cost/period and per-model breakdowns, reset timestamps for Ollama, plan upgrades.
+Dropped: daily-token/workspace/skill/plugin analytics, credit events, 30-day history, spend control, Ollama activity cost/period and per-model breakdowns, exact Ollama reset timestamps (not exposed by the API), plan upgrades.
