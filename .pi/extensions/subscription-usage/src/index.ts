@@ -11,6 +11,7 @@ import type { OllamaAuthInspection, UsageProbeResult, UsageSnapshot } from "./ol
 import { isSnapshotStale } from "./quota.ts";
 import { probeQuota } from "./quota-client.ts";
 import { formatQuotaText } from "./render.ts";
+import { styleUsageText } from "./style.ts";
 import type { CodexAuthInspection, QuotaProbeResult, QuotaSnapshot } from "./types.ts";
 
 const UsageToolParams = Type.Object({
@@ -154,7 +155,7 @@ export function createSubscriptionUsageExtension(options: {
 					const text = provider === "codex"
 						? formatQuotaText(snapshot, captured)
 						: formatUsageText(snapshot, captured);
-					ctx.ui.notify(text, "info");
+					ctx.ui.notify(styleUsageText(text), "info");
 				} catch (error) {
 					ctx.ui.notify((error as Error).message, "error");
 				}
@@ -169,7 +170,7 @@ export function createSubscriptionUsageExtension(options: {
 					.catch((error) => ({ ok: false as const, text: `Ollama Cloud: ${(error as Error).message}` })),
 			]);
 			const ready = results.some((result) => result.ok);
-			ctx.ui.notify(results.map((result) => result.text).join("\n\n"), ready ? "info" : "error");
+			ctx.ui.notify(styleUsageText(results.map((result) => result.text).join("\n\n")), ready ? "info" : "error");
 		};
 
 		pi.registerCommand("usage", {
