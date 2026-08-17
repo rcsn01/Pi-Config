@@ -26,6 +26,9 @@ export interface UsageSnapshot {
 	plan?: string;
 	session?: UsageWindow;
 	weekly?: UsageWindow;
+	// ISO timestamp of the API's 4-week activity period start — the weekly
+	// reset anchor: boundaries repeat every 7 days from this instant.
+	weekStartsAt?: string;
 	fetchedAt: string;
 }
 

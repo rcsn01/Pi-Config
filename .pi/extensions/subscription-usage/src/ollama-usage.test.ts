@@ -53,6 +53,28 @@ describe("usage snapshot normalization", () => {
 		expect(snapshot.weekly).toEqual({ usedPercent: 42 });
 	});
 
+	it("carries the activity period start as the weekly reset anchor", () => {
+		const snapshot = normalizeUsage({
+			activity: { period: { type: "last_4_weeks", starting_at: "2026-07-27T00:00:00Z" } },
+			limits: { weekly: { usage: 0.1 } },
+		}, "2026-08-17T12:00:00.000Z")!;
+		expect(snapshot.weekStartsAt).toBe("2026-07-27T00:00:00.000Z");
+	});
+
+	it("omits the anchor when the period start is absent or unparsable", () => {
+		const none = normalizeUsage({
+			activity: { period: { type: "last_4_weeks" } },
+			limits: { weekly: { usage: 0.1 } },
+		}, "2026-08-17T12:00:00.000Z")!;
+		expect(none.weekStartsAt).toBeUndefined();
+
+		const bad = normalizeUsage({
+			activity: { period: { starting_at: "not-a-date" } },
+			limits: { weekly: { usage: 0.1 } },
+		}, "2026-08-17T12:00:00.000Z")!;
+		expect(bad.weekStartsAt).toBeUndefined();
+	});
+
 	it("omits rows for windows that lack a usable percentage", () => {
 		const snapshot = normalizeUsage({
 			plan: "pro",

@@ -153,12 +153,13 @@ describe("Ollama usage request contract", () => {
 			fetchImpl: successfulFetch(),
 			now,
 		});
-			expect(result).toEqual({
+				expect(result).toEqual({
 			state: "ok",
 			fetchedAt: "2026-08-17T12:00:00.000Z",
 			snapshot: {
 				session: { usedPercent: 16.1 },
 				weekly: { usedPercent: 2.8 },
+				weekStartsAt: "2026-07-27T00:00:00.000Z",
 				fetchedAt: "2026-08-17T12:00:00.000Z",
 			},
 		});
