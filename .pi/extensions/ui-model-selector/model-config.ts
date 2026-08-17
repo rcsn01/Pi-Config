@@ -44,18 +44,19 @@ export interface ProjectModelPreferences {
 	compactionThreshold: number;
 }
 
-export const MAX_CONTEXT_WINDOW = 200_000;
+/** Default context window applied when a model entry declares none. */
+export const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 /** pi's fallback context window applied when a model entry declares none. */
 export const PI_DEFAULT_CONTEXT_WINDOW = 128_000;
 
 export function resolveContextWindow(contextWindow: number): number {
 	// pi assigns this sentinel when a model declares no contextWindow; treat that
-	// as "unspecified" and default it to the full capped window instead of 128K.
+	// as "unspecified" and default it to DEFAULT_CONTEXT_WINDOW instead of 128K.
 	if (contextWindow === PI_DEFAULT_CONTEXT_WINDOW) {
-		return MAX_CONTEXT_WINDOW;
+		return DEFAULT_CONTEXT_WINDOW;
 	}
-	return Math.min(contextWindow, MAX_CONTEXT_WINDOW);
+	return contextWindow;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

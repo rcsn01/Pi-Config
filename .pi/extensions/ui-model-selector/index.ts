@@ -3,7 +3,10 @@
  *
  * Applies the saved normal profile silently on fresh-session startup and routes
  * the built-in command through a searchable model picker with thinking choices.
- * The context window is hard-coded to the model's catalogue value capped at 200K.
+ * The context window comes from the model's catalogue value, or the saved
+ * profile's contextWindow when a startup profile is applied. On reload and
+ * resume, the session model's context window is refreshed from the profile
+ * without switching models.
  * Explicit --model startup overrides and resumed sessions preserve their session
  * profile. Normal and Plan Mode selections are persisted separately in
  * .pi/settings.json.
@@ -196,7 +199,12 @@ async function applyStoredProfile(
 	) {
 		throw new Error(`Normal profile model ${profile.provider}/${profile.modelId} is outside this session's model scope.`);
 	}
-	const model = resolveModelContext(catalogueModel);
+	// Honor the profile's configured context window; the catalogue value is only
+	// a fallback when the profile does not pin one.
+	const model = {
+		...resolveModelContext(catalogueModel),
+		contextWindow: resolveContextWindow(profile.contextWindow),
+	};
 	if (!(await pi.setModel(model))) {
 		throw new Error(`No configured authentication for ${profile.provider}/${profile.modelId}.`);
 	}
@@ -369,10 +377,21 @@ export function createModelSelectorExtension(
 			} else if (ctx.model && (hasConversationHistory || ["reload", "resume", "fork"].includes(event.reason))) {
 				try {
 					const restoredModel = resolveModelContext(ctx.model);
-					if (restoredModel !== ctx.model && !(await pi.setModel(restoredModel))) {
-						ctx.ui.notify(`No configured authentication for ${modelKey(restoredModel)}`, "error");
+					// Keep the session model's context window in sync with the saved
+					// profile for the active mode (settings.json edits take effect on
+					// reload) without switching models.
+					const preferences = await settingsStore.load();
+					const profile = preferences.profiles[currentSelectionMode(ctx)];
+					const profileContext = profile && ctx.model.provider === profile.provider && ctx.model.id === profile.modelId
+						? resolveContextWindow(profile.contextWindow)
+						: restoredModel.contextWindow;
+					const targetModel = profileContext !== restoredModel.contextWindow
+						? { ...restoredModel, contextWindow: profileContext }
+						: restoredModel;
+					if (targetModel !== ctx.model && !(await pi.setModel(targetModel))) {
+						ctx.ui.notify(`No configured authentication for ${modelKey(targetModel)}`, "error");
 					} else {
-						await settingsStore.syncCompaction(restoredModel.contextWindow);
+						await settingsStore.syncCompaction(targetModel.contextWindow);
 					}
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
