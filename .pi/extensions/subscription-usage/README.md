@@ -44,12 +44,12 @@ Weekly limit: 58% used · resets 14:30 on 24 Aug
 Rate-limit reset credits: 1 available
 
 Ollama Cloud
-Session usage: 16% used · resets in ~5 hours
-Weekly usage: 3% used · resets in 7 days
+Session usage: 16% used · resets in 40 minutes
+Weekly usage: 3% used · resets in 6 days
 ```
 
 - Codex semantics mirror Codex's own display: the weekly window is the one Codex labels `weekly` (primary or secondary), falling back to the secondary window; reset times use `HH:MM` today, otherwise `HH:MM on %-d %b`; plan names are remapped like Codex's status card (Team → Business, Business → Enterprise, Pro Lite, Enterprise (Automation)).
-- Ollama semantics mirror the live `/api/usage` contract: `limits.session.usage` / `limits.weekly.usage` are fractions of the window limit (`0.162` → `16%`); the `session_usage`/`weekly_usage` shape proposed in ollama/ollama#16448 is still accepted defensively. The endpoint exposes no reset timestamps, so the Ollama rows show the nominal window durations the web UI uses (session resets roughly every 5 hours, weekly every 7 days); a proposal-shape `resets_in` value would take precedence when present.
+- Ollama semantics mirror the live `/api/usage` contract: `limits.session.usage` / `limits.weekly.usage` are fractions of the window limit (`0.162` → `16%`); the `session_usage`/`weekly_usage` shape proposed in ollama/ollama#16448 is still accepted defensively. The endpoint exposes no reset timestamps, so the Ollama reset countdowns mirror the web UI's observed window alignment — session resets on the next full hour, weekly at the start of the local week (Monday 00:00) — and are computed at render time (verified against the web UI: 40 minutes at twenty past the hour, 6 days on a Monday evening). A proposal-shape `resets_in` value wins when present.
 - A snapshot older than 15 minutes is marked `(stale)`; rows are omitted when absent.
 
 The `subscription_usage` and `ollama_usage` tools expose the same data to the agent; each `status` reuses its latest in-memory snapshot when fresh, `refresh` queries the provider. No raw response, account ID, user ID, email, cookie, access token, key material, or signature is persisted or returned.

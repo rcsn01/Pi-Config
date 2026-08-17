@@ -37,8 +37,8 @@ const okOllamaResult: Extract<UsageProbeResult, { state: "ok" }> = {
 	state: "ok",
 	fetchedAt: "2026-08-17T12:00:00.000Z",
 	snapshot: {
-		session: { usedPercent: 16.2, resetsIn: "~5 hours" },
-		weekly: { usedPercent: 2.9, resetsIn: "7 days" },
+		session: { usedPercent: 16.2 },
+		weekly: { usedPercent: 2.9 },
 		fetchedAt: "2026-08-17T12:00:00.000Z",
 	},
 };
@@ -70,16 +70,20 @@ function harness(options: {
 
 describe("/usage (unified) and the usage tools", () => {
 	it("shows both providers on a plain /usage", async () => {
-		const { command, probe, probeOllama, notify, ctx } = harness();
+		// Monday 21:20 local: 40 minutes to the full hour, 6 days to Monday —
+		// the exact values observed in the web UI.
+		const { command, probe, probeOllama, notify, ctx } = harness({
+			now: () => new Date(2026, 7, 17, 21, 20),
+		});
 		await command.handler("", ctx);
 		expect(probe).toHaveBeenCalledTimes(1);
 		expect(probeOllama).toHaveBeenCalledTimes(1);
 		const [text, level] = notify.mock.calls[0];
 		expect(text).toContain("ChatGPT Codex · Plan: Pro");
 		expect(text).toContain("Weekly limit: 58% used");
-		expect(text).toContain("Ollama Cloud");
-		expect(text).toContain("Session usage: 16% used · resets in ~5 hours");
-		expect(text).toContain("Weekly usage: 3% used · resets in 7 days");
+			expect(text).toContain("Ollama Cloud");
+		expect(text).toContain("Session usage: 16% used · resets in 40 minutes");
+		expect(text).toContain("Weekly usage: 3% used · resets in 6 days");
 		expect(level).toBe("info");
 	});
 
