@@ -12,10 +12,10 @@ import { createModelSelectorExtension, selectionModeFromEntries } from "./index.
 import {
 	calculateCompactionReserveTokens,
 	DEFAULT_COMPACTION_THRESHOLD,
+	DEFAULT_CONTEXT_WINDOW,
 	filterModels,
 	findExactModel,
 	hasExplicitModelArgument,
-	MAX_CONTEXT_WINDOW,
 	mergeProjectCompactionSettings,
 	mergeProjectModelSelection,
 	parseProjectModelPreferences,
@@ -217,20 +217,16 @@ describe("model selector lifecycle", () => {
 		const harness = createLifecycleHarness({ hasConversationHistory: true });
 		await harness.emit("startup");
 		expect(harness.custom).not.toHaveBeenCalled();
-		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
-			id: "claude-sonnet-4.6",
-			contextWindow: MAX_CONTEXT_WINDOW,
-		}));
+		expect(harness.setModel).not.toHaveBeenCalled();
+		expect(harness.syncCompaction).toHaveBeenCalledWith(1_000_000);
 	});
 
 	it.each(["reload", "resume", "fork"] as const)("does not invoke the selector for %s", async (reason) => {
 		const harness = createLifecycleHarness();
 		await harness.emit(reason);
 		expect(harness.custom).not.toHaveBeenCalled();
-		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
-			id: "claude-sonnet-4.6",
-			contextWindow: MAX_CONTEXT_WINDOW,
-		}));
+		expect(harness.setModel).not.toHaveBeenCalled();
+		expect(harness.syncCompaction).toHaveBeenCalledWith(1_000_000);
 	});
 
 	it("uses the complete normal profile as the fresh-session startup default", async () => {
@@ -241,7 +237,7 @@ describe("model selector lifecycle", () => {
 					provider: "github-copilot",
 					modelId: "gpt-5.6-sol",
 					thinkingLevel: "xhigh",
-					contextWindow: MAX_CONTEXT_WINDOW,
+					contextWindow: 256_000,
 				},
 			},
 		});
@@ -250,10 +246,10 @@ describe("model selector lifecycle", () => {
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
 			provider: "github-copilot",
 			id: "gpt-5.6-sol",
-			contextWindow: MAX_CONTEXT_WINDOW,
+			contextWindow: 256_000,
 		}));
 		expect(harness.setThinkingLevel).toHaveBeenCalledWith("xhigh");
-		expect(harness.syncCompaction).toHaveBeenCalledWith(MAX_CONTEXT_WINDOW);
+		expect(harness.syncCompaction).toHaveBeenCalledWith(256_000);
 		expect(harness.custom).not.toHaveBeenCalled();
 		expect(harness.save).not.toHaveBeenCalled();
 	});
@@ -302,7 +298,7 @@ describe("model selector lifecycle", () => {
 			provider: "anthropic",
 			modelId: "claude-sonnet-4.6",
 			thinkingLevel: "high",
-			contextWindow: MAX_CONTEXT_WINDOW,
+			contextWindow: 1_000_000,
 		});
 	});
 
@@ -313,7 +309,7 @@ describe("model selector lifecycle", () => {
 			provider: "anthropic",
 			modelId: "claude-sonnet-4.6",
 			thinkingLevel: "xhigh",
-			contextWindow: MAX_CONTEXT_WINDOW,
+			contextWindow: 1_000_000,
 		});
 	});
 
@@ -327,25 +323,44 @@ describe("model selector lifecycle", () => {
 		await getModelCommandHandler()?.("github-copilot/gpt-5.6-sol");
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
 			id: "gpt-5.6-sol",
-			contextWindow: MAX_CONTEXT_WINDOW,
+			contextWindow: 1_050_000,
 		}));
 		expect(harness.save).toHaveBeenCalledWith("normal", expect.objectContaining({
-			contextWindow: MAX_CONTEXT_WINDOW,
+			contextWindow: 1_050_000,
 		}));
 	});
 
-	it("restores a saved context for an existing session", async () => {
+	it("syncs compaction for an existing session without re-applying the model", async () => {
 		const harness = createLifecycleHarness({
 			hasConversationHistory: true,
 			selectedModel: models[0],
 			contextWindows: { "github-copilot/gpt-5.6-sol": 272_000 },
 		});
 		await harness.emit("startup");
+		expect(harness.setModel).not.toHaveBeenCalled();
+		expect(harness.syncCompaction).toHaveBeenCalledWith(1_050_000);
+		expect(harness.save).not.toHaveBeenCalled();
+	});
+
+	it("refreshes the session model's context window from the profile on reload", async () => {
+		const harness = createLifecycleHarness({
+			selectedModel: models[1],
+			profiles: {
+				normal: {
+					provider: "anthropic",
+					modelId: "claude-sonnet-4.6",
+					thinkingLevel: "medium",
+					contextWindow: 256_000,
+				},
+			},
+		});
+		await harness.emit("reload");
 		expect(harness.setModel).toHaveBeenCalledOnce();
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
-			contextWindow: MAX_CONTEXT_WINDOW,
+			id: "claude-sonnet-4.6",
+			contextWindow: 256_000,
 		}));
-		expect(harness.syncCompaction).toHaveBeenCalledWith(MAX_CONTEXT_WINDOW);
+		expect(harness.syncCompaction).toHaveBeenCalledWith(256_000);
 		expect(harness.save).not.toHaveBeenCalled();
 	});
 
@@ -370,18 +385,18 @@ describe("model selection helpers", () => {
 		])).toBe("normal");
 	});
 
-	it("caps the context window at 200K", () => {
-		expect(resolveContextWindow(1_050_000)).toBe(MAX_CONTEXT_WINDOW);
-		expect(resolveContextWindow(1_000_000)).toBe(MAX_CONTEXT_WINDOW);
+	it("passes large context windows through unchanged", () => {
+		expect(resolveContextWindow(1_050_000)).toBe(1_050_000);
+		expect(resolveContextWindow(1_000_000)).toBe(1_000_000);
 	});
 
 	it("defaults undeclared-context models (pi's 128K fallback) to 200K", () => {
-		expect(resolveContextWindow(PI_DEFAULT_CONTEXT_WINDOW)).toBe(MAX_CONTEXT_WINDOW);
+		expect(resolveContextWindow(PI_DEFAULT_CONTEXT_WINDOW)).toBe(DEFAULT_CONTEXT_WINDOW);
 	});
 
-	it("passes context windows below 200K through unchanged", () => {
+	it("passes context windows through unchanged", () => {
 		expect(resolveContextWindow(100_000)).toBe(100_000);
-		expect(resolveContextWindow(MAX_CONTEXT_WINDOW)).toBe(MAX_CONTEXT_WINDOW);
+		expect(resolveContextWindow(DEFAULT_CONTEXT_WINDOW)).toBe(DEFAULT_CONTEXT_WINDOW);
 	});
 
 	it("finds canonical references and filters by model name", () => {
@@ -475,9 +490,9 @@ describe("project model settings", () => {
 		});
 	});
 
-	it("caps a model's context window without mutating the catalogue model", () => {
+	it("resolves a model's context window without mutating the catalogue model", () => {
 		const configured = resolveModelContext(models[0]!);
-		expect(configured.contextWindow).toBe(MAX_CONTEXT_WINDOW);
+		expect(configured.contextWindow).toBe(1_050_000);
 		expect(models[0]!.contextWindow).toBe(1_050_000);
 	});
 
