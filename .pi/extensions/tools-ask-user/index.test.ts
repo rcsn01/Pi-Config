@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createPlanQuestionTool } from "./plan-question.ts";
+import askUserExtension, { createAskUserTool } from "./index.ts";
 
 function theme() {
 	return {
@@ -8,9 +8,9 @@ function theme() {
 	} as any;
 }
 
-function context(mode: "tui" | "print" = "tui") {
+function context(hasUI = true) {
 	return {
-		mode,
+		hasUI,
 		ui: { select: vi.fn() },
 	} as any;
 }
@@ -25,33 +25,44 @@ const question = {
 	recommended: "Small",
 };
 
-describe("plan_question", () => {
-	it("keeps registered schema and prompt metadata", () => {
-		const tool = createPlanQuestionTool(() => true);
+describe("ask_user", () => {
+	it("registers as a standalone generic clarification tool", () => {
+		const registerTool = vi.fn();
+		askUserExtension({ registerTool } as any);
+		expect(registerTool).toHaveBeenCalledOnce();
+
+		const tool = registerTool.mock.calls[0][0];
 		expect(tool).toMatchObject({
-			name: "plan_question",
-			label: "Plan Question",
-			description: expect.stringContaining("Ask the user 1-3"),
-			promptSnippet: "Ask planning questions",
+			name: "ask_user",
+			label: "Ask User",
+			description: expect.stringContaining("material ambiguity"),
+			promptSnippet: "Ask concise multiple-choice clarification questions",
+			promptGuidelines: [expect.stringContaining("Use ask_user")],
 		});
 		expect((tool.parameters as any).properties.questions.description)
 			.toBe("One to three multiple-choice clarification questions");
 	});
 
-	it("rejects inactive and non-TUI execution", async () => {
-		const inactive = createPlanQuestionTool(() => false);
-		const inactiveResult = await inactive.execute("call", { questions: [question] }, undefined, undefined, context());
-		expect(inactiveResult).toMatchObject({ isError: true, details: { answers: [], cancelled: true } });
-		expect(inactiveResult.content[0]).toMatchObject({ text: expect.stringContaining("only available in Plan Mode") });
+	it("works outside Plan Mode and rejects non-interactive execution", async () => {
+		const tool = createAskUserTool();
+		const ctx = context();
+		ctx.ui.select.mockResolvedValue("1. Small (recommended) — Change one module");
+		const result = await tool.execute("call", { questions: [question] }, undefined, undefined, ctx);
+		expect(result.details).toMatchObject({ cancelled: false, answers: [{ answer: "Small" }] });
 
-		const nonTui = createPlanQuestionTool(() => true);
-		const nonTuiResult = await nonTui.execute("call", { questions: [question] }, undefined, undefined, context("print"));
-		expect(nonTuiResult).toMatchObject({ isError: true, details: { cancelled: true } });
-		expect(nonTuiResult.content[0]).toMatchObject({ text: expect.stringContaining("interactive TUI") });
+		const nonInteractiveResult = await tool.execute(
+			"call",
+			{ questions: [question] },
+			undefined,
+			undefined,
+			context(false),
+		);
+		expect(nonInteractiveResult).toMatchObject({ isError: true, details: { cancelled: true } });
+		expect(nonInteractiveResult.content[0]).toMatchObject({ text: expect.stringContaining("interactive UI") });
 	});
 
 	it("validates question and option counts", async () => {
-		const tool = createPlanQuestionTool(() => true);
+		const tool = createAskUserTool();
 		const ctx = context();
 		const noQuestions = await tool.execute("call", { questions: [] }, undefined, undefined, ctx);
 		expect(noQuestions.content[0]).toMatchObject({ text: "Error: ask between 1 and 3 questions." });
@@ -63,7 +74,7 @@ describe("plan_question", () => {
 	});
 
 	it("formats recommendations and collects sequential answers", async () => {
-		const tool = createPlanQuestionTool(() => true);
+		const tool = createAskUserTool();
 		const ctx = context();
 		ctx.ui.select
 			.mockResolvedValueOnce("1. Small (recommended) — Change one module")
@@ -91,7 +102,7 @@ describe("plan_question", () => {
 	});
 
 	it("returns partial answers when selection is cancelled", async () => {
-		const tool = createPlanQuestionTool(() => true);
+		const tool = createAskUserTool();
 		const ctx = context();
 		ctx.ui.select.mockResolvedValue(undefined);
 		const result = await tool.execute("call", { questions: [question] }, undefined, undefined, ctx);
@@ -103,9 +114,9 @@ describe("plan_question", () => {
 	});
 
 	it("renders calls, successful results, cancellation, and fallback text", () => {
-		const tool = createPlanQuestionTool(() => true);
+		const tool = createAskUserTool();
 		expect(tool.renderCall?.({ questions: [question] }, theme(), {} as any).render(80).join("\n"))
-			.toContain("plan_question 1 question");
+			.toContain("ask_user 1 question");
 		expect(tool.renderResult?.({
 			content: [{ type: "text", text: "done" }],
 			details: { answers: [{ id: "scope", question: "Which?", answer: "Small" }], cancelled: false },

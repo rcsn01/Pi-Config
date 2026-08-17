@@ -22,7 +22,6 @@ describe("Plan Mode tool policy integration", () => {
 		]);
 		expect(harness.registrations).toEqual([
 			"tool:plan_bash",
-			"tool:plan_question",
 			"message-renderer:proposed-plan",
 			"entry-renderer:proposed-plan-display",
 			"event:session_start",
@@ -345,7 +344,7 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 
 	it("routes arbitrary commands through plan_bash and restores the exact normal tools on exit", async () => {
 		const stores = createProfileDependencies();
-		const initialTools = ["read", "bash", "edit", "write", "grep", "custom_tool"];
+		const initialTools = ["read", "bash", "edit", "write", "grep", "custom_tool", "ask_user"];
 		const harness = createHarness({
 			branch: [], model: normalModel, thinkingLevel: "medium",
 			availableModels: [normalModel], activeTools: initialTools,
@@ -354,7 +353,7 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("plan").handler("", harness.ctx);
 
-		expect(harness.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "grep", "custom_tool", "plan_bash", "plan_question"]));
+		expect(harness.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "grep", "custom_tool", "plan_bash", "ask_user"]));
 		expect(harness.getActiveToolNames()).not.toEqual(expect.arrayContaining(["bash", "edit", "write"]));
 
 		const planBash = harness.tools.get("plan_bash");

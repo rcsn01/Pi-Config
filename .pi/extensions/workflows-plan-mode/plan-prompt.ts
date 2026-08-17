@@ -49,7 +49,7 @@ Start by discovering facts. Before asking the user a question, do at least one t
 
 Ask only questions that materially affect the plan, confirm important assumptions, or choose between meaningful tradeoffs. Prefer concrete options and recommend a default.
 
-If important ambiguity remains after exploration, use the \`plan_question\` tool to ask 1–3 concise multiple-choice questions. Each question must have meaningful options, and you should mark a recommended option when appropriate. Incorporate the selected answers before finalizing the plan. Do not ask clarification questions that can be answered by non-mutating exploration.
+If important ambiguity remains after exploration, use the \`ask_user\` tool to ask 1–3 concise multiple-choice questions. Each question must have meaningful options, and you should mark a recommended option when appropriate. Incorporate the selected answers before finalizing the plan. Do not ask clarification questions that can be answered by non-mutating exploration.
 
 ## Phase 3 — Finalize the implementation plan
 
