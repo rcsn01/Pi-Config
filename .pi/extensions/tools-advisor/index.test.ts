@@ -102,10 +102,10 @@ function makePi(options: {
 describe("advisor settings", () => {
 	it("defaults missing advisor settings to disabled with the v1 budget", () => {
 		expect(parseAdvisorSettings({ compaction: {} })).toEqual({
-			maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: false, contextBudget: DEFAULT_CONTEXT_BUDGET,
+			strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: false, contextBudget: DEFAULT_CONTEXT_BUDGET,
 		});
 		expect(parseAdvisorSettings({ advisor: { provider: "anthropic", modelId: "strong" } })).toEqual({
-			provider: "anthropic", modelId: "strong", maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: false,
+			provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: false,
 			contextBudget: DEFAULT_CONTEXT_BUDGET,
 		});
 	});
@@ -120,6 +120,9 @@ describe("advisor settings", () => {
 		expect(() => parseAdvisorSettings({ advisor: { maxUses: 0 } })).toThrow(/maxUses/);
 		expect(() => parseAdvisorSettings({ advisor: { maxUsesPerSession: 0 } })).toThrow(/maxUsesPerSession/);
 		expect(() => parseAdvisorSettings({ advisor: { maxTokens: -1 } })).toThrow(/maxTokens/);
+		expect(() => parseAdvisorSettings({ advisor: { strict: "yes" } })).toThrow(/strict/);
+		expect(() => parseAdvisorSettings({ advisor: { nudgeTurn: 0 } })).toThrow(/nudgeTurn/);
+		expect(() => parseAdvisorSettings({ advisor: { nudgeTurn: -1 } })).toThrow(/nudgeTurn/);
 		expect(() => parseAdvisorSettings({ advisor: { allowCrossProvider: "yes" } })).toThrow(/allowCrossProvider/);
 		expect(() => parseAdvisorSettings({ advisor: { contextBudget: [] } })).toThrow(/contextBudget must be a JSON object/);
 		expect(() => parseAdvisorSettings({ advisor: { contextBudget: { thinking: "some" } } })).toThrow(/thinking/);
@@ -151,14 +154,14 @@ describe("advisor extension", () => {
 	});
 
 	it("supports direct selection, requires cross-provider consent, and writes atomically without losing settings", async () => {
-		const path = settingsFile({ compaction: { threshold: 0.1 }, other: { keep: true }, advisor: { maxUses: 2, maxTokens: 1000 } });
+		const path = settingsFile({ compaction: { threshold: 0.1 }, other: { keep: true }, advisor: { maxUses: 2, maxTokens: 1000, strict: true } });
 		const harness = makePi({ settingsPath: path, model: { provider: "openai", id: "executor" }, confirm: true });
 		createAdvisorExtension({ settingsPath: path })(harness.pi);
 		await harness.commands.get("advisor").handler("anthropic/strong", harness.ctx);
 		const saved = JSON.parse(readFileSync(path, "utf8"));
 		expect(saved).toMatchObject({
 			compaction: { threshold: 0.1 }, other: { keep: true },
-			advisor: { provider: "anthropic", modelId: "strong", maxUses: 2, maxTokens: 1000, allowCrossProvider: true },
+			advisor: { provider: "anthropic", modelId: "strong", maxUses: 2, maxTokens: 1000, strict: true, allowCrossProvider: true },
 		});
 		expect(harness.ctx.ui.confirm).toHaveBeenCalledOnce();
 		expect(harness.getActiveTools()).toContain("advisor");
@@ -168,7 +171,7 @@ describe("advisor extension", () => {
 		expect(afterOff).toMatchObject({ compaction: { threshold: 0.1 }, other: { keep: true } });
 		expect(afterOff.advisor).not.toHaveProperty("provider");
 		expect(afterOff.advisor).not.toHaveProperty("modelId");
-		expect(afterOff.advisor).toMatchObject({ maxUses: 2, maxTokens: 1000, allowCrossProvider: false });
+		expect(afterOff.advisor).toMatchObject({ maxUses: 2, maxTokens: 1000, strict: false, allowCrossProvider: false });
 		expect(harness.getActiveTools()).toContain("advisor");
 
 		const malformedPath = settingsFile({ other: { keep: true }, advisor: [] });
@@ -176,7 +179,59 @@ describe("advisor extension", () => {
 		createAdvisorExtension({ settingsPath: malformedPath })(malformed.pi);
 		await malformed.commands.get("advisor").handler("off", malformed.ctx);
 		expect(loadAdvisorSettings(malformedPath).provider).toBeUndefined();
-		expect(JSON.parse(readFileSync(malformedPath, "utf8"))).toMatchObject({ other: { keep: true }, advisor: { allowCrossProvider: false } });
+		expect(JSON.parse(readFileSync(malformedPath, "utf8"))).toMatchObject({ other: { keep: true }, advisor: { strict: false, allowCrossProvider: false } });
+
+		const malformedStrictPath = settingsFile({ other: { keep: true }, advisor: { strict: "yes", contextBudget: [] } });
+		const malformedStrict = makePi({ settingsPath: malformedStrictPath, activeTools: ["advisor"] });
+		createAdvisorExtension({ settingsPath: malformedStrictPath })(malformedStrict.pi);
+		await malformedStrict.commands.get("advisor").handler("off", malformedStrict.ctx);
+		expect(JSON.parse(readFileSync(malformedStrictPath, "utf8"))).toMatchObject({ advisor: { strict: false, allowCrossProvider: false } });
+	});
+
+	it("shows the three advisor modes before the model picker on a bare command", async () => {
+		const path = settingsFile({});
+		const harness = makePi({ settingsPath: path });
+		harness.ctx.mode = "print";
+		harness.ctx.ui.select.mockResolvedValueOnce("on").mockResolvedValueOnce(undefined);
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		expect(harness.commands.get("advisor").getArgumentCompletions("")).toEqual([
+			{ value: "on", label: "on" },
+			{ value: "strict", label: "strict" },
+			{ value: "off", label: "off" },
+		]);
+		await harness.commands.get("advisor").handler("", harness.ctx);
+		expect(harness.ctx.ui.select).toHaveBeenNthCalledWith(1, "Select advisor mode", ["on", "strict", "off"]);
+		expect(harness.ctx.ui.select).toHaveBeenNthCalledWith(2, "Select advisor model", ["anthropic/strong"]);
+	});
+
+	it("flips strict mode without reopening the model picker when explicitly requested", async () => {
+		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
+		const harness = makePi({ settingsPath: path });
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.commands.get("advisor").handler("strict", harness.ctx);
+		expect(loadAdvisorSettings(path).strict).toBe(true);
+		expect(harness.ctx.ui.select).not.toHaveBeenCalled();
+		await harness.commands.get("advisor").handler("on", harness.ctx);
+		expect(loadAdvisorSettings(path).strict).toBe(false);
+	});
+
+	it("includes strict mode in the active advisor status", async () => {
+		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong", strict: true } });
+		const runner: any = {
+			execute: vi.fn(async (input: any) => {
+				input.onStatus?.(true, "anthropic/strong");
+				input.onStatus?.(false, "anthropic/strong");
+				return {
+					content: [{ type: "text", text: "Advice" }],
+					details: { model: "anthropic/strong", consumesBudget: true, truncated: false },
+				};
+			}),
+		};
+		const harness = makePi({ settingsPath: path });
+		createAdvisorExtension({ settingsPath: path, runner })(harness.pi);
+		await harness.tools.get("advisor").execute("call", {}, undefined, undefined, harness.ctx);
+		expect(harness.ctx.ui.setStatus).toHaveBeenNthCalledWith(1, "advisor", "Advising (strict) · anthropic/strong");
+		expect(harness.ctx.ui.setStatus).toHaveBeenNthCalledWith(2, "advisor", undefined);
 	});
 
 	it("denies cross-provider selection without UI consent and filters unavailable direct models", async () => {
@@ -323,7 +378,7 @@ describe("advisor extension", () => {
 						complete: async () => { throw new Error("provider must not be called after the budget is exhausted"); },
 					},
 				} as any,
-				settings: { provider: "contract", modelId: "advisor", maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true },
+				settings: { provider: "contract", modelId: "advisor", strict: false, nudgeTurn: 3, maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true },
 				callId: "advisor-call-2",
 				activeToolNames: ["advisor"],
 				allTools: [],

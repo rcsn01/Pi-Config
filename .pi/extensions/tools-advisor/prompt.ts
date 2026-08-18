@@ -1,11 +1,15 @@
 export const ADVISOR_TOOL_DESCRIPTION =
 	"Consult a stronger read-only model on a difficult decision. Your entire conversation is forwarded automatically — the task, every tool call you have made, every result you have seen, and your own reasoning. You do not need to summarise any of it. The optional `question` only sharpens the focus; omit it to ask for guidance on the most important next step. The advisor cannot use tools or change the repository; you remain responsible for all actions and verification.";
 
+export const ADVISOR_NUDGE_MESSAGE =
+	"You have not consulted advisor yet on this task. If it involves a non-obvious design decision, a recommendation you are about to commit to, or a failure mode you have not ruled out, call advisor now before going further.";
+
 export const ADVISOR_PROMPT_GUIDELINES = [
 	// when to call
 	"Use advisor after initial read-only orientation and before a consequential design decision on a complex task.",
 	"Use advisor after repeated failure or before completing a high-risk change.",
-	"Skip advisor for simple lookups, mechanical edits, and steps dictated by fresh evidence.",
+	"Use advisor for design, architecture, and risk questions even when no file will be touched. If your reply would be an analysis or a recommendation rather than an action, call advisor before writing it — that judgment is where a second opinion is worth most.",
+	"Skip advisor for simple lookups and mechanical edits. On short reactive tasks where the next step follows directly from output you just read, you need not keep calling — advisor adds most of its value on the first call, before the approach sets.",
 	// how to treat the answer
 	"Give the advice serious weight; it is the reason you paid for the consultation.",
 	"Depart from it only on empirical failure or primary-source contradiction. A passing self-test is not evidence the advice is wrong — it is evidence your test does not check what the advice checks.",

@@ -87,6 +87,8 @@ function runInput(ctx: any, overrides: Partial<AdvisorRunInput> = {}): AdvisorRu
 		settings: {
 			provider: "anthropic",
 			modelId: "strong",
+			strict: false,
+			nudgeTurn: 3,
 			maxUses: 3,
 			maxUsesPerSession: 20,
 			maxTokens: 2048,
@@ -167,7 +169,7 @@ describe("advisor runner", () => {
 		const entries = [...currentEntries()];
 		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
 		const runner = createAdvisorRunner();
-		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true };
+		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true };
 		await runner.execute(runInput(ctx, { settings }));
 		entries.push({
 			type: "message", id: "advisor-result", parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
@@ -187,7 +189,7 @@ describe("advisor runner", () => {
 		const entries = [...currentEntries()];
 		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
 		const runner = createAdvisorRunner();
-		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true };
+		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true };
 		await runner.execute(runInput(ctx, { settings }));
 		entries.push({
 			type: "message", id: "advisor-result", parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
@@ -209,7 +211,7 @@ describe("advisor runner", () => {
 		const entries = [...currentEntries()];
 		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
 		const runner = createAdvisorRunner();
-		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", maxUses: 3, maxUsesPerSession: 1, maxTokens: 2048, allowCrossProvider: true };
+		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 1, maxTokens: 2048, allowCrossProvider: true };
 		await runner.execute(runInput(ctx, { settings }));
 		entries.push({
 			type: "message", id: "advisor-result", parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
@@ -241,8 +243,8 @@ describe("advisor runner", () => {
 			},
 		});
 		const runner = createAdvisorRunner();
-		const first = await runner.execute(runInput(ctx, { settings: { provider: "anthropic", modelId: "strong", maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true } }));
-		const second = await runner.execute(runInput(ctx, { settings: { provider: "anthropic", modelId: "strong", maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true } }));
+		const first = await runner.execute(runInput(ctx, { settings: { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true } }));
+		const second = await runner.execute(runInput(ctx, { settings: { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true } }));
 		expect(first.usage?.cacheWrite).toBeGreaterThan(0);
 		expect(second.usage?.cacheRead).toBeGreaterThan(0);
 		expect(first.details.model).toBe(second.details.model);
@@ -263,7 +265,7 @@ describe("advisor runner", () => {
 
 		const denied = context();
 		result = await createAdvisorRunner().execute(runInput(denied, {
-			settings: { provider: "anthropic", modelId: "strong", maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: false },
+			settings: { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: false },
 		}));
 		expect(result.content[0].text).toMatch(/^advisor_cross_provider_denied/);
 		expect(result.details.consumesBudget).toBe(false);
