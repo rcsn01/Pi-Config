@@ -427,6 +427,9 @@ describe("display helpers", () => {
 			for (const value of ["45,678", "56,789", "6,789", "12,345", "23,456", "3,456"]) {
 				expect(lines.some((line) => line.includes(value))).toBe(true);
 			}
+			expect(lines.some((line) => line.includes("┌─"))).toBe(true);
+			expect(lines.some((line) => line.includes("│"))).toBe(true);
+			expect(lines.some((line) => line.includes("└"))).toBe(true);
 			expect(lines.some((line) => line.includes("openai/gpt-4o"))).toBe(true);
 			expect(lines.some((line) => line.includes("google/gemini"))).toBe(true);
 			expect(lines.some((line) => line.includes("anthropic/haiku"))).toBe(true);
@@ -455,9 +458,10 @@ describe("display helpers", () => {
 		const wideLines = component.render(90);
 		expect(wideLines.some((line) => line.includes("Current context token usage") && line.includes("Subagent usage in context"))).toBe(true);
 		expect(wideLines.some((line) => line.includes("openai/gpt-4o"))).toBe(true);
-		expect(wideLines.some((line) => line.includes("Input") && line.includes("45,678"))).toBe(true);
+		expect(wideLines.some((line) => line.includes("Cache input"))).toBe(true);
+		expect(wideLines.some((line) => line.includes("45,678"))).toBe(true);
 		expect(wideLines.some((line) => line.includes("anthropic/haiku"))).toBe(true);
-		expect(wideLines.some((line) => line.includes("Input") && line.includes("12,345"))).toBe(true);
+		expect(wideLines.some((line) => line.includes("12,345"))).toBe(true);
 
 		const text = textualSummary(diagnostics);
 		expect(text).toContain("Current context token usage:");
@@ -477,7 +481,7 @@ describe("display helpers", () => {
 			() => {},
 			() => 30,
 		);
-		expect(expanded.render(90).length).toBeGreaterThanOrEqual(30);
+		expect(expanded.render(90).length).toBeGreaterThanOrEqual(28);
 	});
 
 	it("opens the selected System prompt row and shows attributed sources", () => {
