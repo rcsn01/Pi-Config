@@ -23,16 +23,17 @@ import {
 } from "./prompt.ts";
 import {
 	createAdvisorRunner,
+	DEFAULT_MAX_USES,
+	DEFAULT_MAX_USES_PER_SESSION,
 	type AdvisorRunner,
 	type AdvisorSettings,
 	type AdvisorToolDetails,
 } from "./runner.ts";
 import { DEFAULT_CONTEXT_BUDGET, type AdvisorContextBudget } from "./transcript.ts";
 
-export { deriveAdvisorSessionId } from "./runner.ts";
+export { deriveAdvisorSessionId, DEFAULT_MAX_USES, DEFAULT_MAX_USES_PER_SESSION } from "./runner.ts";
 export type { AdvisorSettings, AdvisorToolDetails, AdvisorToolResult } from "./runner.ts";
 
-export const DEFAULT_MAX_USES = 3;
 export const DEFAULT_MAX_TOKENS = 2048;
 
 export { PROJECT_SETTINGS_PATH } from "../tools-subagents/settings-store.ts";
@@ -103,6 +104,7 @@ export function parseAdvisorSettings(document: unknown): AdvisorSettings {
 	if (raw === undefined) {
 		return {
 			maxUses: DEFAULT_MAX_USES,
+			maxUsesPerSession: DEFAULT_MAX_USES_PER_SESSION,
 			maxTokens: DEFAULT_MAX_TOKENS,
 			allowCrossProvider: false,
 			contextBudget: DEFAULT_CONTEXT_BUDGET,
@@ -112,7 +114,9 @@ export function parseAdvisorSettings(document: unknown): AdvisorSettings {
 	return {
 		provider: requiredOptionalString(raw.provider, "provider"),
 		modelId: requiredOptionalString(raw.modelId, "modelId"),
+		// Per user turn; resets on each new user message.
 		maxUses: positiveInteger(raw.maxUses, DEFAULT_MAX_USES, "maxUses"),
+		maxUsesPerSession: positiveInteger(raw.maxUsesPerSession, DEFAULT_MAX_USES_PER_SESSION, "maxUsesPerSession"),
 		maxTokens: positiveInteger(raw.maxTokens, DEFAULT_MAX_TOKENS, "maxTokens"),
 		allowCrossProvider: raw.allowCrossProvider === undefined
 			? false
@@ -132,6 +136,7 @@ function serializedAdvisorSettings(settings: AdvisorSettings): Record<string, un
 		...(settings.provider ? { provider: settings.provider } : {}),
 		...(settings.modelId ? { modelId: settings.modelId } : {}),
 		maxUses: settings.maxUses,
+		maxUsesPerSession: settings.maxUsesPerSession,
 		maxTokens: settings.maxTokens,
 		allowCrossProvider: settings.allowCrossProvider,
 		contextBudget: settings.contextBudget ?? DEFAULT_CONTEXT_BUDGET,
@@ -163,6 +168,9 @@ async function disableAdvisorSettings(path: string): Promise<AdvisorSettings> {
 		}
 		const next: AdvisorSettings = {
 			maxUses: Number.isInteger(raw.maxUses) && (raw.maxUses as number) > 0 ? raw.maxUses as number : DEFAULT_MAX_USES,
+			maxUsesPerSession: Number.isInteger(raw.maxUsesPerSession) && (raw.maxUsesPerSession as number) > 0
+				? raw.maxUsesPerSession as number
+				: DEFAULT_MAX_USES_PER_SESSION,
 			maxTokens: Number.isInteger(raw.maxTokens) && (raw.maxTokens as number) > 0 ? raw.maxTokens as number : DEFAULT_MAX_TOKENS,
 			allowCrossProvider: false,
 			contextBudget,
@@ -275,7 +283,6 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				settings = parseAdvisorSettings({});
 				notify(ctx, `Advisor is disabled because its settings are invalid: ${errorText(error)}`, "error");
 			}
-			runner.reconstruct(ctx);
 			const active = pi.getActiveTools();
 			if (settings.provider && settings.modelId) {
 				if (!active.includes("advisor")) pi.setActiveTools([...active, "advisor"]);
@@ -343,7 +350,9 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			promptGuidelines: ADVISOR_PROMPT_GUIDELINES,
 			executionMode: "sequential",
 			parameters: Type.Object({
-				question: Type.Optional(Type.String({ description: "Optional focus question for the advisor" })),
+				question: Type.Optional(Type.String({
+					description: "Optional focus for the advisor. The full conversation is forwarded either way — do not restate context here.",
+				})),
 			}),
 			async execute(toolCallId, params, signal, _onUpdate, ctx) {
 				try {
@@ -439,7 +448,6 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 		});
 
 		pi.on("session_start", async (_event, ctx) => loadForSession(ctx));
-		pi.on("session_tree", async (_event, ctx) => runner.reconstruct(ctx));
 		pi.on("session_shutdown", async (_event, ctx) => {
 			if (ctx.hasUI) ctx.ui.setStatus("advisor", undefined);
 		});

@@ -43,6 +43,7 @@
     "provider": "openai-codex",
     "modelId": "gpt-5.6-sol",
     "maxUses": 3,
+    "maxUsesPerSession": 10,
     "maxTokens": 2048,
     "allowCrossProvider": true
   }
