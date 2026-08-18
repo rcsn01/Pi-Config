@@ -11,7 +11,12 @@ import {
 	visibleWidth,
 	type Component,
 } from "@earendil-works/pi-tui";
-import { collectSessionUsage, collectSubagentUsage } from "../_shared/usage.ts";
+import {
+	collectCustomMessageUsage,
+	collectSessionUsage,
+	collectSubagentUsage,
+	collectToolUsage,
+} from "../_shared/usage.ts";
 import {
 	allocateMeter,
 	calculateContextDiagnostics,
@@ -92,16 +97,28 @@ function cumulativeUsageLines(
 	theme: Theme,
 	width: number,
 ): string[] {
-	const session = usageBlockLines("Current context token usage", diagnostics.sessionUsage, theme);
-	const subagents = usageBlockLines("Subagent usage in context", diagnostics.subagentUsage, theme);
-	if (width < 72) return [...session, "", ...subagents];
+	const blocks = [
+		usageBlockLines("Current context token usage", diagnostics.sessionUsage, theme),
+		usageBlockLines("Subagent usage in context", diagnostics.subagentUsage, theme),
+		usageBlockLines("Advisor usage in context", diagnostics.advisorUsage, theme),
+		usageBlockLines("Guardian usage in context", diagnostics.guardianUsage, theme),
+	];
+	if (width < 72) return blocks.flatMap((block, index) => index === 0 ? block : ["", ...block]);
 
 	const gap = 3;
 	const leftWidth = Math.floor((width - gap) / 2);
 	const rightWidth = Math.max(1, width - gap - leftWidth);
-	return session.map((line, index) =>
-		`${pad(line, leftWidth)}${" ".repeat(gap)}${fit(subagents[index] ?? "", rightWidth)}`,
-	);
+	const lines: string[] = [];
+	for (let index = 0; index < blocks.length; index += 2) {
+		const left = blocks[index]!;
+		const right = blocks[index + 1] ?? [];
+		const rows = Math.max(left.length, right.length);
+		for (let row = 0; row < rows; row++) {
+			lines.push(`${pad(left[row] ?? "", leftWidth)}${" ".repeat(gap)}${fit(right[row] ?? "", rightWidth)}`);
+		}
+		if (index + 2 < blocks.length) lines.push("");
+	}
+	return lines;
 }
 
 function breakdownLines(
@@ -326,12 +343,14 @@ export function collectCurrentContextUsage(
 		contextEntries,
 		sessionUsage: collectSessionUsage(contextEntries),
 		subagentUsage: collectSubagentUsage(contextEntries),
+		advisorUsage: collectToolUsage(contextEntries, "advisor"),
+		guardianUsage: collectCustomMessageUsage(contextEntries, "auto-review-verdict"),
 	};
 }
 
 function collectDiagnostics(pi: ExtensionAPI, ctx: ExtensionCommandContext): ContextDiagnostics {
 	const options = ctx.getSystemPromptOptions();
-	const { contextEntries, sessionUsage, subagentUsage } = collectCurrentContextUsage(ctx.sessionManager);
+	const { contextEntries, sessionUsage, subagentUsage, advisorUsage, guardianUsage } = collectCurrentContextUsage(ctx.sessionManager);
 	return calculateContextDiagnostics({
 		model: ctx.model,
 		usage: ctx.getContextUsage(),
@@ -352,6 +371,16 @@ function collectDiagnostics(pi: ExtensionAPI, ctx: ExtensionCommandContext): Con
 			cacheRead: subagentUsage.cacheRead,
 			output: subagentUsage.output,
 		},
+		advisorUsage: {
+			input: advisorUsage.input,
+			cacheRead: advisorUsage.cacheRead,
+			output: advisorUsage.output,
+		},
+		guardianUsage: {
+			input: guardianUsage.input,
+			cacheRead: guardianUsage.cacheRead,
+			output: guardianUsage.output,
+		},
 		compaction: loadCompactionSettings(ctx),
 	});
 }
@@ -361,10 +390,14 @@ export function textualSummary(diagnostics: ContextDiagnostics): string {
 	const window = diagnostics.contextWindow > 0 ? formatTokenCount(diagnostics.contextWindow) : "unknown";
 	const usage = diagnostics.sessionUsage;
 	const subagents = diagnostics.subagentUsage;
+	const advisor = diagnostics.advisorUsage;
+	const guardian = diagnostics.guardianUsage;
 	return [
 		`${diagnostics.modelId}: ${marker}${formatTokenCount(diagnostics.usedTokens)} / ${window} tokens (${formatPercent(diagnostics.percent)})`,
 		`Current context token usage: Input ${formatExactTokenCount(usage.input)} · Cache input ${formatExactTokenCount(usage.cacheRead)} · Output ${formatExactTokenCount(usage.output)}`,
 		`Subagent usage in context: Input ${formatExactTokenCount(subagents.input)} · Cache input ${formatExactTokenCount(subagents.cacheRead)} · Output ${formatExactTokenCount(subagents.output)}`,
+		`Advisor usage in context: Input ${formatExactTokenCount(advisor.input)} · Cache input ${formatExactTokenCount(advisor.cacheRead)} · Output ${formatExactTokenCount(advisor.output)}`,
+		`Guardian usage in context: Input ${formatExactTokenCount(guardian.input)} · Cache input ${formatExactTokenCount(guardian.cacheRead)} · Output ${formatExactTokenCount(guardian.output)}`,
 	].join("\n");
 }
 

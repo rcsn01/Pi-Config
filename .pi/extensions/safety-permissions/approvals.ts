@@ -106,7 +106,12 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 				customType: "auto-review-verdict",
 				content: `${icon} ${label}: ${title} — ${result.reason || ""}`,
 				display: true,
-				details: { title, allowed: result.allowed, reason: result.reason },
+				details: {
+					title,
+					allowed: result.allowed,
+					reason: result.reason,
+					...(result.usage ? { usage: result.usage } : {}),
+				},
 			});
 
 			if (result.allowed) {

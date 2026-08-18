@@ -36,6 +36,13 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"previous-message": {
+			"displayName": "Previous Message",
+			"pack": "editor",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"subscription-usage": {
 			"displayName": "Subscription Usage",
 			"pack": "observability",
@@ -50,6 +57,13 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"session-auto-name": {
+			"displayName": "Session Auto Name",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"sessions-memory": {
 			"displayName": "Session Memory",
 			"pack": "excluded",
@@ -61,6 +75,13 @@
 			"displayName": "Feature Flags",
 			"pack": "core",
 			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"tools-advisor": {
+			"displayName": "Advisor",
+			"pack": "autonomy",
+			"defaultEnabled": false,
 			"requires": [],
 			"conflicts": []
 		},

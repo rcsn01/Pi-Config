@@ -65,6 +65,26 @@ function finalizeUsage(totals: SessionUsageTotals): SessionUsageTotals {
 	return totals;
 }
 
+/** Collect usage persisted directly on tool-result messages with the requested tool name. */
+export function collectToolUsage(entries: readonly SessionEntry[], toolName: string): SessionUsageTotals {
+	const totals = emptyUsageTotals();
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== toolName) continue;
+		addUsage(totals, entry.message.usage);
+	}
+	return finalizeUsage(totals);
+}
+
+/** Collect usage nested in custom-message details with the requested custom type. */
+export function collectCustomMessageUsage(entries: readonly SessionEntry[], customType: string): SessionUsageTotals {
+	const totals = emptyUsageTotals();
+	for (const entry of entries) {
+		if (entry.type !== "custom_message" || entry.customType !== customType) continue;
+		addUsage(totals, asRecord(entry.details)?.usage);
+	}
+	return finalizeUsage(totals);
+}
+
 export function collectSubagentUsage(entries: readonly SessionEntry[]): SessionUsageTotals {
 	const totals = emptyUsageTotals();
 	for (const entry of entries) {
@@ -94,6 +114,8 @@ export function collectSessionUsage(entries: readonly SessionEntry[]): SessionUs
 			} else if (entry.message.toolName === "subagent") {
 				for (const usage of nestedSubagentUsages(entry.message.details)) addUsage(totals, usage);
 			}
+		} else if (entry.type === "custom_message" && entry.customType === "auto-review-verdict") {
+			addUsage(totals, asRecord(entry.details)?.usage);
 		} else if (entry.type === "compaction" || entry.type === "branch_summary") {
 			addUsage(totals, entry.usage);
 		}

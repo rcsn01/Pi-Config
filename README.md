@@ -27,6 +27,16 @@ Run the setup script and enter the path to each project you want to link:
 
 This links the project's `.pi` directory to this repo's `.pi`, so it picks up the shared configuration.
 
+## Experimental advisor
+
+The opt-in `tools-advisor` extension lets the executor consult one stronger, read-only model without giving that model tools or edit access.
+
+- `/advisor` opens the authenticated advisor-model picker.
+- `/advisor <provider>/<model>` selects a model directly.
+- `/advisor off` disables future consultations.
+
+The default budget is three consultations per session. The advisor receives the executor system prompt, active tool manifest, conversation, code, and tool output; selecting a different provider requires explicit confirmation. Advice is experimental and remains disabled until configured in the `advisor` namespace of `.pi/settings.json`.
+
 ## Settings profiles
 
 Complete project settings profiles live at `.pi/profiles/<name>.json`. A profile is a full settings document: switching profiles replaces `.pi/settings.json` rather than merging keys from multiple files.

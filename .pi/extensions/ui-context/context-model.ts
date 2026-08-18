@@ -37,6 +37,8 @@ export interface ContextModelInput {
 	contextEntries: readonly SessionEntry[];
 	sessionUsage: SessionTokenUsage;
 	subagentUsage: SessionTokenUsage;
+	advisorUsage: SessionTokenUsage;
+	guardianUsage: SessionTokenUsage;
 	compaction: { enabled: boolean; reserveTokens: number };
 	systemPromptOptions?: {
 		customPrompt?: string;
@@ -71,6 +73,8 @@ export interface ContextDiagnostics {
 	extensionTools: ExtensionToolDetail[];
 	sessionUsage: SessionTokenUsage;
 	subagentUsage: SessionTokenUsage;
+	advisorUsage: SessionTokenUsage;
+	guardianUsage: SessionTokenUsage;
 	freeSpace: number;
 	compactionReserve: number;
 	compactionThreshold: number;
@@ -336,6 +340,8 @@ export function calculateContextDiagnostics(input: ContextModelInput): ContextDi
 	});
 	const sessionUsage = normalizeTokenUsage(input.sessionUsage);
 	const subagentUsage = normalizeTokenUsage(input.subagentUsage);
+	const advisorUsage = normalizeTokenUsage(input.advisorUsage);
+	const guardianUsage = normalizeTokenUsage(input.guardianUsage);
 	return {
 		modelId: input.model ? `${input.model.provider}/${input.model.id}` : "No active model",
 		contextWindow,
@@ -347,6 +353,8 @@ export function calculateContextDiagnostics(input: ContextModelInput): ContextDi
 		extensionTools,
 		sessionUsage,
 		subagentUsage,
+		advisorUsage,
+		guardianUsage,
 		freeSpace,
 		compactionReserve,
 		compactionThreshold: input.compaction.enabled

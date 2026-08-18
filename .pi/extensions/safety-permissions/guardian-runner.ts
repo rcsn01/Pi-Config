@@ -22,6 +22,7 @@
  * A shared ModelRuntime is created lazily and reused across sessions so model
  * catalog/auth initialization happens once.
  */
+import type { Usage } from "@earendil-works/pi-ai";
 import {
 	createAgentSession,
 	type AgentSession,
@@ -47,6 +48,60 @@ export interface GuardianDefinition {
 	systemPrompt: string;
 	model: string;
 	tools: string;
+}
+
+export interface GuardianReviewResult extends ApprovalResult {
+	usage?: Usage;
+}
+
+type GuardianMessage = AgentSession["messages"][number];
+
+/** Aggregate usage from assistant messages emitted by one guardian request. */
+export function collectGuardianUsage(messages: readonly GuardianMessage[], startIndex = 0): Usage | undefined {
+	const total: Usage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	let found = false;
+	let hasCacheWrite1h = false;
+	let cacheWrite1h = 0;
+	let hasReasoning = false;
+	let reasoning = 0;
+	for (const message of messages.slice(Math.max(0, Math.floor(startIndex)))) {
+		if (message.role !== "assistant" || !message.usage) continue;
+		found = true;
+		const usage = message.usage;
+		total.input += finiteUsageNumber(usage.input);
+		total.output += finiteUsageNumber(usage.output);
+		total.cacheRead += finiteUsageNumber(usage.cacheRead);
+		total.cacheWrite += finiteUsageNumber(usage.cacheWrite);
+		total.totalTokens += finiteUsageNumber(usage.totalTokens);
+		total.cost.input += finiteUsageNumber(usage.cost.input);
+		total.cost.output += finiteUsageNumber(usage.cost.output);
+		total.cost.cacheRead += finiteUsageNumber(usage.cost.cacheRead);
+		total.cost.cacheWrite += finiteUsageNumber(usage.cost.cacheWrite);
+		total.cost.total += finiteUsageNumber(usage.cost.total);
+		if (typeof usage.cacheWrite1h === "number" && Number.isFinite(usage.cacheWrite1h)) {
+			hasCacheWrite1h = true;
+			cacheWrite1h += usage.cacheWrite1h;
+		}
+		if (typeof usage.reasoning === "number" && Number.isFinite(usage.reasoning)) {
+			hasReasoning = true;
+			reasoning += usage.reasoning;
+		}
+	}
+	if (!found) return undefined;
+	if (hasCacheWrite1h) total.cacheWrite1h = cacheWrite1h;
+	if (hasReasoning) total.reasoning = reasoning;
+	return total;
+}
+
+function finiteUsageNumber(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 export function resolveGuardianPath(moduleUrl: string): string {
@@ -216,14 +271,14 @@ function lastAssistantTextSince(session: AgentSession, startCount: number): stri
 
 /**
  * Run the guardian LLM in-process to evaluate an action.
- * Returns an `ApprovalResult`. On timeout, subprocess failure, or an
- * unparseable/absent response the result is denied (fail closed).
+ * On timeout, subprocess failure, or an unparseable/absent response the result
+ * is denied (fail closed), while any usage emitted by that request is retained.
  */
 export async function runAutoReviewer(
 	title: string,
 	message: string,
 	guardianPath = resolveGuardianPath(import.meta.url),
-): Promise<ApprovalResult> {
+): Promise<GuardianReviewResult> {
 	const task = `Evaluate this action for safety.
 
 You are operating in auto-review mode. You are the FINAL authority — your decision is never escalated to the user. Decide yourself: allow or deny.
@@ -245,33 +300,40 @@ ${message}`;
 		return { allowed: false, reason: "Guardian agent not found; blocked for safety." };
 	}
 
+	let session: AgentSession | undefined;
+	let startCount = 0;
+	const requestUsage = (): Usage | undefined => session ? collectGuardianUsage(session.messages, startCount) : undefined;
+	const withRequestUsage = (result: ApprovalResult): GuardianReviewResult => {
+		const usage = requestUsage();
+		return usage ? { ...result, usage } : result;
+	};
+
 	try {
-		const session = await getGuardianSession(definition);
-		const startCount = session.messages.length;
+		session = await getGuardianSession(definition);
+		startCount = session.messages.length;
 		await withTimeout(session.prompt(task), GUARDIAN_TIMEOUT_MS);
 		const content = lastAssistantTextSince(session, startCount);
 
 		if (!content.trim()) {
-			return { allowed: false, reason: "Guardian returned no response; blocked for safety." };
+			return withRequestUsage({ allowed: false, reason: "Guardian returned no response; blocked for safety." });
 		}
 
 		const verdict = parseGuardianVerdict(content);
 		if (verdict === "unclear") {
-			return { allowed: false, reason: "Guardian returned ambiguous response; blocked for safety." };
+			return withRequestUsage({ allowed: false, reason: "Guardian returned ambiguous response; blocked for safety." });
 		}
-		return verdict;
+		return withRequestUsage(verdict);
 	} catch (err: any) {
 		if (err?.message && /timed out after/.test(err.message)) {
 			// Best-effort abort so a stranded LLM stream stops burning tokens.
 			try {
-				const session = await sessionPromise;
 				await session?.abort();
 			} catch {}
-			return {
+			return withRequestUsage({
 				allowed: false,
 				reason: `Guardian timed out after ${GUARDIAN_TIMEOUT_MS / 1000}s; blocked for safety.`,
-			};
+			});
 		}
-		return { allowed: false, reason: `Guardian error: ${err.message || String(err)}` };
+		return withRequestUsage({ allowed: false, reason: `Guardian error: ${err.message || String(err)}` });
 	}
 }
