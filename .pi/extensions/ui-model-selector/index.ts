@@ -21,6 +21,7 @@ import {
 	installModelCommandHandler,
 	ModelCommandRoutingEditor,
 } from "../_shared/model-command-routing.ts";
+import { applyStoredProfile, currentSelectionMode } from "./apply-profile.ts";
 import {
 	calculateCompactionReserveTokens,
 	filterModels,
@@ -30,7 +31,6 @@ import {
 	resolveModelContext,
 	shouldOpenStartupModelSelector,
 	type ModelSelectionMode,
-	type ModelSelectionSettings,
 } from "./model-config.ts";
 import {
 	createProjectSettingsStore,
@@ -49,20 +49,6 @@ const THINKING_DESCRIPTIONS: Record<ModelThinkingLevel, string> = {
 
 function modelKey(model: Pick<Model<Api>, "provider" | "id">): string {
 	return `${model.provider}/${model.id}`;
-}
-
-export function selectionModeFromEntries(entries: readonly unknown[]): ModelSelectionMode {
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index] as { type?: unknown; customType?: unknown; data?: unknown };
-		if (entry?.type !== "custom" || entry.customType !== "plan-mode-state") continue;
-		const data = entry.data as { active?: unknown } | undefined;
-		return data?.active === true ? "plan" : "normal";
-	}
-	return "normal";
-}
-
-function currentSelectionMode(ctx: ExtensionContext): ModelSelectionMode {
-	return selectionModeFromEntries(ctx.sessionManager.getBranch());
 }
 
 function availableModels(ctx: ExtensionContext): Model<Api>[] {
@@ -179,37 +165,6 @@ async function selectThinkingLevel(
 	const selected = await ctx.ui.select(`Thinking · ${modelKey(model)}`, choices);
 	if (!selected) return undefined;
 	return ordered[choices.indexOf(selected)];
-}
-
-async function applyStoredProfile(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	profile: ModelSelectionSettings,
-	settingsStore: ProjectSettingsStore,
-): Promise<void> {
-	const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false, providers: [profile.provider] });
-	if (refresh.aborted) throw new Error(`Refreshing ${profile.provider} was aborted.`);
-	const refreshError = refresh.errors.get(profile.provider);
-	if (refreshError) throw refreshError;
-	const catalogueModel = ctx.modelRegistry.find(profile.provider, profile.modelId);
-	if (!catalogueModel) throw new Error(`Normal profile model ${profile.provider}/${profile.modelId} is unavailable.`);
-	if (
-		ctx.scopedModels.length > 0 &&
-		!ctx.scopedModels.some((entry) => entry.model.provider === profile.provider && entry.model.id === profile.modelId)
-	) {
-		throw new Error(`Normal profile model ${profile.provider}/${profile.modelId} is outside this session's model scope.`);
-	}
-	// Honor the profile's configured context window; the catalogue value is only
-	// a fallback when the profile does not pin one.
-	const model = {
-		...resolveModelContext(catalogueModel),
-		contextWindow: resolveContextWindow(profile.contextWindow),
-	};
-	if (!(await pi.setModel(model))) {
-		throw new Error(`No configured authentication for ${profile.provider}/${profile.modelId}.`);
-	}
-	pi.setThinkingLevel(profile.thinkingLevel);
-	await settingsStore.syncCompaction(model.contextWindow);
 }
 
 async function applySelection(

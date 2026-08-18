@@ -2,28 +2,28 @@
   "compaction": {
     "enabled": false,
     "threshold": 0.1,
-    "reserveTokens": 27200,
+    "reserveTokens": 20000,
     "keepRecentTokens": 25600
   },
   "uiModelSelector": {
     "profiles": {
       "normal": {
-        "provider": "openai-codex",
-        "modelId": "gpt-5.6-luna",
+        "provider": "ollama",
+        "modelId": "deepseek-v4-flash:0731-cloud",
         "thinkingLevel": "max",
-        "contextWindow": 272000
+        "contextWindow": 200000
       },
       "plan": {
-        "provider": "openai-codex",
-        "modelId": "gpt-5.6-luna",
+        "provider": "ollama",
+        "modelId": "deepseek-v4-flash:0731-cloud",
         "thinkingLevel": "max",
-        "contextWindow": 272000
+        "contextWindow": 256000
       }
     }
   },
   "subagents": {
     "maxConcurrency": 4,
-    "defaultModel": "openai-codex/gpt-5.6-luna",
+    "defaultModel": "ollama/deepseek-v4-flash:0731-cloud",
     "agentModels": {},
     "defaultThinkingLevel": "max",
     "agentThinkingLevels": {},
@@ -37,7 +37,7 @@
     }
   },
   "configProfiles": {
-    "active": "openai"
+    "active": "dsv4-flash"
   },
   "advisor": {
     "provider": "openai-codex",
@@ -45,9 +45,9 @@
     "strict": false,
     "nudgeTurn": 3,
     "maxUses": 3,
-    "maxUsesPerSession": 20,
+    "maxUsesPerSession": 10,
     "maxTokens": 2048,
-    "allowCrossProvider": false,
+    "allowCrossProvider": true,
     "contextBudget": {
       "thinking": "recent",
       "recentMessages": 8,
