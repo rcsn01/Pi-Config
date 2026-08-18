@@ -2,7 +2,7 @@
   "compaction": {
     "enabled": true,
     "threshold": 0.1,
-    "reserveTokens": 104858,
+    "reserveTokens": 25600,
     "keepRecentTokens": 25600
   },
   "uiModelSelector": {
@@ -11,7 +11,7 @@
         "provider": "ollama",
         "modelId": "deepseek-v4-pro:cloud",
         "thinkingLevel": "max",
-        "contextWindow": 1048576
+        "contextWindow": 256000
       },
       "plan": {
         "provider": "ollama",

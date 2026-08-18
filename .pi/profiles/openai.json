@@ -2,28 +2,28 @@
   "compaction": {
     "enabled": true,
     "threshold": 0.1,
-    "reserveTokens": 20000,
+    "reserveTokens": 27200,
     "keepRecentTokens": 25600
   },
   "uiModelSelector": {
     "profiles": {
       "normal": {
-        "provider": "github-copilot",
+        "provider": "openai-codex",
         "modelId": "gpt-5.6-sol",
-        "thinkingLevel": "medium",
-        "contextWindow": 256000
+        "thinkingLevel": "xhigh",
+        "contextWindow": 272000
       },
       "plan": {
-        "provider": "ollama",
-        "modelId": "deepseek-v4-flash:0731-cloud",
+        "provider": "openai-codex",
+        "modelId": "gpt-5.6-sol",
         "thinkingLevel": "xhigh",
-        "contextWindow": 256000
+        "contextWindow": 272000
       }
     }
   },
   "subagents": {
     "maxConcurrency": 4,
-    "defaultModel": "github-copilot/gpt-5.6-luna",
+    "defaultModel": "openai-codex/gpt-5.6-luna",
     "agentModels": {},
     "defaultThinkingLevel": "max",
     "agentThinkingLevels": {},
@@ -37,6 +37,6 @@
     }
   },
   "configProfiles": {
-    "active": "default"
+    "active": "openai"
   }
 }

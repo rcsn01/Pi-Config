@@ -2,30 +2,30 @@
   "compaction": {
     "enabled": true,
     "threshold": 0.1,
-    "reserveTokens": 104858,
+    "reserveTokens": 27200,
     "keepRecentTokens": 25600
   },
   "uiModelSelector": {
     "profiles": {
       "normal": {
-        "provider": "ollama",
-        "modelId": "deepseek-v4-pro:cloud",
-        "thinkingLevel": "max",
-        "contextWindow": 1048576
+        "provider": "openai-codex",
+        "modelId": "gpt-5.6-sol",
+        "thinkingLevel": "xhigh",
+        "contextWindow": 272000
       },
       "plan": {
-        "provider": "ollama",
-        "modelId": "deepseek-v4-pro:cloud",
-        "thinkingLevel": "max",
-        "contextWindow": 256000
+        "provider": "openai-codex",
+        "modelId": "gpt-5.6-sol",
+        "thinkingLevel": "xhigh",
+        "contextWindow": 272000
       }
     }
   },
   "subagents": {
     "maxConcurrency": 4,
-    "defaultModel": "ollama/deepseek-v4-pro:cloud",
+    "defaultModel": "openai-codex/gpt-5.6-luna",
     "agentModels": {},
-    "defaultThinkingLevel": "high",
+    "defaultThinkingLevel": "max",
     "agentThinkingLevels": {},
     "defaultContextWindow": 256000,
     "agentContextWindows": {
@@ -37,6 +37,6 @@
     }
   },
   "configProfiles": {
-    "active": "dsv4-pro"
+    "active": "openai"
   }
 }
