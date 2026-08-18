@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	collectCustomMessageUsage,
+	collectModelUsage,
 	collectSessionUsage,
 	collectSubagentUsage,
 	collectToolUsage,
@@ -108,6 +109,102 @@ describe("shared usage", () => {
 		expect(collectSessionUsage(entries)).toMatchObject({ input: 1050, output: 8, cacheRead: 20, cacheWrite: 3, tokens: 1081, cost: 0.6000000000000001 });
 	});
 
+	it("attributes usage to persisted models across assistants and delegated work", () => {
+		const entries = [
+			{
+				type: "message",
+				message: { role: "toolResult", toolName: "bash", usage: { input: 1 } },
+			},
+			{
+				type: "message",
+				message: {
+					role: "assistant",
+					provider: "openai",
+					model: "gpt",
+					usage: { input: 10, output: 2, cacheRead: 3, cacheWrite: 1, cost: { total: 0.5 } },
+				},
+			},
+			{ type: "model_change", provider: "anthropic", modelId: "claude" },
+			{
+				type: "message",
+				message: {
+					role: "assistant",
+					provider: "anthropic",
+					model: "claude",
+					usage: { input: 20, output: 4, cacheRead: 5, cost: { total: 1 } },
+				},
+			},
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: "advisor",
+					details: { model: "openai/advisor" },
+					usage: { input: 5, output: 1, cacheRead: 2, cost: { total: 0.2 } },
+				},
+			},
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: "subagent",
+					details: { results: [
+						{ model: "subagent/one", usage: { input: 7, output: 2, cacheRead: 1, cost: 0.3, turns: 2 } },
+						{ model: "subagent/two", usage: { input: 3, output: 1, cacheWrite: 1, cost: 0.1, turns: 1 } },
+					] },
+				},
+			},
+			{
+				type: "custom_message",
+				customType: "auto-review-verdict",
+				details: { model: "guardian/model", usage: { input: 9, output: 2, cacheRead: 4, cost: { total: 0.4 } } },
+			},
+			{
+				type: "compaction",
+				usage: { input: 2, output: 1, cacheRead: 1, cost: { total: 0.25 } },
+			},
+		] as unknown as SessionEntry[];
+
+		expect(collectModelUsage(entries).map((row) => row.model)).toEqual([
+			"anthropic/claude",
+			"openai/gpt",
+			"guardian/model",
+			"subagent/one",
+			"openai/advisor",
+			"subagent/two",
+			"unknown",
+		]);
+		const rows = collectModelUsage(entries);
+		expect(rows[0]).toMatchObject({
+			model: "anthropic/claude",
+			session: { input: 22, output: 5, cacheRead: 6, cacheWrite: 0, tokens: 33, cost: 1.25, turns: 1 },
+		});
+		expect(rows[1]).toMatchObject({
+			model: "openai/gpt",
+			session: { input: 10, output: 2, cacheRead: 3, cacheWrite: 1, tokens: 16, cost: 0.5, turns: 1 },
+		});
+		expect(rows[2]).toMatchObject({
+			model: "guardian/model",
+			guardian: { input: 9, output: 2, cacheRead: 4, cacheWrite: 0, tokens: 15, cost: 0.4, turns: 0 },
+		});
+		expect(rows[3]).toMatchObject({
+			model: "subagent/one",
+			subagent: { input: 7, output: 2, cacheRead: 1, cacheWrite: 0, tokens: 10, cost: 0.3, turns: 2 },
+		});
+		expect(rows[4]).toMatchObject({
+			model: "openai/advisor",
+			advisor: { input: 5, output: 1, cacheRead: 2, cacheWrite: 0, tokens: 8, cost: 0.2, turns: 0 },
+		});
+		expect(rows[5]).toMatchObject({
+			model: "subagent/two",
+			subagent: { input: 3, output: 1, cacheRead: 0, cacheWrite: 1, tokens: 5, cost: 0.1, turns: 1 },
+		});
+		expect(rows[6]).toMatchObject({
+			model: "unknown",
+			session: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, tokens: 1, cost: 0, turns: 0 },
+		});
+	});
+
 	it("keeps named usage restricted to the active compaction-aware branch", () => {
 		const custom = (id: string, parentId: string | null, input: number) => ({
 			type: "custom_message",
@@ -131,6 +228,42 @@ describe("shared usage", () => {
 		const contextEntries = buildContextEntries(entries, "active-post-compact");
 		expect(collectCustomMessageUsage(contextEntries, "auto-review-verdict")).toMatchObject({
 			input: 15, output: 2, cacheRead: 30, tokens: 47,
+		});
+	});
+
+	it("keeps model rows restricted to the active compaction-aware branch", () => {
+		const verdict = (id: string, parentId: string, model: string, input: number) => ({
+			type: "custom_message",
+			id,
+			parentId,
+			timestamp: "2026-01-01T00:00:00.000Z",
+			customType: "auto-review-verdict",
+			content: "verdict",
+			display: true,
+			details: { model, usage: { input, output: 1, cost: { total: 0 } } },
+		});
+		const entries = [
+			{ type: "message", id: "user", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "start" } },
+			{ type: "model_change", id: "change", parentId: "user", timestamp: "2026-01-01T00:00:00.000Z", provider: "main", modelId: "model" },
+			{ type: "message", id: "assistant", parentId: "change", timestamp: "2026-01-01T00:00:00.000Z", message: { role: "assistant", provider: "main", model: "model", usage: { input: 20, output: 2 } } },
+			{ type: "compaction", id: "compact", parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z", summary: "Earlier work", firstKeptEntryId: "assistant", tokensBefore: 100 },
+			verdict("abandoned", "compact", "old/model", 1_000),
+			verdict("active", "compact", "new/model", 5),
+		] as unknown as SessionEntry[];
+		const contextEntries = buildContextEntries(entries, "active");
+
+		expect(collectModelUsage(contextEntries).map((row) => row.model)).toEqual([
+			"main/model",
+			"new/model",
+		]);
+		const rows = collectModelUsage(contextEntries);
+		expect(rows[0]).toMatchObject({
+			model: "main/model",
+			session: { input: 20, output: 2 },
+		});
+		expect(rows[1]).toMatchObject({
+			model: "new/model",
+			guardian: { input: 5, output: 1 },
 		});
 	});
 

@@ -10,6 +10,16 @@ export interface SessionUsageTotals {
 	turns: number;
 }
 
+export interface ModelUsageRow {
+	model: string;
+	session: SessionUsageTotals;
+	subagent: SessionUsageTotals;
+	advisor: SessionUsageTotals;
+	guardian: SessionUsageTotals;
+}
+
+type ModelUsageCategory = keyof Omit<ModelUsageRow, "model">;
+
 export interface ContextUsageTotals {
 	tokens: number | null;
 	contextWindow: number;
@@ -54,10 +64,29 @@ function addUsage(totals: SessionUsageTotals, value: unknown, includeTurns = fal
 	if (includeTurns) totals.turns += finiteNonNegative(usage?.turns);
 }
 
-function nestedSubagentUsages(details: unknown): unknown[] {
+function nestedSubagentResults(details: unknown): Record<string, unknown>[] {
 	const results = asRecord(details)?.results;
 	if (!Array.isArray(results)) return [];
-	return results.map((result) => asRecord(result)?.usage).filter((usage) => usage !== undefined);
+	return results.map(asRecord).filter((result): result is Record<string, unknown> => result !== undefined);
+}
+
+function nestedSubagentUsages(details: unknown): unknown[] {
+	return nestedSubagentResults(details)
+		.map((result) => result.usage)
+		.filter((usage) => usage !== undefined);
+}
+
+function modelKey(provider: unknown, model: unknown): string | undefined {
+	if (typeof provider !== "string" || typeof model !== "string") return undefined;
+	const normalizedProvider = provider.trim();
+	const normalizedModel = model.trim();
+	return normalizedProvider && normalizedModel ? `${normalizedProvider}/${normalizedModel}` : undefined;
+}
+
+function modelName(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const normalized = value.trim();
+	return normalized || undefined;
 }
 
 function finalizeUsage(totals: SessionUsageTotals): SessionUsageTotals {
@@ -83,6 +112,97 @@ export function collectCustomMessageUsage(entries: readonly SessionEntry[], cust
 		addUsage(totals, asRecord(entry.details)?.usage);
 	}
 	return finalizeUsage(totals);
+}
+
+/**
+ * Attribute active-branch usage to the model that produced or initiated it,
+ * split by usage category (session, subagent, advisor, guardian).
+ * Model-specific metadata wins for delegated work; the current session model
+ * is used as a fallback for older entries without that metadata.
+ */
+export function collectModelUsage(entries: readonly SessionEntry[]): ModelUsageRow[] {
+	const byModel = new Map<string, ModelUsageRow>();
+	let currentModel: string | undefined;
+
+	const add = (model: string | undefined, category: ModelUsageCategory, value: unknown, includeTurns = false): void => {
+		const key = model ?? "unknown";
+		let row = byModel.get(key);
+		if (!row) {
+			row = {
+				model: key,
+				session: emptyUsageTotals(),
+				subagent: emptyUsageTotals(),
+				advisor: emptyUsageTotals(),
+				guardian: emptyUsageTotals(),
+			};
+			byModel.set(key, row);
+		}
+		addUsage(row[category], value, includeTurns);
+	};
+
+	for (const entry of entries) {
+		if (entry.type === "model_change") {
+			currentModel = modelKey(entry.provider, entry.modelId) ?? currentModel;
+			continue;
+		}
+
+		if (entry.type === "message") {
+			if (entry.message.role === "assistant") {
+				const assistantModel = modelKey(entry.message.provider, entry.message.model);
+				if (assistantModel) currentModel = assistantModel;
+				add(currentModel, "session", entry.message.usage);
+				byModel.get(currentModel ?? "unknown")!.session.turns++;
+			} else if (entry.message.role === "toolResult") {
+				if (entry.message.toolName === "subagent") {
+					if (entry.message.usage !== undefined) {
+						add(currentModel, "subagent", entry.message.usage, true);
+					} else {
+						for (const result of nestedSubagentResults(entry.message.details)) {
+							add(modelName(result.model) ?? currentModel, "subagent", result.usage, true);
+						}
+					}
+				} else {
+					const delegatedModel = entry.message.toolName === "advisor"
+						? modelName(asRecord(entry.message.details)?.model)
+						: undefined;
+					add(
+						delegatedModel ?? currentModel,
+						entry.message.toolName === "advisor" ? "advisor" : "session",
+						entry.message.usage,
+					);
+				}
+			}
+			continue;
+		}
+
+		if (entry.type === "custom_message" && entry.customType === "auto-review-verdict") {
+			const details = asRecord(entry.details);
+			add(modelName(details?.model) ?? currentModel, "guardian", details?.usage);
+		} else if (entry.type === "compaction" || entry.type === "branch_summary") {
+			add(currentModel, "session", entry.usage);
+		}
+	}
+
+	return [...byModel.values()]
+		.map((row) => ({
+			...row,
+			session: finalizeUsage(row.session),
+			subagent: finalizeUsage(row.subagent),
+			advisor: finalizeUsage(row.advisor),
+			guardian: finalizeUsage(row.guardian),
+		}))
+		.filter((row) =>
+			row.session.tokens + row.subagent.tokens + row.advisor.tokens + row.guardian.tokens > 0 ||
+			row.session.cost + row.subagent.cost + row.advisor.cost + row.guardian.cost > 0 ||
+			row.session.turns + row.subagent.turns + row.advisor.turns + row.guardian.turns > 0,
+		)
+		.sort((left, right) => {
+			if (left.model === "unknown") return 1;
+			if (right.model === "unknown") return -1;
+			const leftTokens = left.session.tokens + left.subagent.tokens + left.advisor.tokens + left.guardian.tokens;
+			const rightTokens = right.session.tokens + right.subagent.tokens + right.advisor.tokens + right.guardian.tokens;
+			return rightTokens - leftTokens || left.model.localeCompare(right.model);
+		});
 }
 
 export function collectSubagentUsage(entries: readonly SessionEntry[]): SessionUsageTotals {

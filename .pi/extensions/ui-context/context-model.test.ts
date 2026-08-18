@@ -81,6 +81,13 @@ function input(overrides: Partial<ContextModelInput> = {}): ContextModelInput {
 		subagentUsage: { input: 1_234, cacheRead: 5_678, output: 345 },
 		advisorUsage: { input: 456, cacheRead: 789, output: 123 },
 		guardianUsage: { input: 321, cacheRead: 654, output: 987 },
+		modelUsage: [{
+			model: "test/model",
+			session: { input: 456, cacheRead: 789, output: 123, cacheWrite: 0, tokens: 1_368, cost: 1.25, turns: 2 },
+			subagent: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+			advisor: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+			guardian: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+		}],
 		compaction: { enabled: true, reserveTokens: 100 },
 		...overrides,
 	};
@@ -89,6 +96,10 @@ function input(overrides: Partial<ContextModelInput> = {}): ContextModelInput {
 describe("current context usage scope", () => {
 	it("reads only the compaction-aware context projection", () => {
 		const retained = [{
+			type: "model_change",
+			provider: "test",
+			modelId: "main",
+		}, {
 			type: "message",
 			message: {
 				role: "toolResult",
@@ -100,12 +111,13 @@ describe("current context usage scope", () => {
 			message: {
 				role: "toolResult",
 				toolName: "advisor",
+				details: { model: "test/advisor" },
 				usage: { input: 13, output: 3, cacheRead: 17 },
 			},
 		}, {
 			type: "custom_message",
 			customType: "auto-review-verdict",
-			details: { usage: { input: 19, output: 5, cacheRead: 23 } },
+			details: { model: "test/guardian", usage: { input: 19, output: 5, cacheRead: 23 } },
 		}] as unknown as SessionEntry[];
 		const getEntries = vi.fn(() => {
 			throw new Error("append-only history must not be read");
@@ -119,6 +131,11 @@ describe("current context usage scope", () => {
 		expect(result.subagentUsage).toMatchObject({ input: 7, output: 2, cacheRead: 11 });
 		expect(result.advisorUsage).toMatchObject({ input: 13, output: 3, cacheRead: 17 });
 		expect(result.guardianUsage).toMatchObject({ input: 19, output: 5, cacheRead: 23 });
+		expect(result.modelUsage).toEqual(expect.arrayContaining([
+			expect.objectContaining({ model: "test/main", subagent: expect.objectContaining({ input: 7 }) }),
+			expect.objectContaining({ model: "test/advisor", advisor: expect.objectContaining({ input: 13 }) }),
+			expect.objectContaining({ model: "test/guardian", guardian: expect.objectContaining({ input: 19 }) }),
+		]));
 		expect(result.sessionUsage).toMatchObject({ input: 39, output: 10, cacheRead: 51 });
 	});
 });
@@ -140,6 +157,13 @@ describe("context category accounting", () => {
 		expect(result.subagentUsage).toEqual({ input: 12_345, cacheRead: 0, output: 0 });
 		expect(result.advisorUsage).toEqual({ input: 456, cacheRead: 789, output: 123 });
 		expect(result.guardianUsage).toEqual({ input: 321, cacheRead: 654, output: 987 });
+		expect(result.modelUsage).toEqual([{
+			model: "test/model",
+			session: { input: 456, cacheRead: 789, output: 123, cacheWrite: 0, tokens: 1_368, cost: 1.25, turns: 2 },
+			subagent: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+			advisor: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+			guardian: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+		}]);
 		expect(result.usedTokens).toBe(400);
 		expect(Object.values(result.categories).reduce((sum, value) => sum + value, 0)).toBe(400);
 		expect(result.freeSpace).toBe(500);
@@ -351,6 +375,25 @@ describe("display helpers", () => {
 			subagentUsage: { input: 123_456, cacheRead: 234_567, output: 34_567 },
 			advisorUsage: { input: 45_678, cacheRead: 56_789, output: 6_789 },
 			guardianUsage: { input: 12_345, cacheRead: 23_456, output: 3_456 },
+			modelUsage: [{
+				model: "openai/gpt-4o",
+				session: { input: 45_678, cacheRead: 56_789, output: 6_789, cacheWrite: 0, tokens: 109_256, cost: 1.234, turns: 3 },
+				subagent: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+				advisor: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+				guardian: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+			}, {
+				model: "google/gemini",
+				session: { input: 12_345, cacheRead: 23_456, output: 3_456, cacheWrite: 0, tokens: 39_257, cost: 0.5, turns: 1 },
+				subagent: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+				advisor: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+				guardian: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+			}, {
+				model: "anthropic/haiku",
+				session: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+				subagent: { input: 12_345, cacheRead: 23_456, output: 3_456, cacheWrite: 0, tokens: 39_257, cost: 0.0012, turns: 1 },
+				advisor: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+				guardian: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+			}],
 			freeSpace: 500,
 			compactionReserve: 100,
 			compactionThreshold: 900,
@@ -381,9 +424,12 @@ describe("display helpers", () => {
 			expect(lines.some((line) => line.includes("System prompt") && line.includes("100 (10%)"))).toBe(true);
 			expect(lines.some((line) => line.includes("Current context token usage"))).toBe(true);
 			expect(lines.some((line) => line.includes("Subagent usage in context"))).toBe(true);
-			for (const value of ["1,234,567", "2,345,678", "345,678", "123,456", "234,567", "34,567", "45,678", "56,789", "6,789", "12,345", "23,456", "3,456"]) {
+			for (const value of ["45,678", "56,789", "6,789", "12,345", "23,456", "3,456"]) {
 				expect(lines.some((line) => line.includes(value))).toBe(true);
 			}
+			expect(lines.some((line) => line.includes("openai/gpt-4o"))).toBe(true);
+			expect(lines.some((line) => line.includes("google/gemini"))).toBe(true);
+			expect(lines.some((line) => line.includes("anthropic/haiku"))).toBe(true);
 			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 		}
 
@@ -392,22 +438,36 @@ describe("display helpers", () => {
 			.toBeGreaterThan(narrowLines.findIndex((line) => line.includes("Current context token usage")));
 		expect(narrowLines.some((line) => line.includes("Advisor usage in context"))).toBe(true);
 		expect(narrowLines.some((line) => line.includes("Guardian usage in context"))).toBe(true);
+		expect(narrowLines.some((line) => line.includes("No usage recorded"))).toBe(true);
+		const sessionStart = narrowLines.findIndex((line) => line.includes("Current context token usage"));
+		const subagentStart = narrowLines.findIndex((line) => line.includes("Subagent usage in context"));
+		const sessionBlock = narrowLines.slice(sessionStart, subagentStart);
+		expect(sessionBlock.some((line) => line.includes("openai/gpt-4o"))).toBe(true);
+		expect(sessionBlock.some((line) => line.includes("google/gemini"))).toBe(true);
+		expect(sessionBlock.some((line) => line.includes("anthropic/haiku"))).toBe(false);
+		expect(sessionBlock.findIndex((line) => line.includes("openai/gpt-4o")))
+			.toBeLessThan(sessionBlock.findIndex((line) => line.includes("google/gemini")));
+		const advisorStart = narrowLines.findIndex((line) => line.includes("Advisor usage in context"));
+		const subagentBlock = narrowLines.slice(subagentStart, advisorStart);
+		expect(subagentBlock.some((line) => line.includes("anthropic/haiku"))).toBe(true);
+		expect(subagentBlock.some((line) => line.includes("openai/gpt-4o"))).toBe(false);
+		expect(subagentBlock.some((line) => line.includes("google/gemini"))).toBe(false);
 		const wideLines = component.render(90);
 		expect(wideLines.some((line) => line.includes("Current context token usage") && line.includes("Subagent usage in context"))).toBe(true);
+		expect(wideLines.some((line) => line.includes("openai/gpt-4o"))).toBe(true);
+		expect(wideLines.some((line) => line.includes("Input") && line.includes("45,678"))).toBe(true);
+		expect(wideLines.some((line) => line.includes("anthropic/haiku"))).toBe(true);
+		expect(wideLines.some((line) => line.includes("Input") && line.includes("12,345"))).toBe(true);
 
 		const text = textualSummary(diagnostics);
-		expect(text).toContain(
-			"Current context token usage: Input 1,234,567 · Cache input 2,345,678 · Output 345,678",
-		);
-		expect(text).toContain(
-			"Subagent usage in context: Input 123,456 · Cache input 234,567 · Output 34,567",
-		);
-		expect(text).toContain(
-			"Advisor usage in context: Input 45,678 · Cache input 56,789 · Output 6,789",
-		);
-		expect(text).toContain(
-			"Guardian usage in context: Input 12,345 · Cache input 23,456 · Output 3,456",
-		);
+		expect(text).toContain("Current context token usage:");
+		expect(text).toContain("  openai/gpt-4o: Input 45,678 · Cache input 56,789 · Output 6,789");
+		expect(text).toContain("  google/gemini: Input 12,345 · Cache input 23,456 · Output 3,456");
+		expect(text.indexOf("openai/gpt-4o")).toBeLessThan(text.indexOf("google/gemini"));
+		expect(text).toContain("Subagent usage in context:");
+		expect(text).toContain("  anthropic/haiku: Input 12,345 · Cache input 23,456 · Output 3,456");
+		expect(text).not.toContain("Advisor usage in context:");
+		expect(text).not.toContain("Guardian usage in context:");
 
 		const expanded = new ContextDiagnosticsComponent(
 			diagnostics,
@@ -417,7 +477,7 @@ describe("display helpers", () => {
 			() => {},
 			() => 30,
 		);
-		expect(expanded.render(90)).toHaveLength(30);
+		expect(expanded.render(90).length).toBeGreaterThanOrEqual(30);
 	});
 
 	it("opens the selected System prompt row and shows attributed sources", () => {

@@ -1,3 +1,4 @@
+import type { ModelUsageRow, SessionUsageTotals } from "../_shared/usage.ts";
 import {
 	estimateTokens,
 	formatSkillsForPrompt,
@@ -19,6 +20,7 @@ export const CATEGORY_KEYS = [
 
 export type ContextCategory = (typeof CATEGORY_KEYS)[number];
 export type CategoryTokens = Record<ContextCategory, number>;
+export type { ModelUsageRow } from "../_shared/usage.ts";
 
 export interface SessionTokenUsage {
 	input: number;
@@ -39,6 +41,7 @@ export interface ContextModelInput {
 	subagentUsage: SessionTokenUsage;
 	advisorUsage: SessionTokenUsage;
 	guardianUsage: SessionTokenUsage;
+	modelUsage: readonly ModelUsageRow[];
 	compaction: { enabled: boolean; reserveTokens: number };
 	systemPromptOptions?: {
 		customPrompt?: string;
@@ -75,6 +78,7 @@ export interface ContextDiagnostics {
 	subagentUsage: SessionTokenUsage;
 	advisorUsage: SessionTokenUsage;
 	guardianUsage: SessionTokenUsage;
+	modelUsage: ModelUsageRow[];
 	freeSpace: number;
 	compactionReserve: number;
 	compactionThreshold: number;
@@ -342,6 +346,7 @@ export function calculateContextDiagnostics(input: ContextModelInput): ContextDi
 	const subagentUsage = normalizeTokenUsage(input.subagentUsage);
 	const advisorUsage = normalizeTokenUsage(input.advisorUsage);
 	const guardianUsage = normalizeTokenUsage(input.guardianUsage);
+	const modelUsage = input.modelUsage.map(normalizeModelUsage);
 	return {
 		modelId: input.model ? `${input.model.provider}/${input.model.id}` : "No active model",
 		contextWindow,
@@ -355,6 +360,7 @@ export function calculateContextDiagnostics(input: ContextModelInput): ContextDi
 		subagentUsage,
 		advisorUsage,
 		guardianUsage,
+		modelUsage,
 		freeSpace,
 		compactionReserve,
 		compactionThreshold: input.compaction.enabled
@@ -366,6 +372,36 @@ export function calculateContextDiagnostics(input: ContextModelInput): ContextDi
 
 function safeTokenTotal(tokens: number): number {
 	return Math.max(0, Math.round(Number.isFinite(tokens) ? tokens : 0));
+}
+
+function safeCost(cost: number): number {
+	return Math.max(0, Number.isFinite(cost) ? cost : 0);
+}
+
+function normalizeModelUsage(row: ModelUsageRow): ModelUsageRow {
+	return {
+		model: typeof row.model === "string" && row.model.trim() ? row.model.trim() : "unknown",
+		session: normalizeUsageTotals(row.session),
+		subagent: normalizeUsageTotals(row.subagent),
+		advisor: normalizeUsageTotals(row.advisor),
+		guardian: normalizeUsageTotals(row.guardian),
+	};
+}
+
+function normalizeUsageTotals(totals: SessionUsageTotals): SessionUsageTotals {
+	const input = safeTokenTotal(totals.input);
+	const output = safeTokenTotal(totals.output);
+	const cacheRead = safeTokenTotal(totals.cacheRead);
+	const cacheWrite = safeTokenTotal(totals.cacheWrite);
+	return {
+		input,
+		output,
+		cacheRead,
+		cacheWrite,
+		tokens: input + output + cacheRead + cacheWrite,
+		cost: safeCost(totals.cost),
+		turns: safeTokenTotal(totals.turns),
+	};
 }
 
 export function formatExactTokenCount(tokens: number): string {
