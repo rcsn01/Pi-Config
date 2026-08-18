@@ -79,6 +79,8 @@ function input(overrides: Partial<ContextModelInput> = {}): ContextModelInput {
 		contextEntries: [messageEntry("Conversation message")],
 		sessionUsage: { input: 12_345, cacheRead: 67_890, output: 2_345 },
 		subagentUsage: { input: 1_234, cacheRead: 5_678, output: 345 },
+		advisorUsage: { input: 456, cacheRead: 789, output: 123 },
+		guardianUsage: { input: 321, cacheRead: 654, output: 987 },
 		compaction: { enabled: true, reserveTokens: 100 },
 		...overrides,
 	};
@@ -93,6 +95,17 @@ describe("current context usage scope", () => {
 				toolName: "subagent",
 				usage: { input: 7, output: 2, cacheRead: 11 },
 			},
+		}, {
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolName: "advisor",
+				usage: { input: 13, output: 3, cacheRead: 17 },
+			},
+		}, {
+			type: "custom_message",
+			customType: "auto-review-verdict",
+			details: { usage: { input: 19, output: 5, cacheRead: 23 } },
 		}] as unknown as SessionEntry[];
 		const getEntries = vi.fn(() => {
 			throw new Error("append-only history must not be read");
@@ -104,7 +117,9 @@ describe("current context usage scope", () => {
 		expect(getEntries).not.toHaveBeenCalled();
 		expect(result.contextEntries).toBe(retained);
 		expect(result.subagentUsage).toMatchObject({ input: 7, output: 2, cacheRead: 11 });
-		expect(result.sessionUsage).toMatchObject({ input: 7, output: 2, cacheRead: 11 });
+		expect(result.advisorUsage).toMatchObject({ input: 13, output: 3, cacheRead: 17 });
+		expect(result.guardianUsage).toMatchObject({ input: 19, output: 5, cacheRead: 23 });
+		expect(result.sessionUsage).toMatchObject({ input: 39, output: 10, cacheRead: 51 });
 	});
 });
 
@@ -123,6 +138,8 @@ describe("context category accounting", () => {
 		}));
 		expect(result.sessionUsage).toEqual({ input: 123_456, cacheRead: 78_901, output: 23_456 });
 		expect(result.subagentUsage).toEqual({ input: 12_345, cacheRead: 0, output: 0 });
+		expect(result.advisorUsage).toEqual({ input: 456, cacheRead: 789, output: 123 });
+		expect(result.guardianUsage).toEqual({ input: 321, cacheRead: 654, output: 987 });
 		expect(result.usedTokens).toBe(400);
 		expect(Object.values(result.categories).reduce((sum, value) => sum + value, 0)).toBe(400);
 		expect(result.freeSpace).toBe(500);
@@ -332,6 +349,8 @@ describe("display helpers", () => {
 			}],
 			sessionUsage: { input: 1_234_567, cacheRead: 2_345_678, output: 345_678 },
 			subagentUsage: { input: 123_456, cacheRead: 234_567, output: 34_567 },
+			advisorUsage: { input: 45_678, cacheRead: 56_789, output: 6_789 },
+			guardianUsage: { input: 12_345, cacheRead: 23_456, output: 3_456 },
 			freeSpace: 500,
 			compactionReserve: 100,
 			compactionThreshold: 900,
@@ -362,7 +381,7 @@ describe("display helpers", () => {
 			expect(lines.some((line) => line.includes("System prompt") && line.includes("100 (10%)"))).toBe(true);
 			expect(lines.some((line) => line.includes("Current context token usage"))).toBe(true);
 			expect(lines.some((line) => line.includes("Subagent usage in context"))).toBe(true);
-			for (const value of ["1,234,567", "2,345,678", "345,678", "123,456", "234,567", "34,567"]) {
+			for (const value of ["1,234,567", "2,345,678", "345,678", "123,456", "234,567", "34,567", "45,678", "56,789", "6,789", "12,345", "23,456", "3,456"]) {
 				expect(lines.some((line) => line.includes(value))).toBe(true);
 			}
 			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
@@ -371,6 +390,8 @@ describe("display helpers", () => {
 		const narrowLines = component.render(50);
 		expect(narrowLines.findIndex((line) => line.includes("Subagent usage in context")))
 			.toBeGreaterThan(narrowLines.findIndex((line) => line.includes("Current context token usage")));
+		expect(narrowLines.some((line) => line.includes("Advisor usage in context"))).toBe(true);
+		expect(narrowLines.some((line) => line.includes("Guardian usage in context"))).toBe(true);
 		const wideLines = component.render(90);
 		expect(wideLines.some((line) => line.includes("Current context token usage") && line.includes("Subagent usage in context"))).toBe(true);
 
@@ -380,6 +401,12 @@ describe("display helpers", () => {
 		);
 		expect(text).toContain(
 			"Subagent usage in context: Input 123,456 · Cache input 234,567 · Output 34,567",
+		);
+		expect(text).toContain(
+			"Advisor usage in context: Input 45,678 · Cache input 56,789 · Output 6,789",
+		);
+		expect(text).toContain(
+			"Guardian usage in context: Input 12,345 · Cache input 23,456 · Output 3,456",
 		);
 
 		const expanded = new ContextDiagnosticsComponent(

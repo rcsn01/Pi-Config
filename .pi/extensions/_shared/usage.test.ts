@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { collectSessionUsage, collectSubagentUsage, normalizeContextUsage } from "./usage.ts";
+import {
+	collectCustomMessageUsage,
+	collectSessionUsage,
+	collectSubagentUsage,
+	collectToolUsage,
+	normalizeContextUsage,
+} from "./usage.ts";
 import { buildContextEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 
 describe("shared usage", () => {
@@ -67,6 +73,64 @@ describe("shared usage", () => {
 			tokens: 0,
 			cost: 0,
 			turns: 1,
+		});
+	});
+
+	it("collects named advisor tools and guardian verdict messages without mixing malformed usage", () => {
+		const entries = [
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: "advisor",
+					usage: { input: 40, output: 5, cacheRead: 7, cacheWrite: 2, cost: { total: 0.4 } },
+				},
+			},
+			{
+				type: "custom_message",
+				customType: "auto-review-verdict",
+				details: { usage: { input: 11, output: 3, cacheRead: 13, cacheWrite: 1, cost: { total: 0.2 } } },
+			},
+			{
+				type: "custom_message",
+				customType: "auto-review-verdict",
+				details: { usage: { input: -1, output: Number.NaN, cacheRead: "bad", cacheWrite: 0, cost: -2 } },
+			},
+			{ type: "message", message: { role: "toolResult", toolName: "bash", usage: { input: 999 } } },
+		] as unknown as SessionEntry[];
+
+		expect(collectToolUsage(entries, "advisor")).toMatchObject({
+			input: 40, output: 5, cacheRead: 7, cacheWrite: 2, tokens: 54, cost: 0.4, turns: 0,
+		});
+		expect(collectCustomMessageUsage(entries, "auto-review-verdict")).toMatchObject({
+			input: 11, output: 3, cacheRead: 13, cacheWrite: 1, tokens: 28, cost: 0.2, turns: 0,
+		});
+		expect(collectSessionUsage(entries)).toMatchObject({ input: 1050, output: 8, cacheRead: 20, cacheWrite: 3, tokens: 1081, cost: 0.6000000000000001 });
+	});
+
+	it("keeps named usage restricted to the active compaction-aware branch", () => {
+		const custom = (id: string, parentId: string | null, input: number) => ({
+			type: "custom_message",
+			id,
+			parentId,
+			timestamp: "2026-01-01T00:00:00.000Z",
+			customType: "auto-review-verdict",
+			content: "verdict",
+			display: true,
+			details: { usage: { input, output: 1, cacheRead: input * 2, cacheWrite: 0, cost: { total: 0 } } },
+		});
+		const entries = [
+			{ type: "message", id: "user", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "start" } },
+			custom("abandoned", "user", 1_000),
+			custom("retained", "abandoned", 10),
+			{ type: "message", id: "assistant", parentId: "retained", timestamp: "2026-01-01T00:00:00.000Z", message: { role: "assistant", usage: { input: 20, output: 2 } } },
+			{ type: "compaction", id: "compact", parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z", summary: "Earlier work", firstKeptEntryId: "retained", tokensBefore: 1_000 },
+			custom("abandoned-post-compact", "compact", 500),
+			custom("active-post-compact", "compact", 5),
+		] as unknown as SessionEntry[];
+		const contextEntries = buildContextEntries(entries, "active-post-compact");
+		expect(collectCustomMessageUsage(contextEntries, "auto-review-verdict")).toMatchObject({
+			input: 15, output: 2, cacheRead: 30, tokens: 47,
 		});
 	});
 

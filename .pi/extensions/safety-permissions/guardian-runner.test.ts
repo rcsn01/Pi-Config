@@ -1,5 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { parseGuardianDefinition, parseGuardianVerdict } from "./guardian-runner.ts";
+import { collectGuardianUsage, parseGuardianDefinition, parseGuardianVerdict } from "./guardian-runner.ts";
+
+describe("collectGuardianUsage", () => {
+	it("aggregates assistant usage only from the current guardian request", () => {
+		const messages = [
+			{ role: "assistant", usage: { input: 999, output: 999, cacheRead: 999, cacheWrite: 0, totalTokens: 1_998, cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0, total: 3 } } },
+			{ role: "user" },
+			{ role: "assistant", usage: { input: 10, output: 2, cacheRead: 3, cacheWrite: 1, totalTokens: 15, cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 } } },
+			{ role: "assistant", usage: { input: 5, output: 4, cacheRead: 6, cacheWrite: 0, totalTokens: 15, cost: { input: 0.5, output: 0.4, cacheRead: 0.6, cacheWrite: 0, total: 1.5 } } },
+		] as any;
+
+		expect(collectGuardianUsage(messages, 1)).toEqual({
+			input: 15,
+			output: 6,
+			cacheRead: 9,
+			cacheWrite: 1,
+			totalTokens: 30,
+			cost: { input: 0.6, output: 0.6000000000000001, cacheRead: 0.8999999999999999, cacheWrite: 0.4, total: 2.5 },
+		});
+		expect(collectGuardianUsage(messages, 0)?.input).toBe(1014);
+		expect(collectGuardianUsage([{ role: "user" }] as any, 0)).toBeUndefined();
+	});
+});
 
 describe("parseGuardianVerdict", () => {
 	it("parses a JSON allow verdict with rationale", () => {
