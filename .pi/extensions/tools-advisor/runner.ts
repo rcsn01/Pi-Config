@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Api, AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { isContextOverflow } from "@earendil-works/pi-ai";
-import type { ExtensionContext, ToolInfo } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, SessionEntry, ToolInfo } from "@earendil-works/pi-coding-agent";
 import {
 	type AdvisorContextBudget,
 	projectTranscript,
@@ -10,13 +10,15 @@ import {
 } from "./transcript.ts";
 
 const CACHE_AFFINITY_VERSION = "advisor-v1";
-const DEFAULT_MAX_USES = 3;
+export const DEFAULT_MAX_USES = 3;
+export const DEFAULT_MAX_USES_PER_SESSION = 20;
 const DEFAULT_MAX_TOKENS = 2048;
 
 export interface AdvisorSettings {
 	provider?: string;
 	modelId?: string;
 	maxUses: number;
+	maxUsesPerSession: number;
 	maxTokens: number;
 	allowCrossProvider: boolean;
 	/** Omit to use DEFAULT_CONTEXT_BUDGET. */
@@ -48,8 +50,6 @@ export interface AdvisorRunInput {
 
 export interface AdvisorRunner {
 	execute(input: AdvisorRunInput): Promise<AdvisorToolResult>;
-	reconstruct(ctx: ExtensionContext): void;
-	usedUses(): number;
 }
 
 export function deriveAdvisorSessionId(mainSessionId: string, resolvedModel: string): string {
@@ -67,17 +67,10 @@ export function deriveAdvisorSessionId(mainSessionId: string, resolvedModel: str
 }
 
 export function createAdvisorRunner(): AdvisorRunner {
-	let consumedUses = 0;
-
-	function reconstruct(ctx: ExtensionContext): void {
-		consumedUses = ctx.sessionManager.getBranch().reduce((count, entry) => {
-			if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "advisor") {
-				return count;
-			}
-			const details = entry.message.details as Partial<AdvisorToolDetails> | undefined;
-			return details?.consumesBudget === true ? count + 1 : count;
-		}, 0);
-	}
+	// Reservations for calls that have started but not yet completed. Completed
+	// calls are counted from the session branch instead, so correctness never
+	// depends on event delivery.
+	let inFlight = 0;
 
 	async function execute(input: AdvisorRunInput): Promise<AdvisorToolResult> {
 		const modelName = configuredModelName(input.settings);
@@ -89,11 +82,22 @@ export function createAdvisorRunner(): AdvisorRunner {
 			false,
 		);
 
+		const branch = input.ctx.sessionManager.getBranch();
+		const turnUses = countTurnUses(branch);
+		const sessionUses = countSessionUses(branch);
 		const maxUses = validPositiveInteger(input.settings.maxUses, DEFAULT_MAX_USES);
-		if (consumedUses >= maxUses) {
+		const maxUsesPerSession = validPositiveInteger(input.settings.maxUsesPerSession, DEFAULT_MAX_USES_PER_SESSION);
+		// Session ceiling first: when both are hit, the terminal message must win.
+		if (sessionUses + inFlight >= maxUsesPerSession) {
 			return localFailure(
 				"advisor_budget_exhausted",
-				`The advisor consultation budget is exhausted (${maxUses} uses per session). Continue without another consultation.`,
+				`The advisor consultation budget is exhausted (${maxUsesPerSession} uses per session). Continue without another consultation.`,
+			);
+		}
+		if (turnUses + inFlight >= maxUses) {
+			return localFailure(
+				"advisor_turn_budget_exhausted",
+				`The advisor consultation budget for this turn is exhausted (${maxUses} uses per turn). Continue without another consultation; the budget resets on the next user message.`,
 			);
 		}
 		if (!input.settings.provider || !input.settings.modelId) {
@@ -146,7 +150,7 @@ export function createAdvisorRunner(): AdvisorRunner {
 
 		// Reserve synchronously before the first await. The tool is sequential in Pi,
 		// and this reservation also protects direct callers that start two executions.
-		consumedUses++;
+		inFlight++;
 		const signal = input.signal ?? input.ctx.signal;
 		const resolvedModel = `${model.provider}/${model.id}`;
 		const setStatus = (active: boolean) => {
@@ -173,15 +177,16 @@ export function createAdvisorRunner(): AdvisorRunner {
 			},
 			);
 			return resultFromResponse(response, resolvedModel, () => {
-				consumedUses--;
+				inFlight--;
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (isAbortError(error) || signal?.aborted) {
+				inFlight--;
 				return failure("advisor_aborted", message || "The advisor consultation was aborted.", resolvedModel, true, false);
 			}
 			if (isExplicitOverflow(message) && !hasNonzeroUsage((error as { usage?: Usage }).usage)) {
-				consumedUses--;
+				inFlight--;
 				return failure(
 					"advisor_context_too_large",
 					`The advisor provider rejected the complete request as too large: ${message}`,
@@ -190,6 +195,7 @@ export function createAdvisorRunner(): AdvisorRunner {
 					false,
 				);
 			}
+			inFlight--;
 			return failure("advisor_provider_error", message || "The advisor provider failed.", resolvedModel, true, false);
 		} finally {
 			setStatus(false);
@@ -198,9 +204,36 @@ export function createAdvisorRunner(): AdvisorRunner {
 
 	return {
 		execute,
-		reconstruct,
-		usedUses: () => consumedUses,
 	};
+}
+
+/** Counts advisor tool results that consumed budget, optionally only after the last user message. */
+function countAdvisorUses(branch: readonly SessionEntry[], afterLastUser: boolean): number {
+	let start = 0;
+	if (afterLastUser) {
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry.type === "message" && entry.message.role === "user") {
+				start = index;
+				break;
+			}
+		}
+	}
+	return branch.slice(start).reduce((count, entry) => {
+		if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "advisor") {
+			return count;
+		}
+		const details = entry.message.details as Partial<AdvisorToolDetails> | undefined;
+		return details?.consumesBudget === true ? count + 1 : count;
+	}, 0);
+}
+
+function countTurnUses(branch: readonly SessionEntry[]): number {
+	return countAdvisorUses(branch, true);
+}
+
+function countSessionUses(branch: readonly SessionEntry[]): number {
+	return countAdvisorUses(branch, false);
 }
 
 function resultFromResponse(
@@ -226,12 +259,15 @@ function resultFromResponse(
 				response.usage,
 			);
 		}
+		releaseBudget();
 		return failure("advisor_provider_error", response.errorMessage ?? "The advisor provider returned an error.", model, true, false, response.usage);
 	}
 	if (response.stopReason === "aborted") {
+		releaseBudget();
 		return failure("advisor_aborted", response.errorMessage ?? "The advisor consultation was aborted.", model, true, false, response.usage);
 	}
 	if (response.stopReason === "length") {
+		releaseBudget();
 		return failure(
 			"advisor_truncated",
 			text ? `The advisor response was truncated and may be incomplete.\n\n${text}` : "The advisor response was truncated before producing visible advice.",
@@ -242,8 +278,10 @@ function resultFromResponse(
 		);
 	}
 	if (!text) {
+		releaseBudget();
 		return failure("advisor_empty", "The advisor returned no visible advice. Its response may have used the output budget for reasoning.", model, true, false, response.usage);
 	}
+	releaseBudget();
 	return {
 		content: [{ type: "text", text }],
 		details: { model, consumesBudget: true, truncated: false },

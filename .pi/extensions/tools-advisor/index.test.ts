@@ -102,10 +102,10 @@ function makePi(options: {
 describe("advisor settings", () => {
 	it("defaults missing advisor settings to disabled with the v1 budget", () => {
 		expect(parseAdvisorSettings({ compaction: {} })).toEqual({
-			maxUses: 3, maxTokens: 2048, allowCrossProvider: false, contextBudget: DEFAULT_CONTEXT_BUDGET,
+			maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: false, contextBudget: DEFAULT_CONTEXT_BUDGET,
 		});
 		expect(parseAdvisorSettings({ advisor: { provider: "anthropic", modelId: "strong" } })).toEqual({
-			provider: "anthropic", modelId: "strong", maxUses: 3, maxTokens: 2048, allowCrossProvider: false,
+			provider: "anthropic", modelId: "strong", maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: false,
 			contextBudget: DEFAULT_CONTEXT_BUDGET,
 		});
 	});
@@ -118,6 +118,7 @@ describe("advisor settings", () => {
 	it("fails closed for malformed advisor values", () => {
 		expect(() => parseAdvisorSettings({ advisor: [] })).toThrow(/advisor must be a JSON object/);
 		expect(() => parseAdvisorSettings({ advisor: { maxUses: 0 } })).toThrow(/maxUses/);
+		expect(() => parseAdvisorSettings({ advisor: { maxUsesPerSession: 0 } })).toThrow(/maxUsesPerSession/);
 		expect(() => parseAdvisorSettings({ advisor: { maxTokens: -1 } })).toThrow(/maxTokens/);
 		expect(() => parseAdvisorSettings({ advisor: { allowCrossProvider: "yes" } })).toThrow(/allowCrossProvider/);
 		expect(() => parseAdvisorSettings({ advisor: { contextBudget: [] } })).toThrow(/contextBudget must be a JSON object/);
@@ -138,6 +139,7 @@ describe("advisor extension", () => {
 		promptSnippet: expect.any(String), promptGuidelines: expect.arrayContaining([expect.stringContaining("advisor")]),
 		parameters: expect.any(Object),
 		});
+		expect(configured.tools.get("advisor").description).toContain("forwarded automatically");
 		await configured.handlers.get("session_start")({ reason: "startup" }, configured.ctx);
 		expect(configured.getActiveTools()).toContain("advisor");
 
@@ -192,15 +194,12 @@ describe("advisor extension", () => {
 		expect(missing.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("unavailable"), "error");
 	});
 
-	it("keeps the advertised tool after /advisor off and reconstructs budget on tree events", async () => {
+	it("keeps the advertised tool after /advisor off", async () => {
 		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong", maxUses: 1 } });
-		const entries: any[] = [{ type: "message", message: { role: "toolResult", toolName: "advisor", details: { consumesBudget: true } } }];
 		const harness = makePi({ settingsPath: path });
-		harness.ctx.sessionManager.getBranch = () => entries;
 		createAdvisorExtension({ settingsPath: path })(harness.pi);
 		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
 		await harness.commands.get("advisor").handler("off", harness.ctx);
-		await harness.handlers.get("session_tree")({}, harness.ctx);
 		expect(harness.getActiveTools()).toContain("advisor");
 	});
 
@@ -263,7 +262,7 @@ describe("advisor extension", () => {
 		}
 	});
 
-	it("persists a budget marker when an in-flight consultation is aborted and reconstructs it after reopening", async () => {
+	it("persists a budget marker when an in-flight consultation is aborted and refuses further consultations after reopening", async () => {
 		const root = mkdtempSync(join(tmpdir(), "advisor-abort-runtime-"));
 		roots.push(root);
 		const path = join(root, "settings.json");
@@ -310,9 +309,27 @@ describe("advisor extension", () => {
 			const result = sessionManager.getBranch().find((entry: any) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "advisor") as any;
 			expect(result?.message.details).toMatchObject({ model: "contract/advisor", consumesBudget: true, truncated: false });
 			const reopened = SessionManager.open(sessionManager.getSessionFile()!);
-			const reconstructed = createAdvisorRunner();
-			reconstructed.reconstruct({ sessionManager: reopened } as any);
-			expect(reconstructed.usedUses()).toBe(1);
+			const runner = createAdvisorRunner();
+			const second = await runner.execute({
+				ctx: {
+					cwd: root,
+					model: { provider: "contract", id: "executor" },
+					signal: undefined,
+					getSystemPrompt: () => "Executor system prompt",
+					sessionManager: reopened,
+					modelRegistry: {
+						find: () => faux.getModel("advisor"),
+						hasConfiguredAuth: () => true,
+						complete: async () => { throw new Error("provider must not be called after the budget is exhausted"); },
+					},
+				} as any,
+				settings: { provider: "contract", modelId: "advisor", maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true },
+				callId: "advisor-call-2",
+				activeToolNames: ["advisor"],
+				allTools: [],
+			});
+			expect(second.content[0].text).toMatch(/^advisor_turn_budget_exhausted/);
+			expect(second.details.consumesBudget).toBe(false);
 		} finally {
 			created.session.dispose();
 		}

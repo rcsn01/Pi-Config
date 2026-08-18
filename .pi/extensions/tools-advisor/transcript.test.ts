@@ -40,6 +40,10 @@ function input(overrides: Partial<TranscriptProjectionInput> = {}): TranscriptPr
 }
 
 describe("advisor transcript projection", () => {
+	it("states the word limit only in the focus message, not the system prompt", () => {
+		expect(ADVISOR_SYSTEM_PROMPT).not.toMatch(/\d+\s*words/);
+	});
+
 	it("includes the executor context and every effective message in order", () => {
 		const projected = projectTranscript(input({
 			entries: [
@@ -79,7 +83,7 @@ describe("advisor transcript projection", () => {
 		expect(rendered).toContain("Earlier work summary");
 		expect(rendered).toContain("A durable note");
 		expect(rendered).toContain("Should I change the parser interface?");
-		expect(rendered).toContain("Keep your advice under 400 words.");
+		expect(rendered).toContain("keep your guidance under 120 words");
 		expect(rendered).not.toContain("opaque");
 	});
 
