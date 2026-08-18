@@ -2,6 +2,11 @@ import { watch as watchDirectory, type FSWatcher, type WatchListener } from "nod
 import { basename, dirname } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
+import {
+	parseProjectModelPreferences,
+	resolveModelContext,
+	type ModelSelectionMode,
+} from "../ui-model-selector/model-config.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 
 export interface ConfigProfilesDependencies {
@@ -30,6 +35,49 @@ function profileListMessage(store: ProfileStore): string {
 		...profiles.map((name) => `  ${name === active ? "*" : "-"} ${name}`),
 		"Usage: /profile <name>",
 	].join("\n");
+}
+
+function currentModelSelectionMode(ctx: ExtensionContext): ModelSelectionMode {
+	for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
+		const candidate = entry as { type?: unknown; customType?: unknown; data?: unknown };
+		if (candidate.type !== "custom" || candidate.customType !== "plan-mode-state") continue;
+		const data = candidate.data as { active?: unknown; mode?: unknown } | undefined;
+		return data?.active === true || data?.mode === "plan" ? "plan" : "normal";
+	}
+	return "normal";
+}
+
+async function activateProfileModel(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	settings: Record<string, unknown>,
+): Promise<void> {
+	const preferences = parseProjectModelPreferences(settings);
+	if (!preferences.profiles.normal && !preferences.profiles.plan) return;
+	const profile = preferences.profiles[currentModelSelectionMode(ctx)];
+	if (!profile) return;
+
+	const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false, providers: [profile.provider] });
+	if (refresh.aborted) throw new Error(`Refreshing ${profile.provider} was aborted.`);
+	const refreshError = refresh.errors.get(profile.provider);
+	if (refreshError) throw refreshError;
+	const catalogueModel = ctx.modelRegistry.find(profile.provider, profile.modelId);
+	if (!catalogueModel) throw new Error(`Profile model ${profile.provider}/${profile.modelId} is unavailable.`);
+	if (
+		ctx.scopedModels.length > 0 &&
+		!ctx.scopedModels.some((entry) => entry.model.provider === profile.provider && entry.model.id === profile.modelId)
+	) {
+		throw new Error(`Profile model ${profile.provider}/${profile.modelId} is outside this session's model scope.`);
+	}
+
+	const model = {
+		...resolveModelContext(catalogueModel),
+		contextWindow: profile.contextWindow,
+	};
+	if (!(await pi.setModel(model))) {
+		throw new Error(`No configured authentication for ${profile.provider}/${profile.modelId}.`);
+	}
+	pi.setThinkingLevel(profile.thinkingLevel);
 }
 
 export function createConfigProfilesExtension(dependencies: ConfigProfilesDependencies = {}) {
@@ -154,6 +202,12 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 					}
 					ctx.ui.notify(`Switched to profile "${name}". Reloading…`, "info");
 					await ctx.reload();
+					// Reload refreshes project settings but preserves the session model.
+					try {
+						await activateProfileModel(pi, ctx, store.readSettings());
+					} catch (error) {
+						ctx.ui.notify(`Could not activate the profile model: ${errorMessage(error)}`, "error");
+					}
 					return;
 				} catch (error) {
 					ctx.ui.notify(`Could not switch settings profile: ${errorMessage(error)}`, "error");

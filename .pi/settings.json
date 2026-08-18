@@ -10,13 +10,13 @@
       "normal": {
         "provider": "openai-codex",
         "modelId": "gpt-5.6-luna",
-        "thinkingLevel": "max",
+        "thinkingLevel": "high",
         "contextWindow": 272000
       },
       "plan": {
         "provider": "openai-codex",
         "modelId": "gpt-5.6-luna",
-        "thinkingLevel": "max",
+        "thinkingLevel": "high",
         "contextWindow": 272000
       }
     }
@@ -40,8 +40,6 @@
     "active": "openai"
   },
   "advisor": {
-    "provider": "openai-codex",
-    "modelId": "gpt-5.6-sol",
     "strict": false,
     "nudgeTurn": 3,
     "maxUses": 3,
