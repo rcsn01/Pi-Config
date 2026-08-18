@@ -18,20 +18,31 @@ import {
 } from "../tools-subagents/settings-store.ts";
 import { Input, Markdown, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import {
+	ADVISOR_NUDGE_MESSAGE,
 	ADVISOR_PROMPT_GUIDELINES,
 	ADVISOR_TOOL_DESCRIPTION,
 } from "./prompt.ts";
 import {
+	ADVISOR_NUDGE_CUSTOM_TYPE,
+	countAdvisorUses,
+	countAssistantTurns,
+	countCustomMessages,
 	createAdvisorRunner,
 	DEFAULT_MAX_USES,
 	DEFAULT_MAX_USES_PER_SESSION,
+	DEFAULT_NUDGE_TURN,
 	type AdvisorRunner,
 	type AdvisorSettings,
 	type AdvisorToolDetails,
 } from "./runner.ts";
 import { DEFAULT_CONTEXT_BUDGET, type AdvisorContextBudget } from "./transcript.ts";
 
-export { deriveAdvisorSessionId, DEFAULT_MAX_USES, DEFAULT_MAX_USES_PER_SESSION } from "./runner.ts";
+export {
+	deriveAdvisorSessionId,
+	DEFAULT_MAX_USES,
+	DEFAULT_MAX_USES_PER_SESSION,
+	DEFAULT_NUDGE_TURN,
+} from "./runner.ts";
 export type { AdvisorSettings, AdvisorToolDetails, AdvisorToolResult } from "./runner.ts";
 
 export const DEFAULT_MAX_TOKENS = 2048;
@@ -66,6 +77,7 @@ function nonNegativeInteger(value: unknown, fallback: number, label: string): nu
 }
 
 const THINKING_MODES = ["all", "recent", "none"] as const;
+type AdvisorMode = "on" | "strict" | "off";
 
 export function parseContextBudget(raw: unknown): AdvisorContextBudget {
 	if (raw === undefined) return DEFAULT_CONTEXT_BUDGET;
@@ -103,6 +115,8 @@ export function parseAdvisorSettings(document: unknown): AdvisorSettings {
 	const raw = document.advisor;
 	if (raw === undefined) {
 		return {
+			strict: false,
+			nudgeTurn: DEFAULT_NUDGE_TURN,
 			maxUses: DEFAULT_MAX_USES,
 			maxUsesPerSession: DEFAULT_MAX_USES_PER_SESSION,
 			maxTokens: DEFAULT_MAX_TOKENS,
@@ -114,6 +128,12 @@ export function parseAdvisorSettings(document: unknown): AdvisorSettings {
 	return {
 		provider: requiredOptionalString(raw.provider, "provider"),
 		modelId: requiredOptionalString(raw.modelId, "modelId"),
+		strict: raw.strict === undefined
+			? false
+			: typeof raw.strict === "boolean"
+				? raw.strict
+				: (() => { throw new Error("advisor.strict must be a boolean."); })(),
+		nudgeTurn: positiveInteger(raw.nudgeTurn, DEFAULT_NUDGE_TURN, "nudgeTurn"),
 		// Per user turn; resets on each new user message.
 		maxUses: positiveInteger(raw.maxUses, DEFAULT_MAX_USES, "maxUses"),
 		maxUsesPerSession: positiveInteger(raw.maxUsesPerSession, DEFAULT_MAX_USES_PER_SESSION, "maxUsesPerSession"),
@@ -135,6 +155,8 @@ function serializedAdvisorSettings(settings: AdvisorSettings): Record<string, un
 	return {
 		...(settings.provider ? { provider: settings.provider } : {}),
 		...(settings.modelId ? { modelId: settings.modelId } : {}),
+		strict: settings.strict,
+		nudgeTurn: settings.nudgeTurn,
 		maxUses: settings.maxUses,
 		maxUsesPerSession: settings.maxUsesPerSession,
 		maxTokens: settings.maxTokens,
@@ -167,6 +189,10 @@ async function disableAdvisorSettings(path: string): Promise<AdvisorSettings> {
 			// The kill switch must still work on a malformed contextBudget.
 		}
 		const next: AdvisorSettings = {
+			strict: false,
+			nudgeTurn: Number.isInteger(raw.nudgeTurn) && (raw.nudgeTurn as number) > 0
+				? raw.nudgeTurn as number
+				: DEFAULT_NUDGE_TURN,
 			maxUses: Number.isInteger(raw.maxUses) && (raw.maxUses as number) > 0 ? raw.maxUses as number : DEFAULT_MAX_USES,
 			maxUsesPerSession: Number.isInteger(raw.maxUsesPerSession) && (raw.maxUsesPerSession as number) > 0
 				? raw.maxUsesPerSession as number
@@ -248,6 +274,49 @@ async function selectAdvisorModel(ctx: ExtensionContext, models: readonly Model<
 	});
 }
 
+const ADVISOR_MODE_OPTIONS = [
+	{ value: "on", label: "on", description: "Advisor available; the model decides when to consult." },
+	{ value: "strict", label: "strict", description: "Advisor available and nudged if unused after the configured turn." },
+	{ value: "off", label: "off", description: "Disable advisor consultations." },
+] as const;
+
+async function selectAdvisorMode(ctx: ExtensionContext): Promise<AdvisorMode | undefined> {
+	if (ctx.mode !== "tui") {
+		const selected = await ctx.ui.select("Select advisor mode", ADVISOR_MODE_OPTIONS.map((option) => option.label));
+		return ADVISOR_MODE_OPTIONS.find((option) => option.value === selected)?.value;
+	}
+	return ctx.ui.custom<AdvisorMode | undefined>((tui, theme, keybindings, done) => {
+		const list = new SelectList(
+			ADVISOR_MODE_OPTIONS.map((option) => ({ ...option })),
+			ADVISOR_MODE_OPTIONS.length,
+			{
+				selectedPrefix: (text) => theme.fg("accent", text),
+				selectedText: (text) => theme.fg("accent", text),
+				description: (text) => theme.fg("muted", text),
+				scrollInfo: (text) => theme.fg("dim", text),
+				noMatch: (text) => theme.fg("warning", text),
+			},
+		);
+		list.onSelect = (item) => done(item.value as AdvisorMode);
+		list.onCancel = () => done(undefined);
+		return {
+			render(width: number) {
+				const border = theme.fg("accent", "─".repeat(Math.max(0, width)));
+				return [
+					border,
+					truncateToWidth(theme.fg("accent", theme.bold("Select Advisor Mode")), width),
+					...list.render(width),
+					"",
+					truncateToWidth(theme.fg("dim", "↑↓ navigate · Enter select · Esc cancel"), width),
+					border,
+				];
+			},
+			invalidate() { list.invalidate(); },
+			handleInput(data: string) { list.handleInput(data); tui.requestRender(); },
+		};
+	});
+}
+
 function hasImagesInContext(ctx: ExtensionContext): boolean {
 	const messages = ctx.sessionManager.buildContextEntries().flatMap(sessionEntryToContextMessages);
 	return convertToLlm(messages).some((message) => {
@@ -300,7 +369,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			}
 		};
 
-		const configureModel = async (model: Model<Api>, ctx: ExtensionContext): Promise<void> => {
+		const configureModel = async (model: Model<Api>, ctx: ExtensionContext, strict?: boolean): Promise<void> => {
 			if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
 				notify(ctx, `Advisor model ${modelKey(model)} is unavailable or unauthenticated.`, "error");
 				return;
@@ -331,12 +400,24 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 					...current,
 					provider: model.provider,
 					modelId: model.id,
+					strict: strict ?? current.strict,
 					allowCrossProvider,
 				}));
 				const active = pi.getActiveTools();
 				if (!active.includes("advisor")) pi.setActiveTools([...active, "advisor"]);
 				warnAboutModel(model, ctx);
 				notify(ctx, `Advisor set to ${modelKey(model)}.`, "info");
+			} catch (error) {
+				notify(ctx, `Could not save advisor settings: ${errorText(error)}`, "error");
+			}
+		};
+
+		const setStrictMode = async (strict: boolean, ctx: ExtensionContext): Promise<void> => {
+			try {
+				settings = await updateAdvisorSettings(settingsPath, (current) => ({ ...current, strict }));
+				const active = pi.getActiveTools();
+				if (!active.includes("advisor")) pi.setActiveTools([...active, "advisor"]);
+				notify(ctx, `Advisor strict mode ${strict ? "enabled" : "disabled"}.`, "info");
 			} catch (error) {
 				notify(ctx, `Could not save advisor settings: ${errorText(error)}`, "error");
 			}
@@ -372,7 +453,10 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 					allTools: pi.getAllTools() as ToolInfo[],
 					signal,
 					onStatus: (active, modelName) => {
-						if (ctx.hasUI) ctx.ui.setStatus("advisor", active ? `Advising · ${modelName}` : undefined);
+						if (ctx.hasUI) {
+							const mode = settings.strict ? " (strict)" : "";
+							ctx.ui.setStatus("advisor", active ? `Advising${mode} · ${modelName}` : undefined);
+						}
 					},
 				});
 			},
@@ -393,15 +477,16 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 		});
 
 		pi.registerCommand("advisor", {
-			description: "Select or disable the read-only advisor model",
+			description: "Select the read-only advisor model or mode",
 			getArgumentCompletions: (prefix: string) => {
-				const values = ["off", ...pi.getAllTools().filter(() => false).map(() => "")];
+				const values = ["on", "strict", "off"];
 				const matches = values.filter((value) => value.startsWith(prefix));
 				return matches.length > 0 ? matches.map((value) => ({ value, label: value })) : null;
 			},
 			handler: async (args, ctx) => {
 				const reference = args.trim();
-				if (reference.toLowerCase() === "off") {
+				const normalized = reference.toLowerCase();
+				if (normalized === "off") {
 					try {
 						settings = await disableAdvisorSettings(settingsPath);
 						notify(ctx, "Advisor disabled for future consultations.", "info");
@@ -416,8 +501,34 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 					notify(ctx, `Advisor settings are invalid: ${errorText(error)}`, "error");
 					return;
 				}
-				let selected: Model<Api> | undefined;
+
+				let desiredStrict: boolean | undefined;
+				let pickModel = false;
 				if (!reference) {
+					const mode = await selectAdvisorMode(ctx);
+					if (!mode) return;
+					if (mode === "off") {
+						try {
+							settings = await disableAdvisorSettings(settingsPath);
+							notify(ctx, "Advisor disabled for future consultations.", "info");
+						} catch (error) {
+							notify(ctx, `Could not disable advisor: ${errorText(error)}`, "error");
+						}
+						return;
+					}
+					desiredStrict = mode === "strict";
+					pickModel = true;
+				} else if (normalized === "on" || normalized === "strict") {
+					desiredStrict = normalized === "strict";
+					if (settings.provider && settings.modelId) {
+						await setStrictMode(desiredStrict, ctx);
+						return;
+					}
+					pickModel = true;
+				}
+
+				let selected: Model<Api> | undefined;
+				if (pickModel) {
 					try {
 						const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false });
 						if (refresh.aborted || refresh.errors.size > 0) throw new Error("Could not refresh the authenticated model catalogue.");
@@ -434,7 +545,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				} else {
 					const parsed = parseModelReference(reference);
 					if (!parsed) {
-						notify(ctx, "Usage: /advisor, /advisor <provider>/<model>, or /advisor off", "error");
+						notify(ctx, "Usage: /advisor, /advisor on, /advisor strict, /advisor <provider>/<model>, or /advisor off", "error");
 						return;
 					}
 					selected = ctx.modelRegistry.find(parsed.provider, parsed.modelId);
@@ -443,8 +554,28 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 						return;
 					}
 				}
-				if (selected) await configureModel(selected, ctx);
+				if (selected) await configureModel(selected, ctx, desiredStrict);
 			},
+		});
+
+		pi.on("turn_end", (event, ctx) => {
+			if (!settings.strict || !settings.provider || !settings.modelId) return;
+			const branch = ctx.sessionManager.getBranch();
+			const currentAssistant = event.message.role === "assistant" ? event.message : undefined;
+			if (countAssistantTurns(branch, currentAssistant) < settings.nudgeTurn) return;
+			if (countAdvisorUses(branch, false) >= settings.maxUsesPerSession) return;
+			const turnUses = countAdvisorUses(branch, true);
+			if (turnUses > 0) return;
+			if (turnUses >= settings.maxUses) return;
+			if (countCustomMessages(branch, ADVISOR_NUDGE_CUSTOM_TYPE) > 0) return;
+			pi.sendMessage(
+				{
+					customType: ADVISOR_NUDGE_CUSTOM_TYPE,
+					content: ADVISOR_NUDGE_MESSAGE,
+					display: false,
+				},
+				{ deliverAs: "steer", triggerTurn: false },
+			);
 		});
 
 		pi.on("session_start", async (_event, ctx) => loadForSession(ctx));

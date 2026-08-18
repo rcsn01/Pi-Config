@@ -12,11 +12,15 @@ import {
 const CACHE_AFFINITY_VERSION = "advisor-v1";
 export const DEFAULT_MAX_USES = 3;
 export const DEFAULT_MAX_USES_PER_SESSION = 20;
+export const DEFAULT_NUDGE_TURN = 3;
+export const ADVISOR_NUDGE_CUSTOM_TYPE = "advisor-nudge";
 const DEFAULT_MAX_TOKENS = 2048;
 
 export interface AdvisorSettings {
 	provider?: string;
 	modelId?: string;
+	strict: boolean;
+	nudgeTurn: number;
 	maxUses: number;
 	maxUsesPerSession: number;
 	maxTokens: number;
@@ -207,25 +211,59 @@ export function createAdvisorRunner(): AdvisorRunner {
 	};
 }
 
-/** Counts advisor tool results that consumed budget, optionally only after the last user message. */
-function countAdvisorUses(branch: readonly SessionEntry[], afterLastUser: boolean): number {
+/** Return the effective branch entries after the most recent real user message. */
+export function entriesSinceLastUser(branch: readonly SessionEntry[]): readonly SessionEntry[] {
 	let start = 0;
-	if (afterLastUser) {
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const entry = branch[index];
-			if (entry.type === "message" && entry.message.role === "user") {
-				start = index;
-				break;
-			}
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index];
+		if (entry.type === "message" && entry.message.role === "user") {
+			start = index + 1;
+			break;
 		}
 	}
-	return branch.slice(start).reduce((count, entry) => {
+	return branch.slice(start);
+}
+
+/** Counts advisor tool results that consumed budget, optionally only after the last user message. */
+export function countAdvisorUses(branch: readonly SessionEntry[], afterLastUser: boolean): number {
+	const entries = afterLastUser ? entriesSinceLastUser(branch) : branch;
+	return entries.reduce((count, entry) => {
 		if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "advisor") {
 			return count;
 		}
 		const details = entry.message.details as Partial<AdvisorToolDetails> | undefined;
 		return details?.consumesBudget === true ? count + 1 : count;
 	}, 0);
+}
+
+/** Counts assistant responses in the current user turn. The optional current message
+ * covers the turn_end event before Pi persists that response to the branch. */
+export function countAssistantTurns(branch: readonly SessionEntry[], currentAssistant?: AssistantMessage): number {
+	const entries = entriesSinceLastUser(branch);
+	const count = entries.reduce(
+		(total, entry) => total + (entry.type === "message" && entry.message.role === "assistant" ? 1 : 0),
+		0,
+	);
+	if (
+		currentAssistant &&
+		!entries.some((entry) => entry.type === "message" && entry.message === currentAssistant)
+	) {
+		return count + 1;
+	}
+	return count;
+}
+
+/** Counts custom messages of a given type, optionally only after the last user message. */
+export function countCustomMessages(
+	branch: readonly SessionEntry[],
+	customType: string,
+	afterLastUser = true,
+): number {
+	const entries = afterLastUser ? entriesSinceLastUser(branch) : branch;
+	return entries.reduce(
+		(count, entry) => count + (entry.type === "custom_message" && entry.customType === customType ? 1 : 0),
+		0,
+	);
 }
 
 function countTurnUses(branch: readonly SessionEntry[]): number {
