@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-	collectCustomMessageUsage,
+	collectCustomUsage,
 	collectModelUsage,
 	collectSessionUsage,
 	collectSubagentUsage,
@@ -77,7 +77,7 @@ describe("shared usage", () => {
 		});
 	});
 
-	it("collects named advisor tools and guardian verdict messages without mixing malformed usage", () => {
+	it("collects named advisor tools and guardian verdict entries without mixing malformed usage", () => {
 		const entries = [
 			{
 				type: "message",
@@ -93,6 +93,11 @@ describe("shared usage", () => {
 				details: { usage: { input: 11, output: 3, cacheRead: 13, cacheWrite: 1, cost: { total: 0.2 } } },
 			},
 			{
+				type: "custom",
+				customType: "auto-review-verdict",
+				data: { usage: { input: 5, output: 1, cacheRead: 7, cacheWrite: 0 } },
+			},
+			{
 				type: "custom_message",
 				customType: "auto-review-verdict",
 				details: { usage: { input: -1, output: Number.NaN, cacheRead: "bad", cacheWrite: 0, cost: -2 } },
@@ -103,10 +108,10 @@ describe("shared usage", () => {
 		expect(collectToolUsage(entries, "advisor")).toMatchObject({
 			input: 40, output: 5, cacheRead: 7, cacheWrite: 2, tokens: 54, cost: 0.4, turns: 0,
 		});
-		expect(collectCustomMessageUsage(entries, "auto-review-verdict")).toMatchObject({
-			input: 11, output: 3, cacheRead: 13, cacheWrite: 1, tokens: 28, cost: 0.2, turns: 0,
+		expect(collectCustomUsage(entries, "auto-review-verdict")).toMatchObject({
+			input: 16, output: 4, cacheRead: 20, cacheWrite: 1, tokens: 41, cost: 0.2, turns: 0,
 		});
-		expect(collectSessionUsage(entries)).toMatchObject({ input: 1050, output: 8, cacheRead: 20, cacheWrite: 3, tokens: 1081, cost: 0.6000000000000001 });
+		expect(collectSessionUsage(entries)).toMatchObject({ input: 1055, output: 9, cacheRead: 27, cacheWrite: 3, tokens: 1094, cost: 0.6000000000000001 });
 	});
 
 	it("attributes usage to persisted models across assistants and delegated work", () => {
@@ -226,7 +231,7 @@ describe("shared usage", () => {
 			custom("active-post-compact", "compact", 5),
 		] as unknown as SessionEntry[];
 		const contextEntries = buildContextEntries(entries, "active-post-compact");
-		expect(collectCustomMessageUsage(contextEntries, "auto-review-verdict")).toMatchObject({
+		expect(collectCustomUsage(contextEntries, "auto-review-verdict")).toMatchObject({
 			input: 15, output: 2, cacheRead: 30, tokens: 47,
 		});
 	});

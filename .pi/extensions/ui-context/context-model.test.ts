@@ -118,6 +118,10 @@ describe("current context usage scope", () => {
 			type: "custom_message",
 			customType: "auto-review-verdict",
 			details: { model: "test/guardian", usage: { input: 19, output: 5, cacheRead: 23 } },
+		}, {
+			type: "custom",
+			customType: "auto-review-verdict",
+			data: { model: "test/guardian", usage: { input: 2, output: 1, cacheRead: 3 } },
 		}] as unknown as SessionEntry[];
 		const getEntries = vi.fn(() => {
 			throw new Error("append-only history must not be read");
@@ -130,13 +134,13 @@ describe("current context usage scope", () => {
 		expect(result.contextEntries).toBe(retained);
 		expect(result.subagentUsage).toMatchObject({ input: 7, output: 2, cacheRead: 11 });
 		expect(result.advisorUsage).toMatchObject({ input: 13, output: 3, cacheRead: 17 });
-		expect(result.guardianUsage).toMatchObject({ input: 19, output: 5, cacheRead: 23 });
+		expect(result.guardianUsage).toMatchObject({ input: 21, output: 6, cacheRead: 26 });
 		expect(result.modelUsage).toEqual(expect.arrayContaining([
 			expect.objectContaining({ model: "test/main", subagent: expect.objectContaining({ input: 7 }) }),
 			expect.objectContaining({ model: "test/advisor", advisor: expect.objectContaining({ input: 13 }) }),
-			expect.objectContaining({ model: "test/guardian", guardian: expect.objectContaining({ input: 19 }) }),
+			expect.objectContaining({ model: "test/guardian", guardian: expect.objectContaining({ input: 21 }) }),
 		]));
-		expect(result.sessionUsage).toMatchObject({ input: 39, output: 10, cacheRead: 51 });
+		expect(result.sessionUsage).toMatchObject({ input: 41, output: 11, cacheRead: 54 });
 	});
 });
 

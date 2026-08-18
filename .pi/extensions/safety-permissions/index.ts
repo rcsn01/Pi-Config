@@ -91,7 +91,7 @@ export default function (pi: ExtensionAPI) {
 	const approvals = createApprovalService({
 		getMode: () => mode,
 		getContext: () => ({ lastUserPrompt, precedingAssistantMessage }),
-		sendMessage: (message) => pi.sendMessage(message),
+		appendEntry: (customType, data) => pi.appendEntry(customType, data),
 	});
 
 	// ── Command service (shared state for /permissions, /approve) ─────
@@ -127,12 +127,14 @@ export default function (pi: ExtensionAPI) {
 		if (text) lastAssistantMessage = text.slice(-2000);
 	});
 
-	// ── Custom rendering for auto-review verdict messages ─────────────
+	// ── Custom rendering for auto-review verdict entries ──────────────
 
-	pi.registerMessageRenderer("auto-review-verdict", (message, _expanded, theme) => {
-		const details = message.details as { allowed?: boolean } | undefined;
-		const bg = details?.allowed ? "toolSuccessBg" : "toolErrorBg";
-		const text = theme.fg("warning", message.content as string);
+	pi.registerEntryRenderer("auto-review-verdict", (entry, _options, theme) => {
+		const data = entry.data as { allowed?: boolean; title?: string; reason?: string } | undefined;
+		const icon = data?.allowed ? "✅" : "❌";
+		const label = data?.allowed ? "ALLOWED" : "DENIED";
+		const text = theme.fg("warning", `${icon} ${label}: ${data?.title ?? ""} — ${data?.reason ?? ""}`);
+		const bg = data?.allowed ? "toolSuccessBg" : "toolErrorBg";
 		const box = new Box(1, 1, (t) => theme.bg(bg, t));
 		box.addChild(new Text(text, 0, 0));
 		return box;
