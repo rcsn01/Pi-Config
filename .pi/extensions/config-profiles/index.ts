@@ -2,6 +2,12 @@ import { watch as watchDirectory, type FSWatcher, type WatchListener } from "nod
 import { basename, dirname } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
+import {
+	parseProjectModelPreferences,
+	resolveContextWindow,
+	type ModelSelectionMode,
+	type ModelSelectionSettings,
+} from "../ui-model-selector/model-config.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 
 export interface ConfigProfilesDependencies {
@@ -30,6 +36,55 @@ function profileListMessage(store: ProfileStore): string {
 		...profiles.map((name) => `  ${name === active ? "*" : "-"} ${name}`),
 		"Usage: /profile <name>",
 	].join("\n");
+}
+
+function currentSelectionMode(ctx: ExtensionContext): ModelSelectionMode {
+	const entries = ctx.sessionManager.getBranch();
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index] as { type?: unknown; customType?: unknown; data?: unknown };
+		if (entry?.type !== "custom" || entry.customType !== "plan-mode-state") continue;
+		const data = entry.data as { active?: unknown } | undefined;
+		return data?.active === true ? "plan" : "normal";
+	}
+	return "normal";
+}
+
+async function resolveProfileModel(
+	ctx: ExtensionContext,
+	settings: Record<string, unknown>,
+): Promise<{ model: NonNullable<ExtensionContext["model"]>; profile: ModelSelectionSettings } | undefined> {
+	const profiles = parseProjectModelPreferences(settings).profiles;
+	const mode = currentSelectionMode(ctx);
+	const profile = profiles[mode] ?? (mode === "plan" ? profiles.normal : undefined);
+	if (!profile) return undefined;
+
+	let model = ctx.model?.provider === profile.provider && ctx.model.id === profile.modelId
+		? ctx.model
+		: undefined;
+	if (!model) {
+		const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false, providers: [profile.provider] });
+		if (refresh.aborted) throw new Error(`Refreshing ${profile.provider} was aborted.`);
+		const refreshError = refresh.errors.get(profile.provider);
+		if (refreshError) throw refreshError;
+		model = ctx.modelRegistry.find(profile.provider, profile.modelId);
+	}
+	if (!model) throw new Error(`Profile model ${profile.provider}/${profile.modelId} is unavailable.`);
+	if (
+		ctx.scopedModels.length > 0 &&
+		!ctx.scopedModels.some((entry) =>
+			entry.model.provider === profile.provider && entry.model.id === profile.modelId
+		)
+	) {
+		throw new Error(`Profile model ${profile.provider}/${profile.modelId} is outside this session's model scope.`);
+	}
+	if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
+		throw new Error(`No configured authentication for ${profile.provider}/${profile.modelId}.`);
+	}
+
+	return {
+		model: { ...model, contextWindow: resolveContextWindow(profile.contextWindow) },
+		profile,
+	};
 }
 
 export function createConfigProfilesExtension(dependencies: ConfigProfilesDependencies = {}) {
@@ -118,6 +173,7 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 			},
 			handler: async (args, ctx) => {
 				let name = args.trim();
+				let profileChanged = false;
 				try {
 					if (!name) {
 						if (!ctx.hasUI) {
@@ -147,16 +203,32 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 						if (!name) return;
 					}
 
+					// Resolve the target before replacing settings.json so an invalid or
+					// unavailable configured model cannot leave a half-applied switch.
+					const target = await resolveProfileModel(ctx, store.readProfile(name));
 					const result = await store.switchProfile(name);
+					profileChanged = result.changed;
+					if (target) {
+						if (!(await pi.setModel(target.model))) {
+							throw new Error(`No configured authentication for ${target.profile.provider}/${target.profile.modelId}.`);
+						}
+						pi.setThinkingLevel(target.profile.thinkingLevel);
+					}
 					if (!result.changed) {
-						ctx.ui.notify(`Profile "${name}" is already active; settings synchronized.`, "info");
+						ctx.ui.notify(`Profile "${name}" is already active; settings and model synchronized.`, "info");
 						return;
 					}
 					ctx.ui.notify(`Switched to profile "${name}". Reloading…`, "info");
 					await ctx.reload();
 					return;
 				} catch (error) {
-					ctx.ui.notify(`Could not switch settings profile: ${errorMessage(error)}`, "error");
+					ctx.ui.notify(
+						profileChanged
+							? `Profile settings changed, but the configured model could not be applied: ${errorMessage(error)}`
+							: `Could not switch settings profile: ${errorMessage(error)}`,
+						"error",
+					);
+					if (profileChanged) await ctx.reload();
 				}
 			},
 		});
