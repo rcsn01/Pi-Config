@@ -22,6 +22,7 @@ import advisorExtension, {
 	parseAdvisorSettings,
 } from "./index.ts";
 import { createAdvisorRunner } from "./runner.ts";
+import { DEFAULT_CONTEXT_BUDGET } from "./transcript.ts";
 
 const roots: string[] = [];
 
@@ -101,11 +102,17 @@ function makePi(options: {
 describe("advisor settings", () => {
 	it("defaults missing advisor settings to disabled with the v1 budget", () => {
 		expect(parseAdvisorSettings({ compaction: {} })).toEqual({
-			maxUses: 3, maxTokens: 2048, allowCrossProvider: false,
+			maxUses: 3, maxTokens: 2048, allowCrossProvider: false, contextBudget: DEFAULT_CONTEXT_BUDGET,
 		});
 		expect(parseAdvisorSettings({ advisor: { provider: "anthropic", modelId: "strong" } })).toEqual({
 			provider: "anthropic", modelId: "strong", maxUses: 3, maxTokens: 2048, allowCrossProvider: false,
+			contextBudget: DEFAULT_CONTEXT_BUDGET,
 		});
+	});
+
+	it("merges a partial context budget over the defaults", () => {
+		expect(parseAdvisorSettings({ advisor: { contextBudget: { thinking: "none", recentMessages: 0 } } }).contextBudget)
+			.toEqual({ ...DEFAULT_CONTEXT_BUDGET, thinking: "none", recentMessages: 0 });
 	});
 
 	it("fails closed for malformed advisor values", () => {
@@ -113,6 +120,10 @@ describe("advisor settings", () => {
 		expect(() => parseAdvisorSettings({ advisor: { maxUses: 0 } })).toThrow(/maxUses/);
 		expect(() => parseAdvisorSettings({ advisor: { maxTokens: -1 } })).toThrow(/maxTokens/);
 		expect(() => parseAdvisorSettings({ advisor: { allowCrossProvider: "yes" } })).toThrow(/allowCrossProvider/);
+		expect(() => parseAdvisorSettings({ advisor: { contextBudget: [] } })).toThrow(/contextBudget must be a JSON object/);
+		expect(() => parseAdvisorSettings({ advisor: { contextBudget: { thinking: "some" } } })).toThrow(/thinking/);
+		expect(() => parseAdvisorSettings({ advisor: { contextBudget: { recentMessages: -1 } } })).toThrow(/recentMessages/);
+		expect(() => parseAdvisorSettings({ advisor: { contextBudget: { toolSchemas: "yes" } } })).toThrow(/toolSchemas/);
 	});
 });
 
