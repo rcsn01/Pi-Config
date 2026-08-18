@@ -197,6 +197,13 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"ui-terminal-name": {
+			"displayName": "Terminal Title",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"workflows-goal": {
 			"displayName": "Goal Mode",
 			"pack": "autonomy",
