@@ -1,6 +1,11 @@
 import { watch as watchDirectory, type FSWatcher, type WatchListener } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	applyProfileModelSelection,
+	createProjectSettingsStore,
+	type ProjectSettingsStore,
+} from "../ui-model-selector/apply-profile.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 
@@ -10,6 +15,7 @@ export interface ConfigProfilesDependencies {
 	output?: (message: string) => void;
 	debounceMs?: number;
 	retryMs?: number;
+	settingsStore?: ProjectSettingsStore;
 }
 
 function errorMessage(error: unknown): string {
@@ -35,6 +41,7 @@ function profileListMessage(store: ProfileStore): string {
 export function createConfigProfilesExtension(dependencies: ConfigProfilesDependencies = {}) {
 	return function configProfilesExtension(pi: ExtensionAPI): void {
 		const store = dependencies.store ?? createProfileStore();
+		const settingsStore = dependencies.settingsStore ?? createProjectSettingsStore();
 		const watch = dependencies.watch ?? ((path, listener) => watchDirectory(path, listener));
 		const output = dependencies.output ?? console.log;
 		const debounceMs = dependencies.debounceMs ?? 75;
@@ -151,6 +158,23 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 					if (!result.changed) {
 						ctx.ui.notify(`Profile "${name}" is already active; settings synchronized.`, "info");
 						return;
+					}
+					// Apply the switched profile's saved model selection for the current
+					// mode (normal or plan) before reloading, so the session model follows
+					// the profile instead of staying behind until a manual /model. The
+					// switch itself never rolls back; on failure the current model is
+					// kept and the settings reload still proceeds.
+					const previousModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+					try {
+						const document = store.readProfile(name);
+						const selection = document
+							? await applyProfileModelSelection(pi, ctx, document, settingsStore)
+							: undefined;
+						if (selection && `${selection.provider}/${selection.modelId}` !== previousModel) {
+							ctx.ui.notify(`Profile model: ${selection.provider}/${selection.modelId}`, "info");
+						}
+					} catch (error) {
+						ctx.ui.notify(`Could not apply the profile model: ${errorMessage(error)}`, "error");
 					}
 					ctx.ui.notify(`Switched to profile "${name}". Reloading…`, "info");
 					await ctx.reload();

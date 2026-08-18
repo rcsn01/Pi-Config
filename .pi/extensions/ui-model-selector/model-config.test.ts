@@ -8,7 +8,8 @@ import {
 	installModelCommandHandler,
 	parseModelCommand,
 } from "../_shared/model-command-routing.ts";
-import { createModelSelectorExtension, selectionModeFromEntries } from "./index.ts";
+import { createModelSelectorExtension } from "./index.ts";
+import { selectionModeFromEntries } from "./apply-profile.ts";
 import {
 	calculateCompactionReserveTokens,
 	DEFAULT_COMPACTION_THRESHOLD,

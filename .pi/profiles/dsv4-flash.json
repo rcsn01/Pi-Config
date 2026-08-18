@@ -42,9 +42,18 @@
   "advisor": {
     "provider": "openai-codex",
     "modelId": "gpt-5.6-sol",
+    "strict": false,
+    "nudgeTurn": 3,
     "maxUses": 3,
     "maxUsesPerSession": 10,
     "maxTokens": 2048,
-    "allowCrossProvider": true
+    "allowCrossProvider": true,
+    "contextBudget": {
+      "thinking": "recent",
+      "recentMessages": 8,
+      "toolResultMaxChars": 2000,
+      "toolCallMaxChars": 600,
+      "toolSchemas": false
+    }
   }
 }

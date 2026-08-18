@@ -50,6 +50,6 @@ To create a profile, copy an existing file in `.pi/profiles`, rename the copy, a
 
 The `configProfiles.active` field is reserved for the profile extension. It identifies the active profile and is normalized during a switch while other settings and other fields under `configProfiles` are preserved.
 
-Switching writes back the outgoing settings, replaces the complete active document, and reloads Pi's resources while retaining the current conversation. The model already selected in the current session remains session-bound; a switched profile's startup model applies to fresh sessions.
+Switching writes back the outgoing settings, replaces the complete active document, applies the new profile's saved model selection for the current mode (`uiModelSelector.profiles.normal` or `.plan`) to the current session, and reloads Pi's resources while retaining the current conversation. A plain `/reload` without a profile switch still preserves the session model.
 
 Plan Mode reads its model from `uiModelSelector.profiles.plan` in the active `.pi/settings.json`. Model or thinking-level changes made while Plan Mode is active are saved back to that project setting; no separate global Plan Mode profile is used.
