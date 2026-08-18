@@ -7,3 +7,5 @@ Guardian allow-list — e.g. always allow pnpm test/pnpm typecheck without promp
   these constantly)
 
 - check out what/session is about
+''
+make /profile session independent instead of relying on /settings
