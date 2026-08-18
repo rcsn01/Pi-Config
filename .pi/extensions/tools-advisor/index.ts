@@ -27,6 +27,7 @@ import {
 	type AdvisorSettings,
 	type AdvisorToolDetails,
 } from "./runner.ts";
+import { DEFAULT_CONTEXT_BUDGET, type AdvisorContextBudget } from "./transcript.ts";
 
 export { deriveAdvisorSessionId } from "./runner.ts";
 export type { AdvisorSettings, AdvisorToolDetails, AdvisorToolResult } from "./runner.ts";
@@ -57,11 +58,55 @@ function positiveInteger(value: unknown, fallback: number, label: string): numbe
 	return value as number;
 }
 
+function nonNegativeInteger(value: unknown, fallback: number, label: string): number {
+	if (value === undefined) return fallback;
+	if (!Number.isInteger(value) || (value as number) < 0) throw new Error(`advisor.${label} must be a non-negative integer.`);
+	return value as number;
+}
+
+const THINKING_MODES = ["all", "recent", "none"] as const;
+
+export function parseContextBudget(raw: unknown): AdvisorContextBudget {
+	if (raw === undefined) return DEFAULT_CONTEXT_BUDGET;
+	if (!isRecord(raw)) throw new Error("advisor.contextBudget must be a JSON object.");
+	const thinking = raw.thinking === undefined ? DEFAULT_CONTEXT_BUDGET.thinking : raw.thinking;
+	if (!THINKING_MODES.includes(thinking as (typeof THINKING_MODES)[number])) {
+		throw new Error(`advisor.contextBudget.thinking must be one of ${THINKING_MODES.join(", ")}.`);
+	}
+	if (raw.toolSchemas !== undefined && typeof raw.toolSchemas !== "boolean") {
+		throw new Error("advisor.contextBudget.toolSchemas must be a boolean.");
+	}
+	return {
+		thinking: thinking as AdvisorContextBudget["thinking"],
+		recentMessages: nonNegativeInteger(
+			raw.recentMessages,
+			DEFAULT_CONTEXT_BUDGET.recentMessages,
+			"contextBudget.recentMessages",
+		),
+		toolResultMaxChars: nonNegativeInteger(
+			raw.toolResultMaxChars,
+			DEFAULT_CONTEXT_BUDGET.toolResultMaxChars,
+			"contextBudget.toolResultMaxChars",
+		),
+		toolCallMaxChars: nonNegativeInteger(
+			raw.toolCallMaxChars,
+			DEFAULT_CONTEXT_BUDGET.toolCallMaxChars,
+			"contextBudget.toolCallMaxChars",
+		),
+		toolSchemas: raw.toolSchemas === undefined ? DEFAULT_CONTEXT_BUDGET.toolSchemas : raw.toolSchemas,
+	};
+}
+
 export function parseAdvisorSettings(document: unknown): AdvisorSettings {
 	if (!isRecord(document)) throw new Error("Settings document must be a JSON object.");
 	const raw = document.advisor;
 	if (raw === undefined) {
-		return { maxUses: DEFAULT_MAX_USES, maxTokens: DEFAULT_MAX_TOKENS, allowCrossProvider: false };
+		return {
+			maxUses: DEFAULT_MAX_USES,
+			maxTokens: DEFAULT_MAX_TOKENS,
+			allowCrossProvider: false,
+			contextBudget: DEFAULT_CONTEXT_BUDGET,
+		};
 	}
 	if (!isRecord(raw)) throw new Error("advisor must be a JSON object.");
 	return {
@@ -74,6 +119,7 @@ export function parseAdvisorSettings(document: unknown): AdvisorSettings {
 			: typeof raw.allowCrossProvider === "boolean"
 				? raw.allowCrossProvider
 				: (() => { throw new Error("advisor.allowCrossProvider must be a boolean."); })(),
+		contextBudget: parseContextBudget(raw.contextBudget),
 	};
 }
 
@@ -88,6 +134,7 @@ function serializedAdvisorSettings(settings: AdvisorSettings): Record<string, un
 		maxUses: settings.maxUses,
 		maxTokens: settings.maxTokens,
 		allowCrossProvider: settings.allowCrossProvider,
+		contextBudget: settings.contextBudget ?? DEFAULT_CONTEXT_BUDGET,
 	};
 }
 
@@ -108,10 +155,17 @@ async function disableAdvisorSettings(path: string): Promise<AdvisorSettings> {
 	return withFileMutationQueue(path, async () => {
 		const document = readSettingsDocument(path);
 		const raw = isRecord(document.advisor) ? document.advisor : {};
+		let contextBudget = DEFAULT_CONTEXT_BUDGET;
+		try {
+			contextBudget = parseContextBudget(raw.contextBudget);
+		} catch {
+			// The kill switch must still work on a malformed contextBudget.
+		}
 		const next: AdvisorSettings = {
 			maxUses: Number.isInteger(raw.maxUses) && (raw.maxUses as number) > 0 ? raw.maxUses as number : DEFAULT_MAX_USES,
 			maxTokens: Number.isInteger(raw.maxTokens) && (raw.maxTokens as number) > 0 ? raw.maxTokens as number : DEFAULT_MAX_TOKENS,
 			allowCrossProvider: false,
+			contextBudget,
 		};
 		writeSettingsDocument(path, { ...document, advisor: serializedAdvisorSettings(next) });
 		return next;

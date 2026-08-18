@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ADVISOR_SYSTEM_PROMPT } from "./prompt.ts";
 import {
+	DEFAULT_CONTEXT_BUDGET,
 	projectTranscript,
 	providerRejectsOversizedInput,
 	type TranscriptProjectionInput,
@@ -146,7 +147,62 @@ describe("advisor transcript projection", () => {
 		expect(rendered).not.toContain("secret");
 	});
 
-	it("is byte-stable and never truncates the projected transcript", () => {
+	it("compresses the older transcript while keeping the recent window verbatim", () => {
+		const big = "B".repeat(9_000);
+		const entries = [
+			entry("old-call", {
+				role: "assistant", content: [
+					{ type: "thinking", thinking: "OLD_REASONING" },
+					{ type: "toolCall", id: "c1", name: "read", arguments: { path: big } },
+				], provider: "x", model: "x", api: "x", usage: {}, stopReason: "stop", timestamp: 1,
+			}),
+			entry("old-result", { role: "toolResult", toolCallId: "c1", toolName: "read", isError: false, content: [{ type: "text", text: big }], timestamp: 2 }),
+			entry("recent-call", {
+				role: "assistant", content: [
+					{ type: "thinking", thinking: "RECENT_REASONING" },
+					{ type: "toolCall", id: "c2", name: "read", arguments: { path: "small.ts" } },
+				], provider: "x", model: "x", api: "x", usage: {}, stopReason: "stop", timestamp: 3,
+			}),
+			entry("recent-result", { role: "toolResult", toolCallId: "c2", toolName: "read", isError: false, content: [{ type: "text", text: "RECENT_OUTPUT" }], timestamp: 4 }),
+		];
+		const projected = projectTranscript(input({
+			entries,
+			model: model({ contextWindow: 1_000_000 }),
+			// Only the trailing two messages count as recent, so the first pair is compressed.
+			budget: { ...DEFAULT_CONTEXT_BUDGET, recentMessages: 2 },
+		}));
+		const rendered = JSON.stringify(projected.messages);
+
+		expect(rendered).toContain("RECENT_REASONING");
+		expect(rendered).toContain("RECENT_OUTPUT");
+		expect(rendered).not.toContain("OLD_REASONING");
+		expect(rendered).toContain("[assistant thinking omitted]");
+		expect(rendered).toContain("characters omitted");
+		expect(rendered).not.toContain(big);
+		// Clamping happens inside the arguments, so the projected call still parses.
+		const callText = projected.messages
+			.flatMap((message) => (Array.isArray(message.content) ? (message.content as any[]) : []))
+			.map((block) => block.text as string | undefined)
+			.find((text) => text?.startsWith("<tool_call>") && text.includes("characters omitted"));
+		expect(callText).toBeDefined();
+		const call = JSON.parse(callText!.slice("<tool_call>".length, -"</tool_call>".length));
+		expect(call.name).toBe("read");
+		expect(call.arguments.path).toContain("characters omitted");
+		expect(call.arguments.path.length).toBeLessThan(big.length);
+	});
+
+	it("quotes tool schemas only when the budget asks for them", () => {
+		const withoutSchemas = projectTranscript(input());
+		expect(JSON.stringify(withoutSchemas.messages)).not.toContain("properties");
+
+		const withSchemas = projectTranscript(input({
+			budget: { ...DEFAULT_CONTEXT_BUDGET, toolSchemas: true },
+		}));
+		expect(JSON.stringify(withSchemas.messages)).toContain("properties");
+		expect(withSchemas.bounds.estimatedInputTokens).toBeGreaterThan(withoutSchemas.bounds.estimatedInputTokens);
+	});
+
+	it("is byte-stable and preserves the recent window without truncation", () => {
 		const value = input({
 			entries: [entry("user", { role: "user", content: "stable", timestamp: Date.now() })],
 			question: "same",

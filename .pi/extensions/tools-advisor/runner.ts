@@ -3,6 +3,7 @@ import type { Api, AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { isContextOverflow } from "@earendil-works/pi-ai";
 import type { ExtensionContext, ToolInfo } from "@earendil-works/pi-coding-agent";
 import {
+	type AdvisorContextBudget,
 	projectTranscript,
 	TranscriptProjectionError,
 	type TranscriptProjectionInput,
@@ -18,6 +19,8 @@ export interface AdvisorSettings {
 	maxUses: number;
 	maxTokens: number;
 	allowCrossProvider: boolean;
+	/** Omit to use DEFAULT_CONTEXT_BUDGET. */
+	contextBudget?: AdvisorContextBudget;
 }
 
 export interface AdvisorToolDetails {
@@ -131,6 +134,7 @@ export function createAdvisorRunner(): AdvisorRunner {
 				maxTokens: validPositiveInteger(input.settings.maxTokens, DEFAULT_MAX_TOKENS),
 				advisorCallId: input.callId,
 				question: input.question,
+				budget: input.settings.contextBudget,
 			};
 			projection = projectTranscript(transcriptInput);
 		} catch (error) {
