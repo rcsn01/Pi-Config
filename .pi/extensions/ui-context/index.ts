@@ -81,23 +81,85 @@ export function formatBreakdownValue(tokens: number, contextWindow: number): str
 	return `${formatTokenCount(tokens)} (${percent})`;
 }
 
-function usageBlockLines(
+function rightAlign(line: string, width: number): string {
+	const clipped = fit(line, width);
+	return " ".repeat(Math.max(0, width - visibleWidth(clipped))) + clipped;
+}
+
+function usageTableLines(
 	title: string,
 	rows: readonly { model: string; usage: SessionTokenUsage }[],
 	theme: Theme,
+	width: number,
 ): string[] {
-	const lines = [theme.fg("muted", title)];
-	if (rows.length === 0) {
-		lines.push(theme.fg("dim", "  No usage recorded"));
+	const safeWidth = Math.max(1, width);
+	const border = (text: string) => theme.fg("borderMuted", text);
+	const contentWidth = Math.max(1, safeWidth - 4);
+	const empty = rows.length === 0;
+
+	const topBorder = (): string => {
+		const prefix = "┌─ ";
+		const label = truncateToWidth(title, Math.max(1, safeWidth - 5), "…");
+		const dashes = Math.max(0, safeWidth - visibleWidth(prefix + label) - 2);
+		return border(prefix) + theme.fg("accent", theme.bold(label)) + border(` ${"─".repeat(dashes)}┐`);
+	};
+	const bottomBorder = (): string => border(`└${"─".repeat(safeWidth - 2)}┘`);
+	const divider = (): string => border(`├${"─".repeat(safeWidth - 2)}┤`);
+	const contentRow = (content: string): string => border("│ ") + pad(content, contentWidth) + border(" │");
+
+	const numericHeaders = ["Input", "Cache input", "Output"];
+	const numericValues = (usage: SessionTokenUsage): string[] => [
+		formatExactTokenCount(usage.input),
+		formatExactTokenCount(usage.cacheRead),
+		formatExactTokenCount(usage.output),
+	];
+	const longestValue = (index: number): number =>
+		empty ? 0 : Math.max(...rows.map((row) => numericValues(row.usage)[index]!.length));
+
+	const headerTable = (headers: readonly string[]): string[] | undefined => {
+		const numericWidths = headers.map((header, index) => Math.max(header.length, longestValue(index)));
+		const modelWidth = contentWidth - headers.length * 2 - numericWidths.reduce((sum, w) => sum + w, 0);
+		if (modelWidth < 8) return undefined;
+		if (rows.some((row) => visibleWidth(row.model) > modelWidth)) return undefined;
+		const headerRow = contentRow(theme.fg("muted", [
+			pad("Model", modelWidth),
+			...numericWidths.map((w, index) => rightAlign(headers[index]!, w)),
+		].join("  ")));
+		const modelRow = (model: string, usage: SessionTokenUsage): string => contentRow([
+			pad(theme.bold(model), modelWidth),
+			...numericValues(usage).map((value, index) => rightAlign(value, numericWidths[index]!)),
+		].join("  "));
+		return [
+			topBorder(),
+			headerRow,
+			divider(),
+			...rows.map(({ model, usage }) => modelRow(model, usage)),
+			bottomBorder(),
+		];
+	};
+
+	const labelTable = (): string[] => {
+		const lines = [topBorder()];
+		if (empty) {
+			lines.push(contentRow(theme.fg("dim", "No usage recorded")));
+		} else {
+			for (const { model, usage } of rows) {
+				lines.push(contentRow(theme.bold(truncateToWidth(model, contentWidth, "…"))));
+				for (const [label, value] of [
+					["Input", usage.input],
+					["Cache input", usage.cacheRead],
+					["Output", usage.output],
+				] as const) {
+					lines.push(contentRow(`  ${pad(label, 12)} ${formatExactTokenCount(value)}`));
+				}
+			}
+		}
+		lines.push(bottomBorder());
 		return lines;
-	}
-	for (const { model, usage } of rows) {
-		lines.push(`  ${model}`);
-		lines.push(`    ${"Input".padEnd(12)} ${formatExactTokenCount(usage.input)}`);
-		lines.push(`    ${"Cache input".padEnd(12)} ${formatExactTokenCount(usage.cacheRead)}`);
-		lines.push(`    ${"Output".padEnd(12)} ${formatExactTokenCount(usage.output)}`);
-	}
-	return lines;
+	};
+
+	if (empty) return labelTable();
+	return headerTable(numericHeaders) ?? headerTable(["Input", "Cache", "Output"]) ?? labelTable();
 }
 
 function sortedUsageRows(
@@ -120,26 +182,31 @@ function cumulativeUsageLines(
 	width: number,
 ): string[] {
 	const rows = diagnostics.modelUsage;
-	const blocks = [
-		usageBlockLines("Current context token usage", sortedUsageRows(rows.map((row) => ({ model: row.model, usage: row.session }))), theme),
-		usageBlockLines("Subagent usage in context", sortedUsageRows(rows.map((row) => ({ model: row.model, usage: row.subagent }))), theme),
-		usageBlockLines("Advisor usage in context", sortedUsageRows(rows.map((row) => ({ model: row.model, usage: row.advisor }))), theme),
-		usageBlockLines("Guardian usage in context", sortedUsageRows(rows.map((row) => ({ model: row.model, usage: row.guardian }))), theme),
+	const makeBlocks = (blockWidth: number): string[][] => [
+		usageTableLines("Current context token usage", sortedUsageRows(rows.map((row) => ({ model: row.model, usage: row.session }))), theme, blockWidth),
+		usageTableLines("Subagent usage in context", sortedUsageRows(rows.map((row) => ({ model: row.model, usage: row.subagent }))), theme, blockWidth),
+		usageTableLines("Advisor usage in context", sortedUsageRows(rows.map((row) => ({ model: row.model, usage: row.advisor }))), theme, blockWidth),
+		usageTableLines("Guardian usage in context", sortedUsageRows(rows.map((row) => ({ model: row.model, usage: row.guardian }))), theme, blockWidth),
 	];
-	if (width < 72) return blocks.flatMap((block, index) => index === 0 ? block : ["", ...block]);
+	if (width < 72) {
+		const blocks = makeBlocks(width);
+		return blocks.flatMap((block, index) => index === 0 ? block : ["", ...block]);
+	}
 
 	const gap = 3;
 	const leftWidth = Math.floor((width - gap) / 2);
 	const rightWidth = Math.max(1, width - gap - leftWidth);
+	const leftBlocks = makeBlocks(leftWidth);
+	const rightBlocks = makeBlocks(rightWidth);
 	const lines: string[] = [];
-	for (let index = 0; index < blocks.length; index += 2) {
-		const left = blocks[index]!;
-		const right = blocks[index + 1] ?? [];
+	for (let index = 0; index < leftBlocks.length; index += 2) {
+		const left = leftBlocks[index]!;
+		const right = rightBlocks[index + 1] ?? [];
 		const rows = Math.max(left.length, right.length);
 		for (let row = 0; row < rows; row++) {
 			lines.push(`${pad(left[row] ?? "", leftWidth)}${" ".repeat(gap)}${fit(right[row] ?? "", rightWidth)}`);
 		}
-		if (index + 2 < blocks.length) lines.push("");
+		if (index + 2 < leftBlocks.length) lines.push("");
 	}
 	return lines;
 }
