@@ -1,6 +1,6 @@
 # 4. Plan: Client-side advisor system for pi
 
-Implements the **advisor strategy** (research doc 3, Approach A) as a pi
+Implements the **advisor strategy** (Approach A) as a pi
 extension in this repo: the executor model gets an `advisor` tool it can call;
 the tool gathers the conversation from the session and makes a second model
 call to a stronger advisor model. Works with any provider (Anthropic, Ollama,
@@ -16,7 +16,7 @@ counted in usage totals, and surfaced in the TUI ("Advising" status, expandable
 advice).
 
 **Out of scope (v1):** server-side `advisor_20260301` tool (needs pi-ai
-changes, see research doc 3 §3.4), subagent inheritance of the advisor,
+changes), subagent inheritance of the advisor,
 per-agent advisor config.
 
 ## 4.2 Architecture
@@ -141,8 +141,8 @@ Top-level key in `.pi/settings.json` (preserved by `config-profiles` like
 
 ### Phase 4 — Tool + command (`index.ts`)
 - [ ] `pi.registerTool("advisor", …)`:
-      - `description` + `promptSnippet` + `promptGuidelines` (timing guidance
-        from research doc 2 §2.10: call early after exploratory reads, before
+      - `description` + `promptSnippet` + `promptGuidelines` (timing guidance:
+        call early after exploratory reads, before
         committing, when stuck, before declaring done; call before todo tools)
       - `parameters: Type.Object({ question: Type.Optional(Type.String()) })`
       - `execute()` → runner; return `{ content, details, usage }`
@@ -165,7 +165,7 @@ Top-level key in `.pi/settings.json` (preserved by `config-profiles` like
       `pairing.ts` rank) → `pi.sendUserMessage("Consider consulting the
       advisor before continuing.", { deliverAs: "steer" })`
 - [ ] Skip nudge for Opus-class executors and when the system prompt already
-      contains restraint language (Anthropic findings, research doc 2 §2.10)
+      contains restraint language (Anthropic findings)
 - [ ] Test: nudge fires on turn 2 for Haiku-class, not for Opus-class, not
       after first advisor call
 
@@ -180,7 +180,7 @@ Top-level key in `.pi/settings.json` (preserved by `config-profiles` like
 |----------|--------|-----------|
 | Tool always registered | Yes, even when unconfigured | Model stays aware; `execute()` returns "run /advisor" notice when unset |
 | Advisor reasoning | `reasoning: "off"` by default | Cost control; server-side advisor drops thinking anyway. Configurable later |
-| Advisor output cap | `maxTokens: 2048` | Anthropic: ~7× output reduction, ~0% truncation (research doc 2 §2.7) |
+| Advisor output cap | `maxTokens: 2048` | Anthropic: ~7× output reduction, ~0% truncation |
 | Call cap | `maxUses: 3` per session, counted in tool-result `details` | Mirrors `max_uses`; survives restarts via state reconstruction |
 | Nudge | Haiku-class executors only, turn 2, `deliverAs: "steer"` | Anthropic: +7pp on Haiku, harmful on Opus |
 | Pairing | Client-side rank check, notify + skip on invalid | Mirrors Claude Code's validation |

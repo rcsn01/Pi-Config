@@ -1,4 +1,4 @@
-# claude_plan.md — A client-side `/advisor` for pi
+# A client-side `/advisor` for pi
 
 **Goal:** reproduce Claude Code's `/advisor` as a pi extension that *reduces* token cost
 without losing quality.
@@ -85,17 +85,16 @@ them and continues.
 | Fable 5 | Fable 5, Opus 5 |
 | Mythos 5 | Mythos 5, Opus 5 |
 
-> ⚠️ This supersedes the table in `research/02-advisor-executor-mechanics.md`, which listed
-> Sonnet-tier models as valid advisors. Current guidance requires an Opus-4.7-or-better
-> advisor. **The extension's `pairing.ts` must encode this table, not the older one.**
+> ⚠️ This supersedes earlier research notes, which listed Sonnet-tier models as valid
+> advisors. Current guidance requires an Opus-4.7-or-better advisor. **The extension's
+> `pairing.ts` must encode this table, not the older one.**
 
 **Availability:** beta on the Claude API and Claude Platform on AWS. **Not** on Amazon
 Bedrock, Google Vertex AI, or Microsoft Foundry.
 
 ## 3. Why pi cannot use the server-side tool today
 
-I verified this against the installed `pi-ai` rather than trusting the earlier research
-note. The conclusion holds:
+Verified against the installed `pi-ai`:
 
 ```
 $ grep -rn "advisor"         --include='*.js' --include='*.d.ts' dist/   →  0 matches
@@ -486,8 +485,5 @@ the `subscription-usage` quota bars before and after each arm.
 - Claude Code docs — *Escalate hard decisions with the advisor tool*
 - Claude API docs — *Advisor tool* (`advisor_20260301`, beta `advisor-tool-2026-03-01`)
 - Anthropic — *The advisor strategy: give agents an intelligence boost*
-- `claude-api` skill: advisor contract, current pairing table, platform availability
 - Local: `pi-ai@0.84.1/dist/{models,types}.d.ts`, `dist/api/anthropic-messages.js`;
   `pi-coding-agent@0.84.2/docs/extensions.md`; `.pi/extensions/{tools-subagents,safety-permissions}/`
-- Prior research in this repo: `research/01`–`04` (in `git show HEAD:research/`) — superseded
-  on the pairing table, confirmed on the pi-ai gaps
