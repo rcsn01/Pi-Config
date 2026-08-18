@@ -104,12 +104,17 @@ export function collectToolUsage(entries: readonly SessionEntry[], toolName: str
 	return finalizeUsage(totals);
 }
 
-/** Collect usage nested in custom-message details with the requested custom type. */
-export function collectCustomMessageUsage(entries: readonly SessionEntry[], customType: string): SessionUsageTotals {
+/** Collect usage nested in custom entries (messages or persisted entries) with the requested custom type. */
+export function collectCustomUsage(entries: readonly SessionEntry[], customType: string): SessionUsageTotals {
 	const totals = emptyUsageTotals();
 	for (const entry of entries) {
-		if (entry.type !== "custom_message" || entry.customType !== customType) continue;
-		addUsage(totals, asRecord(entry.details)?.usage);
+		if (entry.type !== "custom_message" && entry.type !== "custom") continue;
+		if (entry.customType !== customType) continue;
+		if (entry.type === "custom_message") {
+			addUsage(totals, asRecord(entry.details)?.usage);
+		} else {
+			addUsage(totals, asRecord(entry.data)?.usage);
+		}
 	}
 	return finalizeUsage(totals);
 }
@@ -175,9 +180,9 @@ export function collectModelUsage(entries: readonly SessionEntry[]): ModelUsageR
 			continue;
 		}
 
-		if (entry.type === "custom_message" && entry.customType === "auto-review-verdict") {
-			const details = asRecord(entry.details);
-			add(modelName(details?.model) ?? currentModel, "guardian", details?.usage);
+		if ((entry.type === "custom_message" || entry.type === "custom") && entry.customType === "auto-review-verdict") {
+			const data = entry.type === "custom_message" ? asRecord(entry.details) : asRecord(entry.data);
+			if (data) add(modelName(data.model) ?? currentModel, "guardian", data.usage);
 		} else if (entry.type === "compaction" || entry.type === "branch_summary") {
 			add(currentModel, "session", entry.usage);
 		}
@@ -234,8 +239,9 @@ export function collectSessionUsage(entries: readonly SessionEntry[]): SessionUs
 			} else if (entry.message.toolName === "subagent") {
 				for (const usage of nestedSubagentUsages(entry.message.details)) addUsage(totals, usage);
 			}
-		} else if (entry.type === "custom_message" && entry.customType === "auto-review-verdict") {
-			addUsage(totals, asRecord(entry.details)?.usage);
+		} else if ((entry.type === "custom_message" || entry.type === "custom") && entry.customType === "auto-review-verdict") {
+			const data = entry.type === "custom_message" ? asRecord(entry.details) : asRecord(entry.data);
+			addUsage(totals, data?.usage);
 		} else if (entry.type === "compaction" || entry.type === "branch_summary") {
 			addUsage(totals, entry.usage);
 		}

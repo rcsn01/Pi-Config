@@ -11,12 +11,7 @@ import type { ApprovalResult } from "./policy-types.ts";
 export interface ApprovalServiceOptions {
 	getMode: () => ModeState;
 	getContext: () => { lastUserPrompt: string; precedingAssistantMessage: string };
-	sendMessage: (message: {
-		customType: string;
-		content: string;
-		display: boolean;
-		details: Record<string, unknown>;
-	}) => void;
+	appendEntry: (customType: string, data: Record<string, unknown>) => void;
 }
 
 export interface ApprovalService {
@@ -36,7 +31,7 @@ export interface ApprovalService {
  * Create the approval service bound to the extension's live state.
  */
 export function createApprovalService(options: ApprovalServiceOptions): ApprovalService {
-	const { getMode, getContext, sendMessage } = options;
+	const { getMode, getContext, appendEntry } = options;
 
 	/**
 	 * Get the approval decision for the current mode.
@@ -99,20 +94,15 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 		try {
 			const result = await runAutoReviewer(title, evaluationMessage);
 
-			// Emit custom verdict message in warning color
-			const icon = result.allowed ? "✅" : "❌";
-			const label = result.allowed ? "ALLOWED" : "DENIED";
-			sendMessage({
-				customType: "auto-review-verdict",
-				content: `${icon} ${label}: ${title} — ${result.reason || ""}`,
-				display: true,
-				details: {
-					title,
-					allowed: result.allowed,
-					reason: result.reason,
-					...(result.model ? { model: result.model } : {}),
-					...(result.usage ? { usage: result.usage } : {}),
-				},
+			// Persist the verdict as a custom entry: rendered in the transcript by
+			// registerEntryRenderer, but NOT sent to the LLM and not queued through
+			// the steering queue (so it can never arrive late, after the turn ends).
+			appendEntry("auto-review-verdict", {
+				title,
+				allowed: result.allowed,
+				reason: result.reason,
+				...(result.model ? { model: result.model } : {}),
+				...(result.usage ? { usage: result.usage } : {}),
 			});
 
 			if (result.allowed) {

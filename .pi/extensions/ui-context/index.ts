@@ -12,7 +12,7 @@ import {
 	type Component,
 } from "@earendil-works/pi-tui";
 import {
-	collectCustomMessageUsage,
+	collectCustomUsage,
 	collectModelUsage,
 	collectSessionUsage,
 	collectSubagentUsage,
@@ -434,7 +434,7 @@ export function collectCurrentContextUsage(
 		sessionUsage: collectSessionUsage(contextEntries),
 		subagentUsage: collectSubagentUsage(contextEntries),
 		advisorUsage: collectToolUsage(contextEntries, "advisor"),
-		guardianUsage: collectCustomMessageUsage(contextEntries, "auto-review-verdict"),
+		guardianUsage: collectCustomUsage(contextEntries, "auto-review-verdict"),
 		modelUsage: collectModelUsage(contextEntries),
 	};
 }
