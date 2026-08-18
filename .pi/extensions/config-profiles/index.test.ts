@@ -3,10 +3,26 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConfigProfilesExtension } from "./index.ts";
 import type { ProfileStore } from "./profile-store.ts";
 
-function createHarness(options: { profiles?: string[]; active?: string; switchError?: Error } = {}) {
+function createHarness(options: {
+	profiles?: string[];
+	active?: string;
+	switchError?: Error;
+	modelSettings?: Record<string, unknown>;
+} = {}) {
 	const handlers = new Map<string, (event: any, ctx: any) => unknown>();
 	const commands = new Map<string, any>();
 	const synchronizeActiveProfile = vi.fn(async () => options.active);
+	const readSettings = vi.fn(() => options.modelSettings ?? {});
+	const modelRegistry = {
+		refresh: vi.fn(async () => ({ aborted: false, errors: new Map() })),
+		find: vi.fn((_provider: string, _modelId: string) => ({
+			provider: "test-provider",
+			id: "test-model",
+			name: "Test model",
+			contextWindow: 128_000,
+			reasoning: true,
+		})),
+	};
 	const switchProfile = vi.fn(async (name: string) => {
 		if (options.switchError) throw options.switchError;
 		return { changed: name !== options.active, active: name };
@@ -16,7 +32,7 @@ function createHarness(options: { profiles?: string[]; active?: string; switchEr
 		profilesDirectory: "/shared/.pi/profiles",
 		listProfiles: vi.fn(() => options.profiles ?? ["default", "focused"]),
 		readProfile: vi.fn(),
-		readSettings: vi.fn(),
+		readSettings,
 		getActiveProfile: vi.fn(() => options.active ?? "default"),
 		synchronizeActiveProfile,
 		switchProfile,
@@ -32,15 +48,22 @@ function createHarness(options: { profiles?: string[]; active?: string; switchEr
 	const output = vi.fn();
 	const reload = vi.fn(async () => {});
 	const request = vi.fn();
+	const setModel = vi.fn(async () => true);
+	const setThinkingLevel = vi.fn();
 	const ctx = {
 		hasUI: true,
 		mode: "tui",
 		ui: { notify, request, select: vi.fn() },
+		sessionManager: { getBranch: vi.fn(() => []) },
+		modelRegistry,
+		scopedModels: [],
 		reload,
 	};
 	const pi = {
 		on: vi.fn((event: string, handler: (event: any, ctx: any) => unknown) => handlers.set(event, handler)),
 		registerCommand: vi.fn((name: string, command: any) => commands.set(name, command)),
+		setModel,
+		setThinkingLevel,
 	};
 	createConfigProfilesExtension({ store, watch, output, debounceMs: 10, retryMs: 20 })(pi as any);
 	const emit = async (event: string) => handlers.get(event)?.({ type: event, reason: "startup" }, ctx);
@@ -55,6 +78,9 @@ function createHarness(options: { profiles?: string[]; active?: string; switchEr
 		output,
 		reload,
 		request,
+		setModel,
+		setThinkingLevel,
+		modelRegistry,
 		switchProfile,
 		synchronizeActiveProfile,
 		fireWatch: (filename: string | null = "settings.json") => watchListener?.("rename", filename),
@@ -72,6 +98,36 @@ describe("config profiles extension", () => {
 		expect(harness.switchProfile).toHaveBeenCalledWith("focused");
 		expect(harness.notify).toHaveBeenCalledWith('Switched to profile "focused". Reloading…', "info");
 		expect(harness.reload).toHaveBeenCalledOnce();
+	});
+
+	it("activates the switched profile's model after reloading", async () => {
+		const harness = createHarness({
+			active: "default",
+			modelSettings: {
+				uiModelSelector: {
+					profiles: {
+						normal: {
+							provider: "test-provider",
+							modelId: "test-model",
+							thinkingLevel: "high",
+							contextWindow: 64_000,
+						},
+					},
+				},
+			},
+		});
+		await harness.commands.get("profile").handler("focused", harness.ctx);
+
+		expect(harness.modelRegistry.refresh).toHaveBeenCalledWith({
+			allowNetwork: false,
+			providers: ["test-provider"],
+		});
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			provider: "test-provider",
+			id: "test-model",
+			contextWindow: 64_000,
+		}));
+		expect(harness.setThinkingLevel).toHaveBeenCalledWith("high");
 	});
 
 	it("uses the shared picker and marks the active profile", async () => {
