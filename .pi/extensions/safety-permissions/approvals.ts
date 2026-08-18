@@ -110,6 +110,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 					title,
 					allowed: result.allowed,
 					reason: result.reason,
+					...(result.model ? { model: result.model } : {}),
 					...(result.usage ? { usage: result.usage } : {}),
 				},
 			});

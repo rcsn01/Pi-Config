@@ -16,7 +16,7 @@ const usage = {
 
 describe("guardian approval persistence", () => {
 	it("persists guardian usage on the existing verdict message without transcript data", async () => {
-		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe", usage });
+		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe", model: "openai/guardian", usage });
 		const sendMessage = vi.fn();
 		const service = createApprovalService({
 			getMode: () => ({ mode: "auto-review", setAt: 0 }),
@@ -31,7 +31,7 @@ describe("guardian approval persistence", () => {
 			customType: "auto-review-verdict",
 			content: "✅ ALLOWED: Read file — safe",
 			display: true,
-			details: { title: "Read file", allowed: true, reason: "safe", usage },
+			details: { title: "Read file", allowed: true, reason: "safe", model: "openai/guardian", usage },
 		});
 	});
 });

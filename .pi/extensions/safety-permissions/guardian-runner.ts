@@ -51,6 +51,7 @@ export interface GuardianDefinition {
 }
 
 export interface GuardianReviewResult extends ApprovalResult {
+	model?: string;
 	usage?: Usage;
 }
 
@@ -302,14 +303,21 @@ ${message}`;
 
 	let session: AgentSession | undefined;
 	let startCount = 0;
+	let sessionModel: string | undefined;
 	const requestUsage = (): Usage | undefined => session ? collectGuardianUsage(session.messages, startCount) : undefined;
 	const withRequestUsage = (result: ApprovalResult): GuardianReviewResult => {
 		const usage = requestUsage();
-		return usage ? { ...result, usage } : result;
+		return {
+			...result,
+			...(sessionModel ? { model: sessionModel } : {}),
+			...(usage ? { usage } : {}),
+		};
 	};
 
 	try {
 		session = await getGuardianSession(definition);
+		const model = session.model;
+		if (model) sessionModel = `${model.provider}/${model.id}`;
 		startCount = session.messages.length;
 		await withTimeout(session.prompt(task), GUARDIAN_TIMEOUT_MS);
 		const content = lastAssistantTextSince(session, startCount);
