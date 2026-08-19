@@ -10,13 +10,12 @@ import {
 	convertToLlm,
 	getMarkdownTheme,
 	sessionEntryToContextMessages,
-	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import {
+	mutateSettingsDocument,
 	PROJECT_SETTINGS_PATH,
 	readSettingsDocument,
-	writeSettingsDocument,
-} from "../tools-subagents/settings-store.ts";
+} from "../_shared/settings-document.ts";
 import { createSessionProfileResolver } from "../_shared/active-profile.ts";
 import { Input, Markdown, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import {
@@ -49,7 +48,7 @@ export type { AdvisorSettings, AdvisorToolDetails, AdvisorToolResult } from "./r
 
 export const DEFAULT_MAX_TOKENS = 2048;
 
-export { PROJECT_SETTINGS_PATH } from "../tools-subagents/settings-store.ts";
+export { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 
 export interface AdvisorExtensionDependencies {
 	settingsPath?: string;
@@ -184,18 +183,18 @@ async function updateAdvisorSettings(
 	path: string,
 	mutate: (settings: AdvisorSettings) => AdvisorSettings,
 ): Promise<AdvisorSettings> {
-	return withFileMutationQueue(path, async () => {
-		const document = readSettingsDocument(path);
-		const next = mutate(parseAdvisorSettings(document));
-		writeSettingsDocument(path, { ...document, advisor: serializedAdvisorSettings(next) });
-		return next;
+	let next: AdvisorSettings;
+	await mutateSettingsDocument(path, (document) => {
+		next = mutate(parseAdvisorSettings(document));
+		return { ...document, advisor: serializedAdvisorSettings(next) };
 	});
+	return next!;
 }
 
 /** Disable without first validating the advisor namespace, so the kill switch works on malformed advisor settings. */
 async function disableAdvisorSettings(path: string): Promise<AdvisorSettings> {
-	return withFileMutationQueue(path, async () => {
-		const document = readSettingsDocument(path);
+	let next: AdvisorSettings;
+	await mutateSettingsDocument(path, (document) => {
 		const raw = isRecord(document.advisor) ? document.advisor : {};
 		let contextBudget = DEFAULT_CONTEXT_BUDGET;
 		try {
@@ -203,7 +202,7 @@ async function disableAdvisorSettings(path: string): Promise<AdvisorSettings> {
 		} catch {
 			// The kill switch must still work on a malformed contextBudget.
 		}
-		const next: AdvisorSettings = {
+		next = {
 			provider: preservedOptionalString(raw.provider),
 			modelId: preservedOptionalString(raw.modelId),
 			enabled: false,
@@ -219,9 +218,9 @@ async function disableAdvisorSettings(path: string): Promise<AdvisorSettings> {
 			allowCrossProvider: false,
 			contextBudget,
 		};
-		writeSettingsDocument(path, { ...document, advisor: serializedAdvisorSettings(next) });
-		return next;
+		return { ...document, advisor: serializedAdvisorSettings(next) };
 	});
+	return next!;
 }
 
 function modelKey(model: Pick<Model<Api>, "provider" | "id">): string {

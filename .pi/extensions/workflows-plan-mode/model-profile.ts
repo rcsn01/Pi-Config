@@ -1,14 +1,16 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	getAgentDir,
 	SettingsManager,
-	withFileMutationQueue,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+	isRecord,
+	mutateSettingsDocument,
+	PROJECT_SETTINGS_PATH,
+	readSettingsDocument,
+} from "../_shared/settings-document.ts";
 import {
 	DEFAULT_SENTINEL,
 	readPiNativeDefaults,
@@ -43,9 +45,6 @@ export interface NormalDefaultsStore {
 	capture(cwd: string, fallback: ModeModelProfile): Promise<ModeModelProfile>;
 	restore(cwd: string, profile: ModeModelProfile): Promise<void>;
 }
-
-const EXTENSION_DIRECTORY = dirname(fileURLToPath(import.meta.url));
-export const PLAN_MODE_SETTINGS_PATH = join(EXTENSION_DIRECTORY, "..", "..", "settings.json");
 
 export function profileLabel(
 	profile: Pick<ModeModelProfile, "provider" | "modelId" | "thinkingLevel" | "contextWindow">,
@@ -181,10 +180,6 @@ const THINKING_LEVELS = new Set<ModelThinkingLevel>([
 	"max",
 ]);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 export function validateStoredModeModelProfile(value: unknown, label = "Plan Mode profile"): StoredModeModelProfile {
 	if (!isRecord(value)) throw new Error(`${label} must be a JSON object.`);
 	if (typeof value.provider !== "string" || !value.provider.trim()) {
@@ -232,35 +227,12 @@ export function validateModeModelProfile(value: unknown, label = "Plan Mode prof
 	};
 }
 
-function readProjectSettings(path: string): Record<string, unknown> {
-	if (!existsSync(path)) return {};
-	let document: unknown;
-	try {
-		document = JSON.parse(readFileSync(path, "utf-8"));
-	} catch (error) {
-		throw new Error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
-	}
-	if (!isRecord(document)) throw new Error(`Cannot read ${path}: the root value must be a JSON object`);
-	return document;
-}
-
-function writeProjectSettings(path: string, document: Record<string, unknown>): void {
-	mkdirSync(dirname(path), { recursive: true });
-	const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-	try {
-		writeFileSync(temporaryPath, `${JSON.stringify(document, null, 2)}\n`, "utf-8");
-		renameSync(temporaryPath, path);
-	} finally {
-		if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
-	}
-}
-
-export function createPlanModeProfileStore(path = PLAN_MODE_SETTINGS_PATH): PlanModeProfileStore {
+export function createPlanModeProfileStore(path = PROJECT_SETTINGS_PATH): PlanModeProfileStore {
 	let currentPath = path;
 	return {
 		async load() {
 			try {
-				const profile = parseProjectModelPreferences(readProjectSettings(currentPath)).profiles.plan;
+				const profile = parseProjectModelPreferences(readSettingsDocument(currentPath)).profiles.plan;
 				return profile ? validateStoredModeModelProfile(profile) : undefined;
 			} catch (error) {
 				throw new Error(`Cannot load the Plan Mode profile from ${currentPath}: ${error instanceof Error ? error.message : String(error)}`);
@@ -272,12 +244,11 @@ export function createPlanModeProfileStore(path = PLAN_MODE_SETTINGS_PATH): Plan
 			if (validated.contextWindow === undefined) {
 				throw new Error("Plan Mode profile contextWindow must be a positive integer.");
 			}
-			await withFileMutationQueue(currentPath, async () => {
-				const settings = readProjectSettings(currentPath);
+			await mutateSettingsDocument(currentPath, (settings) => {
 				parseProjectModelPreferences(settings);
 				const selector = isRecord(settings.uiModelSelector) ? settings.uiModelSelector : {};
 				const profiles = isRecord(selector.profiles) ? selector.profiles : {};
-				writeProjectSettings(currentPath, {
+				return {
 					...settings,
 					uiModelSelector: {
 						...selector,
@@ -286,7 +257,7 @@ export function createPlanModeProfileStore(path = PLAN_MODE_SETTINGS_PATH): Plan
 							plan: { ...validated, contextWindow: validated.contextWindow! },
 						},
 					},
-				});
+				};
 			});
 		},
 

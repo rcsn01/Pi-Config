@@ -1,4 +1,3 @@
-import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	CONFIG_DIR_NAME,
@@ -6,6 +5,7 @@ import {
 	type ContextUsage,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { isRecord, readSettingsDocument, writeSettingsDocument } from "../_shared/settings-document.ts";
 
 /**
  * Claude/Codex-style auto-compaction.
@@ -55,12 +55,11 @@ export function vetoNativeCompaction(
  */
 export function disableNativeCompaction(settingsPath: string): boolean {
 	try {
-		const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
-			compaction?: { enabled?: boolean };
-		};
-		if (settings.compaction?.enabled === false) return false;
-		settings.compaction = { ...(settings.compaction ?? {}), enabled: false };
-		writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+		const settings = readSettingsDocument(settingsPath, { missing: "throw" });
+		const compaction = isRecord(settings.compaction) ? settings.compaction : {};
+		if (compaction.enabled === false) return false;
+		settings.compaction = { ...compaction, enabled: false };
+		writeSettingsDocument(settingsPath, settings);
 		return true;
 	} catch {
 		return false;

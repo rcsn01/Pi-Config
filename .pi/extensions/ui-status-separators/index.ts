@@ -1,25 +1,16 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import {
-	mkdirSync,
-	rmSync,
-	readFileSync,
-	renameSync,
-	writeFileSync,
-} from "node:fs";
+import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { collectSessionUsage, normalizeContextUsage } from "../_shared/usage.ts";
+import { isRecord, writeSettingsDocument } from "../_shared/settings-document.ts";
 
 const STATUS_ORDER = ["profile", "approval-mode", "plan"];
 const KEYBINDINGS_FILENAME = "keybindings.json";
 const THINKING_CYCLE_KEY = "app.thinking.cycle";
 
 type JsonObject = Record<string, unknown>;
-
-function isJsonObject(value: unknown): value is JsonObject {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isFileNotFoundError(error: unknown): boolean {
 	return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
@@ -30,16 +21,6 @@ function warnKeybindings(message: string, configPath: string, error?: unknown): 
 	console.warn(`[ui-status-separators] ${message} (${configPath})${detail}`);
 }
 
-function writeJsonAtomically(configPath: string, config: JsonObject): void {
-	const temporaryPath = `${configPath}.${process.pid}.${Date.now()}.tmp`;
-	try {
-		writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-		renameSync(temporaryPath, configPath);
-	} finally {
-		rmSync(temporaryPath, { force: true });
-	}
-}
-
 export function ensureThinkingCycleBinding(
 	configPath = path.join(getAgentDir(), KEYBINDINGS_FILENAME),
 ): void {
@@ -47,7 +28,7 @@ export function ensureThinkingCycleBinding(
 
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"));
-		if (!isJsonObject(parsed)) {
+		if (!isRecord(parsed)) {
 			warnKeybindings("Keybindings config must contain a JSON object; leaving it unchanged", configPath);
 			return;
 		}
@@ -66,8 +47,7 @@ export function ensureThinkingCycleBinding(
 	config[THINKING_CYCLE_KEY] = [];
 
 	try {
-		mkdirSync(path.dirname(configPath), { recursive: true });
-		writeJsonAtomically(configPath, config);
+		writeSettingsDocument(configPath, config);
 	} catch (error) {
 		warnKeybindings("Could not update keybindings config", configPath, error);
 	}

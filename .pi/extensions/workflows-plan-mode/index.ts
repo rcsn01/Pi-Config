@@ -13,6 +13,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
+import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import {
 	discardAssistantMessage,
 	extractAssistantText,
@@ -25,7 +26,6 @@ import {
 	applySessionProfile,
 	createNormalDefaultsStore,
 	createPlanModeProfileStore,
-	PLAN_MODE_SETTINGS_PATH,
 	type ModeModelProfile,
 	type NormalDefaultsStore,
 	type PlanModeProfileStore,
@@ -93,7 +93,7 @@ export function createPlanModeExtension(dependencies: PlanModeDependencies = {})
 
 function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDependencies): void {
 	const resolver = createSessionProfileResolver({
-		settingsPath: PLAN_MODE_SETTINGS_PATH,
+		settingsPath: PROJECT_SETTINGS_PATH,
 		profilesDirectory: PROFILES_DIRECTORY,
 	});
 	const profileStore = dependencies.profileStore ?? createPlanModeProfileStore();

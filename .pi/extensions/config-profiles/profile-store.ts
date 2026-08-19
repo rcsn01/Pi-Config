@@ -1,7 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+	isRecord,
+	mutateSettingsDocument,
+	parseSettingsText,
+	readSettingsDocument,
+} from "../_shared/settings-document.ts";
 import {
 	CONFIG_PROFILES_KEY,
 	PI_DIRECTORY,
@@ -36,30 +39,6 @@ export interface ProfileStore {
 	profilePath(name: string): string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseDocument(contents: string, path: string): Record<string, unknown> {
-	let value: unknown;
-	try {
-		value = JSON.parse(contents);
-	} catch (error) {
-		throw new Error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
-	}
-	if (!isRecord(value)) throw new Error(`Cannot read ${path}: the root value must be a JSON object`);
-	return value;
-}
-
-function readDocument(path: string): Record<string, unknown> {
-	try {
-		return parseDocument(readFileSync(path, "utf-8"), path);
-	} catch (error) {
-		if (error instanceof Error && error.message.startsWith(`Cannot read ${path}:`)) throw error;
-		throw new Error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
-	}
-}
-
 function activeProfile(document: Record<string, unknown>): string | undefined {
 	const namespace = document[CONFIG_PROFILES_KEY];
 	if (!isRecord(namespace) || typeof namespace.active !== "string") return undefined;
@@ -74,22 +53,6 @@ function withActiveProfile(document: Record<string, unknown>, name: string): Rec
 	const current = document[CONFIG_PROFILES_KEY];
 	const namespace = isRecord(current) ? current : {};
 	return { ...document, [CONFIG_PROFILES_KEY]: { ...namespace, active: name } };
-}
-
-let temporarySequence = 0;
-function atomicWrite(path: string, contents: string): void {
-	mkdirSync(dirname(path), { recursive: true });
-	const temporaryPath = `${path}.${process.pid}.${Date.now()}.${temporarySequence++}.tmp`;
-	try {
-		writeFileSync(temporaryPath, contents, { encoding: "utf-8", mode: 0o600 });
-		renameSync(temporaryPath, path);
-	} finally {
-		if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
-	}
-}
-
-function serialize(document: Record<string, unknown>): string {
-	return `${JSON.stringify(document, null, 2)}\n`;
 }
 
 export function createProfileStore(options: {
@@ -121,39 +84,32 @@ export function createProfileStore(options: {
 		},
 
 		readProfile(name) {
-			return readDocument(profilePath(name));
+			return readSettingsDocument(profilePath(name), { missing: "throw" });
 		},
 
 		getActiveProfile(settings) {
-			return activeProfile(settings ?? readDocument(settingsPath));
+			return activeProfile(settings ?? readSettingsDocument(settingsPath, { missing: "throw" }));
 		},
 
 		loadActiveProfile() {
 			const name = readActiveProfileName(settingsPath);
 			if (!name) return undefined;
-			return { name, document: readDocument(profilePath(name)) };
+			return { name, document: readSettingsDocument(profilePath(name), { missing: "throw" }) };
 		},
 
 		async switchProfile(name) {
 			validateProfileName(name);
-			return withFileMutationQueue(settingsPath, async () => {
-				// Validate every input before the first mutation.
-				const settingsContents = readFileSync(settingsPath, "utf-8");
-				const settings = parseDocument(settingsContents, settingsPath);
-				const destinationPath = profilePath(name);
-				const destinationContents = readFileSync(destinationPath, "utf-8");
-				parseDocument(destinationContents, destinationPath);
-				const outgoing = activeProfile(settings);
-
-				if (outgoing === name) {
-					return { changed: false, active: name };
-				}
-
-				// Only the marker changes; every other settings.json key (pi-core
-				// settings) is preserved and profile files are never written.
-				atomicWrite(settingsPath, serialize(withActiveProfile(settings, name)));
-				return { changed: true, active: name };
+			// Validate every input before the first mutation.
+			parseSettingsText(readFileSync(settingsPath, "utf-8"), settingsPath);
+			const destinationPath = profilePath(name);
+			parseSettingsText(readFileSync(destinationPath, "utf-8"), destinationPath);
+			let changed = false;
+			await mutateSettingsDocument(settingsPath, (settings) => {
+				if (activeProfile(settings) === name) return settings;
+				changed = true;
+				return withActiveProfile(settings, name);
 			});
+			return { changed, active: name };
 		},
 
 		profilePath,

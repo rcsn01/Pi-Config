@@ -1,7 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import {
+	mutateSettingsDocument,
+	PROJECT_SETTINGS_PATH,
+	readSettingsDocument as readRawDocument,
+} from "../_shared/settings-document.ts";
+
+export { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import {
 	mergeProjectCompactionSettings,
 	mergeProjectModelSelection,
@@ -19,25 +22,6 @@ export interface ProjectSettingsStore {
 	setPaths(profilePath: string, compactionPath: string): void;
 }
 
-const EXTENSION_DIRECTORY = dirname(fileURLToPath(import.meta.url));
-export const PROJECT_SETTINGS_PATH = join(EXTENSION_DIRECTORY, "..", "..", "settings.json");
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Read a document without validating its contents (the profile's pi-core keys are ignored). */
-function readRawDocument(path: string): Record<string, unknown> {
-	if (!existsSync(path)) return {};
-	try {
-		const document: unknown = JSON.parse(readFileSync(path, "utf-8"));
-		if (!isRecord(document)) throw new Error("the root value must be a JSON object");
-		return document;
-	} catch (error) {
-		throw new Error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
-	}
-}
-
 /** Read and validate a settings.json document (compaction is pi-core and authoritative). */
 function readSettingsDocument(path: string): Record<string, unknown> {
 	try {
@@ -46,17 +30,6 @@ function readSettingsDocument(path: string): Record<string, unknown> {
 		return document;
 	} catch (error) {
 		throw new Error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
-	}
-}
-
-function writeSettingsDocument(path: string, settings: Record<string, unknown>): void {
-	mkdirSync(dirname(path), { recursive: true });
-	const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-	try {
-		writeFileSync(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
-		renameSync(temporaryPath, path);
-	} finally {
-		if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
 	}
 }
 
@@ -86,30 +59,19 @@ export function createProjectSettingsStore(
 		},
 
 		async save(mode, selection) {
-			await withFileMutationQueue(profilePath, async () => {
-				const selectionSettings = mergeProjectModelSelection(
-					readRawDocument(profilePath),
-					mode,
-					selection,
-				);
-				writeSettingsDocument(profilePath, selectionSettings);
-			});
-			await withFileMutationQueue(currentCompactionPath, async () => {
-				const settings = mergeProjectCompactionSettings(
-					readSettingsDocument(currentCompactionPath),
-					selection.contextWindow,
-				);
-				writeSettingsDocument(currentCompactionPath, settings);
+			await mutateSettingsDocument(profilePath, (document) =>
+				mergeProjectModelSelection(document, mode, selection)
+			);
+			await mutateSettingsDocument(currentCompactionPath, (document) => {
+				parseProjectModelPreferences(document);
+				return mergeProjectCompactionSettings(document, selection.contextWindow);
 			});
 		},
 
 		async syncCompaction(contextWindow) {
-			await withFileMutationQueue(currentCompactionPath, async () => {
-				const settings = mergeProjectCompactionSettings(
-					readSettingsDocument(currentCompactionPath),
-					contextWindow,
-				);
-				writeSettingsDocument(currentCompactionPath, settings);
+			await mutateSettingsDocument(currentCompactionPath, (document) => {
+				parseProjectModelPreferences(document);
+				return mergeProjectCompactionSettings(document, contextWindow);
 			});
 		},
 
