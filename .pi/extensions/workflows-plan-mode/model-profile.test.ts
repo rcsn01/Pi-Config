@@ -418,6 +418,38 @@ describe("Plan Mode profile schema", () => {
 		}
 	});
 
+	it("strips legacy defaultProvider/defaultModel/defaultThinkingLevel keys on save", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-plan-profile-"));
+		const path = join(directory, "settings.json");
+		const initialSettings = {
+			defaultProvider: normalModel.provider,
+			defaultModel: normalModel.id,
+			defaultThinkingLevel: "medium",
+			compaction: { enabled: true, threshold: 0.1 },
+			uiModelSelector: {
+				label: "preserved",
+				profiles: { normal: profileFor(normalModel, "medium") },
+			},
+		};
+		writeFileSync(path, `${JSON.stringify(initialSettings, null, 2)}\n`, "utf-8");
+		try {
+			const store = createPlanModeProfileStore(path);
+			await store.save(profileFor(planModel, "high"));
+			expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
+				compaction: { enabled: true, threshold: 0.1 },
+				uiModelSelector: {
+					label: "preserved",
+					profiles: {
+						normal: profileFor(normalModel, "medium"),
+						plan: profileFor(planModel, "high"),
+					},
+				},
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("repoints the store at the session's profile with setPath", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "pi-plan-profile-"));
 		const settingsPath = join(directory, "settings.json");

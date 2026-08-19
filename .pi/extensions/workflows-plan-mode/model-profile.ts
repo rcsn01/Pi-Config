@@ -16,7 +16,7 @@ import {
 	readPiNativeDefaults,
 	type PiNativeDefaults,
 } from "../_shared/pi-defaults.ts";
-import { parseProjectModelPreferences } from "../ui-model-selector/model-config.ts";
+import { mergeProjectModelSelection, parseProjectModelPreferences } from "../ui-model-selector/model-config.ts";
 
 export interface ModeModelProfile {
 	provider: string;
@@ -244,21 +244,12 @@ export function createPlanModeProfileStore(path = PROJECT_SETTINGS_PATH): PlanMo
 			if (validated.contextWindow === undefined) {
 				throw new Error("Plan Mode profile contextWindow must be a positive integer.");
 			}
-			await mutateSettingsDocument(currentPath, (settings) => {
-				parseProjectModelPreferences(settings);
-				const selector = isRecord(settings.uiModelSelector) ? settings.uiModelSelector : {};
-				const profiles = isRecord(selector.profiles) ? selector.profiles : {};
-				return {
-					...settings,
-					uiModelSelector: {
-						...selector,
-						profiles: {
-							...profiles,
-							plan: { ...validated, contextWindow: validated.contextWindow! },
-						},
-					},
-				};
-			});
+			await mutateSettingsDocument(currentPath, (settings) =>
+				mergeProjectModelSelection(settings, "plan", {
+					...validated,
+					contextWindow: validated.contextWindow!,
+				}),
+			);
 		},
 
 		setPath(nextPath) {
