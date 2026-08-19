@@ -148,7 +148,7 @@ export default function (pi: ExtensionAPI) {
 			{ mode: mode.mode, cwd: ctx.cwd, hasUI: ctx.hasUI, execPolicy: loadExecPolicy() },
 			{
 				requestApproval: (title, message) => approvals.requestApproval(ctx, title, message),
-				guardianReview: (title, desc) => approvals.guardianReview(ctx, title, desc),
+				guardianReview: (title, desc, triggers) => approvals.guardianReview(ctx, title, desc, triggers),
 				onDenied: (input, title, message) => {
 					lastDeniedAction = { key: actionKey(input.toolName, input.input), title, message, at: Date.now() };
 				},
