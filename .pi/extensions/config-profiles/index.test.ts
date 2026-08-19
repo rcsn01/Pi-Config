@@ -9,6 +9,7 @@ interface HarnessOptions {
 	profiles?: string[];
 	active?: string;
 	switchError?: Error;
+	nativeDefaults?: { provider: string; modelId: string; thinkingLevel?: string };
 	readProfileDocument?: Record<string, unknown>;
 	activeProfile?: { name: string; document: Record<string, unknown> } | undefined;
 	model?: { provider: string; id: string };
@@ -84,7 +85,7 @@ function createHarness(options: HarnessOptions = {}) {
 		setThinkingLevel,
 		appendEntry,
 	};
-	createConfigProfilesExtension({ store, output })(pi as any);
+	createConfigProfilesExtension({ store, output, nativeDefaults: options.nativeDefaults })(pi as any);
 	const emit = async (event: string, reason = "startup") =>
 		handlers.get(event)?.({ type: event, reason }, ctx);
 	return {
@@ -226,6 +227,31 @@ describe("config profiles extension", () => {
 
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "plan-model", contextWindow: 131072 }));
 		expect(harness.setThinkingLevel).toHaveBeenCalledWith("low");
+	});
+
+	it("resolves the default profile through Pi native settings", async () => {
+		const harness = createHarness({
+			active: "focused",
+			nativeDefaults: { provider: "openai-codex", modelId: "gpt-5.6-luna", thinkingLevel: "max" },
+			readProfileDocument: {
+				uiModelSelector: {
+					profiles: {
+						normal: { provider: "default", modelId: "default", thinkingLevel: "default", contextWindow: "default" },
+						plan: { provider: "default", modelId: "default", thinkingLevel: "default", contextWindow: "default" },
+					},
+				},
+			},
+		});
+		await harness.commands.get("profile").handler("default", harness.ctx);
+
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			provider: "openai-codex",
+			id: "gpt-5.6-luna",
+			contextWindow: 256000,
+		}));
+		expect(harness.setThinkingLevel).toHaveBeenCalledWith("max");
+		expect(harness.notify).toHaveBeenCalledWith("Profile model: openai-codex/gpt-5.6-luna", "info");
+		expect(harness.reload).toHaveBeenCalledOnce();
 	});
 
 	it("always applies the selection even when the model is unchanged", async () => {

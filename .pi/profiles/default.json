@@ -8,32 +8,32 @@
   "uiModelSelector": {
     "profiles": {
       "normal": {
-        "provider": "github-copilot",
-        "modelId": "gpt-5.6-sol",
-        "thinkingLevel": "medium",
-        "contextWindow": 256000
+        "provider": "default",
+        "modelId": "default",
+        "thinkingLevel": "default",
+        "contextWindow": "default"
       },
       "plan": {
-        "provider": "ollama",
-        "modelId": "deepseek-v4-flash:0731-cloud",
-        "thinkingLevel": "xhigh",
-        "contextWindow": 256000
+        "provider": "default",
+        "modelId": "default",
+        "thinkingLevel": "default",
+        "contextWindow": "default"
       }
     }
   },
   "subagents": {
     "maxConcurrency": 4,
-    "defaultModel": "github-copilot/gpt-5.6-luna",
+    "defaultModel": "default",
     "agentModels": {},
-    "defaultThinkingLevel": "max",
+    "defaultThinkingLevel": "default",
     "agentThinkingLevels": {},
-    "defaultContextWindow": 256000,
+    "defaultContextWindow": "default",
     "agentContextWindows": {
-      "default": 256000,
-      "explorer": 256000,
-      "worker": 256000,
-      "researcher": 256000,
-      "judge": 256000
+      "default": "default",
+      "explorer": "default",
+      "worker": "default",
+      "researcher": "default",
+      "judge": "default"
     }
   },
   "configProfiles": {

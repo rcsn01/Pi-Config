@@ -115,8 +115,10 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 	function modelStatusLines(availableAgents: AgentConfig[]): string[] {
 		const config = configStore.load();
 		const modelOverrides = Object.entries(config.agentModels);
-		const thinkingOverrides = Object.entries(config.agentThinkingLevels);
-		const contextOverrides = Object.entries(config.agentContextWindows);
+		const thinkingOverrides = Object.entries(config.agentThinkingLevels)
+			.filter((entry): entry is [string, SubagentThinkingLevel] => entry[1] !== undefined);
+		const contextOverrides = Object.entries(config.agentContextWindows)
+			.filter((entry): entry is [string, number] => entry[1] !== undefined);
 		const lines = [
 			"Subagent model and thinking configuration:",
 			`Main model: ${canonicalMainModel(configStore.getMainModel())}`,

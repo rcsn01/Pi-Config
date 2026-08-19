@@ -97,6 +97,42 @@ describe("applyProfileModelSelection", () => {
 		expect(harness.setThinkingLevel).toHaveBeenCalledWith("low");
 	});
 
+	it("resolves all-default selections through injected Pi native defaults", async () => {
+		const harness = createHarness();
+		const document = {
+			uiModelSelector: {
+				profiles: {
+					normal: { provider: "default", modelId: "default", thinkingLevel: "default", contextWindow: "default" },
+				},
+			},
+		};
+
+		const result = await applyProfileModelSelection(
+			harness.pi,
+			harness.ctx,
+			document,
+			harness.settingsStore,
+			{ provider: "openai-codex", modelId: "gpt-5.6-luna", thinkingLevel: "max" },
+		);
+
+		expect(result).toEqual({
+			provider: "openai-codex",
+			modelId: "gpt-5.6-luna",
+			thinkingLevel: "max",
+			contextWindow: 256000,
+		});
+		expect(harness.ctx.modelRegistry.refresh).toHaveBeenCalledWith({
+			allowNetwork: false,
+			providers: ["openai-codex"],
+		});
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			provider: "openai-codex",
+			id: "gpt-5.6-luna",
+			contextWindow: 256000,
+		}));
+		expect(harness.setThinkingLevel).toHaveBeenCalledWith("max");
+	});
+
 	it("returns undefined without applying when the mode has no selection", async () => {
 		const harness = createHarness();
 

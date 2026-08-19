@@ -16,6 +16,7 @@ import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import { Input, SelectList, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	installModelCommandHandler,
@@ -349,7 +350,8 @@ export function createModelSelectorExtension(
 					// reload) without switching models.
 					const preferences = await settingsStore.load();
 					const profile = preferences.profiles[currentSelectionMode(ctx)];
-					const profileContext = profile && ctx.model.provider === profile.provider && ctx.model.id === profile.modelId
+					const profileContext = profile && profile.contextWindow !== DEFAULT_SENTINEL &&
+						ctx.model.provider === profile.provider && ctx.model.id === profile.modelId
 						? resolveContextWindow(profile.contextWindow)
 						: restoredModel.contextWindow;
 					const targetModel = profileContext !== restoredModel.contextWindow

@@ -9,6 +9,11 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+	DEFAULT_SENTINEL,
+	readPiNativeDefaults,
+	type PiNativeDefaults,
+} from "../_shared/pi-defaults.ts";
 import { parseProjectModelPreferences } from "../ui-model-selector/model-config.ts";
 
 export interface ModeModelProfile {
@@ -19,8 +24,16 @@ export interface ModeModelProfile {
 	contextWindow?: number;
 }
 
+export interface StoredModeModelProfile {
+	provider: string;
+	modelId: string;
+	thinkingLevel: ModelThinkingLevel | typeof DEFAULT_SENTINEL;
+	/** `default` resolves to the selected model's catalogue context window. */
+	contextWindow?: number | typeof DEFAULT_SENTINEL;
+}
+
 export interface PlanModeProfileStore {
-	load(): Promise<ModeModelProfile | undefined>;
+	load(): Promise<StoredModeModelProfile | undefined>;
 	save(profile: ModeModelProfile): Promise<void>;
 	/** Repoint the store at the session's profile file (default: settings.json). */
 	setPath(path: string): void;
@@ -77,17 +90,52 @@ export async function resolveProfileModel(
 	return model;
 }
 
+function resolveStoredModeProfile(
+	pi: ExtensionAPI,
+	profile: StoredModeModelProfile,
+	nativeDefaults?: PiNativeDefaults,
+): { profile: ModeModelProfile; useCatalogueContext: boolean } {
+	const needsNativeDefaults = profile.provider === DEFAULT_SENTINEL ||
+		profile.modelId === DEFAULT_SENTINEL ||
+		profile.thinkingLevel === DEFAULT_SENTINEL;
+	const defaults = needsNativeDefaults ? (nativeDefaults ?? readPiNativeDefaults()) : undefined;
+	const thinkingLevel = profile.thinkingLevel === DEFAULT_SENTINEL
+		? defaults?.thinkingLevel ?? pi.getThinkingLevel()
+		: profile.thinkingLevel;
+	if (typeof thinkingLevel !== "string" || !THINKING_LEVELS.has(thinkingLevel as ModelThinkingLevel)) {
+		throw new Error(`Pi's native defaultThinkingLevel is not supported: ${String(thinkingLevel)}.`);
+	}
+	return {
+		profile: {
+			provider: profile.provider === DEFAULT_SENTINEL ? defaults!.provider : profile.provider,
+			modelId: profile.modelId === DEFAULT_SENTINEL ? defaults!.modelId : profile.modelId,
+			thinkingLevel: thinkingLevel as ModelThinkingLevel,
+			contextWindow: profile.contextWindow === DEFAULT_SENTINEL ? undefined : profile.contextWindow,
+		},
+		useCatalogueContext: profile.contextWindow === DEFAULT_SENTINEL,
+	};
+}
+
+export function usesDefaultModeProfile(profile: StoredModeModelProfile): boolean {
+	return profile.provider === DEFAULT_SENTINEL ||
+		profile.modelId === DEFAULT_SENTINEL ||
+		profile.thinkingLevel === DEFAULT_SENTINEL ||
+		profile.contextWindow === DEFAULT_SENTINEL;
+}
+
 export async function applySessionProfile(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-	profile: ModeModelProfile,
+	storedProfile: StoredModeModelProfile,
+	nativeDefaults?: PiNativeDefaults,
 ): Promise<ModeModelProfile> {
+	const { profile, useCatalogueContext } = resolveStoredModeProfile(pi, storedProfile, nativeDefaults);
 	const currentModel = ctx.model;
 	const sameModel = currentModel?.provider === profile.provider && currentModel.id === profile.modelId;
 	let model: Model<any>;
 	let shouldSetModel = false;
 
-	if (sameModel) {
+	if (sameModel && !useCatalogueContext) {
 		model = profile.contextWindow === undefined || profile.contextWindow === currentModel.contextWindow
 			? currentModel
 			: { ...currentModel, contextWindow: profile.contextWindow };
@@ -97,7 +145,7 @@ export async function applySessionProfile(
 		model = profile.contextWindow === undefined
 			? catalogueModel
 			: { ...catalogueModel, contextWindow: profile.contextWindow };
-		shouldSetModel = true;
+		shouldSetModel = !sameModel || model.contextWindow !== currentModel?.contextWindow;
 	}
 
 	if (shouldSetModel) {
@@ -137,7 +185,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function validateModeModelProfile(value: unknown, label = "Plan Mode profile"): ModeModelProfile {
+export function validateStoredModeModelProfile(value: unknown, label = "Plan Mode profile"): StoredModeModelProfile {
 	if (!isRecord(value)) throw new Error(`${label} must be a JSON object.`);
 	if (typeof value.provider !== "string" || !value.provider.trim()) {
 		throw new Error(`${label} provider must be a non-empty string.`);
@@ -145,17 +193,42 @@ export function validateModeModelProfile(value: unknown, label = "Plan Mode prof
 	if (typeof value.modelId !== "string" || !value.modelId.trim()) {
 		throw new Error(`${label} modelId must be a non-empty string.`);
 	}
-	if (typeof value.thinkingLevel !== "string" || !THINKING_LEVELS.has(value.thinkingLevel as ModelThinkingLevel)) {
+	if (
+		typeof value.thinkingLevel !== "string" ||
+		(value.thinkingLevel !== DEFAULT_SENTINEL && !THINKING_LEVELS.has(value.thinkingLevel as ModelThinkingLevel))
+	) {
 		throw new Error(`${label} thinkingLevel is not supported.`);
 	}
-	if (value.contextWindow !== undefined && (!Number.isInteger(value.contextWindow) || (value.contextWindow as number) <= 0)) {
+	if (
+		value.contextWindow !== undefined &&
+		value.contextWindow !== DEFAULT_SENTINEL &&
+		(!Number.isInteger(value.contextWindow) || (value.contextWindow as number) <= 0)
+	) {
 		throw new Error(`${label} contextWindow must be a positive integer.`);
 	}
 	return {
 		provider: value.provider,
 		modelId: value.modelId,
-		thinkingLevel: value.thinkingLevel as ModelThinkingLevel,
-		contextWindow: value.contextWindow as number | undefined,
+		thinkingLevel: value.thinkingLevel as ModelThinkingLevel | typeof DEFAULT_SENTINEL,
+		contextWindow: value.contextWindow as number | typeof DEFAULT_SENTINEL | undefined,
+	};
+}
+
+export function validateModeModelProfile(value: unknown, label = "Plan Mode profile"): ModeModelProfile {
+	const stored = validateStoredModeModelProfile(value, label);
+	if (
+		stored.provider === DEFAULT_SENTINEL ||
+		stored.modelId === DEFAULT_SENTINEL ||
+		stored.thinkingLevel === DEFAULT_SENTINEL ||
+		stored.contextWindow === DEFAULT_SENTINEL
+	) {
+		throw new Error(`${label} must contain concrete model settings.`);
+	}
+	return {
+		provider: stored.provider,
+		modelId: stored.modelId,
+		thinkingLevel: stored.thinkingLevel,
+		contextWindow: stored.contextWindow,
 	};
 }
 
@@ -188,7 +261,7 @@ export function createPlanModeProfileStore(path = PLAN_MODE_SETTINGS_PATH): Plan
 		async load() {
 			try {
 				const profile = parseProjectModelPreferences(readProjectSettings(currentPath)).profiles.plan;
-				return profile ? validateModeModelProfile(profile) : undefined;
+				return profile ? validateStoredModeModelProfile(profile) : undefined;
 			} catch (error) {
 				throw new Error(`Cannot load the Plan Mode profile from ${currentPath}: ${error instanceof Error ? error.message : String(error)}`);
 			}

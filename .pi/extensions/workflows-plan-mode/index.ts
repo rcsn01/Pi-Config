@@ -11,6 +11,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import { PROFILES_DIRECTORY, resolveSessionProfilePath } from "../_shared/active-profile.ts";
 import {
 	discardAssistantMessage,
@@ -31,6 +32,7 @@ import {
 	preserveNormalGlobalDefaults,
 	profileFromCurrentSession,
 	profileLabel,
+	usesDefaultModeProfile,
 	validateModeModelProfile,
 } from "./model-profile.ts";
 import { buildPlanModeSystemPrompt } from "./plan-prompt.ts";
@@ -67,6 +69,7 @@ export type { PlanReviewAction } from "./plan-review.ts";
 
 export interface PlanModeDependencies {
 	profileStore?: PlanModeProfileStore;
+	nativeDefaults?: PiNativeDefaults;
 	normalDefaultsStore?: NormalDefaultsStore;
 	waitForNativePersistence?: () => Promise<void>;
 	createWorkspace?: (hostRoot: string, options?: PlanWorkspaceOptions) => Promise<PlanWorkspace>;
@@ -340,9 +343,9 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 
 			profileTransitionDepth++;
 			try {
-				activePlanProfile = await applySessionProfile(pi, ctx, storedProfile);
+				activePlanProfile = await applySessionProfile(pi, ctx, storedProfile, dependencies.nativeDefaults);
 				switchedSessionProfile = true;
-				await profileStore.save(activePlanProfile);
+				if (!usesDefaultModeProfile(storedProfile)) await profileStore.save(activePlanProfile);
 				await preserveDefaults(ctx);
 			} finally {
 				profileTransitionDepth--;
@@ -356,7 +359,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			if (switchedSessionProfile) {
 				try {
 					profileTransitionDepth++;
-					await applySessionProfile(pi, ctx, normalProfile);
+					await applySessionProfile(pi, ctx, normalProfile, dependencies.nativeDefaults);
 					await preserveDefaults(ctx);
 				} catch (failure) {
 					rollbackError = failure;
@@ -398,14 +401,14 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			let restoredSessionProfile = false;
 			try {
 				profileTransitionDepth++;
-				await applySessionProfile(pi, ctx, normalProfile);
+				await applySessionProfile(pi, ctx, normalProfile, dependencies.nativeDefaults);
 				restoredSessionProfile = true;
 				await preserveDefaults(ctx);
 			} catch (error) {
 				let rollbackError: unknown;
 				if (restoredSessionProfile && activePlanProfile) {
 					try {
-						await applySessionProfile(pi, ctx, activePlanProfile);
+						await applySessionProfile(pi, ctx, activePlanProfile, dependencies.nativeDefaults);
 						await preserveDefaults(ctx);
 					} catch (failure) {
 						rollbackError = failure;
