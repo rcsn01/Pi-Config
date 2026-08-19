@@ -2,10 +2,10 @@
   "compaction": {
     "enabled": false,
     "threshold": 0.1,
-    "reserveTokens": 27200,
+    "reserveTokens": 20000,
     "keepRecentTokens": 25600
   },
   "configProfiles": {
-    "active": "openai"
+    "active": "dsv4-flash"
   }
 }
