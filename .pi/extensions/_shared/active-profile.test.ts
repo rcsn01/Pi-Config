@@ -69,19 +69,22 @@ describe("active profile helpers", () => {
 			.toBe(join(profilesDirectory, "default.json"));
 	});
 
-	it("falls back to the entry when the marker is absent, and vice versa", () => {
+	it("falls back to the entry when the marker is absent on new sessions", () => {
 		const { settingsPath, profilesDirectory } = fixture({});
 		expect(resolveSessionProfilePath([entry("default")], settingsPath, profilesDirectory, "startup"))
 			.toBe(join(profilesDirectory, "default.json"));
+	});
 
+	it("never falls back to the marker on reload", () => {
 		const marked = fixture({ configProfiles: { active: "focused" } });
 		expect(resolveSessionProfilePath([], marked.settingsPath, marked.profilesDirectory, "reload"))
-			.toBe(join(marked.profilesDirectory, "focused.json"));
+			.toBeUndefined();
+		expect(resolveSessionProfilePath([entry("../bad")], marked.settingsPath, marked.profilesDirectory, "reload"))
+			.toBeUndefined();
 	});
 
 	it("returns undefined when neither source yields a valid name", () => {
 		const { settingsPath, profilesDirectory } = fixture({});
 		expect(resolveSessionProfilePath([], settingsPath, profilesDirectory, "startup")).toBeUndefined();
-		expect(resolveSessionProfilePath([entry("../bad")], settingsPath, profilesDirectory, "reload")).toBeUndefined();
 	});
 });
