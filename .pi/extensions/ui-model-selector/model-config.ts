@@ -31,6 +31,9 @@ export type ModelSelectionMode = "normal" | "plan";
 /** Fraction of each model context window reserved for the response before compaction. */
 export const DEFAULT_COMPACTION_THRESHOLD = 0.1;
 
+/** Recent tokens kept (not summarized) when compaction runs, when none is configured. */
+export const DEFAULT_KEEP_RECENT_TOKENS = 25_600;
+
 /** A fully resolved selection suitable for Pi's runtime APIs and persistence. */
 export interface ModelSelectionSettings {
 	provider: string;
@@ -53,6 +56,8 @@ export interface ProjectModelPreferences {
 	contextWindows: Record<string, number>;
 	/** Fraction of the active context window reserved for the model response. */
 	compactionThreshold: number;
+	/** Recent tokens to keep (not summarized) when compaction runs. */
+	keepRecentTokens: number;
 }
 
 /** Default context window applied when a model entry declares none. */
@@ -189,6 +194,14 @@ function validateCompactionThreshold(value: unknown): number {
 	return value;
 }
 
+function validateKeepRecentTokens(value: unknown): number {
+	if (value === undefined) return DEFAULT_KEEP_RECENT_TOKENS;
+	if (!Number.isInteger(value) || (value as number) <= 0) {
+		throw new Error("compaction.keepRecentTokens must be a positive integer.");
+	}
+	return value as number;
+}
+
 export function calculateCompactionReserveTokens(
 	contextWindow: number,
 	threshold = DEFAULT_COMPACTION_THRESHOLD,
@@ -236,6 +249,7 @@ export function parseProjectModelPreferences(settings: unknown): ProjectModelPre
 		profiles: validateProfiles(selector.profiles),
 		contextWindows: validateContextWindows(selector.contextWindows),
 		compactionThreshold: validateCompactionThreshold(compaction.threshold),
+		keepRecentTokens: validateKeepRecentTokens(compaction.keepRecentTokens),
 	};
 }
 
@@ -290,6 +304,7 @@ export function mergeProjectCompactionSettings(
 			...compaction,
 			threshold: preferences.compactionThreshold,
 			reserveTokens: calculateCompactionReserveTokens(contextWindow, preferences.compactionThreshold),
+			keepRecentTokens: preferences.keepRecentTokens,
 		},
 	};
 }

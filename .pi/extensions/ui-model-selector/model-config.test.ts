@@ -14,6 +14,7 @@ import {
 	calculateCompactionReserveTokens,
 	DEFAULT_COMPACTION_THRESHOLD,
 	DEFAULT_CONTEXT_WINDOW,
+	DEFAULT_KEEP_RECENT_TOKENS,
 	filterModels,
 	findExactModel,
 	hasExplicitModelArgument,
@@ -451,6 +452,18 @@ describe("project model settings", () => {
 				threshold: DEFAULT_COMPACTION_THRESHOLD,
 			},
 			uiModelSelector: { label: "kept" },
+		});
+	});
+
+	it("defaults keepRecentTokens when compaction declares none", () => {
+		expect(mergeProjectCompactionSettings({
+			compaction: { threshold: 0.1 },
+		}, 256_000)).toEqual({
+			compaction: {
+				threshold: 0.1,
+				reserveTokens: 25_600,
+				keepRecentTokens: DEFAULT_KEEP_RECENT_TOKENS,
+			},
 		});
 	});
 
