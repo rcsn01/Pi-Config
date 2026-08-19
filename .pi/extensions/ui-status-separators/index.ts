@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
-import { collectSessionUsage, normalizeContextUsage } from "../_shared/usage.ts";
+import { collectUsageSnapshot, normalizeContextUsage } from "../_shared/usage.ts";
 import { isRecord, writeSettingsDocument } from "../_shared/settings-document.ts";
 
 const STATUS_ORDER = ["profile", "approval-mode", "plan"];
@@ -121,7 +121,9 @@ function installFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
 		dispose: footerData.onBranchChange(() => tui.requestRender()),
 		invalidate() {},
 		render(width: number): string[] {
-			const usage = collectSessionUsage(ctx.sessionManager.getEntries());
+			// Session-entry adapter: the footer reports cumulative usage over the
+			// append-only session history, not the compaction-aware context branch.
+			const usage = collectUsageSnapshot(ctx.sessionManager.getEntries()).session;
 
 			let pwd = formatCwd(ctx.sessionManager.getCwd());
 			const branch = footerData.getGitBranch();

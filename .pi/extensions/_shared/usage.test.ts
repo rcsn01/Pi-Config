@@ -1,15 +1,8 @@
 import { describe, expect, it } from "vitest";
-import {
-	collectCustomUsage,
-	collectModelUsage,
-	collectSessionUsage,
-	collectSubagentUsage,
-	collectToolUsage,
-	normalizeContextUsage,
-} from "./usage.ts";
+import { collectUsageSnapshot, normalizeContextUsage } from "./usage.ts";
 import { buildContextEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 
-describe("shared usage", () => {
+describe("shared usage snapshot", () => {
 	it("totals assistant, nested tool, compaction, and branch-summary usage", () => {
 		const entries = [
 			{ type: "message", message: { role: "user" } },
@@ -43,7 +36,7 @@ describe("shared usage", () => {
 			},
 		] as SessionEntry[];
 
-		expect(collectSessionUsage(entries)).toEqual({
+		expect(collectUsageSnapshot(entries).session).toEqual({
 			input: 201,
 			output: 40,
 			cacheRead: 58,
@@ -66,7 +59,7 @@ describe("shared usage", () => {
 			{ type: "custom", usage: { input: 999, output: 999, cacheRead: 999 } },
 			{ type: "message", message: { role: "user", usage: { input: 999 } } },
 		] as unknown as SessionEntry[];
-		expect(collectSessionUsage(entries)).toEqual({
+		expect(collectUsageSnapshot(entries).session).toEqual({
 			input: 0,
 			output: 0,
 			cacheRead: 0,
@@ -105,13 +98,14 @@ describe("shared usage", () => {
 			{ type: "message", message: { role: "toolResult", toolName: "bash", usage: { input: 999 } } },
 		] as unknown as SessionEntry[];
 
-		expect(collectToolUsage(entries, "advisor")).toMatchObject({
+		const usage = collectUsageSnapshot(entries);
+		expect(usage.advisor).toMatchObject({
 			input: 40, output: 5, cacheRead: 7, cacheWrite: 2, tokens: 54, cost: 0.4, turns: 0,
 		});
-		expect(collectCustomUsage(entries, "auto-review-verdict")).toMatchObject({
+		expect(usage.guardian).toMatchObject({
 			input: 16, output: 4, cacheRead: 20, cacheWrite: 1, tokens: 41, cost: 0.2, turns: 0,
 		});
-		expect(collectSessionUsage(entries)).toMatchObject({ input: 1055, output: 9, cacheRead: 27, cacheWrite: 3, tokens: 1094, cost: 0.6000000000000001 });
+		expect(usage.session).toMatchObject({ input: 1055, output: 9, cacheRead: 27, cacheWrite: 3, tokens: 1094, cost: 0.6000000000000001 });
 	});
 
 	it("attributes usage to persisted models across assistants and delegated work", () => {
@@ -170,7 +164,8 @@ describe("shared usage", () => {
 			},
 		] as unknown as SessionEntry[];
 
-		expect(collectModelUsage(entries).map((row) => row.model)).toEqual([
+		const snapshot = collectUsageSnapshot(entries);
+		expect(snapshot.models.map((row) => row.model)).toEqual([
 			"anthropic/claude",
 			"openai/gpt",
 			"guardian/model",
@@ -179,32 +174,31 @@ describe("shared usage", () => {
 			"subagent/two",
 			"unknown",
 		]);
-		const rows = collectModelUsage(entries);
-		expect(rows[0]).toMatchObject({
+		expect(snapshot.models[0]).toMatchObject({
 			model: "anthropic/claude",
 			session: { input: 22, output: 5, cacheRead: 6, cacheWrite: 0, tokens: 33, cost: 1.25, turns: 1 },
 		});
-		expect(rows[1]).toMatchObject({
+		expect(snapshot.models[1]).toMatchObject({
 			model: "openai/gpt",
 			session: { input: 10, output: 2, cacheRead: 3, cacheWrite: 1, tokens: 16, cost: 0.5, turns: 1 },
 		});
-		expect(rows[2]).toMatchObject({
+		expect(snapshot.models[2]).toMatchObject({
 			model: "guardian/model",
 			guardian: { input: 9, output: 2, cacheRead: 4, cacheWrite: 0, tokens: 15, cost: 0.4, turns: 0 },
 		});
-		expect(rows[3]).toMatchObject({
+		expect(snapshot.models[3]).toMatchObject({
 			model: "subagent/one",
 			subagent: { input: 7, output: 2, cacheRead: 1, cacheWrite: 0, tokens: 10, cost: 0.3, turns: 2 },
 		});
-		expect(rows[4]).toMatchObject({
+		expect(snapshot.models[4]).toMatchObject({
 			model: "openai/advisor",
 			advisor: { input: 5, output: 1, cacheRead: 2, cacheWrite: 0, tokens: 8, cost: 0.2, turns: 0 },
 		});
-		expect(rows[5]).toMatchObject({
+		expect(snapshot.models[5]).toMatchObject({
 			model: "subagent/two",
 			subagent: { input: 3, output: 1, cacheRead: 0, cacheWrite: 1, tokens: 5, cost: 0.1, turns: 1 },
 		});
-		expect(rows[6]).toMatchObject({
+		expect(snapshot.models[6]).toMatchObject({
 			model: "unknown",
 			session: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, tokens: 1, cost: 0, turns: 0 },
 		});
@@ -231,7 +225,7 @@ describe("shared usage", () => {
 			custom("active-post-compact", "compact", 5),
 		] as unknown as SessionEntry[];
 		const contextEntries = buildContextEntries(entries, "active-post-compact");
-		expect(collectCustomUsage(contextEntries, "auto-review-verdict")).toMatchObject({
+		expect(collectUsageSnapshot(contextEntries).guardian).toMatchObject({
 			input: 15, output: 2, cacheRead: 30, tokens: 47,
 		});
 	});
@@ -257,16 +251,16 @@ describe("shared usage", () => {
 		] as unknown as SessionEntry[];
 		const contextEntries = buildContextEntries(entries, "active");
 
-		expect(collectModelUsage(contextEntries).map((row) => row.model)).toEqual([
+		const snapshot = collectUsageSnapshot(contextEntries);
+		expect(snapshot.models.map((row) => row.model)).toEqual([
 			"main/model",
 			"new/model",
 		]);
-		const rows = collectModelUsage(contextEntries);
-		expect(rows[0]).toMatchObject({
+		expect(snapshot.models[0]).toMatchObject({
 			model: "main/model",
 			session: { input: 20, output: 2 },
 		});
-		expect(rows[1]).toMatchObject({
+		expect(snapshot.models[1]).toMatchObject({
 			model: "new/model",
 			guardian: { input: 5, output: 1 },
 		});
@@ -298,7 +292,7 @@ describe("shared usage", () => {
 			},
 		] as unknown as SessionEntry[];
 
-		expect(collectSubagentUsage(entries)).toEqual({
+		expect(collectUsageSnapshot(entries).subagent).toEqual({
 			input: 23,
 			output: 7,
 			cacheRead: 46,
@@ -335,7 +329,8 @@ describe("shared usage", () => {
 		expect(contextEntries.map((entry) => entry.id)).toEqual([
 			"compact", "retained", "assistant", "active-post-compact",
 		]);
-		expect(collectSubagentUsage(contextEntries)).toEqual({
+		const snapshot = collectUsageSnapshot(contextEntries);
+		expect(snapshot.subagent).toEqual({
 			input: 15,
 			output: 2,
 			cacheRead: 30,
@@ -344,7 +339,7 @@ describe("shared usage", () => {
 			cost: 0,
 			turns: 0,
 		});
-		expect(collectSessionUsage(contextEntries)).toMatchObject({
+		expect(snapshot.session).toMatchObject({
 			input: 35,
 			output: 4,
 			cacheRead: 30,
@@ -374,7 +369,7 @@ describe("shared usage", () => {
 			},
 		] as unknown as SessionEntry[];
 
-		expect(collectSubagentUsage(entries)).toEqual({
+		expect(collectUsageSnapshot(entries).subagent).toEqual({
 			input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0,
 		});
 	});
@@ -398,6 +393,7 @@ describe("shared usage", () => {
 			},
 		}] as unknown as SessionEntry[];
 
+		const snapshot = collectUsageSnapshot(entries);
 		const expected = {
 			input: 20,
 			output: 4,
@@ -407,8 +403,8 @@ describe("shared usage", () => {
 			cost: 0.75,
 			turns: 0,
 		};
-		expect(collectSubagentUsage(entries)).toEqual(expected);
-		expect(collectSessionUsage(entries)).toEqual(expected);
+		expect(snapshot.subagent).toEqual(expected);
+		expect(snapshot.session).toEqual(expected);
 	});
 
 	it("includes historical nested subagent usage in session totals but only counts assistant turns", () => {
@@ -426,7 +422,7 @@ describe("shared usage", () => {
 			},
 		] as unknown as SessionEntry[];
 
-		expect(collectSessionUsage(entries)).toEqual({
+		expect(collectUsageSnapshot(entries).session).toEqual({
 			input: 105,
 			output: 12,
 			cacheRead: 8,

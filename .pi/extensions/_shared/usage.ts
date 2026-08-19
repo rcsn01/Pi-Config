@@ -26,6 +26,20 @@ export interface ContextUsageTotals {
 	percent: number | null;
 }
 
+/**
+ * One classification pass over session entries. `session` is the cumulative
+ * union of all usage — subagent, advisor, and guardian contributions are also
+ * counted in `session` — so the four totals must never be summed together.
+ * `models` attributes the same usage to the model that produced it.
+ */
+export interface UsageSnapshot {
+	session: SessionUsageTotals;
+	subagent: SessionUsageTotals;
+	advisor: SessionUsageTotals;
+	guardian: SessionUsageTotals;
+	models: ModelUsageRow[];
+}
+
 type ReportedUsage = {
 	input?: unknown;
 	output?: unknown;
@@ -70,12 +84,6 @@ function nestedSubagentResults(details: unknown): Record<string, unknown>[] {
 	return results.map(asRecord).filter((result): result is Record<string, unknown> => result !== undefined);
 }
 
-function nestedSubagentUsages(details: unknown): unknown[] {
-	return nestedSubagentResults(details)
-		.map((result) => result.usage)
-		.filter((usage) => usage !== undefined);
-}
-
 function modelKey(provider: unknown, model: unknown): string | undefined {
 	if (typeof provider !== "string" || typeof model !== "string") return undefined;
 	const normalizedProvider = provider.trim();
@@ -94,42 +102,22 @@ function finalizeUsage(totals: SessionUsageTotals): SessionUsageTotals {
 	return totals;
 }
 
-/** Collect usage persisted directly on tool-result messages with the requested tool name. */
-export function collectToolUsage(entries: readonly SessionEntry[], toolName: string): SessionUsageTotals {
-	const totals = emptyUsageTotals();
-	for (const entry of entries) {
-		if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== toolName) continue;
-		addUsage(totals, entry.message.usage);
-	}
-	return finalizeUsage(totals);
-}
-
-/** Collect usage nested in custom entries (messages or persisted entries) with the requested custom type. */
-export function collectCustomUsage(entries: readonly SessionEntry[], customType: string): SessionUsageTotals {
-	const totals = emptyUsageTotals();
-	for (const entry of entries) {
-		if (entry.type !== "custom_message" && entry.type !== "custom") continue;
-		if (entry.customType !== customType) continue;
-		if (entry.type === "custom_message") {
-			addUsage(totals, asRecord(entry.details)?.usage);
-		} else {
-			addUsage(totals, asRecord(entry.data)?.usage);
-		}
-	}
-	return finalizeUsage(totals);
-}
-
 /**
- * Attribute active-branch usage to the model that produced or initiated it,
- * split by usage category (session, subagent, advisor, guardian).
- * Model-specific metadata wins for delegated work; the current session model
- * is used as a fallback for older entries without that metadata.
+ * Classify every entry once and accumulate session totals, per-category totals
+ * (subagent, advisor, guardian), and per-model attribution into one snapshot.
+ * Active-branch usage is attributed to the model that produced or initiated it,
+ * split by usage category. Model-specific metadata wins for delegated work; the
+ * current session model is the fallback for older entries without that metadata.
  */
-export function collectModelUsage(entries: readonly SessionEntry[]): ModelUsageRow[] {
+export function collectUsageSnapshot(entries: readonly SessionEntry[]): UsageSnapshot {
+	const session = emptyUsageTotals();
+	const subagent = emptyUsageTotals();
+	const advisor = emptyUsageTotals();
+	const guardian = emptyUsageTotals();
 	const byModel = new Map<string, ModelUsageRow>();
 	let currentModel: string | undefined;
 
-	const add = (model: string | undefined, category: ModelUsageCategory, value: unknown, includeTurns = false): void => {
+	const addToModel = (model: string | undefined, category: ModelUsageCategory, value: unknown, includeTurns = false): void => {
 		const key = model ?? "unknown";
 		let row = byModel.get(key);
 		if (!row) {
@@ -155,26 +143,35 @@ export function collectModelUsage(entries: readonly SessionEntry[]): ModelUsageR
 			if (entry.message.role === "assistant") {
 				const assistantModel = modelKey(entry.message.provider, entry.message.model);
 				if (assistantModel) currentModel = assistantModel;
-				add(currentModel, "session", entry.message.usage);
+				addUsage(session, entry.message.usage);
+				session.turns++;
+				addToModel(currentModel, "session", entry.message.usage);
 				byModel.get(currentModel ?? "unknown")!.session.turns++;
 			} else if (entry.message.role === "toolResult") {
 				if (entry.message.toolName === "subagent") {
+					// Newer sessions persist aggregate tool usage at the message
+					// level. Older sessions only have per-result usage in details;
+					// never add both.
 					if (entry.message.usage !== undefined) {
-						add(currentModel, "subagent", entry.message.usage, true);
+						addUsage(session, entry.message.usage);
+						addUsage(subagent, entry.message.usage, true);
+						addToModel(currentModel, "subagent", entry.message.usage, true);
 					} else {
 						for (const result of nestedSubagentResults(entry.message.details)) {
-							add(modelName(result.model) ?? currentModel, "subagent", result.usage, true);
+							addUsage(session, result.usage);
+							addUsage(subagent, result.usage, true);
+							addToModel(modelName(result.model) ?? currentModel, "subagent", result.usage, true);
 						}
 					}
 				} else {
-					const delegatedModel = entry.message.toolName === "advisor"
-						? modelName(asRecord(entry.message.details)?.model)
-						: undefined;
-					add(
-						delegatedModel ?? currentModel,
-						entry.message.toolName === "advisor" ? "advisor" : "session",
-						entry.message.usage,
-					);
+					addUsage(session, entry.message.usage);
+					if (entry.message.toolName === "advisor") {
+						addUsage(advisor, entry.message.usage);
+						const delegatedModel = modelName(asRecord(entry.message.details)?.model);
+						addToModel(delegatedModel ?? currentModel, "advisor", entry.message.usage);
+					} else {
+						addToModel(currentModel, "session", entry.message.usage);
+					}
 				}
 			}
 			continue;
@@ -182,71 +179,41 @@ export function collectModelUsage(entries: readonly SessionEntry[]): ModelUsageR
 
 		if ((entry.type === "custom_message" || entry.type === "custom") && entry.customType === "auto-review-verdict") {
 			const data = entry.type === "custom_message" ? asRecord(entry.details) : asRecord(entry.data);
-			if (data) add(modelName(data.model) ?? currentModel, "guardian", data.usage);
+			addUsage(session, data?.usage);
+			addUsage(guardian, data?.usage);
+			addToModel(modelName(data?.model) ?? currentModel, "guardian", data?.usage);
 		} else if (entry.type === "compaction" || entry.type === "branch_summary") {
-			add(currentModel, "session", entry.usage);
+			addUsage(session, entry.usage);
+			addToModel(currentModel, "session", entry.usage);
 		}
 	}
 
-	return [...byModel.values()]
-		.map((row) => ({
-			...row,
-			session: finalizeUsage(row.session),
-			subagent: finalizeUsage(row.subagent),
-			advisor: finalizeUsage(row.advisor),
-			guardian: finalizeUsage(row.guardian),
-		}))
-		.filter((row) =>
-			row.session.tokens + row.subagent.tokens + row.advisor.tokens + row.guardian.tokens > 0 ||
-			row.session.cost + row.subagent.cost + row.advisor.cost + row.guardian.cost > 0 ||
-			row.session.turns + row.subagent.turns + row.advisor.turns + row.guardian.turns > 0,
-		)
-		.sort((left, right) => {
-			if (left.model === "unknown") return 1;
-			if (right.model === "unknown") return -1;
-			const leftTokens = left.session.tokens + left.subagent.tokens + left.advisor.tokens + left.guardian.tokens;
-			const rightTokens = right.session.tokens + right.subagent.tokens + right.advisor.tokens + right.guardian.tokens;
-			return rightTokens - leftTokens || left.model.localeCompare(right.model);
-		});
-}
-
-export function collectSubagentUsage(entries: readonly SessionEntry[]): SessionUsageTotals {
-	const totals = emptyUsageTotals();
-	for (const entry of entries) {
-		if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "subagent") {
-			continue;
-		}
-		// Newer sessions persist aggregate tool usage at the message level. Older
-		// sessions only have per-result usage in details; never add both.
-		if (entry.message.usage !== undefined) {
-			addUsage(totals, entry.message.usage, true);
-		} else {
-			for (const usage of nestedSubagentUsages(entry.message.details)) addUsage(totals, usage, true);
-		}
-	}
-	return finalizeUsage(totals);
-}
-
-export function collectSessionUsage(entries: readonly SessionEntry[]): SessionUsageTotals {
-	const totals = emptyUsageTotals();
-	for (const entry of entries) {
-		if (entry.type === "message" && entry.message.role === "assistant") {
-			addUsage(totals, entry.message.usage);
-			totals.turns++;
-		} else if (entry.type === "message" && entry.message.role === "toolResult") {
-			if (entry.message.usage !== undefined) {
-				addUsage(totals, entry.message.usage);
-			} else if (entry.message.toolName === "subagent") {
-				for (const usage of nestedSubagentUsages(entry.message.details)) addUsage(totals, usage);
-			}
-		} else if ((entry.type === "custom_message" || entry.type === "custom") && entry.customType === "auto-review-verdict") {
-			const data = entry.type === "custom_message" ? asRecord(entry.details) : asRecord(entry.data);
-			addUsage(totals, data?.usage);
-		} else if (entry.type === "compaction" || entry.type === "branch_summary") {
-			addUsage(totals, entry.usage);
-		}
-	}
-	return finalizeUsage(totals);
+	return {
+		session: finalizeUsage(session),
+		subagent: finalizeUsage(subagent),
+		advisor: finalizeUsage(advisor),
+		guardian: finalizeUsage(guardian),
+		models: [...byModel.values()]
+			.map((row) => ({
+				...row,
+				session: finalizeUsage(row.session),
+				subagent: finalizeUsage(row.subagent),
+				advisor: finalizeUsage(row.advisor),
+				guardian: finalizeUsage(row.guardian),
+			}))
+			.filter((row) =>
+				row.session.tokens + row.subagent.tokens + row.advisor.tokens + row.guardian.tokens > 0 ||
+				row.session.cost + row.subagent.cost + row.advisor.cost + row.guardian.cost > 0 ||
+				row.session.turns + row.subagent.turns + row.advisor.turns + row.guardian.turns > 0,
+			)
+			.sort((left, right) => {
+				if (left.model === "unknown") return 1;
+				if (right.model === "unknown") return -1;
+				const leftTokens = left.session.tokens + left.subagent.tokens + left.advisor.tokens + left.guardian.tokens;
+				const rightTokens = right.session.tokens + right.subagent.tokens + right.advisor.tokens + right.guardian.tokens;
+				return rightTokens - leftTokens || left.model.localeCompare(right.model);
+			}),
+	};
 }
 
 export function normalizeContextUsage(

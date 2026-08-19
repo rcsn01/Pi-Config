@@ -132,15 +132,15 @@ describe("current context usage scope", () => {
 		expect(buildContextEntries).toHaveBeenCalledOnce();
 		expect(getEntries).not.toHaveBeenCalled();
 		expect(result.contextEntries).toBe(retained);
-		expect(result.subagentUsage).toMatchObject({ input: 7, output: 2, cacheRead: 11 });
-		expect(result.advisorUsage).toMatchObject({ input: 13, output: 3, cacheRead: 17 });
-		expect(result.guardianUsage).toMatchObject({ input: 21, output: 6, cacheRead: 26 });
-		expect(result.modelUsage).toEqual(expect.arrayContaining([
+		expect(result.usage.subagent).toMatchObject({ input: 7, output: 2, cacheRead: 11 });
+		expect(result.usage.advisor).toMatchObject({ input: 13, output: 3, cacheRead: 17 });
+		expect(result.usage.guardian).toMatchObject({ input: 21, output: 6, cacheRead: 26 });
+		expect(result.usage.models).toEqual(expect.arrayContaining([
 			expect.objectContaining({ model: "test/main", subagent: expect.objectContaining({ input: 7 }) }),
 			expect.objectContaining({ model: "test/advisor", advisor: expect.objectContaining({ input: 13 }) }),
 			expect.objectContaining({ model: "test/guardian", guardian: expect.objectContaining({ input: 21 }) }),
 		]));
-		expect(result.sessionUsage).toMatchObject({ input: 41, output: 11, cacheRead: 54 });
+		expect(result.usage.session).toMatchObject({ input: 41, output: 11, cacheRead: 54 });
 	});
 });
 
