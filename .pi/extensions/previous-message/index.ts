@@ -35,9 +35,10 @@
 
 import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { EditorTheme, KeybindingsManager, TUI } from "@earendil-works/pi-tui";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { writeSettingsDocument } from "../_shared/settings-document.ts";
 
 const MAX_ENTRIES = 200;
 const SAVE_DEBOUNCE_MS = 400;
@@ -127,11 +128,7 @@ const store = {
 			} catch {
 				// First write or unreadable file — write our data as-is.
 			}
-			const file = historyFile();
-			mkdirSync(dirname(file), { recursive: true });
-			const tmp = `${file}.tmp`;
-			writeFileSync(tmp, JSON.stringify(merged, null, 2));
-			renameSync(tmp, file);
+			writeSettingsDocument(historyFile(), merged);
 		} catch (err) {
 			console.error("[previous-message] failed to persist history:", err);
 		}

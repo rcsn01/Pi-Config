@@ -2,11 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	createSubagentsSettingsStore,
-	readSettingsDocument,
-	writeSettingsDocument,
-} from "./settings-store.ts";
+import { createSubagentsSettingsStore } from "./settings-store.ts";
 
 const roots: string[] = [];
 
@@ -86,9 +82,4 @@ describe("subagents settings store", () => {
 			.toThrow(/Cannot read/);
 	});
 
-	it("round-trips unknown top-level keys through read/write", () => {
-		const path = settingsFile();
-		writeSettingsDocument(path, { compaction: { threshold: 0.1 }, customTopLevel: true });
-		expect(readSettingsDocument(path)).toEqual({ compaction: { threshold: 0.1 }, customTopLevel: true });
-	});
 });
