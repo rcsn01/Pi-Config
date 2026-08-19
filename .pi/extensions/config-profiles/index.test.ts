@@ -1,16 +1,16 @@
-import { mkdtempSync, rmSync, type FSWatcher, type WatchListener } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConfigProfilesExtension } from "./index.ts";
 import type { ProfileStore } from "./profile-store.ts";
-import { createProjectSettingsStore } from "../ui-model-selector/apply-profile.ts";
 
 interface HarnessOptions {
 	profiles?: string[];
 	active?: string;
 	switchError?: Error;
 	readProfileDocument?: Record<string, unknown>;
+	activeProfile?: { name: string; document: Record<string, unknown> } | undefined;
 	model?: { provider: string; id: string };
 	branchEntries?: unknown[];
 	setModelResult?: boolean;
@@ -21,35 +21,41 @@ const DEFAULT_MODEL = { provider: "ollama", id: "deepseek-v4-flash:0731-cloud" }
 function createHarness(options: HarnessOptions = {}) {
 	const handlers = new Map<string, (event: any, ctx: any) => unknown>();
 	const commands = new Map<string, any>();
-	const synchronizeActiveProfile = vi.fn(async () => options.active);
+	const settingsDirectory = mkdtempSync(join(tmpdir(), "pi-config-profiles-"));
+	tempDirectories.push(settingsDirectory);
+	const settingsPath = join(settingsDirectory, "settings.json");
+	const profilesDirectory = join(settingsDirectory, "profiles");
+	mkdirSync(profilesDirectory);
+	writeFileSync(
+		settingsPath,
+		`${JSON.stringify({ configProfiles: { active: options.active ?? "default" } }, null, 2)}\n`,
+	);
 	const switchProfile = vi.fn(async (name: string) => {
 		if (options.switchError) throw options.switchError;
-		return { changed: name !== options.active, active: name };
+		return { changed: name !== (options.active ?? "default"), active: name };
 	});
 	const readProfile = vi.fn(() => options.readProfileDocument ?? {});
+	const loadActiveProfile = vi.fn(() =>
+		options.activeProfile === undefined
+			? { name: options.active ?? "default", document: {} }
+			: options.activeProfile);
 	const store: ProfileStore = {
-		settingsPath: "/shared/.pi/settings.json",
-		profilesDirectory: "/shared/.pi/profiles",
+		settingsPath,
+		profilesDirectory,
 		listProfiles: vi.fn(() => options.profiles ?? ["default", "focused"]),
 		readProfile,
-		readSettings: vi.fn(),
 		getActiveProfile: vi.fn(() => options.active ?? "default"),
-		synchronizeActiveProfile,
+		loadActiveProfile,
 		switchProfile,
+		profilePath: vi.fn((name: string) => join(profilesDirectory, `${name}.json`)),
 	};
-	let watchListener: WatchListener<string> | undefined;
-	const close = vi.fn();
-	const onWatcherEvent = vi.fn();
-	const watch = vi.fn((_path: string, listener: WatchListener<string>) => {
-		watchListener = listener;
-		return { close, on: onWatcherEvent } as unknown as FSWatcher;
-	});
 	const notify = vi.fn();
 	const output = vi.fn();
 	const reload = vi.fn(async () => {});
 	const request = vi.fn();
 	const setModel = vi.fn(async () => options.setModelResult ?? true);
 	const setThinkingLevel = vi.fn();
+	const appendEntry = vi.fn();
 	const modelRegistry = {
 		refresh: vi.fn(async () => ({ aborted: false, errors: new Map() })),
 		find: vi.fn((provider: string, id: string) => ({
@@ -75,48 +81,80 @@ function createHarness(options: HarnessOptions = {}) {
 		registerCommand: vi.fn((name: string, command: any) => commands.set(name, command)),
 		setModel,
 		setThinkingLevel,
+		appendEntry,
 	};
-	const settingsDirectory = mkdtempSync(join(tmpdir(), "pi-config-profiles-"));
-	tempDirectories.push(settingsDirectory);
-	const settingsStore = createProjectSettingsStore(join(settingsDirectory, "settings.json"));
-	createConfigProfilesExtension({ store, watch, output, debounceMs: 10, retryMs: 20, settingsStore })(pi as any);
-	const emit = async (event: string) => handlers.get(event)?.({ type: event, reason: "startup" }, ctx);
+	createConfigProfilesExtension({ store, output })(pi as any);
+	const emit = async (event: string, reason = "startup") =>
+		handlers.get(event)?.({ type: event, reason }, ctx);
 	return {
 		commands,
 		ctx,
 		emit,
 		store,
-		watch,
-		close,
 		notify,
 		output,
 		reload,
 		request,
 		switchProfile,
-		synchronizeActiveProfile,
 		readProfile,
+		loadActiveProfile,
 		setModel,
 		setThinkingLevel,
+		appendEntry,
 		modelRegistry,
-		settingsDirectory,
-		fireWatch: (filename: string | null = "settings.json") => watchListener?.("rename", filename),
+		settingsPath,
 	};
 }
 
 const tempDirectories: string[] = [];
 
 afterEach(() => {
-	vi.useRealTimers();
 	while (tempDirectories.length > 0) {
 		rmSync(tempDirectories.pop()!, { recursive: true, force: true });
 	}
 });
 
 describe("config profiles extension", () => {
-	it("switches a direct argument, notifies, and reloads exactly once", async () => {
+	it("records the active profile as a session entry on startup", async () => {
+		const harness = createHarness({ active: "default" });
+		await harness.emit("session_start", "startup");
+		expect(harness.loadActiveProfile).toHaveBeenCalledOnce();
+		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "default" });
+	});
+
+	it("records the active profile on resume and fork boundaries", async () => {
+		for (const reason of ["resume", "fork", "new"] as const) {
+			const harness = createHarness({ active: "default" });
+			await harness.emit("session_start", reason);
+			expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "default" });
+		}
+	});
+
+	it("does nothing on reload: the session entry persists and siblings re-read the profile", async () => {
+		const harness = createHarness({ active: "default" });
+		await harness.emit("session_start", "reload");
+		expect(harness.loadActiveProfile).not.toHaveBeenCalled();
+		expect(harness.appendEntry).not.toHaveBeenCalled();
+	});
+
+	it("notifies when the active profile file is missing", async () => {
+		const harness = createHarness({ activeProfile: undefined });
+		harness.loadActiveProfile.mockImplementation(() => {
+			throw new Error("Cannot read /missing/default.json");
+		});
+		await harness.emit("session_start", "startup");
+		expect(harness.appendEntry).not.toHaveBeenCalled();
+		expect(harness.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Cannot read /missing/default.json"),
+			"error",
+		);
+	});
+
+	it("switches a direct argument, records the entry, notifies, and reloads exactly once", async () => {
 		const harness = createHarness({ active: "default" });
 		await harness.commands.get("profile").handler("focused", harness.ctx);
 		expect(harness.switchProfile).toHaveBeenCalledWith("focused");
+		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "focused" });
 		expect(harness.notify).toHaveBeenCalledWith('Switched to profile "focused". Reloading…', "info");
 		expect(harness.reload).toHaveBeenCalledOnce();
 	});
@@ -275,39 +313,21 @@ describe("config profiles extension", () => {
 		expect(harness.switchProfile).not.toHaveBeenCalled();
 	});
 
-	it("starts watching on session_start and debounces settings changes", async () => {
-		vi.useFakeTimers();
-		const harness = createHarness();
-		expect(harness.watch).not.toHaveBeenCalled();
-		await harness.emit("session_start");
-		expect(harness.watch).toHaveBeenCalledWith("/shared/.pi", expect.any(Function));
-		expect(harness.synchronizeActiveProfile).toHaveBeenCalledOnce();
-
-		harness.fireWatch();
-		harness.fireWatch();
-		await vi.advanceTimersByTimeAsync(10);
-		expect(harness.synchronizeActiveProfile).toHaveBeenCalledTimes(2);
+	it("does not install a settings.json watcher", async () => {
+		const harness = createHarness({ active: "default" });
+		await harness.emit("session_start", "startup");
+		await harness.emit("session_start", "reload");
+		// No watcher, timers, or synchronization: the profile file is the source of
+		// truth and is only read at session boundaries.
+		expect(harness.switchProfile).not.toHaveBeenCalled();
+		expect(harness.reload).not.toHaveBeenCalled();
 	});
 
-	it("flushes pending synchronization and closes the watcher on shutdown", async () => {
-		vi.useFakeTimers();
-		const harness = createHarness();
-		await harness.emit("session_start");
-		harness.fireWatch();
-		await harness.emit("session_shutdown");
-		expect(harness.close).toHaveBeenCalledOnce();
-		expect(harness.synchronizeActiveProfile).toHaveBeenCalledTimes(2);
-		await vi.runAllTimersAsync();
-		expect(harness.synchronizeActiveProfile).toHaveBeenCalledTimes(2);
-	});
-
-	it("synchronizes an already-active profile without applying or reloading", async () => {
+	it("reports an already-active profile without applying or reloading", async () => {
 		const harness = createHarness({ active: "default" });
 		await harness.commands.get("profile").handler("default", harness.ctx);
-		expect(harness.notify).toHaveBeenCalledWith(
-			'Profile "default" is already active; settings synchronized.',
-			"info",
-		);
+		expect(harness.notify).toHaveBeenCalledWith('Profile "default" is already active.', "info");
+		expect(harness.appendEntry).not.toHaveBeenCalled();
 		expect(harness.readProfile).not.toHaveBeenCalled();
 		expect(harness.setModel).not.toHaveBeenCalled();
 		expect(harness.reload).not.toHaveBeenCalled();
@@ -320,22 +340,9 @@ describe("config profiles extension", () => {
 			"Could not switch settings profile: broken destination",
 			"error",
 		);
+		expect(harness.appendEntry).not.toHaveBeenCalled();
 		expect(harness.readProfile).not.toHaveBeenCalled();
 		expect(harness.setModel).not.toHaveBeenCalled();
 		expect(harness.reload).not.toHaveBeenCalled();
-	});
-
-	it("retries transient watcher errors and only reports persistent failures", async () => {
-		vi.useFakeTimers();
-		const harness = createHarness();
-		await harness.emit("session_start");
-		harness.synchronizeActiveProfile
-			.mockRejectedValueOnce(new Error("half-written"))
-			.mockRejectedValueOnce(new Error("still malformed"));
-		harness.fireWatch();
-		await vi.advanceTimersByTimeAsync(10);
-		expect(harness.notify).not.toHaveBeenCalled();
-		await vi.advanceTimersByTimeAsync(20);
-		expect(harness.notify).toHaveBeenCalledWith(expect.stringContaining("still malformed"), "error");
 	});
 });

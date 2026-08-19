@@ -14,6 +14,7 @@ import {
 	type SubagentProgressEvent,
 	type SubagentService,
 } from "../_shared/subagent-service.ts";
+import { PROFILES_DIRECTORY, resolveSessionProfilePath } from "../_shared/active-profile.ts";
 import {
 	agentRegistry,
 	loadAgents,
@@ -79,10 +80,20 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		const maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 		registry.initialize();
 
-		pi.on("session_start", async (_event, ctx) => {
+		pi.on("session_start", async (event, ctx) => {
 			configStore.rememberMainModel(ctx.model);
-			// One-time migration: carry a legacy config.json into settings.json, then delete it.
-			await migrateSubagentConfigLegacy(PROJECT_SETTINGS_PATH, LEGACY_CONFIG_PATH);
+			// Point the config store at the session's profile file; fall back to
+			// settings.json when no profile is resolved.
+			const profile = resolveSessionProfilePath(
+				ctx.sessionManager.getBranch(),
+				PROJECT_SETTINGS_PATH,
+				PROFILES_DIRECTORY,
+				event.reason,
+			);
+			if (profile) configStore.setSettingsPath(profile);
+			// One-time migration: carry a legacy config.json into the session's
+			// settings document (the profile when one is active), then delete it.
+			await migrateSubagentConfigLegacy(configStore.configPath, LEGACY_CONFIG_PATH);
 		});
 		pi.on("model_select", (event) => configStore.rememberMainModel(event.model));
 

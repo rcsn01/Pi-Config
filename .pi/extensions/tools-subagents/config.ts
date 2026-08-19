@@ -55,6 +55,8 @@ export interface SubagentConfigStore {
 	rememberMainModel(model: { provider: unknown; id: unknown } | undefined): void;
 	getMainModel(): string | undefined;
 	resolveLaunch(agent: AgentConfig, explicitModel?: string, explicitThinkingLevel?: SubagentThinkingLevel): ResolvedLaunchConfiguration;
+	/** Repoint the store at the session's profile file (default: settings.json). */
+	setSettingsPath(path: string): void;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -410,7 +412,6 @@ export interface SubagentConfigStoreOptions {
 export function createSubagentConfigStore(options: SubagentConfigStoreOptions = {}): SubagentConfigStore {
 	const settingsStore: SubagentsSettingsStore = createSubagentsSettingsStore(options.settingsPath);
 	const legacyPath = options.legacyConfigPath;
-	const configPath = settingsStore.settingsPath;
 	let activeMainModel: string | undefined;
 
 	/** Read the legacy config.json as a namespace, or undefined when absent/malformed. */
@@ -463,7 +464,9 @@ export function createSubagentConfigStore(options: SubagentConfigStoreOptions = 
 	}
 
 	return {
-		configPath,
+		get configPath() {
+			return settingsStore.settingsPath;
+		},
 		readDocument,
 		load,
 		update,
@@ -481,6 +484,9 @@ export function createSubagentConfigStore(options: SubagentConfigStoreOptions = 
 				mainModel: activeMainModel,
 			});
 		},
+		setSettingsPath(path) {
+			settingsStore.setSettingsPath(path);
+		},
 	};
 }
 
@@ -492,9 +498,11 @@ export const subagentConfig = createSubagentConfigStore({
 });
 
 /**
- * One-time migration: copy a legacy config.json into settings.json's "subagents" key,
- * then remove config.json. No-op when settings.json already has a subagents key or when
- * the legacy file is absent/malformed. Returns whether a migration was performed.
+ * One-time migration: copy a legacy config.json into the target settings
+ * document's "subagents" key (the session's profile when one is active, else
+ * settings.json), then remove config.json. No-op when the target already has a
+ * subagents key or when the legacy file is absent/malformed. Returns whether a
+ * migration was performed.
  */
 export async function migrateSubagentConfigLegacy(
 	settingsPath: string,

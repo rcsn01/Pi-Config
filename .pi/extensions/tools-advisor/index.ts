@@ -1,3 +1,4 @@
+import { dirname, join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type {
@@ -16,6 +17,7 @@ import {
 	readSettingsDocument,
 	writeSettingsDocument,
 } from "../tools-subagents/settings-store.ts";
+import { resolveSessionProfilePath } from "../_shared/active-profile.ts";
 import { Input, Markdown, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	ADVISOR_NUDGE_MESSAGE,
@@ -337,7 +339,11 @@ function errorText(error: unknown): string {
 
 export function createAdvisorExtension(dependencies: AdvisorExtensionDependencies = {}) {
 	return function advisorExtensionFactory(pi: ExtensionAPI): void {
-		const settingsPath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
+		const settingsFilePath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
+		const profilesDirectory = join(dirname(settingsFilePath), "profiles");
+		// The document read/written by loadForSession and the /advisor commands;
+		// repointed at the session's profile file on session start.
+		let settingsPath = settingsFilePath;
 		const runner = dependencies.runner ?? createAdvisorRunner();
 		let settings: AdvisorSettings = parseAdvisorSettings({});
 
@@ -578,7 +584,18 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			);
 		});
 
-		pi.on("session_start", async (_event, ctx) => loadForSession(ctx));
+		pi.on("session_start", async (event, ctx) => {
+			// Point the advisor at the session's profile file; fall back to
+			// settings.json when no profile is resolved.
+			const profile = resolveSessionProfilePath(
+				ctx.sessionManager.getBranch(),
+				settingsFilePath,
+				profilesDirectory,
+				event.reason,
+			);
+			if (profile) settingsPath = profile;
+			loadForSession(ctx);
+		});
 		pi.on("session_shutdown", async (_event, ctx) => {
 			if (ctx.hasUI) ctx.ui.setStatus("advisor", undefined);
 		});
