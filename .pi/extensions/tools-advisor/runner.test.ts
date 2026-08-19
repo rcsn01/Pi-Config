@@ -165,6 +165,18 @@ describe("advisor runner", () => {
 		}
 	});
 
+	it("does not call the provider when explicitly disabled with a retained model", async () => {
+		const ctx = context();
+		const settings: AdvisorSettings = {
+			provider: "anthropic", modelId: "strong", enabled: false, strict: false,
+			nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true,
+		};
+		const result = await createAdvisorRunner().execute(runInput(ctx, { settings }));
+		expect(result.content[0].text).toMatch(/^advisor_off/);
+		expect(result.details.consumesBudget).toBe(false);
+		expect(ctx.modelRegistry.complete).not.toHaveBeenCalled();
+	});
+
 	it("does not call the provider after the per-turn cap is exhausted", async () => {
 		const entries = [...currentEntries()];
 		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });

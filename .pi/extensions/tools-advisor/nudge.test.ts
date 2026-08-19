@@ -123,6 +123,7 @@ async function runTurn(harness: ReturnType<typeof makeHarness>, currentMessage?:
 describe("strict advisor nudge", () => {
 	it.each([
 		["advisor off", { strict: true }],
+		["explicitly disabled", { provider: "test", modelId: "advisor", enabled: false, strict: true }],
 		["strict false", { provider: "test", modelId: "advisor", strict: false }],
 		["fewer than nudgeTurn assistant turns", { provider: "test", modelId: "advisor", strict: true, entries: branchWithAssistants(2) }],
 		["advisor already consulted this user turn", { provider: "test", modelId: "advisor", strict: true, entries: [...branchWithAssistants(3), advisorResult("advisor-1")] }],

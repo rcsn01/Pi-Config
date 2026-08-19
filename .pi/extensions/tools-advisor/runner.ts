@@ -19,6 +19,8 @@ const DEFAULT_MAX_TOKENS = 2048;
 export interface AdvisorSettings {
 	provider?: string;
 	modelId?: string;
+	/** Omit for legacy settings; false is the persisted /advisor off state. */
+	enabled?: boolean;
 	strict: boolean;
 	nudgeTurn: number;
 	maxUses: number;
@@ -86,6 +88,10 @@ export function createAdvisorRunner(): AdvisorRunner {
 			false,
 		);
 
+		if (input.settings.enabled === false || !input.settings.provider || !input.settings.modelId) {
+			return localFailure("advisor_off", "Advisor is disabled. Select a model with /advisor first.");
+		}
+
 		const branch = input.ctx.sessionManager.getBranch();
 		const turnUses = countTurnUses(branch);
 		const sessionUses = countSessionUses(branch);
@@ -104,10 +110,6 @@ export function createAdvisorRunner(): AdvisorRunner {
 				`The advisor consultation budget for this turn is exhausted (${maxUses} uses per turn). Continue without another consultation; the budget resets on the next user message.`,
 			);
 		}
-		if (!input.settings.provider || !input.settings.modelId) {
-			return localFailure("advisor_off", "Advisor is disabled. Select a model with /advisor first.");
-		}
-
 		let model;
 		try {
 			model = input.ctx.modelRegistry.find(input.settings.provider, input.settings.modelId);
