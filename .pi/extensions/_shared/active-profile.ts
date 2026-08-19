@@ -7,6 +7,12 @@
  * resolves its profile once at start (marker first on new session boundaries,
  * the remembered session entry first on reload) so sibling extensions read and
  * write the session's profile file instead of fighting over settings.json.
+ *
+ * Lifecycle policy: the binding is resolved once per `session_start` and each
+ * consuming extension repoints its settings store at the resolved document
+ * (a profile file when one is bound, else the plain settings document —
+ * `resolve` always returns a concrete path). `session_tree` navigation updates
+ * profile status but never rebinds stores.
  */
 
 import { readFileSync } from "node:fs";
@@ -81,26 +87,34 @@ export function profilePath(profilesDirectory: string, name: string): string {
 	return join(profilesDirectory, `${validateProfileName(name)}.json`);
 }
 
+export interface SessionProfileResolver {
+	/** Resolve the session's effective settings document path. */
+	resolve(entries: readonly unknown[], reason: string): string;
+}
+
 /**
- * Resolve the session's profile file path. On new session boundaries
- * (`startup`/`resume`/`new`/`fork`) the settings.json marker is authoritative
- * (fallback: the remembered session entry). On `reload`, only the remembered
- * session entry is consulted, so another session's `/profile` switch cannot
- * change this session's profile. Returns `undefined` when the reload has no
- * remembered entry or when neither source yields a valid name; callers then
- * fall back to the plain settings document.
+ * Build the session-profile binding for one extension: owns the marker/entry
+ * precedence, reload semantics, validation, fallback, and path construction
+ * behind one method. On new session boundaries (`startup`/`resume`/`new`/
+ * `fork`) the settings.json marker is authoritative (fallback: the remembered
+ * session entry). On `reload`, only the remembered session entry is consulted,
+ * so another session's `/profile` switch cannot change this session's profile.
+ * Always returns a concrete path: the profile file when a name resolves, else
+ * the plain settings document.
  */
-export function resolveSessionProfilePath(
-	entries: readonly unknown[],
-	settingsPath: string,
-	profilesDirectory: string,
-	reason: string,
-): string | undefined {
-	const fromEntry = sessionProfileName(entries);
-	if (reason === "reload") {
-		return fromEntry === undefined ? undefined : profilePath(profilesDirectory, fromEntry);
-	}
-	const fromMarker = readActiveProfileName(settingsPath);
-	const name = fromMarker ?? fromEntry;
-	return name === undefined ? undefined : profilePath(profilesDirectory, name);
+export function createSessionProfileResolver(options: {
+	settingsPath: string;
+	profilesDirectory: string;
+}): SessionProfileResolver {
+	return {
+		resolve(entries, reason) {
+			const fromEntry = sessionProfileName(entries);
+			if (reason === "reload") {
+				return fromEntry === undefined ? options.settingsPath : profilePath(options.profilesDirectory, fromEntry);
+			}
+			const fromMarker = readActiveProfileName(options.settingsPath);
+			const name = fromMarker ?? fromEntry;
+			return name === undefined ? options.settingsPath : profilePath(options.profilesDirectory, name);
+		},
+	};
 }

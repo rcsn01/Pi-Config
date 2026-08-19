@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	CONFIG_PROFILES_ENTRY_TYPE,
+	createSessionProfileResolver,
 	profilePath,
 	readActiveProfileName,
-	resolveSessionProfilePath,
 	sessionProfileName,
 	validateProfileName,
 } from "./active-profile.ts";
@@ -59,32 +59,56 @@ describe("active profile helpers", () => {
 		expect(() => profilePath("/p", "a/b")).toThrow(/Invalid profile name/);
 	});
 
-	it("prefers the marker on new session boundaries and the entry on reload", () => {
-		const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
-		const entries = [entry("default")];
+	describe("session profile resolver", () => {
+		it("prefers the marker on new session boundaries and the entry on reload", () => {
+			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+			const entries = [entry("default")];
 
-		expect(resolveSessionProfilePath(entries, settingsPath, profilesDirectory, "startup"))
-			.toBe(join(profilesDirectory, "focused.json"));
-		expect(resolveSessionProfilePath(entries, settingsPath, profilesDirectory, "reload"))
-			.toBe(join(profilesDirectory, "default.json"));
-	});
+			expect(resolver.resolve(entries, "startup")).toBe(join(profilesDirectory, "focused.json"));
+			expect(resolver.resolve(entries, "reload")).toBe(join(profilesDirectory, "default.json"));
+		});
 
-	it("falls back to the entry when the marker is absent on new sessions", () => {
-		const { settingsPath, profilesDirectory } = fixture({});
-		expect(resolveSessionProfilePath([entry("default")], settingsPath, profilesDirectory, "startup"))
-			.toBe(join(profilesDirectory, "default.json"));
-	});
+		it("falls back to the entry when the marker is absent on new sessions", () => {
+			const { settingsPath, profilesDirectory } = fixture({});
+			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+			expect(resolver.resolve([entry("default")], "startup")).toBe(join(profilesDirectory, "default.json"));
+		});
 
-	it("never falls back to the marker on reload", () => {
-		const marked = fixture({ configProfiles: { active: "focused" } });
-		expect(resolveSessionProfilePath([], marked.settingsPath, marked.profilesDirectory, "reload"))
-			.toBeUndefined();
-		expect(resolveSessionProfilePath([entry("../bad")], marked.settingsPath, marked.profilesDirectory, "reload"))
-			.toBeUndefined();
-	});
+		it("falls back to the entry when the marker is invalid on new sessions", () => {
+			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "../bad" } });
+			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+			expect(resolver.resolve([entry("default")], "startup")).toBe(join(profilesDirectory, "default.json"));
+		});
 
-	it("returns undefined when neither source yields a valid name", () => {
-		const { settingsPath, profilesDirectory } = fixture({});
-		expect(resolveSessionProfilePath([], settingsPath, profilesDirectory, "startup")).toBeUndefined();
+		it("never falls back to the marker on reload, returning settings.json when no valid entry", () => {
+			const marked = fixture({ configProfiles: { active: "focused" } });
+			const resolver = createSessionProfileResolver({
+				settingsPath: marked.settingsPath,
+				profilesDirectory: marked.profilesDirectory,
+			});
+			expect(resolver.resolve([], "reload")).toBe(marked.settingsPath);
+			expect(resolver.resolve([entry("../bad")], "reload")).toBe(marked.settingsPath);
+		});
+
+		it("returns settings.json when neither source yields a valid name", () => {
+			const { settingsPath, profilesDirectory } = fixture({});
+			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+			expect(resolver.resolve([], "startup")).toBe(settingsPath);
+			expect(resolver.resolve([], "reload")).toBe(settingsPath);
+		});
+
+		it("always returns a concrete document path", () => {
+			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+			expect(resolver.resolve([entry("default")], "startup")).toBe(join(profilesDirectory, "focused.json"));
+			// A new session with neither source still yields the plain settings document.
+			const unmarked = fixture({});
+			const unmarkedResolver = createSessionProfileResolver({
+				settingsPath: unmarked.settingsPath,
+				profilesDirectory: unmarked.profilesDirectory,
+			});
+			expect(unmarkedResolver.resolve([], "fork")).toBe(unmarked.settingsPath);
+		});
 	});
 });

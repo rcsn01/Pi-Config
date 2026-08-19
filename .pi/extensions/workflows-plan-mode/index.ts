@@ -12,7 +12,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
-import { PROFILES_DIRECTORY, resolveSessionProfilePath } from "../_shared/active-profile.ts";
+import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
 import {
 	discardAssistantMessage,
 	extractAssistantText,
@@ -92,6 +92,10 @@ export function createPlanModeExtension(dependencies: PlanModeDependencies = {})
 }
 
 function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDependencies): void {
+	const resolver = createSessionProfileResolver({
+		settingsPath: PLAN_MODE_SETTINGS_PATH,
+		profilesDirectory: PROFILES_DIRECTORY,
+	});
 	const profileStore = dependencies.profileStore ?? createPlanModeProfileStore();
 	const normalDefaultsStore = dependencies.normalDefaultsStore ?? createNormalDefaultsStore();
 	const waitForNativePersistence = dependencies.waitForNativePersistence ??
@@ -514,15 +518,8 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 
 	pi.on("session_start", async (event, ctx) => {
 		// Point the profile store at the session's profile file so the Plan Mode
-		// model is read/written there; fall back to settings.json when no profile
-		// is resolved.
-		const profile = resolveSessionProfilePath(
-			ctx.sessionManager.getBranch(),
-			PLAN_MODE_SETTINGS_PATH,
-			PROFILES_DIRECTORY,
-			event.reason,
-		);
-		if (profile) profileStore.setPath(profile);
+		// model is read/written there; no profile means settings.json.
+		profileStore.setPath(resolver.resolve(ctx.sessionManager.getBranch(), event.reason));
 		await reconstruct(ctx);
 	});
 	pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));

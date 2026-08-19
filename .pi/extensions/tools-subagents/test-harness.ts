@@ -57,8 +57,11 @@ export interface MemoryConfigStore extends SubagentConfigStore {
 
 export function memoryConfigStore(initial: Record<string, unknown> = {}): MemoryConfigStore {
 	let activeMainModel: string | undefined;
+	let settingsPath = "/config.json";
 	const store: MemoryConfigStore = {
-		configPath: "/config.json",
+		get configPath() {
+			return settingsPath;
+		},
 		document: structuredClone(initial),
 		updates: [],
 		readDocument: () => structuredClone(store.document),
@@ -86,7 +89,9 @@ export function memoryConfigStore(initial: Record<string, unknown> = {}): Memory
 				mainModel: activeMainModel,
 			});
 		},
-		setSettingsPath: () => {},
+		setSettingsPath: (path: string) => {
+			settingsPath = path;
+		},
 	};
 	return store;
 }

@@ -22,7 +22,7 @@ import {
 	installModelCommandHandler,
 	ModelCommandRoutingEditor,
 } from "../_shared/model-command-routing.ts";
-import { PROFILES_DIRECTORY, resolveSessionProfilePath } from "../_shared/active-profile.ts";
+import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
 import { applyStoredProfile, currentSelectionMode } from "./apply-profile.ts";
 import {
 	calculateCompactionReserveTokens,
@@ -287,6 +287,10 @@ async function runModelControl(
 export function createModelSelectorExtension(
 	settingsStore: ProjectSettingsStore = createProjectSettingsStore(),
 ) {
+	const resolver = createSessionProfileResolver({
+		settingsPath: PROJECT_SETTINGS_PATH,
+		profilesDirectory: PROFILES_DIRECTORY,
+	});
 	return function modelSelectorExtension(pi: ExtensionAPI) {
 		let uninstallModelCommandHandler: (() => void) | undefined;
 
@@ -294,15 +298,11 @@ export function createModelSelectorExtension(
 			uninstallModelCommandHandler?.();
 			uninstallModelCommandHandler = undefined;
 			// Point the store at the session's profile file (uiModelSelector) while
-			// compaction stays in settings.json; fall back to settings.json when no
-			// profile is resolved.
-			const profile = resolveSessionProfilePath(
-				ctx.sessionManager.getBranch(),
+			// compaction stays in settings.json; no profile means settings.json.
+			settingsStore.setPaths(
+				resolver.resolve(ctx.sessionManager.getBranch(), event.reason),
 				PROJECT_SETTINGS_PATH,
-				PROFILES_DIRECTORY,
-				event.reason,
 			);
-			settingsStore.setPaths(profile ?? PROJECT_SETTINGS_PATH, PROJECT_SETTINGS_PATH);
 			if (ctx.mode !== "tui") return;
 
 			const handler = async (args: string): Promise<void> => {

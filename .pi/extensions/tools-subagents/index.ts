@@ -14,7 +14,7 @@ import {
 	type SubagentProgressEvent,
 	type SubagentService,
 } from "../_shared/subagent-service.ts";
-import { PROFILES_DIRECTORY, resolveSessionProfilePath } from "../_shared/active-profile.ts";
+import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
 import {
 	agentRegistry,
 	loadAgents,
@@ -55,6 +55,10 @@ export interface SubagentsExtensionDependencies {
 }
 
 export function createSubagentsExtension(dependencies: SubagentsExtensionDependencies = {}) {
+	const resolver = createSessionProfileResolver({
+		settingsPath: PROJECT_SETTINGS_PATH,
+		profilesDirectory: PROFILES_DIRECTORY,
+	});
 	return (pi: ExtensionAPI): void => {
 		const registry = dependencies.registry ?? agentRegistry;
 		const configStore = dependencies.config ?? subagentConfig;
@@ -82,15 +86,9 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 
 		pi.on("session_start", async (event, ctx) => {
 			configStore.rememberMainModel(ctx.model);
-			// Point the config store at the session's profile file; fall back to
-			// settings.json when no profile is resolved.
-			const profile = resolveSessionProfilePath(
-				ctx.sessionManager.getBranch(),
-				PROJECT_SETTINGS_PATH,
-				PROFILES_DIRECTORY,
-				event.reason,
-			);
-			if (profile) configStore.setSettingsPath(profile);
+			// Point the config store at the session's profile file; no profile
+			// means settings.json.
+			configStore.setSettingsPath(resolver.resolve(ctx.sessionManager.getBranch(), event.reason));
 			// One-time migration: carry a legacy config.json into the session's
 			// settings document (the profile when one is active), then delete it.
 			await migrateSubagentConfigLegacy(configStore.configPath, LEGACY_CONFIG_PATH);
