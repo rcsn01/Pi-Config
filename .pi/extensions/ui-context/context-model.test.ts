@@ -18,10 +18,12 @@ import {
 	reconcileExtensionTools,
 	type ContextDiagnostics,
 	type ContextModelInput,
+	type ModelUsageRow,
 } from "./context-model.ts";
 import {
 	collectCurrentContextUsage,
 	ContextDiagnosticsComponent,
+	autoCompactCompactionSettings,
 	formatBreakdownValue,
 	textualSummary,
 } from "./index.ts";
@@ -332,6 +334,47 @@ describe("capacity arithmetic", () => {
 		expect(missing.contextWindow).toBe(0);
 		expect(missing.modelId).toBe("No active model");
 	});
+	describe("auto-compact buffer integration", () => {
+		it("derives the buffer from the auto-compact threshold fraction", () => {
+			expect(autoCompactCompactionSettings(256_000)).toEqual({
+				enabled: true,
+				reserveTokens: 51_200,
+			});
+			expect(autoCompactCompactionSettings(200_000)).toEqual({
+				enabled: true,
+				reserveTokens: 40_000,
+			});
+		});
+
+		it("yields no reserve for unknown context windows", () => {
+			expect(autoCompactCompactionSettings(0)).toEqual({ enabled: true, reserveTokens: 0 });
+			expect(autoCompactCompactionSettings(-1)).toEqual({ enabled: true, reserveTokens: 0 });
+		});
+
+		it("shows the auto-compact buffer in the breakdown without a disabled suffix", () => {
+			const diagnostics = calculateContextDiagnostics(input({}));
+			const theme = {
+				fg: (_color: string, text: string) => text,
+				bold: (text: string) => text,
+			} as unknown as Theme;
+			const keybindings = {
+				matches: (data: string, binding: string) =>
+					({ u: "tui.select.up", d: "tui.select.down" }[data] === binding),
+			};
+			const component = new ContextDiagnosticsComponent(
+				diagnostics,
+				theme,
+				keybindings,
+				() => {},
+				() => {},
+			);
+			const lines = component.render(50);
+			const bufferLine = lines.find((line) => line.includes("Compaction buffer"));
+			expect(bufferLine).toBeDefined();
+			expect(bufferLine).toContain("100 (10%)");
+			expect(lines.some((line) => line.includes("(disabled)"))).toBe(false);
+		});
+	});
 });
 
 describe("display helpers", () => {
@@ -622,5 +665,102 @@ describe("display helpers", () => {
 			expect(meter.used + meter.free + meter.reserve).toBe(meter.cells);
 		}
 		expect(allocateMeter(diagnostics, 100)).toEqual({ cells: 100, used: 40, free: 50, reserve: 10 });
+	});
+});
+
+describe("ContextDiagnosticsComponent scrolling", () => {
+	function usageRow(model: string): ModelUsageRow {
+		return {
+			model,
+			session: { input: 1_000, cacheRead: 2_000, output: 500, cacheWrite: 0, tokens: 3_500, cost: 0.1, turns: 1 },
+			subagent: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+			advisor: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+			guardian: { input: 0, cacheRead: 0, output: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 },
+		};
+	}
+
+	function scrollFixture() {
+		const diagnostics = calculateContextDiagnostics(input({
+			modelUsage: Array.from({ length: 8 }, (_, index) => usageRow(`provider/model-${index}`)),
+		}));
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as unknown as Theme;
+		const keybindings = {
+			matches: (data: string, binding: string) => ({
+				u: "tui.select.up",
+				d: "tui.select.down",
+				enter: "tui.select.confirm",
+				escape: "tui.select.cancel",
+				pu: "tui.select.pageUp",
+				pd: "tui.select.pageDown",
+			}[data] === binding),
+		};
+		const component = new ContextDiagnosticsComponent(
+			diagnostics,
+			theme,
+			keybindings,
+			() => {},
+			() => {},
+			() => 20,
+		);
+		return { component, diagnostics, theme, keybindings };
+	}
+
+	it("slices the body to the available rows and scrolls with PgDn", () => {
+		const { component } = scrollFixture();
+		const first = component.render(50);
+		expect(first.length).toBe(20);
+		expect(first[3]).toContain("█"); // meter at the top of the content
+
+		component.handleInput("pd");
+		const scrolled = component.render(50);
+		expect(scrolled.length).toBe(20);
+		expect(scrolled[3]).not.toBe(first[3]);
+		// hint advertises scrolling; the position fits at wider widths
+		expect(scrolled[scrolled.length - 2]).toContain("PgUp/PgDn");
+		const wide = component.render(90);
+		expect(wide[wide.length - 2]).toContain(" of ");
+	});
+
+	it("clamps PgDn at the bottom and PgUp at the top", () => {
+		const { component, diagnostics, theme, keybindings } = scrollFixture();
+		component.render(50); // initialize maxScroll/pageSize
+		for (let index = 0; index < 10; index += 1) component.handleInput("pd");
+		const bottom = component.render(50);
+		const bottomAgain = component.render(50);
+		expect(bottomAgain).toEqual(bottom);
+
+		const full = new ContextDiagnosticsComponent(diagnostics, theme, keybindings, () => {}, () => {}).render(50);
+		const fullBody = full.slice(3, full.length - 3);
+		expect(bottom[3 + 14 - 1]).toBe(fullBody[fullBody.length - 1]);
+
+		for (let index = 0; index < 10; index += 1) component.handleInput("pu");
+		const top = component.render(50);
+		expect(top[3]).toBe(fullBody[0]);
+	});
+
+	it("scrolls with arrows at the selection edges", () => {
+		const { component } = scrollFixture();
+		const first = component.render(50);
+		// move the selection to the last label, then ↓ scrolls down one row
+		for (let index = 0; index < 4; index += 1) component.handleInput("d");
+		const down = component.render(50);
+		expect(down[3]).not.toBe(first[3]);
+		// move the selection back to the top, then ↑ scrolls back up
+		for (let index = 0; index < 6; index += 1) component.handleInput("u");
+		const up = component.render(50);
+		expect(up[3]).toBe(first[3]);
+	});
+
+	it("resets the scroll offset when switching views", () => {
+		const { component } = scrollFixture();
+		component.render(50); // initialize maxScroll/pageSize
+		component.handleInput("pd");
+		component.handleInput("enter"); // opens the extensionTools detail view
+		component.handleInput("escape"); // back to summary
+		const top = component.render(50);
+		expect(top[3]).toContain("█");
 	});
 });

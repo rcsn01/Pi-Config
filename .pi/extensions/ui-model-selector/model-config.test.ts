@@ -121,6 +121,7 @@ function createLifecycleHarness(options: {
 	}>;
 	effectiveThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	compactionThreshold?: number;
+	keepRecentTokens?: number;
 	hasConversationHistory?: boolean;
 	mode?: "tui" | "print" | "json" | "rpc";
 	refreshError?: Error;
@@ -150,6 +151,7 @@ function createLifecycleHarness(options: {
 		profiles: options.profiles ?? {},
 		contextWindows: options.contextWindows ?? {},
 		compactionThreshold: options.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD,
+		keepRecentTokens: options.keepRecentTokens ?? DEFAULT_KEEP_RECENT_TOKENS,
 	}));
 	const ctx = {
 		mode: options.mode ?? "tui",
