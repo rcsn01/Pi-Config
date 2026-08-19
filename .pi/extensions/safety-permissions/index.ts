@@ -123,10 +123,11 @@ export default function (pi: ExtensionAPI) {
 	// ── Custom rendering for auto-review verdict entries ──────────────
 
 	pi.registerEntryRenderer("auto-review-verdict", (entry, _options, theme) => {
-		const data = entry.data as { allowed?: boolean; title?: string; reason?: string } | undefined;
+		const data = entry.data as { allowed?: boolean; title?: string; reason?: string; triggers?: string[] } | undefined;
 		const icon = data?.allowed ? "✅" : "❌";
 		const label = data?.allowed ? "ALLOWED" : "DENIED";
-		const text = theme.fg("warning", `${icon} ${label}: ${data?.title ?? ""} — ${data?.reason ?? ""}`);
+		const triggers = data?.triggers?.length ? ` [${data.triggers.join(", ")}]` : "";
+		const text = theme.fg("warning", `${icon} ${label}: ${data?.title ?? ""}${triggers} — ${data?.reason ?? ""}`);
 		const bg = data?.allowed ? "toolSuccessBg" : "toolErrorBg";
 		const box = new Box(1, 1, (t) => theme.bg(bg, t));
 		box.addChild(new Text(text, 0, 0));

@@ -33,7 +33,7 @@ export interface EvaluateDeps {
 	/** Prompt the user for approval (default mode). */
 	requestApproval(title: string, message: string): Promise<ApprovalResult>;
 	/** Run the guardian reviewer (auto-review mode). */
-	guardianReview(title: string, actionDescription: string): Promise<ApprovalResult>;
+	guardianReview(title: string, actionDescription: string, triggers?: string[]): Promise<ApprovalResult>;
 	/** Record a denied action so /approve can retry it once. */
 	onDenied(input: ToolCallInput, title: string, message: string): void;
 }

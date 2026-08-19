@@ -143,17 +143,40 @@ export async function evaluateToolCall(
 		// Default & auto-review: dangerous commands need approval
 		if (mode === "default" || mode === "auto-review") {
 			const dangerReason = dangerousShellReason(trimmedCmd);
-			if (dangerReason) {
-				if (mode === "auto-review") {
-					const { allowed, reason } = await deps.guardianReview(
-						"Dangerous Command",
-						`Auto-review mode: ${dangerReason}\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
-					);
+			const network = isNetworkCommand(trimmedCmd);
+			const externalPaths = mode === "auto-review"
+				? extractExternalPathsFromCommand(trimmedCmd, cwd)
+				: [];
+
+			if (mode === "auto-review") {
+				// Batch every concern into ONE guardian review per command.
+				const triggers: string[] = [];
+				const concerns: string[] = [];
+				if (dangerReason) {
+					triggers.push("dangerous");
+					concerns.push(`- Dangerous: ${dangerReason}`);
+				}
+				if (network) {
+					triggers.push("network");
+					concerns.push("- Network: command may install/modify software outside the workspace");
+				}
+				if (externalPaths.length > 0) {
+					triggers.push("external-path");
+					const pathList = externalPaths.slice(0, 5).map((p) => `  - ${p}`).join("\n");
+					const extra = externalPaths.length > 5 ? `\n  ... and ${externalPaths.length - 5} more` : "";
+					concerns.push(`- External paths (outside workspace):\n${pathList}${extra}`);
+				}
+				if (triggers.length > 0) {
+					const message = `Command: ${trimmedCmd.slice(0, 200)}\n\nConcerns:\n${concerns.join("\n")}`;
+					const { allowed, reason } = await deps.guardianReview("Command Review", message, triggers);
 					if (!allowed) {
-						deps.onDenied(input, "Dangerous Command", trimmedCmd.slice(0, 200));
-						return { action: "block", reason: reason ?? "Auto-review: dangerous command blocked." };
+						deps.onDenied(input, "Command Review", message);
+						return { action: "block", reason: reason ?? "Auto-review: command blocked." };
 					}
-				} else {
+				}
+			} else {
+				// Default mode: per-trigger user prompts (unchanged)
+				if (dangerReason) {
 					const { allowed, reason } = await deps.requestApproval(
 						"Dangerous Command",
 						`Default mode detected: ${dangerReason}\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
@@ -163,20 +186,7 @@ export async function evaluateToolCall(
 						return { action: "block", reason: reason ?? "Blocked." };
 					}
 				}
-			}
-
-			// Network command detection (default: prompt; auto-review: prompt for install/modify commands)
-			if (isNetworkCommand(trimmedCmd)) {
-				if (mode === "auto-review") {
-					const { allowed, reason } = await deps.guardianReview(
-						"Network Command",
-						`Command may install/modify software outside the workspace.\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
-					);
-					if (!allowed) {
-						deps.onDenied(input, "Network Access", trimmedCmd.slice(0, 200));
-						return { action: "block", reason: reason ?? "Auto-review: network command blocked." };
-					}
-				} else {
+				if (network) {
 					const { allowed, reason } = await deps.requestApproval(
 						"Network Access",
 						`Command appears to require network access.\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
@@ -184,23 +194,6 @@ export async function evaluateToolCall(
 					if (!allowed) {
 						deps.onDenied(input, "Network Access", trimmedCmd.slice(0, 200));
 						return { action: "block", reason: reason ?? "Network access blocked." };
-					}
-				}
-			}
-
-			// Auto-review: detect bash commands referencing paths outside the workspace
-			if (mode === "auto-review") {
-				const externalPaths = extractExternalPathsFromCommand(trimmedCmd, cwd);
-				if (externalPaths.length > 0) {
-					const pathList = externalPaths.slice(0, 5).join("\n");
-					const extra = externalPaths.length > 5 ? `\n... and ${externalPaths.length - 5} more` : "";
-					const { allowed, reason } = await deps.guardianReview(
-						"External Path in Command",
-						`Command references paths outside the workspace:\n${pathList}${extra}\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
-					);
-					if (!allowed) {
-						deps.onDenied(input, "External Path", externalPaths[0]);
-						return { action: "block", reason: reason ?? "Auto-review: external path command blocked." };
 					}
 				}
 			}
@@ -223,53 +216,51 @@ export async function evaluateToolCall(
 	if ((mode === "default" || mode === "auto-review") &&
 		(toolName === "write" || toolName === "edit")) {
 		const inputPaths = extractPathsFromInput(toolName, input.input);
-		for (const inputPath of inputPaths) {
-			if (inputPath && isExternalWritePath(inputPath)) {
-				// Auto-review: prompt user directly for external writes (the ONE thing you care about)
-				if (mode === "auto-review") {
-					const { allowed, reason } = await deps.guardianReview(
-						"External Write",
-						`Path "${inputPath}" is outside the workspace.`,
-					);
-					if (!allowed) {
-						deps.onDenied(input, "External Path", inputPath);
-						return { action: "block", reason: reason ?? "Auto-review: external write blocked." };
-					}
-					continue;
-				}
-				// Default mode
-				const { allowed, reason } = await deps.requestApproval(
-					"External Path",
-					`Default mode: path "${inputPath}" is outside workspace.\nAllow write?`,
-				);
-				if (!allowed) {
-					deps.onDenied(input, "External Path", inputPath);
-					return { action: "block", reason: reason ?? "Write to external path blocked." };
+
+		if (mode === "auto-review") {
+			// Batch every external path into ONE guardian review per tool call.
+			const externalWrites: Array<{ path: string; detail: string }> = [];
+			for (const inputPath of inputPaths) {
+				if (!inputPath) continue;
+				if (isExternalWritePath(inputPath)) {
+					externalWrites.push({ path: inputPath, detail: `- ${inputPath} (outside the workspace)` });
+				} else if (!isPathWithinCwd(inputPath, cwd)) {
+					const resolved = resolveToolPath(inputPath, cwd);
+					externalWrites.push({ path: inputPath, detail: `- ${inputPath} (resolved: ${resolved}, outside the workspace)` });
 				}
 			}
-			// Also catch non-external paths that are still outside cwd
-			if (inputPath && !isPathWithinCwd(inputPath, cwd) && !isExternalWritePath(inputPath)) {
-				const resolved = resolveToolPath(inputPath, cwd);
-				// Auto-review: prompt user directly
-				if (mode === "auto-review") {
-					const { allowed, reason } = await deps.guardianReview(
-						"External Write",
-						`Path "${inputPath}" (resolved: ${resolved}) is outside the workspace.`,
+			if (externalWrites.length > 0) {
+				const message = `Paths outside the workspace:\n${externalWrites.map((w) => w.detail).join("\n")}`;
+				const { allowed, reason } = await deps.guardianReview("External Write", message, ["external-write"]);
+				if (!allowed) {
+					deps.onDenied(input, "External Path", externalWrites[0].path);
+					return { action: "block", reason: reason ?? "Auto-review: external write blocked." };
+				}
+			}
+		} else {
+			// Default mode: per-path user prompts (unchanged)
+			for (const inputPath of inputPaths) {
+				if (inputPath && isExternalWritePath(inputPath)) {
+					const { allowed, reason } = await deps.requestApproval(
+						"External Path",
+						`Default mode: path "${inputPath}" is outside workspace.\nAllow write?`,
 					);
 					if (!allowed) {
 						deps.onDenied(input, "External Path", inputPath);
-						return { action: "block", reason: reason ?? "Auto-review: external write blocked." };
+						return { action: "block", reason: reason ?? "Write to external path blocked." };
 					}
-					continue;
 				}
-				// Default mode
-				const { allowed, reason } = await deps.requestApproval(
-					"External Path",
-					`Default mode: path "${inputPath}" (resolved: ${resolved}) is outside workspace.\nAllow write?`,
-				);
-				if (!allowed) {
-					deps.onDenied(input, "External Path", inputPath);
-					return { action: "block", reason: reason ?? "Write to external path blocked." };
+				// Also catch non-external paths that are still outside cwd
+				if (inputPath && !isPathWithinCwd(inputPath, cwd) && !isExternalWritePath(inputPath)) {
+					const resolved = resolveToolPath(inputPath, cwd);
+					const { allowed, reason } = await deps.requestApproval(
+						"External Path",
+						`Default mode: path "${inputPath}" (resolved: ${resolved}) is outside workspace.\nAllow write?`,
+					);
+					if (!allowed) {
+						deps.onDenied(input, "External Path", inputPath);
+						return { action: "block", reason: reason ?? "Write to external path blocked." };
+					}
 				}
 			}
 		}

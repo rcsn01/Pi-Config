@@ -42,11 +42,34 @@ export function safeJoin(baseDir: string, requested: string): string | null {
 	return resolved === base || resolved.startsWith(base + path.sep) ? resolved : null;
 }
 
+/**
+ * Detect `rm` invoked with BOTH recursive and force flags (`-rf`/`-fr` in any
+ * flag cluster, or split across separate flag tokens like `-r -f`).
+ *
+ * A regex like `rm\s+[^\n;|&]*-[^\n;|&]*f[^\n;|&]*r` bleeds into the path
+ * argument (e.g. `rm -f /private/...` matches because the path contains an
+ * "r"), so flags are parsed token-scoped instead: only the flag tokens
+ * immediately following `rm` are inspected, and both `r` and `f` must be
+ * present (avoids `-rr`/`-ff` false positives).
+ */
+export function isRecursiveForcedRm(command: string): boolean {
+	// Scan every `rm` invocation in the command (compound commands like
+	// `rm -f /x && rm -rf /y` must be caught too). Flag tokens may be quoted
+	// (`rm "-rf" /x`) and may be split across tokens (`rm -r -f /x`).
+	const re = /\brm\s+((?:["']?-[^\s;|&]*["']?\s*)+)/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(command)) !== null) {
+		const flags = m[1].replace(/[\s"']/g, "").replace(/-/g, "");
+		if (flags.includes("r") && flags.includes("f")) return true;
+	}
+	return false;
+}
+
 export function dangerousCommandReason(command: string): string | null {
 	const normalized = command.replace(/\\\n/g, " ").trim();
+	if (isRecursiveForcedRm(normalized)) return "recursive forced deletion";
 	const checks: Array<[RegExp, string]> = [
 		[/\bsudo\b/, "sudo/elevated privileges"],
-		[/\brm\s+[^\n;|&]*-[^\n;|&]*r[^\n;|&]*f|\brm\s+[^\n;|&]*-[^\n;|&]*f[^\n;|&]*r/, "recursive forced deletion"],
 		[/\bcurl\b[^|]*\|\s*(?:ba)?sh\b|\bwget\b[^|]*\|\s*(?:ba)?sh\b/, "download piped to shell"],
 		[/\bmkfs\b|\bdd\s+if=|:\(\)\s*\{\s*:\|:&\s*\}\s*;:/, "destructive system command"],
 		[/\bshutdown\b|\breboot\b|\binit\s+0\b|\bkill\s+-9\s+1\b/, "system shutdown/process destruction"],
