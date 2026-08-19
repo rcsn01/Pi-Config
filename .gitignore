@@ -24,6 +24,8 @@ Deployment/
 .pi/worktrees/
 .pi/workflow-runs/
 .pi/workflow-approvals/
+.pi/profiles/*.json
+!.pi/profiles/default.json
 
 # IDE
 .vscode/
