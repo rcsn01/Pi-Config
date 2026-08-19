@@ -47,39 +47,32 @@ describe("profile store", () => {
 		expect(() => store.readProfile("array")).toThrow(/root value must be a JSON object/);
 	});
 
-	it("mirrors edited settings into the active profile and preserves unknown fields", async () => {
-		const settings = {
-			model: "new",
-			unknown: { nested: true },
-			configProfiles: { active: "default", futureOption: 42 },
-		};
-		const { store, writeProfile, profilesDirectory, read } = fixture(settings);
-		writeProfile("default", { model: "old" });
-		expect(await store.synchronizeActiveProfile()).toBe("default");
-		expect(read(join(profilesDirectory, "default.json"))).toEqual(settings);
+	it("loads the active profile from the marker and its file", () => {
+		const { store, writeProfile } = fixture();
+		writeProfile("default", { model: "old", unknown: { nested: true } });
+		expect(store.loadActiveProfile()).toEqual({ name: "default", document: { model: "old", unknown: { nested: true } } });
 	});
 
-	it("leaves profiles untouched without a valid active marker", async () => {
+	it("returns undefined without a valid active marker", () => {
 		for (const marker of [undefined, { active: "../bad" }, { active: 3 }]) {
-			const { store, writeProfile, profilesDirectory } = fixture(
+			const { store, writeProfile } = fixture(
 				marker === undefined ? { model: "edited" } : { model: "edited", configProfiles: marker },
 			);
 			writeProfile("default", { model: "original" });
-			const before = readFileSync(join(profilesDirectory, "default.json"), "utf-8");
-			expect(await store.synchronizeActiveProfile()).toBeUndefined();
-			expect(readFileSync(join(profilesDirectory, "default.json"), "utf-8")).toBe(before);
+			expect(store.loadActiveProfile()).toBeUndefined();
 		}
 	});
 
-	it("reports a valid active marker whose profile is missing", async () => {
+	it("reports a valid active marker whose profile is missing", () => {
 		const { store } = fixture({ configProfiles: { active: "missing" } });
-		await expect(store.synchronizeActiveProfile()).rejects.toThrow(/does not exist/);
+		expect(() => store.loadActiveProfile()).toThrow(/Cannot read/);
 	});
 
-	it("saves outgoing changes, fully replaces settings, and normalizes the destination marker", async () => {
+	it("switches by updating only the marker and preserving every other settings key", async () => {
 		const current = {
-			outgoingOnly: true,
-			configProfiles: { active: "default", outgoingMetadata: "kept" },
+			compaction: { enabled: true, threshold: 0.1 },
+			theme: "dark",
+			configProfiles: { active: "default", metadata: "kept" },
 		};
 		const { store, writeProfile, settingsPath, profilesDirectory, read } = fixture(current);
 		writeProfile("default", { stale: true });
@@ -89,16 +82,20 @@ describe("profile store", () => {
 		});
 
 		expect(await store.switchProfile("focused")).toEqual({ changed: true, active: "focused" });
-		expect(read(join(profilesDirectory, "default.json"))).toEqual(current);
 		expect(read(settingsPath)).toEqual({
-			destinationOnly: true,
-			configProfiles: { active: "focused", destinationMetadata: "kept" },
+			compaction: { enabled: true, threshold: 0.1 },
+			theme: "dark",
+			configProfiles: { active: "focused", metadata: "kept" },
 		});
-		expect(read(join(profilesDirectory, "focused.json"))).toEqual(read(settingsPath));
-		expect(read(settingsPath)).not.toHaveProperty("outgoingOnly");
+		// Profile files are never written by a switch.
+		expect(read(join(profilesDirectory, "default.json"))).toEqual({ stale: true });
+		expect(read(join(profilesDirectory, "focused.json"))).toEqual({
+			destinationOnly: true,
+			configProfiles: { active: "wrong", destinationMetadata: "kept" },
+		});
 	});
 
-	it("validates the destination before changing settings or the outgoing profile", async () => {
+	it("validates the destination before changing the marker", async () => {
 		const { store, writeProfile, settingsPath, profilesDirectory } = fixture({
 			value: "edited",
 			configProfiles: { active: "default" },
@@ -106,25 +103,23 @@ describe("profile store", () => {
 		writeProfile("default", { value: "old" });
 		writeFileSync(join(profilesDirectory, "broken.json"), "{");
 		const beforeSettings = readFileSync(settingsPath, "utf-8");
-		const beforeOutgoing = readFileSync(join(profilesDirectory, "default.json"), "utf-8");
 
 		await expect(store.switchProfile("broken")).rejects.toThrow(/Cannot read/);
 		expect(readFileSync(settingsPath, "utf-8")).toBe(beforeSettings);
-		expect(readFileSync(join(profilesDirectory, "default.json"), "utf-8")).toBe(beforeOutgoing);
 	});
 
-	it("synchronizes an already-active profile without reporting a change", async () => {
+	it("reports an already-active profile without a change", async () => {
 		const settings = { edited: true, configProfiles: { active: "default" } };
-		const { store, writeProfile, profilesDirectory, read } = fixture(settings);
+		const { store, writeProfile, settingsPath } = fixture(settings);
 		writeProfile("default", { edited: false, configProfiles: { active: "default" } });
 		expect(await store.switchProfile("default")).toEqual({ changed: false, active: "default" });
-		expect(read(join(profilesDirectory, "default.json"))).toEqual(settings);
+		expect(readFileSync(settingsPath, "utf-8")).toBe(`${JSON.stringify(settings, null, 2)}\n`);
 	});
 
 	it("cleans up atomic-write temporary files", async () => {
 		const { store, writeProfile, root, profilesDirectory } = fixture();
 		writeProfile("default", { configProfiles: { active: "default" } });
-		await store.synchronizeActiveProfile();
+		await store.switchProfile("default");
 		expect(readdirSync(root, { recursive: true }).filter((name) => String(name).endsWith(".tmp"))).toEqual([]);
 		expect(readdirSync(profilesDirectory)).toEqual(["default.json"]);
 	});

@@ -11,6 +11,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { PROFILES_DIRECTORY, resolveSessionProfilePath } from "../_shared/active-profile.ts";
 import {
 	discardAssistantMessage,
 	extractAssistantText,
@@ -23,6 +24,7 @@ import {
 	applySessionProfile,
 	createNormalDefaultsStore,
 	createPlanModeProfileStore,
+	PLAN_MODE_SETTINGS_PATH,
 	type ModeModelProfile,
 	type NormalDefaultsStore,
 	type PlanModeProfileStore,
@@ -507,7 +509,19 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		sendUserMessage: (message, options) => pi.sendUserMessage(message, options),
 	});
 
-	pi.on("session_start", async (_event, ctx) => reconstruct(ctx));
+	pi.on("session_start", async (event, ctx) => {
+		// Point the profile store at the session's profile file so the Plan Mode
+		// model is read/written there; fall back to settings.json when no profile
+		// is resolved.
+		const profile = resolveSessionProfilePath(
+			ctx.sessionManager.getBranch(),
+			PLAN_MODE_SETTINGS_PATH,
+			PROFILES_DIRECTORY,
+			event.reason,
+		);
+		if (profile) profileStore.setPath(profile);
+		await reconstruct(ctx);
+	});
 	pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
 	pi.on("session_shutdown", async (_event, ctx) => {
 		lifecycleGeneration++;

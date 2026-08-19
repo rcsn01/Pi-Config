@@ -21,6 +21,7 @@ import {
 	installModelCommandHandler,
 	ModelCommandRoutingEditor,
 } from "../_shared/model-command-routing.ts";
+import { PROFILES_DIRECTORY, resolveSessionProfilePath } from "../_shared/active-profile.ts";
 import { applyStoredProfile, currentSelectionMode } from "./apply-profile.ts";
 import {
 	calculateCompactionReserveTokens,
@@ -34,6 +35,7 @@ import {
 } from "./model-config.ts";
 import {
 	createProjectSettingsStore,
+	PROJECT_SETTINGS_PATH,
 	type ProjectSettingsStore,
 } from "./settings-store.ts";
 
@@ -290,6 +292,16 @@ export function createModelSelectorExtension(
 		pi.on("session_start", async (event, ctx) => {
 			uninstallModelCommandHandler?.();
 			uninstallModelCommandHandler = undefined;
+			// Point the store at the session's profile file (uiModelSelector) while
+			// compaction stays in settings.json; fall back to settings.json when no
+			// profile is resolved.
+			const profile = resolveSessionProfilePath(
+				ctx.sessionManager.getBranch(),
+				PROJECT_SETTINGS_PATH,
+				PROFILES_DIRECTORY,
+				event.reason,
+			);
+			settingsStore.setPaths(profile ?? PROJECT_SETTINGS_PATH, PROJECT_SETTINGS_PATH);
 			if (ctx.mode !== "tui") return;
 
 			const handler = async (args: string): Promise<void> => {

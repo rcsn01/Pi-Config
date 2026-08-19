@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -349,6 +349,51 @@ describe("subagent config store", () => {
 		expect(existsSync(legacyPath)).toBe(false);
 		// No-op once settings.json already has a subagents key.
 		expect(await migrateSubagentConfigLegacy(settingsPath, legacyPath)).toBe(false);
+	});
+
+	it("migrates a legacy config.json into the session's profile instead of settings.json", async () => {
+		const root = mkdtempSync(join(tmpdir(), "subagent-config-"));
+		roots.push(root);
+		const settingsPath = join(root, "settings.json");
+		const profilePath = join(root, "profiles", "focused.json");
+		const legacyPath = join(root, "config.json");
+		mkdirSync(join(root, "profiles"));
+		writeFileSync(settingsPath, '{"compaction":{"threshold":0.1}}');
+		writeFileSync(profilePath, '{"uiModelSelector":{"profiles":{}}}');
+		writeFileSync(legacyPath, '{"maxConcurrency":4,"defaultModel":"main"}');
+
+		expect(await migrateSubagentConfigLegacy(profilePath, legacyPath)).toBe(true);
+		expect(JSON.parse(readFileSync(profilePath, "utf8"))).toEqual({
+			uiModelSelector: { profiles: {} },
+			subagents: { maxConcurrency: 4, defaultModel: "main" },
+		});
+		// settings.json is untouched by the profile-targeted migration.
+		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({ compaction: { threshold: 0.1 } });
+		expect(existsSync(legacyPath)).toBe(false);
+	});
+
+	it("repoints the config store at the session's profile with setSettingsPath", async () => {
+		const root = mkdtempSync(join(tmpdir(), "subagent-config-"));
+		roots.push(root);
+		const settingsPath = join(root, "settings.json");
+		const profilePath = join(root, "profiles", "focused.json");
+		mkdirSync(join(root, "profiles"));
+		writeFileSync(settingsPath, '{"subagents":{"defaultModel":"main"}}');
+		writeFileSync(profilePath, '{"uiModelSelector":{"profiles":{}}}');
+		const store = createSubagentConfigStore({ settingsPath });
+		expect(store.configPath).toBe(settingsPath);
+		expect(store.load()).toMatchObject({ defaultModel: "main" });
+
+		store.setSettingsPath(profilePath);
+		expect(store.configPath).toBe(profilePath);
+		expect(store.load()).not.toHaveProperty("defaultModel");
+		await store.update((document) => setAgentModelAssignment(document, "worker", "openai/test"));
+		expect(JSON.parse(readFileSync(profilePath, "utf8"))).toEqual({
+			uiModelSelector: { profiles: {} },
+			subagents: { agentModels: { worker: "openai/test" } },
+		});
+		// settings.json keeps its own subagents namespace untouched.
+		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({ subagents: { defaultModel: "main" } });
 	});
 
 	it("tracks the main model dynamically when resolving launches", () => {

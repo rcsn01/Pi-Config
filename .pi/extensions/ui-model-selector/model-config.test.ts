@@ -144,6 +144,7 @@ function createLifecycleHarness(options: {
 	const notify = vi.fn();
 	const save = vi.fn(async () => {});
 	const syncCompaction = vi.fn(async () => {});
+	const setPaths = vi.fn();
 	const load = vi.fn(async () => ({
 		profiles: options.profiles ?? {},
 		contextWindows: options.contextWindows ?? {},
@@ -186,7 +187,7 @@ function createLifecycleHarness(options: {
 		getThinkingLevel: vi.fn(() => options.effectiveThinkingLevel ?? "medium"),
 		setThinkingLevel,
 	} as unknown as ExtensionAPI;
-	createModelSelectorExtension({ load, save, syncCompaction })(pi);
+	createModelSelectorExtension({ load, save, syncCompaction, setPaths })(pi);
 
 	return {
 		custom,
@@ -197,6 +198,7 @@ function createLifecycleHarness(options: {
 		load,
 		save,
 		syncCompaction,
+		setPaths,
 		emit: async (reason: "startup" | "reload" | "new" | "resume" | "fork") => {
 			await handlers.get("session_start")?.({ type: "session_start", reason }, ctx);
 		},
@@ -562,7 +564,7 @@ describe("project model settings", () => {
 				modelId: "gpt-5.6-sol",
 				thinkingLevel: "xhigh",
 				contextWindow: 1_050_000,
-			})).rejects.toThrow("Cannot read");
+			})).rejects.toThrow(/Cannot read|Context window/);
 			expect(readFileSync(path, "utf-8")).toBe(original);
 		} finally {
 			rmSync(directory, { recursive: true, force: true });

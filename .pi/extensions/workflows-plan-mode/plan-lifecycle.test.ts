@@ -323,7 +323,7 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 			availableModels: [normalModel],
 			dependencies: {
 				...stores.dependencies,
-				profileStore: { load, save: stores.save },
+				profileStore: { load, save: stores.save, setPath: vi.fn() },
 			},
 		});
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });

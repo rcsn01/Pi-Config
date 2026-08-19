@@ -22,6 +22,8 @@ export interface ModeModelProfile {
 export interface PlanModeProfileStore {
 	load(): Promise<ModeModelProfile | undefined>;
 	save(profile: ModeModelProfile): Promise<void>;
+	/** Repoint the store at the session's profile file (default: settings.json). */
+	setPath(path: string): void;
 }
 
 export interface NormalDefaultsStore {
@@ -181,13 +183,14 @@ function writeProjectSettings(path: string, document: Record<string, unknown>): 
 }
 
 export function createPlanModeProfileStore(path = PLAN_MODE_SETTINGS_PATH): PlanModeProfileStore {
+	let currentPath = path;
 	return {
 		async load() {
 			try {
-				const profile = parseProjectModelPreferences(readProjectSettings(path)).profiles.plan;
+				const profile = parseProjectModelPreferences(readProjectSettings(currentPath)).profiles.plan;
 				return profile ? validateModeModelProfile(profile) : undefined;
 			} catch (error) {
-				throw new Error(`Cannot load the Plan Mode profile from ${path}: ${error instanceof Error ? error.message : String(error)}`);
+				throw new Error(`Cannot load the Plan Mode profile from ${currentPath}: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		},
 
@@ -196,12 +199,12 @@ export function createPlanModeProfileStore(path = PLAN_MODE_SETTINGS_PATH): Plan
 			if (validated.contextWindow === undefined) {
 				throw new Error("Plan Mode profile contextWindow must be a positive integer.");
 			}
-			await withFileMutationQueue(path, async () => {
-				const settings = readProjectSettings(path);
+			await withFileMutationQueue(currentPath, async () => {
+				const settings = readProjectSettings(currentPath);
 				parseProjectModelPreferences(settings);
 				const selector = isRecord(settings.uiModelSelector) ? settings.uiModelSelector : {};
 				const profiles = isRecord(selector.profiles) ? selector.profiles : {};
-				writeProjectSettings(path, {
+				writeProjectSettings(currentPath, {
 					...settings,
 					uiModelSelector: {
 						...selector,
@@ -212,6 +215,10 @@ export function createPlanModeProfileStore(path = PLAN_MODE_SETTINGS_PATH): Plan
 					},
 				});
 			});
+		},
+
+		setPath(nextPath) {
+			currentPath = nextPath;
 		},
 	};
 }

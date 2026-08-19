@@ -1,21 +1,15 @@
-import { watch as watchDirectory, type FSWatcher, type WatchListener } from "node:fs";
-import { basename, dirname } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	applyProfileModelSelection,
 	createProjectSettingsStore,
-	type ProjectSettingsStore,
 } from "../ui-model-selector/apply-profile.ts";
+import { CONFIG_PROFILES_ENTRY_TYPE } from "../_shared/active-profile.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 
 export interface ConfigProfilesDependencies {
 	store?: ProfileStore;
-	watch?: (path: string, listener: WatchListener<string>) => FSWatcher;
 	output?: (message: string) => void;
-	debounceMs?: number;
-	retryMs?: number;
-	settingsStore?: ProjectSettingsStore;
 }
 
 function errorMessage(error: unknown): string {
@@ -41,73 +35,17 @@ function profileListMessage(store: ProfileStore): string {
 export function createConfigProfilesExtension(dependencies: ConfigProfilesDependencies = {}) {
 	return function configProfilesExtension(pi: ExtensionAPI): void {
 		const store = dependencies.store ?? createProfileStore();
-		const settingsStore = dependencies.settingsStore ?? createProjectSettingsStore();
-		const watch = dependencies.watch ?? ((path, listener) => watchDirectory(path, listener));
 		const output = dependencies.output ?? console.log;
-		const debounceMs = dependencies.debounceMs ?? 75;
-		const retryMs = dependencies.retryMs ?? 150;
-		let watcher: FSWatcher | undefined;
-		let debounceTimer: NodeJS.Timeout | undefined;
-		let retryTimer: NodeJS.Timeout | undefined;
 
-		const clearTimers = () => {
-			if (debounceTimer) clearTimeout(debounceTimer);
-			if (retryTimer) clearTimeout(retryTimer);
-			debounceTimer = undefined;
-			retryTimer = undefined;
-		};
-
-		const report = (ctx: ExtensionContext, error: unknown) => {
-			ctx.ui.notify(`Could not synchronize the active settings profile: ${errorMessage(error)}`, "error");
-		};
-
-		const synchronizeWithRetry = async (ctx: ExtensionContext): Promise<void> => {
+		pi.on("session_start", async (event, ctx) => {
+			// On reload the session keeps its profile: the remembered session entry
+			// persists and the sibling extensions re-read the profile file with it.
+			if (event.reason === "reload") return;
 			try {
-				await store.synchronizeActiveProfile();
-				if (retryTimer) clearTimeout(retryTimer);
-				retryTimer = undefined;
-			} catch {
-				if (retryTimer) clearTimeout(retryTimer);
-				retryTimer = setTimeout(() => {
-					retryTimer = undefined;
-					void store.synchronizeActiveProfile().catch((error) => report(ctx, error));
-				}, retryMs);
-			}
-		};
-
-		const scheduleSynchronization = (ctx: ExtensionContext) => {
-			if (debounceTimer) clearTimeout(debounceTimer);
-			debounceTimer = setTimeout(() => {
-				debounceTimer = undefined;
-				void synchronizeWithRetry(ctx);
-			}, debounceMs);
-		};
-
-		pi.on("session_start", async (_event, ctx) => {
-			clearTimers();
-			watcher?.close();
-			try {
-				watcher = watch(dirname(store.settingsPath), (_eventType, filename) => {
-					if (filename === null || filename.toString() === basename(store.settingsPath)) {
-						scheduleSynchronization(ctx);
-					}
-				});
-				watcher.on("error", (error) => report(ctx, error));
+				const active = store.loadActiveProfile();
+				if (active) pi.appendEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: active.name });
 			} catch (error) {
-				watcher = undefined;
-				ctx.ui.notify(`Could not watch .pi/settings.json: ${errorMessage(error)}`, "error");
-			}
-			await synchronizeWithRetry(ctx);
-		});
-
-		pi.on("session_shutdown", async (_event, ctx) => {
-			clearTimers();
-			watcher?.close();
-			watcher = undefined;
-			try {
-				await store.synchronizeActiveProfile();
-			} catch (error) {
-				report(ctx, error);
+				ctx.ui.notify(`Could not load the active settings profile: ${errorMessage(error)}`, "error");
 			}
 		});
 
@@ -156,19 +94,29 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 
 					const result = await store.switchProfile(name);
 					if (!result.changed) {
-						ctx.ui.notify(`Profile "${name}" is already active; settings synchronized.`, "info");
+						ctx.ui.notify(`Profile "${name}" is already active.`, "info");
 						return;
 					}
+					// Remember the session's profile before reloading so the sibling
+					// extensions re-read the profile file with this name on reload.
+					pi.appendEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: name });
 					// Apply the switched profile's saved model selection for the current
 					// mode (normal or plan) before reloading, so the session model follows
 					// the profile instead of staying behind until a manual /model. The
 					// switch itself never rolls back; on failure the current model is
-					// kept and the settings reload still proceeds.
+					// kept and the settings reload still proceeds. The settings store is
+					// pointed at the profile for uiModelSelector and at settings.json for
+					// the model-derived compaction values.
 					const previousModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
 					try {
 						const document = store.readProfile(name);
 						const selection = document
-							? await applyProfileModelSelection(pi, ctx, document, settingsStore)
+							? await applyProfileModelSelection(
+								pi,
+								ctx,
+								document,
+								createProjectSettingsStore(store.profilePath(name), store.settingsPath),
+							)
 							: undefined;
 						if (selection && `${selection.provider}/${selection.modelId}` !== previousModel) {
 							ctx.ui.notify(`Profile model: ${selection.provider}/${selection.modelId}`, "info");

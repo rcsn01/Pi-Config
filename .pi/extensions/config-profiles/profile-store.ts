@@ -1,18 +1,27 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import {
+	CONFIG_PROFILES_KEY,
+	PI_DIRECTORY,
+	PROFILES_DIRECTORY,
+	PROJECT_SETTINGS_PATH,
+	profilePath as resolveProfilePath,
+	readActiveProfileName,
+	validateProfileName,
+} from "../_shared/active-profile.ts";
 
-export const CONFIG_PROFILES_KEY = "configProfiles";
-
-const EXTENSION_DIRECTORY = dirname(fileURLToPath(import.meta.url));
-export const PI_DIRECTORY = join(EXTENSION_DIRECTORY, "..", "..");
-export const PROJECT_SETTINGS_PATH = join(PI_DIRECTORY, "settings.json");
-export const PROFILES_DIRECTORY = join(PI_DIRECTORY, "profiles");
+export { CONFIG_PROFILES_KEY, PI_DIRECTORY, PROFILES_DIRECTORY, PROJECT_SETTINGS_PATH, validateProfileName } from "../_shared/active-profile.ts";
 
 export interface ProfileSwitchResult {
 	changed: boolean;
 	active: string;
+}
+
+export interface ActiveProfile {
+	name: string;
+	document: Record<string, unknown>;
 }
 
 export interface ProfileStore {
@@ -20,22 +29,15 @@ export interface ProfileStore {
 	readonly profilesDirectory: string;
 	listProfiles(): string[];
 	readProfile(name: string): Record<string, unknown>;
-	readSettings(): Record<string, unknown>;
 	getActiveProfile(settings?: Record<string, unknown>): string | undefined;
-	synchronizeActiveProfile(): Promise<string | undefined>;
+	/** Marker from settings.json plus the profile document; throws when the active profile file is missing. */
+	loadActiveProfile(): ActiveProfile | undefined;
 	switchProfile(name: string): Promise<ProfileSwitchResult>;
+	profilePath(name: string): string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Profile names are filename stems, never paths or names including `.json`. */
-export function validateProfileName(name: string): string {
-	if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name === "." || name === ".." || extname(name) === ".json") {
-		throw new Error(`Invalid profile name "${name}". Use letters, numbers, dots, underscores, or hyphens.`);
-	}
-	return name;
 }
 
 function parseDocument(contents: string, path: string): Record<string, unknown> {
@@ -90,21 +92,13 @@ function serialize(document: Record<string, unknown>): string {
 	return `${JSON.stringify(document, null, 2)}\n`;
 }
 
-function restore(path: string, previous: string | undefined): void {
-	if (previous === undefined) {
-		if (existsSync(path)) unlinkSync(path);
-		return;
-	}
-	atomicWrite(path, previous);
-}
-
 export function createProfileStore(options: {
 	settingsPath?: string;
 	profilesDirectory?: string;
 } = {}): ProfileStore {
 	const settingsPath = options.settingsPath ?? PROJECT_SETTINGS_PATH;
 	const profilesDirectory = options.profilesDirectory ?? PROFILES_DIRECTORY;
-	const profilePath = (name: string) => join(profilesDirectory, `${validateProfileName(name)}.json`);
+	const profilePath = (name: string) => resolveProfilePath(profilesDirectory, name);
 
 	return {
 		settingsPath,
@@ -130,26 +124,14 @@ export function createProfileStore(options: {
 			return readDocument(profilePath(name));
 		},
 
-		readSettings() {
-			return readDocument(settingsPath);
-		},
-
 		getActiveProfile(settings) {
 			return activeProfile(settings ?? readDocument(settingsPath));
 		},
 
-		async synchronizeActiveProfile() {
-			return withFileMutationQueue(settingsPath, async () => {
-				const settings = readDocument(settingsPath);
-				const active = activeProfile(settings);
-				if (!active) return undefined;
-				const destination = profilePath(active);
-				if (!existsSync(destination)) {
-					throw new Error(`Active settings profile "${active}" does not exist at ${destination}`);
-				}
-				atomicWrite(destination, serialize(settings));
-				return active;
-			});
+		loadActiveProfile() {
+			const name = readActiveProfileName(settingsPath);
+			if (!name) return undefined;
+			return { name, document: readDocument(profilePath(name)) };
 		},
 
 		async switchProfile(name) {
@@ -160,47 +142,20 @@ export function createProfileStore(options: {
 				const settings = parseDocument(settingsContents, settingsPath);
 				const destinationPath = profilePath(name);
 				const destinationContents = readFileSync(destinationPath, "utf-8");
-				const destination = parseDocument(destinationContents, destinationPath);
+				parseDocument(destinationContents, destinationPath);
 				const outgoing = activeProfile(settings);
 
 				if (outgoing === name) {
-					atomicWrite(destinationPath, serialize(settings));
 					return { changed: false, active: name };
 				}
 
-				const selected = withActiveProfile(destination, name);
-				const outgoingPath = outgoing ? profilePath(outgoing) : undefined;
-				const previousOutgoing = outgoingPath && existsSync(outgoingPath)
-					? readFileSync(outgoingPath, "utf-8")
-					: undefined;
-				const previousDestination = destinationContents;
-				const touched: string[] = [];
-
-				try {
-					if (outgoingPath) {
-						atomicWrite(outgoingPath, serialize(settings));
-						touched.push(outgoingPath);
-					}
-					atomicWrite(settingsPath, serialize(selected));
-					touched.push(settingsPath);
-					atomicWrite(destinationPath, serialize(selected));
-					touched.push(destinationPath);
-				} catch (error) {
-					// Best-effort rollback keeps this coordinated operation all-or-nothing.
-					for (const path of touched.reverse()) {
-						try {
-							if (path === settingsPath) restore(path, settingsContents);
-							else if (path === destinationPath) restore(path, previousDestination);
-							else restore(path, previousOutgoing);
-						} catch {
-							// Preserve the original mutation failure.
-						}
-					}
-					throw error;
-				}
-
+				// Only the marker changes; every other settings.json key (pi-core
+				// settings) is preserved and profile files are never written.
+				atomicWrite(settingsPath, serialize(withActiveProfile(settings, name)));
 				return { changed: true, active: name };
 			});
 		},
+
+		profilePath,
 	};
 }

@@ -86,6 +86,7 @@ export function memoryConfigStore(initial: Record<string, unknown> = {}): Memory
 				mainModel: activeMainModel,
 			});
 		},
+		setSettingsPath: () => {},
 	};
 	return store;
 }

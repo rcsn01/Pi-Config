@@ -40,7 +40,7 @@ export function writeSettingsDocument(path: string, settings: Record<string, unk
 
 export interface SubagentsSettingsStore {
 	readonly settingsPath: string;
-	/** Full settings.json document (all top-level keys). */
+	/** Full settings document (all top-level keys). */
 	readDocument(): Record<string, unknown>;
 	/** Just the subagents namespace (empty object when absent). */
 	readNamespace(): Record<string, unknown>;
@@ -51,11 +51,15 @@ export interface SubagentsSettingsStore {
 	): Promise<Record<string, unknown>>;
 	/** Persist a fully-formed subagents namespace atomically, preserving every other settings key. */
 	writeNamespace(namespace: Record<string, unknown>): Promise<Record<string, unknown>>;
+	/** Repoint the store at the session's profile file (default: settings.json). */
+	setSettingsPath(path: string): void;
 }
 
 export function createSubagentsSettingsStore(path = PROJECT_SETTINGS_PATH): SubagentsSettingsStore {
+	let settingsPath = path;
+
 	function readDocument(): Record<string, unknown> {
-		return readSettingsDocument(path);
+		return readSettingsDocument(settingsPath);
 	}
 
 	function readNamespace(): Record<string, unknown> {
@@ -70,29 +74,34 @@ export function createSubagentsSettingsStore(path = PROJECT_SETTINGS_PATH): Suba
 		mutate: (namespace: Record<string, unknown>) => Record<string, unknown>,
 		base?: Record<string, unknown>,
 	): Promise<Record<string, unknown>> {
-		return withFileMutationQueue(path, async () => {
+		return withFileMutationQueue(settingsPath, async () => {
 			const document = readDocument();
 			const current = structuredClone(base ?? document[SUBAGENTS_SETTINGS_KEY] ?? {});
 			if (!isRecord(current)) throw new Error(`Subagent settings "${SUBAGENTS_SETTINGS_KEY}" must be a JSON object.`);
 			const next = mutate(current);
-			writeSettingsDocument(path, { ...document, [SUBAGENTS_SETTINGS_KEY]: next });
+			writeSettingsDocument(settingsPath, { ...document, [SUBAGENTS_SETTINGS_KEY]: next });
 			return next;
 		});
 	}
 
 	async function writeNamespace(namespace: Record<string, unknown>): Promise<Record<string, unknown>> {
-		return withFileMutationQueue(path, async () => {
+		return withFileMutationQueue(settingsPath, async () => {
 			const document = readDocument();
-			writeSettingsDocument(path, { ...document, [SUBAGENTS_SETTINGS_KEY]: namespace });
+			writeSettingsDocument(settingsPath, { ...document, [SUBAGENTS_SETTINGS_KEY]: namespace });
 			return namespace;
 		});
 	}
 
 	return {
-		settingsPath: path,
+		get settingsPath() {
+			return settingsPath;
+		},
 		readDocument,
 		readNamespace,
 		updateNamespace,
 		writeNamespace,
+		setSettingsPath(nextPath) {
+			settingsPath = nextPath;
+		},
 	};
 }

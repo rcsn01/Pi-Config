@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -50,6 +50,7 @@ function makePi(options: {
 	model?: any;
 	confirm?: boolean;
 	availableModel?: any;
+	branchEntries?: any[];
 }): any {
 	const handlers = new Map<string, any>();
 	const commands = new Map<string, any>();
@@ -67,7 +68,7 @@ function makePi(options: {
 		setActiveTools: vi.fn((names: string[]) => { activeTools = [...names]; }),
 		getAllTools: vi.fn(() => [...allTools]),
 	};
-	const entries: any[] = [];
+	const entries: any[] = options.branchEntries ?? [];
 	const ctx: any = {
 		cwd: "/workspace",
 		mode: "tui",
@@ -151,6 +152,61 @@ describe("advisor extension", () => {
 		createAdvisorExtension({ settingsPath: disabledPath })(disabled.pi);
 		await disabled.handlers.get("session_start")({ reason: "startup" }, disabled.ctx);
 		expect(disabled.getActiveTools()).not.toContain("advisor");
+	});
+
+	it("reads advisor settings from the session's profile file at session start", async () => {
+		const root = mkdtempSync(join(tmpdir(), "advisor-profile-"));
+		roots.push(root);
+		const settingsPath = join(root, "settings.json");
+		const profilesDirectory = join(root, "profiles");
+		mkdirSync(profilesDirectory);
+		writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+		writeFileSync(join(profilesDirectory, "focused.json"), JSON.stringify({
+			advisor: { provider: "anthropic", modelId: "strong" },
+		}));
+		const harness = makePi({ settingsPath });
+		createAdvisorExtension({ settingsPath })(harness.pi);
+		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+		expect(harness.getActiveTools()).toContain("advisor");
+	});
+
+	it("ignores settings.json advisor values when the session has a profile", async () => {
+		const root = mkdtempSync(join(tmpdir(), "advisor-profile-"));
+		roots.push(root);
+		const settingsPath = join(root, "settings.json");
+		const profilesDirectory = join(root, "profiles");
+		mkdirSync(profilesDirectory);
+		writeFileSync(settingsPath, JSON.stringify({
+			configProfiles: { active: "focused" },
+			advisor: { provider: "anthropic", modelId: "strong" },
+		}));
+		writeFileSync(join(profilesDirectory, "focused.json"), JSON.stringify({ compaction: { enabled: true } }));
+		const harness = makePi({ settingsPath, activeTools: ["read", "advisor"] });
+		createAdvisorExtension({ settingsPath })(harness.pi);
+		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+		expect(harness.getActiveTools()).not.toContain("advisor");
+	});
+
+	it("keeps the session's profile on reload even when the marker changed", async () => {
+		const root = mkdtempSync(join(tmpdir(), "advisor-profile-"));
+		roots.push(root);
+		const settingsPath = join(root, "settings.json");
+		const profilesDirectory = join(root, "profiles");
+		mkdirSync(profilesDirectory);
+		// Another session switched the marker to "focused" (no advisor), but this
+		// session's remembered entry still names "default" (with advisor).
+		writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+		writeFileSync(join(profilesDirectory, "focused.json"), JSON.stringify({ compaction: { enabled: true } }));
+		writeFileSync(join(profilesDirectory, "default.json"), JSON.stringify({
+			advisor: { provider: "anthropic", modelId: "strong" },
+		}));
+		const harness = makePi({
+			settingsPath,
+			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "default" } }],
+		});
+		createAdvisorExtension({ settingsPath })(harness.pi);
+		await harness.handlers.get("session_start")({ reason: "reload" }, harness.ctx);
+		expect(harness.getActiveTools()).toContain("advisor");
 	});
 
 	it("supports direct selection, requires cross-provider consent, and writes atomically without losing settings", async () => {

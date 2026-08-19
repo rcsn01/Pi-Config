@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -237,6 +237,7 @@ describe("Plan Mode model and thinking profiles", () => {
 				profileStore: {
 					load: vi.fn(async () => { throw new Error("malformed profile"); }),
 					save: vi.fn(),
+					setPath: vi.fn(),
 				},
 			},
 		});
@@ -363,6 +364,32 @@ describe("Plan Mode profile schema", () => {
 				},
 			});
 			expect(readdirSync(directory)).toEqual(["settings.json"]);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("repoints the store at the session's profile with setPath", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-plan-profile-"));
+		const settingsPath = join(directory, "settings.json");
+		const profilePath = join(directory, "profiles", "focused.json");
+		mkdirSync(join(directory, "profiles"));
+		writeFileSync(settingsPath, JSON.stringify({
+			uiModelSelector: { profiles: { plan: profileFor(planModel, "low") } },
+		}), "utf-8");
+		writeFileSync(profilePath, JSON.stringify({ uiModelSelector: { profiles: {} } }), "utf-8");
+		try {
+			const store = createPlanModeProfileStore(settingsPath);
+			expect(await store.load()).toEqual(profileFor(planModel, "low"));
+
+			store.setPath(profilePath);
+			expect(await store.load()).toBeUndefined();
+			await store.save(profileFor(planModel, "high"));
+			expect(await store.load()).toEqual(profileFor(planModel, "high"));
+			// The original settings.json document is untouched.
+			expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
+				uiModelSelector: { profiles: { plan: profileFor(planModel, "low") } },
+			});
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
