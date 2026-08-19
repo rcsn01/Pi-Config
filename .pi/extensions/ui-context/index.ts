@@ -11,13 +11,7 @@ import {
 	visibleWidth,
 	type Component,
 } from "@earendil-works/pi-tui";
-import {
-	collectCustomUsage,
-	collectModelUsage,
-	collectSessionUsage,
-	collectSubagentUsage,
-	collectToolUsage,
-} from "../_shared/usage.ts";
+import { collectUsageSnapshot } from "../_shared/usage.ts";
 import {
 	allocateMeter,
 	calculateContextDiagnostics,
@@ -425,23 +419,18 @@ function loadCompactionSettings(ctx: ExtensionCommandContext): { enabled: boolea
 export function collectCurrentContextUsage(
 	sessionManager: Pick<ExtensionCommandContext["sessionManager"], "buildContextEntries">,
 ) {
-	// Use Pi's active, compaction-aware branch rather than the append-only
-	// session history. Summarized and abandoned subagent calls are not present in
-	// the model's current context and must not contribute to these diagnostics.
+	// Context-entry adapter: use Pi's active, compaction-aware branch rather than
+	// the append-only session history. Summarized and abandoned subagent calls
+	// are not present in the model's current context and must not contribute to
+	// these diagnostics.
 	const contextEntries = sessionManager.buildContextEntries();
-	return {
-		contextEntries,
-		sessionUsage: collectSessionUsage(contextEntries),
-		subagentUsage: collectSubagentUsage(contextEntries),
-		advisorUsage: collectToolUsage(contextEntries, "advisor"),
-		guardianUsage: collectCustomUsage(contextEntries, "auto-review-verdict"),
-		modelUsage: collectModelUsage(contextEntries),
-	};
+	return { contextEntries, usage: collectUsageSnapshot(contextEntries) };
 }
 
 function collectDiagnostics(pi: ExtensionAPI, ctx: ExtensionCommandContext): ContextDiagnostics {
 	const options = ctx.getSystemPromptOptions();
-	const { contextEntries, sessionUsage, subagentUsage, advisorUsage, guardianUsage, modelUsage } = collectCurrentContextUsage(ctx.sessionManager);
+	const { contextEntries, usage } = collectCurrentContextUsage(ctx.sessionManager);
+	const { session: sessionUsage, subagent: subagentUsage, advisor: advisorUsage, guardian: guardianUsage, models: modelUsage } = usage;
 	return calculateContextDiagnostics({
 		model: ctx.model,
 		usage: ctx.getContextUsage(),
