@@ -1,5 +1,8 @@
-import { existsSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
 import { requireSubagentService } from "../_shared/subagent-service.ts";
 import subagentsExtension, {
 	createSubagentsExtension,
@@ -10,6 +13,26 @@ import subagentsExtension, {
 	unregisterAgent,
 } from "./index.ts";
 import { agent, agentResult, memoryConfigStore, memoryRegistry } from "./test-harness.ts";
+
+// The extension hardcodes PROJECT_SETTINGS_PATH; redirect it to a per-test
+// fixture so the session profile binding is exercised hermetically.
+const profileFixture = vi.hoisted(() => ({ settingsPath: "" }));
+
+vi.mock("./settings-store.ts", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./settings-store.ts")>();
+	return {
+		...original,
+		get PROJECT_SETTINGS_PATH() {
+			return profileFixture.settingsPath;
+		},
+	};
+});
+
+const roots: string[] = [];
+
+afterEach(() => {
+	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 const BUNDLED_AGENTS = ["default", "explorer", "judge", "researcher", "worker"];
 
@@ -38,7 +61,7 @@ function extensionHarness(runSingle = vi.fn(async (options: any) => agentResult(
 	const ctx = {
 		cwd: "/workspace",
 		model: { provider: "anthropic", id: "main" },
-		sessionManager: { getSessionId: () => "main-session-123" },
+		sessionManager: { getSessionId: () => "main-session-123", getBranch: () => [] },
 		mode: "print",
 		ui: { notify: vi.fn() },
 		modelRegistry: { refresh: vi.fn(), getAvailable: vi.fn(() => []), find: vi.fn() },
@@ -155,5 +178,39 @@ describe("subagent tool adaptation", () => {
 			.rejects.toThrow("Unknown agent: missing. Available agents: worker, explorer");
 		await expect(execute("call", { tasks: [{ agent: "missing", task: "x" }] }, undefined, undefined, harness.ctx))
 			.rejects.toThrow("Unknown agent: missing. Available agents: worker, explorer");
+	});
+
+	describe("session profile binding", () => {
+		it("repoints the config store at the session's profile file when a marker is present", async () => {
+			const root = mkdtempSync(join(tmpdir(), "subagents-profile-"));
+			roots.push(root);
+			const settingsPath = join(root, "settings.json");
+			mkdirSync(join(root, "profiles"));
+			writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+			profileFixture.settingsPath = settingsPath;
+			try {
+				const harness = extensionHarness();
+				await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+				expect(harness.config.configPath).toBe(join(PROFILES_DIRECTORY, "focused.json"));
+			} finally {
+				profileFixture.settingsPath = "";
+			}
+		});
+
+		it("keeps the config store on settings.json when no profile is bound", async () => {
+			const root = mkdtempSync(join(tmpdir(), "subagents-noprofile-"));
+			roots.push(root);
+			const settingsPath = join(root, "settings.json");
+			mkdirSync(join(root, "profiles"));
+			writeFileSync(settingsPath, JSON.stringify({}));
+			profileFixture.settingsPath = settingsPath;
+			try {
+				const harness = extensionHarness();
+				await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+				expect(harness.config.configPath).toBe(settingsPath);
+			} finally {
+				profileFixture.settingsPath = "";
+			}
+		});
 	});
 });
