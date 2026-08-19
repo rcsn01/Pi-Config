@@ -46,6 +46,7 @@ describe("split-path project settings store", () => {
 			profiles: { normal: NORMAL_SELECTION },
 			contextWindows: {},
 			compactionThreshold: 0.2,
+			keepRecentTokens: 25600,
 		});
 	});
 
@@ -79,7 +80,7 @@ describe("split-path project settings store", () => {
 		await store.syncCompaction(131072);
 
 		expect(read(settingsPath)).toEqual({
-			compaction: { threshold: 0.1, reserveTokens: 13108 },
+			compaction: { threshold: 0.1, reserveTokens: 13108, keepRecentTokens: 25600 },
 		});
 		expect(read(profilePath)).toEqual({
 			uiModelSelector: { profiles: { normal: NORMAL_SELECTION } },
@@ -102,7 +103,7 @@ describe("split-path project settings store", () => {
 		});
 		expect(read(profilePath)).toEqual({ uiModelSelector: { profiles: {} } });
 		expect(read(settingsPath)).toEqual({
-			compaction: { threshold: 0.1, reserveTokens: 13108 },
+			compaction: { threshold: 0.1, reserveTokens: 13108, keepRecentTokens: 25600 },
 		});
 	});
 
