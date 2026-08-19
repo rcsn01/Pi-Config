@@ -73,6 +73,6 @@ export function updatePlanStatus(ctx: ExtensionContext, state: PlanState): void 
 		ctx.ui.setStatus("plan", undefined);
 		return;
 	}
-	const phase = state.phase === "awaiting_review" ? "PLAN REVIEW" : "PLAN";
+	const phase = state.phase === "awaiting_review" ? "plan review" : "plan";
 	ctx.ui.setStatus("plan", `📋 ${phase}`);
 }

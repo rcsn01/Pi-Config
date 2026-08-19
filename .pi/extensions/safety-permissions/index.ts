@@ -72,10 +72,10 @@ export default function (pi: ExtensionAPI) {
 
 	function updateStatus(ctx: ExtensionContext) {
 		const modeLabels: Record<string, string> = {
-			"read-only": "READ-ONLY",
-			default: "DEFAULT",
-			"auto-review": "AUTO-REVIEW",
-			"full-access": "FULL ACCESS",
+			"read-only": "read-only",
+			default: "default",
+			"auto-review": "auto-review",
+			"full-access": "full-access",
 		};
 		let label = modeLabels[mode.mode];
 		if (sessionProfile) label = `${sessionProfile} · ${label}`;

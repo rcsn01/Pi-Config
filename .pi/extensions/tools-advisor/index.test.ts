@@ -18,6 +18,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import advisorExtension, {
 	createAdvisorExtension,
+	formatAdvisorStatus,
+	formatConfiguredAdvisorStatus,
 	loadAdvisorSettings,
 	parseAdvisorSettings,
 } from "./index.ts";
@@ -137,6 +139,16 @@ describe("advisor settings", () => {
 });
 
 describe("advisor extension", () => {
+	it("shows the configured advisor model in the footer status while idle", async () => {
+		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
+		const harness = makePi({ settingsPath: path });
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+
+		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+
+		expect(harness.ctx.ui.setStatus).toHaveBeenCalledWith("advisor", "advisor(a/strong)");
+	});
+
 	it("registers the opt-in advisor tool and activates it only for configured sessions", async () => {
 		const configuredPath = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
 		const configured = makePi({ settingsPath: configuredPath });
@@ -288,6 +300,14 @@ describe("advisor extension", () => {
 		expect(loadAdvisorSettings(path).strict).toBe(false);
 	});
 
+	it("formats advisor statuses by mode and hides inactive consultations", () => {
+		expect(formatAdvisorStatus(true, false, "anthropic/strong")).toBe("advisor(a/strong)");
+		expect(formatAdvisorStatus(true, true, "anthropic/strong")).toBe("advisor.s(a/strong)");
+		expect(formatAdvisorStatus(false, true, "anthropic/strong")).toBeUndefined();
+		expect(formatConfiguredAdvisorStatus({ provider: "anthropic", modelId: "strong", strict: false })).toBe("advisor(a/strong)");
+		expect(formatConfiguredAdvisorStatus({ provider: "anthropic", modelId: "strong", strict: true, enabled: false })).toBeUndefined();
+	});
+
 	it("includes strict mode in the active advisor status", async () => {
 		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong", strict: true } });
 		const runner: any = {
@@ -303,8 +323,8 @@ describe("advisor extension", () => {
 		const harness = makePi({ settingsPath: path });
 		createAdvisorExtension({ settingsPath: path, runner })(harness.pi);
 		await harness.tools.get("advisor").execute("call", {}, undefined, undefined, harness.ctx);
-		expect(harness.ctx.ui.setStatus).toHaveBeenNthCalledWith(1, "advisor", "Advising (strict) · anthropic/strong");
-		expect(harness.ctx.ui.setStatus).toHaveBeenNthCalledWith(2, "advisor", undefined);
+		expect(harness.ctx.ui.setStatus).toHaveBeenNthCalledWith(1, "advisor", "advisor.s(a/strong)");
+		expect(harness.ctx.ui.setStatus).toHaveBeenNthCalledWith(2, "advisor", "advisor.s(a/strong)");
 	});
 
 	it("denies cross-provider selection without UI consent and filters unavailable direct models", async () => {

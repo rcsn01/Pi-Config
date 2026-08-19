@@ -353,6 +353,20 @@ function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+export function formatAdvisorStatus(active: boolean, strict: boolean, modelName: string): string | undefined {
+	if (!active) return undefined;
+	const slash = modelName.indexOf("/");
+	const shortModelName = slash > 0 ? `${modelName[0]}/${modelName.slice(slash + 1)}` : modelName;
+	return `${strict ? "advisor.s" : "advisor"}(${shortModelName})`;
+}
+
+export function formatConfiguredAdvisorStatus(
+	settings: Pick<AdvisorSettings, "enabled" | "provider" | "modelId" | "strict">,
+): string | undefined {
+	if (settings.enabled === false || !settings.provider || !settings.modelId) return undefined;
+	return formatAdvisorStatus(true, settings.strict, `${settings.provider}/${settings.modelId}`);
+}
+
 export function createAdvisorExtension(dependencies: AdvisorExtensionDependencies = {}) {
 	return function advisorExtensionFactory(pi: ExtensionAPI): void {
 		const settingsFilePath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
@@ -365,6 +379,10 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 
 		const notify = (ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info") => {
 			if (ctx.hasUI) ctx.ui.notify(message, type);
+		};
+
+		const updateStatus = (ctx: ExtensionContext): void => {
+			if (ctx.hasUI) ctx.ui.setStatus("advisor", formatConfiguredAdvisorStatus(settings));
 		};
 
 		const loadForSession = (ctx: ExtensionContext): void => {
@@ -380,6 +398,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			} else if (active.includes("advisor")) {
 				pi.setActiveTools(active.filter((name) => name !== "advisor"));
 			}
+			updateStatus(ctx);
 		};
 
 		const warnAboutModel = (model: Model<Api>, ctx: ExtensionContext) => {
@@ -428,6 +447,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				}));
 				const active = pi.getActiveTools();
 				if (!active.includes("advisor")) pi.setActiveTools([...active, "advisor"]);
+				updateStatus(ctx);
 				warnAboutModel(model, ctx);
 				notify(ctx, `Advisor set to ${modelKey(model)}.`, "info");
 			} catch (error) {
@@ -440,6 +460,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				settings = await updateAdvisorSettings(settingsPath, (current) => ({ ...current, enabled: true, strict }));
 				const active = pi.getActiveTools();
 				if (!active.includes("advisor")) pi.setActiveTools([...active, "advisor"]);
+				updateStatus(ctx);
 				notify(ctx, `Advisor strict mode ${strict ? "enabled" : "disabled"}.`, "info");
 			} catch (error) {
 				notify(ctx, `Could not save advisor settings: ${errorText(error)}`, "error");
@@ -462,11 +483,13 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				try {
 					settings = loadAdvisorSettings(settingsPath);
 				} catch (error) {
+					updateStatus(ctx);
 					return {
 						content: [{ type: "text", text: `advisor_settings_error: ${errorText(error)}` }],
 						details: { model: "(invalid settings)", consumesBudget: false, truncated: false },
 					};
 				}
+				updateStatus(ctx);
 				return runner.execute({
 					ctx,
 					settings,
@@ -475,12 +498,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 					activeToolNames: pi.getActiveTools(),
 					allTools: pi.getAllTools() as ToolInfo[],
 					signal,
-					onStatus: (active, modelName) => {
-						if (ctx.hasUI) {
-							const mode = settings.strict ? " (strict)" : "";
-							ctx.ui.setStatus("advisor", active ? `Advising${mode} · ${modelName}` : undefined);
-						}
-					},
+					onStatus: () => updateStatus(ctx),
 				});
 			},
 			renderCall(args, theme) {
@@ -512,6 +530,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				if (normalized === "off") {
 					try {
 						settings = await disableAdvisorSettings(settingsPath);
+						updateStatus(ctx);
 						notify(ctx, "Advisor disabled for future consultations.", "info");
 					} catch (error) {
 						notify(ctx, `Could not disable advisor: ${errorText(error)}`, "error");
@@ -533,6 +552,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 					if (mode === "off") {
 						try {
 							settings = await disableAdvisorSettings(settingsPath);
+							updateStatus(ctx);
 							notify(ctx, "Advisor disabled for future consultations.", "info");
 						} catch (error) {
 							notify(ctx, `Could not disable advisor: ${errorText(error)}`, "error");

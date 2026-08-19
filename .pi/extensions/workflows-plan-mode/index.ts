@@ -443,7 +443,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		}
 		beginModeTransition(ctx);
 		modeTransition = "entering";
-		ctx.ui.setStatus("plan", "📋 PLAN STARTING");
+		ctx.ui.setStatus("plan", "📋 plan starting");
 		const transition = enqueueLifecycle(() => enterPlanModeInternal(ctx, prompt));
 		modeTransitionPromise = transition;
 		try {
@@ -465,7 +465,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		}
 		beginModeTransition(ctx);
 		modeTransition = "exiting";
-		ctx.ui.setStatus("plan", "📋 PLAN EXITING");
+		ctx.ui.setStatus("plan", "📋 plan exiting");
 		const transition = enqueueLifecycle(() => exitPlanModeInternal(ctx));
 		modeTransitionPromise = transition;
 		try {
