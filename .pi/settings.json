@@ -2,10 +2,10 @@
   "compaction": {
     "enabled": false,
     "threshold": 0.1,
-    "reserveTokens": 20000,
+    "reserveTokens": 27200,
     "keepRecentTokens": 25600
   },
   "configProfiles": {
-    "active": "dsv4-flash"
+    "active": "github"
   }
 }
