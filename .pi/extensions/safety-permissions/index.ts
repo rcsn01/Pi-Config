@@ -20,8 +20,9 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
+import { basename } from "node:path";
 import { loadExecPolicy } from "../_shared/command-policy.ts";
-import { createProfileStore } from "../config-profiles/profile-store.ts";
+import { PROFILES_DIRECTORY, PROJECT_SETTINGS_PATH, resolveSessionProfilePath } from "../_shared/active-profile.ts";
 import { createApprovalService } from "./approvals.ts";
 import { registerPermissionCommands, type CommandService, type DeniedAction } from "./commands.ts";
 import {
@@ -67,7 +68,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Status display ─────────────────────────────────────────────────
 
-	const profileStore = createProfileStore();
+	let sessionProfile: string | undefined;
 
 	function updateStatus(ctx: ExtensionContext) {
 		const modeLabels: Record<string, string> = {
@@ -77,12 +78,7 @@ export default function (pi: ExtensionAPI) {
 			"full-access": "FULL ACCESS",
 		};
 		let label = modeLabels[mode.mode];
-		try {
-			const profile = profileStore.getActiveProfile();
-			if (profile) label = `${profile} · ${label}`;
-		} catch {
-			// settings.json may be temporarily invalid; show the mode alone.
-		}
+		if (sessionProfile) label = `${sessionProfile} · ${label}`;
 		ctx.ui.setStatus("approval-mode", label);
 	}
 
@@ -115,7 +111,17 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Events ──────────────────────────────────────────────────────────
 
-	pi.on("session_start", async (_event, ctx) => { reconstruct(ctx); updateStatus(ctx); });
+	pi.on("session_start", async (event, ctx) => {
+		const profilePath = resolveSessionProfilePath(
+			ctx.sessionManager.getBranch(),
+			PROJECT_SETTINGS_PATH,
+			PROFILES_DIRECTORY,
+			event.reason,
+		);
+		sessionProfile = profilePath ? basename(profilePath, ".json") : undefined;
+		reconstruct(ctx);
+		updateStatus(ctx);
+	});
 	pi.on("session_tree", async (_event, ctx) => { reconstruct(ctx); updateStatus(ctx); });
 	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx));
 
