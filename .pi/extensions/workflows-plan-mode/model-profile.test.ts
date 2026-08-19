@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import {
+	applySessionProfile,
 	createNormalDefaultsStore,
 	createPlanModeProfileStore,
 	validateModeModelProfile,
+	validateStoredModeModelProfile,
 } from "./model-profile.ts";
 import {
 	createHarness,
@@ -95,6 +97,53 @@ describe("Plan Mode model and thinking profiles", () => {
 		]);
 		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({ mode: "default", revision: 2 });
 		expect(harness.appendedEntries.at(-1)?.data.normalProfile).toBeUndefined();
+	});
+
+	it("applies native defaults without rewriting a sentinel Plan profile", async () => {
+		const nativeModel = {
+			provider: "openai-codex",
+			id: "gpt-5.6-luna",
+			name: "GPT 5.6 Luna",
+			contextWindow: 900_000,
+			reasoning: true,
+		};
+		const stored = validateStoredModeModelProfile({
+			provider: "default",
+			modelId: "default",
+			thinkingLevel: "default",
+			contextWindow: "default",
+		});
+		const profileStore = {
+			load: vi.fn(async () => stored),
+			save: vi.fn(),
+			setPath: vi.fn(),
+		};
+		const harness = createHarness({
+			branch: [],
+			model: normalModel,
+			thinkingLevel: "medium",
+			availableModels: [normalModel, nativeModel],
+			dependencies: {
+				profileStore,
+				nativeDefaults: { provider: nativeModel.provider, modelId: nativeModel.id, thinkingLevel: "max" },
+				normalDefaultsStore: {
+					capture: vi.fn(async (_cwd, fallback) => fallback),
+					restore: vi.fn(async () => {}),
+				},
+				waitForNativePersistence: async () => {},
+			},
+		});
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.commands.get("plan").handler("", harness.ctx);
+
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			provider: nativeModel.provider,
+			id: nativeModel.id,
+			contextWindow: nativeModel.contextWindow,
+		}));
+		expect(harness.setThinkingLevel).toHaveBeenCalledWith("max");
+		expect(profileStore.save).not.toHaveBeenCalled();
 	});
 
 	it("restores normal before sending an implementation prompt", async () => {
@@ -403,6 +452,22 @@ describe("Plan Mode profile schema", () => {
 			modelId: planModel.id,
 			thinkingLevel: "high",
 		})).toEqual({ provider: planModel.provider, modelId: planModel.id, thinkingLevel: "high" });
+	});
+
+	it("accepts stored default sentinels without treating them as concrete session profiles", () => {
+		const stored = validateStoredModeModelProfile({
+			provider: "default",
+			modelId: "default",
+			thinkingLevel: "default",
+			contextWindow: "default",
+		});
+		expect(stored).toEqual({
+			provider: "default",
+			modelId: "default",
+			thinkingLevel: "default",
+			contextWindow: "default",
+		});
+		expect(() => validateModeModelProfile(stored)).toThrow(/concrete model settings/);
 	});
 
 	it("rejects malformed thinking levels and contexts", () => {

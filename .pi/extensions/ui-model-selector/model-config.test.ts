@@ -421,6 +421,22 @@ describe("project model settings", () => {
 		expect(calculateCompactionReserveTokens(100_000, 0.2)).toBe(20_000);
 	});
 
+	it("preserves default sentinels in stored normal and Plan selections", () => {
+		expect(parseProjectModelPreferences({
+			uiModelSelector: {
+				profiles: {
+					normal: { provider: "default", modelId: "default", thinkingLevel: "default", contextWindow: "default" },
+					plan: { provider: "default", modelId: "default", thinkingLevel: "default", contextWindow: "default" },
+				},
+			},
+		})).toMatchObject({
+			profiles: {
+				normal: { provider: "default", modelId: "default", thinkingLevel: "default", contextWindow: "default" },
+				plan: { provider: "default", modelId: "default", thinkingLevel: "default", contextWindow: "default" },
+			},
+		});
+	});
+
 	it("merges context-sized compaction settings without discarding existing settings", () => {
 		expect(mergeProjectCompactionSettings({
 			theme: "dark",

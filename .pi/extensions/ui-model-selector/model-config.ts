@@ -1,4 +1,5 @@
 import type { ThinkingLevelMap } from "@earendil-works/pi-ai";
+import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import { matchFamily } from "./model-families.ts";
 
 export interface ModelChoiceLike {
@@ -23,12 +24,14 @@ export const MODEL_THINKING_LEVELS = [
 ] as const;
 
 export type StoredThinkingLevel = typeof MODEL_THINKING_LEVELS[number];
+export type StoredProfileValue = typeof DEFAULT_SENTINEL;
 
 export type ModelSelectionMode = "normal" | "plan";
 
 /** Fraction of each model context window reserved for the response before compaction. */
 export const DEFAULT_COMPACTION_THRESHOLD = 0.1;
 
+/** A fully resolved selection suitable for Pi's runtime APIs and persistence. */
 export interface ModelSelectionSettings {
 	provider: string;
 	modelId: string;
@@ -36,8 +39,16 @@ export interface ModelSelectionSettings {
 	contextWindow: number;
 }
 
+/** A profile selection as stored on disk; fields may defer to Pi's defaults. */
+export interface StoredModelSelectionSettings {
+	provider: string;
+	modelId: string;
+	thinkingLevel: StoredThinkingLevel | StoredProfileValue;
+	contextWindow: number | StoredProfileValue;
+}
+
 export interface ProjectModelPreferences {
-	profiles: Partial<Record<ModelSelectionMode, ModelSelectionSettings>>;
+	profiles: Partial<Record<ModelSelectionMode, StoredModelSelectionSettings>>;
 	/** Legacy model-keyed contexts, read only as a migration fallback. */
 	contextWindows: Record<string, number>;
 	/** Fraction of the active context window reserved for the model response. */
@@ -165,6 +176,11 @@ function validateContextWindows(value: unknown): Record<string, number> {
 	return result;
 }
 
+function validateStoredContextWindow(value: unknown, label: string): number | StoredProfileValue {
+	if (value === DEFAULT_SENTINEL) return DEFAULT_SENTINEL;
+	return validateContextWindow(value, label);
+}
+
 function validateCompactionThreshold(value: unknown): number {
 	if (value === undefined) return DEFAULT_COMPACTION_THRESHOLD;
 	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value >= 1) {
@@ -182,21 +198,25 @@ export function calculateCompactionReserveTokens(
 	return Math.ceil(validatedContextWindow * validatedThreshold);
 }
 
-function validateSelection(value: unknown, label: string): ModelSelectionSettings {
-	if (!isRecord(value)) throw new Error(`${label} must be a JSON object.`);
-	const thinkingLevel = value.thinkingLevel;
-	if (typeof thinkingLevel !== "string" || !MODEL_THINKING_LEVELS.includes(thinkingLevel as StoredThinkingLevel)) {
-		throw new Error(`${label}.thinkingLevel is not supported.`);
+function validateStoredThinkingLevel(value: unknown, label: string): StoredThinkingLevel | StoredProfileValue {
+	if (value === DEFAULT_SENTINEL) return DEFAULT_SENTINEL;
+	if (typeof value !== "string" || !MODEL_THINKING_LEVELS.includes(value as StoredThinkingLevel)) {
+		throw new Error(`${label} is not supported.`);
 	}
+	return value as StoredThinkingLevel;
+}
+
+function validateSelection(value: unknown, label: string): StoredModelSelectionSettings {
+	if (!isRecord(value)) throw new Error(`${label} must be a JSON object.`);
 	return {
 		provider: requiredNonEmptyString(value.provider, `${label}.provider`),
 		modelId: requiredNonEmptyString(value.modelId, `${label}.modelId`),
-		thinkingLevel: thinkingLevel as StoredThinkingLevel,
-		contextWindow: validateContextWindow(value.contextWindow, `${label}.contextWindow`),
+		thinkingLevel: validateStoredThinkingLevel(value.thinkingLevel, `${label}.thinkingLevel`),
+		contextWindow: validateStoredContextWindow(value.contextWindow, `${label}.contextWindow`),
 	};
 }
 
-function validateProfiles(value: unknown): Partial<Record<ModelSelectionMode, ModelSelectionSettings>> {
+function validateProfiles(value: unknown): Partial<Record<ModelSelectionMode, StoredModelSelectionSettings>> {
 	if (value === undefined) return {};
 	if (!isRecord(value)) throw new Error("uiModelSelector.profiles must be a JSON object.");
 	for (const key of Object.keys(value)) {

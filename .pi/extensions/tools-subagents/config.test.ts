@@ -62,6 +62,35 @@ describe("subagent model resolution", () => {
 		);
 	});
 
+	it("treats default thinking and context settings as Pi fallbacks", () => {
+		const parsed = parseModelConfiguration({
+			defaultModel: "default",
+			defaultThinkingLevel: "default",
+			agentThinkingLevels: { worker: "default" },
+			defaultContextWindow: "default",
+			agentContextWindows: { worker: "default" },
+		});
+		expect(parsed).toEqual({
+			defaultModel: "main",
+			agentModels: {},
+			agentThinkingLevels: {},
+			agentContextWindows: {},
+		});
+		expect(resolveLaunchConfiguration({
+			agentName: "worker",
+			config: {
+				defaultModel: "default",
+				defaultThinkingLevel: "default",
+				defaultContextWindow: "default",
+			},
+			mainModel,
+		})).toEqual({
+			model: "anthropic/claude-sonnet-4-6",
+			thinkingLevel: undefined,
+			contextWindow: undefined,
+		});
+	});
+
 	it("leaves a specific model unchanged", () => {
 		expect(resolveModelAssignment({
 			agentName: "worker",

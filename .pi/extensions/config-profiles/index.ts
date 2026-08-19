@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import {
 	applyProfileModelSelection,
 	createProjectSettingsStore,
@@ -10,6 +11,7 @@ import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 export interface ConfigProfilesDependencies {
 	store?: ProfileStore;
 	output?: (message: string) => void;
+	nativeDefaults?: PiNativeDefaults;
 }
 
 function errorMessage(error: unknown): string {
@@ -133,6 +135,7 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 								ctx,
 								document,
 								createProjectSettingsStore(store.profilePath(name), store.settingsPath),
+								dependencies.nativeDefaults,
 							)
 							: undefined;
 						if (selection && `${selection.provider}/${selection.modelId}` !== previousModel) {

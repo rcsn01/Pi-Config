@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import type { AgentConfig } from "../_shared/subagent-service.ts";
 import {
 	createSubagentsSettingsStore,
@@ -19,9 +20,9 @@ export interface ModelConfiguration {
 	defaultModel?: string;
 	agentModels: Record<string, string>;
 	defaultThinkingLevel?: SubagentThinkingLevel;
-	agentThinkingLevels: Record<string, SubagentThinkingLevel>;
+	agentThinkingLevels: Record<string, SubagentThinkingLevel | undefined>;
 	defaultContextWindow?: number;
-	agentContextWindows: Record<string, number>;
+	agentContextWindows: Record<string, number | undefined>;
 }
 
 export interface ResolveModelOptions {
@@ -112,6 +113,16 @@ export function validateContextWindow(value: unknown, label = "context window"):
 	return value as number;
 }
 
+function parseConfiguredThinkingLevel(value: unknown, label: string): SubagentThinkingLevel | undefined {
+	if (value === DEFAULT_SENTINEL) return undefined;
+	return normalizeThinkingLevel(value, label);
+}
+
+function parseConfiguredContextWindow(value: unknown, label: string): number | undefined {
+	if (value === DEFAULT_SENTINEL) return undefined;
+	return validateContextWindow(value, label);
+}
+
 /** Split Pi's optional provider/model:thinking shorthand into independent settings. */
 export function splitModelThinkingSetting(value: unknown): { model: string; thinkingLevel?: SubagentThinkingLevel } {
 	const setting = normalizeModelSetting(value);
@@ -143,7 +154,8 @@ export function parseModelConfiguration(value: unknown): ModelConfiguration {
 	}
 
 	if (Object.hasOwn(document, "defaultThinkingLevel")) {
-		parsed.defaultThinkingLevel = normalizeThinkingLevel(document.defaultThinkingLevel, "config defaultThinkingLevel");
+		const level = parseConfiguredThinkingLevel(document.defaultThinkingLevel, "config defaultThinkingLevel");
+		if (level !== undefined) parsed.defaultThinkingLevel = level;
 	}
 
 	if (Object.hasOwn(document, "agentThinkingLevels")) {
@@ -152,12 +164,14 @@ export function parseModelConfiguration(value: unknown): ModelConfiguration {
 		}
 		for (const [agentName, level] of Object.entries(document.agentThinkingLevels)) {
 			if (!agentName.trim()) throw new Error("Subagent config agentThinkingLevels cannot contain an empty agent name.");
-			parsed.agentThinkingLevels[agentName] = normalizeThinkingLevel(level, `config agentThinkingLevels.${agentName}`);
+			const parsedLevel = parseConfiguredThinkingLevel(level, `config agentThinkingLevels.${agentName}`);
+			if (parsedLevel !== undefined) parsed.agentThinkingLevels[agentName] = parsedLevel;
 		}
 	}
 
 	if (Object.hasOwn(document, "defaultContextWindow")) {
-		parsed.defaultContextWindow = validateContextWindow(document.defaultContextWindow, "config defaultContextWindow");
+		const contextWindow = parseConfiguredContextWindow(document.defaultContextWindow, "config defaultContextWindow");
+		if (contextWindow !== undefined) parsed.defaultContextWindow = contextWindow;
 	}
 
 	if (Object.hasOwn(document, "agentContextWindows")) {
@@ -166,7 +180,8 @@ export function parseModelConfiguration(value: unknown): ModelConfiguration {
 		}
 		for (const [agentName, contextWindow] of Object.entries(document.agentContextWindows)) {
 			if (!agentName.trim()) throw new Error("Subagent config agentContextWindows cannot contain an empty agent name.");
-			parsed.agentContextWindows[agentName] = validateContextWindow(contextWindow, `config agentContextWindows.${agentName}`);
+			const parsedContextWindow = parseConfiguredContextWindow(contextWindow, `config agentContextWindows.${agentName}`);
+			if (parsedContextWindow !== undefined) parsed.agentContextWindows[agentName] = parsedContextWindow;
 		}
 	}
 

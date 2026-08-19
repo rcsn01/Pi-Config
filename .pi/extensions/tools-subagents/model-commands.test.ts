@@ -34,6 +34,25 @@ describe("subagents model command", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("model: main → anthropic/main"), "info");
 	});
 
+	it("shows Pi defaults without leaking undefined values", async () => {
+		const config = memoryConfigStore({
+			defaultModel: "default",
+			defaultThinkingLevel: "default",
+			defaultContextWindow: "default",
+			agentThinkingLevels: { worker: "default" },
+			agentContextWindows: { worker: "default" },
+		});
+		const command = createSubagentsCommand({ registry: memoryRegistry([agent()]), config });
+		const ctx = context();
+
+		await command.handler("models", ctx);
+
+		const message = ctx.ui.notify.mock.calls.at(-1)?.[0] as string;
+		expect(message).toContain("Global thinking: Pi default");
+		expect(message).toContain("Global context: Pi default");
+		expect(message).not.toContain("undefined");
+	});
+
 	it("reports model assignments and applies model/thinking mutations", async () => {
 		const config = memoryConfigStore({
 			custom: true,
