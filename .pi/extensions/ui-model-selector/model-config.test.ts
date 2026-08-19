@@ -393,7 +393,7 @@ describe("model selection helpers", () => {
 		expect(resolveContextWindow(1_000_000)).toBe(1_000_000);
 	});
 
-	it("defaults undeclared-context models (pi's 128K fallback) to 200K", () => {
+	it("defaults undeclared-context models (pi's 128K fallback) to 256K", () => {
 		expect(resolveContextWindow(PI_DEFAULT_CONTEXT_WINDOW)).toBe(DEFAULT_CONTEXT_WINDOW);
 	});
 
