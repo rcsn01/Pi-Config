@@ -24,7 +24,7 @@ export interface ApprovalService {
 		ctx: ExtensionContext,
 		title: string,
 		actionDescription: string,
-		triggers?: string[],
+		triggers: string[],
 	): Promise<ApprovalResult>;
 }
 
@@ -76,7 +76,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 		ctx: ExtensionContext,
 		title: string,
 		actionDescription: string,
-		triggers?: string[],
+		triggers: string[],
 	): Promise<ApprovalResult> {
 		if (!ctx.hasUI) {
 			return { allowed: false, reason: "Auto-review: no UI available for guardian fallback." };
