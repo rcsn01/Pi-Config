@@ -50,6 +50,7 @@ function createHarness(options: HarnessOptions = {}) {
 		profilePath: vi.fn((name: string) => join(profilesDirectory, `${name}.json`)),
 	};
 	const notify = vi.fn();
+	const setStatus = vi.fn();
 	const output = vi.fn();
 	const reload = vi.fn(async () => {});
 	const request = vi.fn();
@@ -69,7 +70,7 @@ function createHarness(options: HarnessOptions = {}) {
 	const ctx = {
 		hasUI: true,
 		mode: "tui",
-		ui: { notify, request, select: vi.fn() },
+		ui: { notify, request, select: vi.fn(), setStatus },
 		reload,
 		model: options.model ?? DEFAULT_MODEL,
 		scopedModels: [],
@@ -92,6 +93,7 @@ function createHarness(options: HarnessOptions = {}) {
 		emit,
 		store,
 		notify,
+		setStatus,
 		output,
 		reload,
 		request,
@@ -115,11 +117,12 @@ afterEach(() => {
 });
 
 describe("config profiles extension", () => {
-	it("records the active profile as a session entry on startup", async () => {
+	it("records and publishes the active profile on startup", async () => {
 		const harness = createHarness({ active: "default" });
 		await harness.emit("session_start", "startup");
 		expect(harness.loadActiveProfile).toHaveBeenCalledOnce();
 		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "default" });
+		expect(harness.setStatus).toHaveBeenCalledWith("profile", "default");
 	});
 
 	it("records the active profile on resume and fork boundaries", async () => {
@@ -130,24 +133,43 @@ describe("config profiles extension", () => {
 		}
 	});
 
-	it("does nothing on reload: the session entry persists and siblings re-read the profile", async () => {
-		const harness = createHarness({ active: "default" });
+	it("publishes the remembered session profile on reload without rewriting it", async () => {
+		const harness = createHarness({
+			active: "default",
+			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
+		});
 		await harness.emit("session_start", "reload");
 		expect(harness.loadActiveProfile).not.toHaveBeenCalled();
 		expect(harness.appendEntry).not.toHaveBeenCalled();
+		expect(harness.setStatus).toHaveBeenCalledWith("profile", "focused");
 	});
 
-	it("notifies when the active profile file is missing", async () => {
+	it("clears the profile status when the active profile file is missing", async () => {
 		const harness = createHarness({ activeProfile: undefined });
 		harness.loadActiveProfile.mockImplementation(() => {
 			throw new Error("Cannot read /missing/default.json");
 		});
 		await harness.emit("session_start", "startup");
 		expect(harness.appendEntry).not.toHaveBeenCalled();
+		expect(harness.setStatus).toHaveBeenCalledWith("profile", undefined);
 		expect(harness.notify).toHaveBeenCalledWith(
 			expect.stringContaining("Cannot read /missing/default.json"),
 			"error",
 		);
+	});
+
+	it("publishes the remembered profile when the session tree changes", async () => {
+		const harness = createHarness({
+			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
+		});
+		await harness.emit("session_tree");
+		expect(harness.setStatus).toHaveBeenCalledWith("profile", "focused");
+	});
+
+	it("clears the profile status on shutdown", async () => {
+		const harness = createHarness({ active: "default" });
+		await harness.emit("session_shutdown");
+		expect(harness.setStatus).toHaveBeenCalledWith("profile", undefined);
 	});
 
 	it("switches a direct argument, records the entry, notifies, and reloads exactly once", async () => {

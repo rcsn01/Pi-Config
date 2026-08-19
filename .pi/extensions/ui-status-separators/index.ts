@@ -3,6 +3,8 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import * as path from "node:path";
 import { collectSessionUsage, normalizeContextUsage } from "../_shared/usage.ts";
 
+const STATUS_ORDER = ["profile", "approval-mode", "plan"];
+
 function sanitizeStatusText(text: string): string {
 	return text
 		.replace(/[\r\n\t]/g, " ")
@@ -19,7 +21,12 @@ function formatExtensionStatusLine(
 	if (targetWidth === 0) return "";
 
 	const entries = Array.from(statuses.entries())
-		.sort(([left], [right]) => left.localeCompare(right))
+		.sort(([left], [right]) => {
+			const leftOrder = STATUS_ORDER.indexOf(left);
+			const rightOrder = STATUS_ORDER.indexOf(right);
+			return (leftOrder < 0 ? STATUS_ORDER.length : leftOrder) - (rightOrder < 0 ? STATUS_ORDER.length : rightOrder)
+				|| left.localeCompare(right);
+		})
 		.map(([key, text]) => [key, sanitizeStatusText(text)] as const)
 		.filter(([, text]) => Boolean(text));
 	const advisor = entries.find(([key]) => key === "advisor")?.[1];
