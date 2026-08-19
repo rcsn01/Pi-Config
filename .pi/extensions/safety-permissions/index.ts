@@ -20,9 +20,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { basename } from "node:path";
 import { loadExecPolicy } from "../_shared/command-policy.ts";
-import { PROFILES_DIRECTORY, PROJECT_SETTINGS_PATH, resolveSessionProfilePath } from "../_shared/active-profile.ts";
 import { createApprovalService } from "./approvals.ts";
 import { registerPermissionCommands, type CommandService, type DeniedAction } from "./commands.ts";
 import {
@@ -68,8 +66,6 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Status display ─────────────────────────────────────────────────
 
-	let sessionProfile: string | undefined;
-
 	function updateStatus(ctx: ExtensionContext) {
 		const modeLabels: Record<string, string> = {
 			"read-only": "read-only",
@@ -77,9 +73,7 @@ export default function (pi: ExtensionAPI) {
 			"auto-review": "auto-review",
 			"full-access": "full-access",
 		};
-		let label = modeLabels[mode.mode];
-		if (sessionProfile) label = `${sessionProfile} · ${label}`;
-		ctx.ui.setStatus("approval-mode", label);
+		ctx.ui.setStatus("approval-mode", modeLabels[mode.mode]);
 	}
 
 	// ── Approval service (user + guardian flows) ───────────────────────
@@ -111,14 +105,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Events ──────────────────────────────────────────────────────────
 
-	pi.on("session_start", async (event, ctx) => {
-		const profilePath = resolveSessionProfilePath(
-			ctx.sessionManager.getBranch(),
-			PROJECT_SETTINGS_PATH,
-			PROFILES_DIRECTORY,
-			event.reason,
-		);
-		sessionProfile = profilePath ? basename(profilePath, ".json") : undefined;
+	pi.on("session_start", async (_event, ctx) => {
 		reconstruct(ctx);
 		updateStatus(ctx);
 	});

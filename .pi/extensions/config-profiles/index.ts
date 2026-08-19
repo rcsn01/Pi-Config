@@ -3,7 +3,7 @@ import {
 	applyProfileModelSelection,
 	createProjectSettingsStore,
 } from "../ui-model-selector/apply-profile.ts";
-import { CONFIG_PROFILES_ENTRY_TYPE } from "../_shared/active-profile.ts";
+import { CONFIG_PROFILES_ENTRY_TYPE, sessionProfileName } from "../_shared/active-profile.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 
@@ -37,16 +37,33 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 		const store = dependencies.store ?? createProfileStore();
 		const output = dependencies.output ?? console.log;
 
+		const updateStatus = (ctx: ExtensionContext, profile: string | undefined): void => {
+			if (ctx.hasUI) ctx.ui.setStatus("profile", profile);
+		};
+
 		pi.on("session_start", async (event, ctx) => {
 			// On reload the session keeps its profile: the remembered session entry
 			// persists and the sibling extensions re-read the profile file with it.
-			if (event.reason === "reload") return;
+			if (event.reason === "reload") {
+				updateStatus(ctx, sessionProfileName(ctx.sessionManager.getBranch()));
+				return;
+			}
 			try {
 				const active = store.loadActiveProfile();
+				updateStatus(ctx, active?.name);
 				if (active) pi.appendEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: active.name });
 			} catch (error) {
+				updateStatus(ctx, undefined);
 				ctx.ui.notify(`Could not load the active settings profile: ${errorMessage(error)}`, "error");
 			}
+		});
+
+		pi.on("session_tree", async (_event, ctx) => {
+			updateStatus(ctx, sessionProfileName(ctx.sessionManager.getBranch()));
+		});
+
+		pi.on("session_shutdown", async (_event, ctx) => {
+			updateStatus(ctx, undefined);
 		});
 
 		pi.registerCommand("profile", {

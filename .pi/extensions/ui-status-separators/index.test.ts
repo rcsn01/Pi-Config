@@ -38,6 +38,17 @@ function renderFooter(statuses: ReadonlyMap<string, string>, width: number): str
 }
 
 describe("status footer", () => {
+	it("orders extension statuses and uses one separator between them", () => {
+		const statusLine = renderFooter(new Map([
+			["plan", "📋 plan"],
+			["other", "other"],
+			["approval-mode", "auto-review"],
+			["profile", "openai"],
+		]), 80)[2] ?? "";
+
+		expect(statusLine).toBe("openai | auto-review | 📋 plan | other");
+	});
+
 	it("right-aligns the advisor status after other extension statuses", () => {
 		const left = "openai · auto-review";
 		const advisor = "advisor(o/gpt-5.6-sol)";
