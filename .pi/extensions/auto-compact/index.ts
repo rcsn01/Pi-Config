@@ -5,6 +5,7 @@ import {
 	type ContextUsage,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { COMPACT_THRESHOLD } from "../_shared/auto-compact.ts";
 import { isRecord, readSettingsDocument, writeSettingsDocument } from "../_shared/settings-document.ts";
 
 /**
@@ -16,7 +17,6 @@ import { isRecord, readSettingsDocument, writeSettingsDocument } from "../_share
  * after compaction instead of ending.
  */
 
-const COMPACT_THRESHOLD = 0.8; // compact when context >= 80% of the model window
 const CONTINUE_MESSAGE = "Continue the task using the compacted context.";
 const CONTINUE_CUSTOM_TYPE = "auto-compact-continue";
 

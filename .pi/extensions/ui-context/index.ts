@@ -1,6 +1,4 @@
 import {
-	getAgentDir,
-	SettingsManager,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type KeybindingsManager,
@@ -10,8 +8,13 @@ import {
 	truncateToWidth,
 	visibleWidth,
 	type Component,
+	type TUI,
 } from "@earendil-works/pi-tui";
 import { collectUsageSnapshot } from "../_shared/usage.ts";
+import {
+	COMPACT_RESERVE_FRACTION,
+} from "../_shared/auto-compact.ts";
+import { installOverlayInputGuard } from "./overlay-input-guard.ts";
 import {
 	allocateMeter,
 	calculateContextDiagnostics,
@@ -241,6 +244,9 @@ export class ContextDiagnosticsComponent implements Component {
 	private summarySelection = LABELS.findIndex(([, key]) => key === "extensionTools");
 	private systemPromptSelection = 0;
 	private toolSelection = 0;
+	private scrollOffset = 0;
+	private maxScroll = 0;
+	private pageSize = 1;
 
 	constructor(
 		private readonly diagnostics: ContextDiagnostics,
@@ -314,7 +320,6 @@ export class ContextDiagnosticsComponent implements Component {
 			? "Context Usage"
 			: this.view === "systemPrompt" ? "System Prompt" : "Extension Tools";
 		const title = this.theme.fg("accent", this.theme.bold(titleText));
-		const border = this.theme.fg("borderAccent", "─".repeat(outerWidth));
 		let body: string[];
 
 		if (this.view !== "summary") {
@@ -344,14 +349,39 @@ export class ContextDiagnosticsComponent implements Component {
 		const hintText = this.view === "summary"
 			? "↑↓ select · Enter details · Esc/q close"
 			: "↑↓ browse · Esc back · q close";
-		const hint = this.theme.fg("dim", hintText);
 		const fixedRows = 6;
+		const availableBodyRows = requestedRows > 0
+			? Math.max(1, requestedRows - fixedRows)
+			: body.length;
+		this.pageSize = Math.max(1, availableBodyRows);
+		this.maxScroll = Math.max(0, body.length - availableBodyRows);
+		this.scrollOffset = Math.min(this.scrollOffset, this.maxScroll);
+		const scrollable = this.maxScroll > 0;
+		const visibleBody = scrollable
+			? body.slice(this.scrollOffset, this.scrollOffset + availableBodyRows)
+			: body;
+		const scrollHint = this.view === "summary"
+			? "↑↓ select · PgUp/PgDn scroll · Enter details · Esc/q close"
+			: "↑↓ browse · Esc back · q close";
+		const position = scrollable
+			? ` · ${this.scrollOffset + 1}-${Math.min(this.scrollOffset + availableBodyRows, body.length)} of ${body.length}`
+			: "";
+		const hint = this.theme.fg("dim", (scrollable ? scrollHint : hintText) + position);
 		const padding = Array.from(
-			{ length: Math.max(0, requestedRows - body.length - fixedRows) },
+			{ length: Math.max(0, requestedRows - visibleBody.length - fixedRows) },
 			() => "",
 		);
-		return [border, `  ${title}`, "", ...body, ...padding, "", `  ${hint}`, border]
-			.map((line) => fit(line, outerWidth));
+		const boxed = (line: string): string => `│${pad(line, Math.max(0, outerWidth - 2))}│`;
+		return [
+			this.theme.fg("borderAccent", `┌${"─".repeat(Math.max(0, outerWidth - 2))}┐`),
+			boxed(`  ${title}`),
+			boxed(""),
+			...visibleBody.map(boxed),
+			...padding.map(boxed),
+			boxed(""),
+			boxed(`  ${hint}`),
+			this.theme.fg("borderAccent", `└${"─".repeat(Math.max(0, outerWidth - 2))}┘`),
+		].map((line) => fit(line, outerWidth));
 	}
 
 	handleInput(data: string): void {
@@ -362,6 +392,7 @@ export class ContextDiagnosticsComponent implements Component {
 		if (this.keybindings.matches(data, "tui.select.cancel")) {
 			if (this.view !== "summary") {
 				this.view = "summary";
+				this.scrollOffset = 0;
 				this.requestRender();
 			} else {
 				this.onClose();
@@ -369,16 +400,26 @@ export class ContextDiagnosticsComponent implements Component {
 			return;
 		}
 		if (this.keybindings.matches(data, "tui.select.up")) {
-			if (this.view === "summary") this.summarySelection = Math.max(0, this.summarySelection - 1);
-			else if (this.view === "systemPrompt") {
+			if (this.view === "summary") {
+				if (this.summarySelection > 0) {
+					this.summarySelection -= 1;
+				} else if (this.scrollOffset > 0) {
+					this.scrollOffset -= 1;
+				}
+			} else if (this.view === "systemPrompt") {
 				this.systemPromptSelection = Math.max(0, this.systemPromptSelection - 1);
 			} else this.toolSelection = Math.max(0, this.toolSelection - 1);
 			this.requestRender();
 			return;
 		}
 		if (this.keybindings.matches(data, "tui.select.down")) {
-			if (this.view === "summary") this.summarySelection = Math.min(LABELS.length - 1, this.summarySelection + 1);
-			else if (this.view === "systemPrompt") {
+			if (this.view === "summary") {
+				if (this.summarySelection < LABELS.length - 1) {
+					this.summarySelection += 1;
+				} else if (this.scrollOffset < this.maxScroll) {
+					this.scrollOffset += 1;
+				}
+			} else if (this.view === "systemPrompt") {
 				this.systemPromptSelection = Math.max(
 					0,
 					Math.min(this.diagnostics.systemPromptDetails.length - 1, this.systemPromptSelection + 1),
@@ -390,10 +431,39 @@ export class ContextDiagnosticsComponent implements Component {
 			this.requestRender();
 			return;
 		}
+		if (this.keybindings.matches(data, "tui.select.pageUp")) {
+			if (this.view === "summary") {
+				this.scrollOffset = Math.max(0, this.scrollOffset - this.pageSize);
+			} else if (this.view === "systemPrompt") {
+				this.systemPromptSelection = Math.max(0, this.systemPromptSelection - this.pageSize);
+			} else {
+				this.toolSelection = Math.max(0, this.toolSelection - this.pageSize);
+			}
+			this.requestRender();
+			return;
+		}
+		if (this.keybindings.matches(data, "tui.select.pageDown")) {
+			if (this.view === "summary") {
+				this.scrollOffset = Math.min(this.maxScroll, this.scrollOffset + this.pageSize);
+			} else if (this.view === "systemPrompt") {
+				this.systemPromptSelection = Math.min(
+					Math.max(0, this.diagnostics.systemPromptDetails.length - 1),
+					this.systemPromptSelection + this.pageSize,
+				);
+			} else {
+				this.toolSelection = Math.min(
+					Math.max(0, this.diagnostics.extensionTools.length - 1),
+					this.toolSelection + this.pageSize,
+				);
+			}
+			this.requestRender();
+			return;
+		}
 		if (this.view === "summary" && this.keybindings.matches(data, "tui.select.confirm")) {
 			const selected = LABELS[this.summarySelection]?.[1];
 			if (selected === "systemPrompt" || selected === "extensionTools") {
 				this.view = selected;
+				this.scrollOffset = 0;
 				this.requestRender();
 			}
 		}
@@ -405,15 +475,28 @@ export class ContextDiagnosticsComponent implements Component {
 }
 
 function loadCompactionSettings(ctx: ExtensionCommandContext): { enabled: boolean; reserveTokens: number } {
-	try {
-		return SettingsManager.create(ctx.cwd, getAgentDir(), {
-			projectTrusted: ctx.isProjectTrusted(),
-		}).getCompactionSettings();
-	} catch {
-		// These are Pi's public defaults; diagnostics should remain available if a
-		// settings file is temporarily unreadable.
-		return { enabled: true, reserveTokens: 16_384 };
-	}
+	// The auto-compact extension replaces Pi's native compaction (which it
+	// disables in settings.json), so the diagram always reflects the
+	// auto-compact buffer rather than the native, disabled one.
+	const contextWindow = Math.max(
+		0,
+		ctx.model?.contextWindow ?? ctx.getContextUsage()?.contextWindow ?? 0,
+	);
+	return autoCompactCompactionSettings(contextWindow);
+}
+
+/**
+ * The auto-compact extension's buffer: it compacts at {@link COMPACT_THRESHOLD}
+ * of the model window, so the headroom kept for the response is the remaining
+ * {@link COMPACT_RESERVE_FRACTION} of the window.
+ */
+export function autoCompactCompactionSettings(
+	contextWindow: number,
+): { enabled: boolean; reserveTokens: number } {
+	return {
+		enabled: true,
+		reserveTokens: Math.round(Math.max(0, contextWindow) * COMPACT_RESERVE_FRACTION),
+	};
 }
 
 export function collectCurrentContextUsage(
@@ -501,26 +584,50 @@ export default function contextDiagnosticsExtension(pi: ExtensionAPI): void {
 				return;
 			}
 
-			await ctx.ui.custom<void>(
-				(tui, theme, keybindings, done) =>
-					new ContextDiagnosticsComponent(
-						diagnostics,
-						theme,
-						keybindings,
-						() => done(undefined),
-						() => tui.requestRender(),
-						() => tui.terminal.rows * 0.88,
-					),
-				{
-					overlay: true,
-					overlayOptions: {
-						anchor: "center",
-						width: "94%",
-						maxHeight: "90%",
-						margin: 1,
+			let unsubscribe: (() => void) | undefined;
+			let component: ContextDiagnosticsComponent | undefined;
+			let tuiRef: TUI | undefined;
+			try {
+				await ctx.ui.custom<void>(
+					(tui, theme, keybindings, done) => {
+						tuiRef = tui;
+						component = new ContextDiagnosticsComponent(
+							diagnostics,
+							theme,
+							keybindings,
+							() => {
+								unsubscribe?.();
+								done(undefined);
+							},
+							() => tui.requestRender(),
+							() => tui.terminal.rows * 0.88,
+						);
+						return component;
 					},
-				},
-			);
+					{
+						overlay: true,
+						overlayOptions: {
+							anchor: "center",
+							width: "94%",
+							maxHeight: "90%",
+							margin: 1,
+						},
+						onHandle: (handle) => {
+							// Route input to this overlay while it is the topmost visible UI,
+							// even when an independent non-overlay UI (e.g. plan mode's review
+							// menu) stole focus from it.
+							unsubscribe = installOverlayInputGuard({
+								registerInputListener: (handler) => ctx.ui.onTerminalInput(handler),
+								tui: tuiRef!,
+								component: component!,
+								handle,
+							});
+						},
+					},
+				);
+			} finally {
+				unsubscribe?.();
+			}
 		},
 	});
 }
