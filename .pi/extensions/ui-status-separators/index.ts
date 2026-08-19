@@ -10,6 +10,34 @@ function sanitizeStatusText(text: string): string {
 		.trim();
 }
 
+function formatExtensionStatusLine(
+	statuses: ReadonlyMap<string, string>,
+	width: number,
+	ellipsis: string,
+): string {
+	const targetWidth = Math.max(0, width);
+	if (targetWidth === 0) return "";
+
+	const entries = Array.from(statuses.entries())
+		.sort(([left], [right]) => left.localeCompare(right))
+		.map(([key, text]) => [key, sanitizeStatusText(text)] as const)
+		.filter(([, text]) => Boolean(text));
+	const advisor = entries.find(([key]) => key === "advisor")?.[1];
+	const leftStatuses = entries.filter(([key]) => key !== "advisor").map(([, text]) => text);
+	const left = leftStatuses.join(" | ");
+
+	if (!advisor) return truncateToWidth(left, targetWidth, ellipsis);
+
+	const advisorText = truncateToWidth(advisor, targetWidth, ellipsis);
+	const advisorWidth = visibleWidth(advisorText);
+	if (advisorWidth >= targetWidth) return advisorText;
+	if (!left) return " ".repeat(targetWidth - advisorWidth) + advisorText;
+
+	const leftText = truncateToWidth(left, Math.max(0, targetWidth - advisorWidth - 1), ellipsis);
+	const gap = Math.max(1, targetWidth - visibleWidth(leftText) - advisorWidth);
+	return `${leftText}${" ".repeat(gap)}${advisorText}`;
+}
+
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
 	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
@@ -112,14 +140,12 @@ function installFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
 
 			const extensionStatuses = footerData.getExtensionStatuses();
 			if (extensionStatuses.size > 0) {
-				const statusLine = Array.from(extensionStatuses.entries())
-					.sort(([a], [b]) => a.localeCompare(b))
-					.map(([, text]) => sanitizeStatusText(text))
-					.filter(Boolean)
-					.join(" | ");
-				if (statusLine) {
-					lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
-				}
+				const statusLine = formatExtensionStatusLine(
+					extensionStatuses,
+					width,
+					theme.fg("dim", "..."),
+				);
+				if (statusLine) lines.push(statusLine);
 			}
 
 			return lines;
