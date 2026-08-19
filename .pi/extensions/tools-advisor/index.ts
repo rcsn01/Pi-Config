@@ -66,6 +66,16 @@ function requiredOptionalString(value: unknown, label: string): string | undefin
 	return value.trim();
 }
 
+function preservedOptionalString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function optionalBoolean(value: unknown, label: string): boolean | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "boolean") throw new Error(`advisor.${label} must be a boolean.`);
+	return value;
+}
+
 function positiveInteger(value: unknown, fallback: number, label: string): number {
 	if (value === undefined) return fallback;
 	if (!Number.isInteger(value) || (value as number) <= 0) throw new Error(`advisor.${label} must be a positive integer.`);
@@ -127,9 +137,11 @@ export function parseAdvisorSettings(document: unknown): AdvisorSettings {
 		};
 	}
 	if (!isRecord(raw)) throw new Error("advisor must be a JSON object.");
+	const enabled = optionalBoolean(raw.enabled, "enabled");
 	return {
 		provider: requiredOptionalString(raw.provider, "provider"),
 		modelId: requiredOptionalString(raw.modelId, "modelId"),
+		...(enabled === undefined ? {} : { enabled }),
 		strict: raw.strict === undefined
 			? false
 			: typeof raw.strict === "boolean"
@@ -157,6 +169,7 @@ function serializedAdvisorSettings(settings: AdvisorSettings): Record<string, un
 	return {
 		...(settings.provider ? { provider: settings.provider } : {}),
 		...(settings.modelId ? { modelId: settings.modelId } : {}),
+		...(settings.enabled === undefined ? {} : { enabled: settings.enabled }),
 		strict: settings.strict,
 		nudgeTurn: settings.nudgeTurn,
 		maxUses: settings.maxUses,
@@ -191,6 +204,9 @@ async function disableAdvisorSettings(path: string): Promise<AdvisorSettings> {
 			// The kill switch must still work on a malformed contextBudget.
 		}
 		const next: AdvisorSettings = {
+			provider: preservedOptionalString(raw.provider),
+			modelId: preservedOptionalString(raw.modelId),
+			enabled: false,
 			strict: false,
 			nudgeTurn: Number.isInteger(raw.nudgeTurn) && (raw.nudgeTurn as number) > 0
 				? raw.nudgeTurn as number
@@ -359,7 +375,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				notify(ctx, `Advisor is disabled because its settings are invalid: ${errorText(error)}`, "error");
 			}
 			const active = pi.getActiveTools();
-			if (settings.provider && settings.modelId) {
+			if (settings.enabled !== false && settings.provider && settings.modelId) {
 				if (!active.includes("advisor")) pi.setActiveTools([...active, "advisor"]);
 			} else if (active.includes("advisor")) {
 				pi.setActiveTools(active.filter((name) => name !== "advisor"));
@@ -404,6 +420,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			try {
 				settings = await updateAdvisorSettings(settingsPath, (current) => ({
 					...current,
+					enabled: true,
 					provider: model.provider,
 					modelId: model.id,
 					strict: strict ?? current.strict,
@@ -420,7 +437,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 
 		const setStrictMode = async (strict: boolean, ctx: ExtensionContext): Promise<void> => {
 			try {
-				settings = await updateAdvisorSettings(settingsPath, (current) => ({ ...current, strict }));
+				settings = await updateAdvisorSettings(settingsPath, (current) => ({ ...current, enabled: true, strict }));
 				const active = pi.getActiveTools();
 				if (!active.includes("advisor")) pi.setActiveTools([...active, "advisor"]);
 				notify(ctx, `Advisor strict mode ${strict ? "enabled" : "disabled"}.`, "info");
@@ -565,7 +582,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 		});
 
 		pi.on("turn_end", (event, ctx) => {
-			if (!settings.strict || !settings.provider || !settings.modelId) return;
+			if (settings.enabled === false || !settings.strict || !settings.provider || !settings.modelId) return;
 			const branch = ctx.sessionManager.getBranch();
 			const currentAssistant = event.message.role === "assistant" ? event.message : undefined;
 			if (countAssistantTurns(branch, currentAssistant) < settings.nudgeTurn) return;

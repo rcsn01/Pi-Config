@@ -109,6 +109,9 @@ describe("advisor settings", () => {
 			provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: false,
 			contextBudget: DEFAULT_CONTEXT_BUDGET,
 		});
+		expect(parseAdvisorSettings({ advisor: { provider: "anthropic", modelId: "strong", enabled: false } })).toMatchObject({
+			provider: "anthropic", modelId: "strong", enabled: false,
+		});
 	});
 
 	it("merges a partial context budget over the defaults", () => {
@@ -122,6 +125,7 @@ describe("advisor settings", () => {
 		expect(() => parseAdvisorSettings({ advisor: { maxUsesPerSession: 0 } })).toThrow(/maxUsesPerSession/);
 		expect(() => parseAdvisorSettings({ advisor: { maxTokens: -1 } })).toThrow(/maxTokens/);
 		expect(() => parseAdvisorSettings({ advisor: { strict: "yes" } })).toThrow(/strict/);
+		expect(() => parseAdvisorSettings({ advisor: { enabled: "yes" } })).toThrow(/enabled/);
 		expect(() => parseAdvisorSettings({ advisor: { nudgeTurn: 0 } })).toThrow(/nudgeTurn/);
 		expect(() => parseAdvisorSettings({ advisor: { nudgeTurn: -1 } })).toThrow(/nudgeTurn/);
 		expect(() => parseAdvisorSettings({ advisor: { allowCrossProvider: "yes" } })).toThrow(/allowCrossProvider/);
@@ -225,23 +229,36 @@ describe("advisor extension", () => {
 		await harness.commands.get("advisor").handler("off", harness.ctx);
 		const afterOff = JSON.parse(readFileSync(path, "utf8"));
 		expect(afterOff).toMatchObject({ compaction: { threshold: 0.1 }, other: { keep: true } });
-		expect(afterOff.advisor).not.toHaveProperty("provider");
-		expect(afterOff.advisor).not.toHaveProperty("modelId");
-		expect(afterOff.advisor).toMatchObject({ maxUses: 2, maxTokens: 1000, strict: false, allowCrossProvider: false });
+		expect(afterOff.advisor).toMatchObject({
+			provider: "anthropic", modelId: "strong", enabled: false,
+			maxUses: 2, maxTokens: 1000, strict: false, allowCrossProvider: false,
+		});
 		expect(harness.getActiveTools()).toContain("advisor");
+
+		const reloaded = makePi({ settingsPath: path, activeTools: ["read", "advisor"] });
+		createAdvisorExtension({ settingsPath: path })(reloaded.pi);
+		await reloaded.handlers.get("session_start")({ reason: "reload" }, reloaded.ctx);
+		expect(reloaded.getActiveTools()).not.toContain("advisor");
+		await reloaded.commands.get("advisor").handler("strict", reloaded.ctx);
+		expect(loadAdvisorSettings(path)).toMatchObject({
+			provider: "anthropic", modelId: "strong", enabled: true, strict: true,
+		});
+		expect(reloaded.ctx.ui.select).not.toHaveBeenCalled();
 
 		const malformedPath = settingsFile({ other: { keep: true }, advisor: [] });
 		const malformed = makePi({ settingsPath: malformedPath, activeTools: ["advisor"] });
 		createAdvisorExtension({ settingsPath: malformedPath })(malformed.pi);
 		await malformed.commands.get("advisor").handler("off", malformed.ctx);
 		expect(loadAdvisorSettings(malformedPath).provider).toBeUndefined();
-		expect(JSON.parse(readFileSync(malformedPath, "utf8"))).toMatchObject({ other: { keep: true }, advisor: { strict: false, allowCrossProvider: false } });
+		expect(JSON.parse(readFileSync(malformedPath, "utf8"))).toMatchObject({ other: { keep: true }, advisor: { enabled: false, strict: false, allowCrossProvider: false } });
 
-		const malformedStrictPath = settingsFile({ other: { keep: true }, advisor: { strict: "yes", contextBudget: [] } });
+		const malformedStrictPath = settingsFile({ other: { keep: true }, advisor: { provider: "anthropic", modelId: "strong", strict: "yes", contextBudget: [] } });
 		const malformedStrict = makePi({ settingsPath: malformedStrictPath, activeTools: ["advisor"] });
 		createAdvisorExtension({ settingsPath: malformedStrictPath })(malformedStrict.pi);
 		await malformedStrict.commands.get("advisor").handler("off", malformedStrict.ctx);
-		expect(JSON.parse(readFileSync(malformedStrictPath, "utf8"))).toMatchObject({ advisor: { strict: false, allowCrossProvider: false } });
+		expect(JSON.parse(readFileSync(malformedStrictPath, "utf8"))).toMatchObject({
+			advisor: { provider: "anthropic", modelId: "strong", enabled: false, strict: false, allowCrossProvider: false },
+		});
 	});
 
 	it("shows the three advisor modes before the model picker on a bare command", async () => {
