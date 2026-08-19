@@ -56,7 +56,7 @@ export interface ProjectModelPreferences {
 }
 
 /** Default context window applied when a model entry declares none. */
-export const DEFAULT_CONTEXT_WINDOW = 200_000;
+export const DEFAULT_CONTEXT_WINDOW = 256_000;
 
 /** pi's fallback context window applied when a model entry declares none. */
 export const PI_DEFAULT_CONTEXT_WINDOW = 128_000;
