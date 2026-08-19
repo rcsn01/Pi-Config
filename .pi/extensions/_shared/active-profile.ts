@@ -84,10 +84,11 @@ export function profilePath(profilesDirectory: string, name: string): string {
 /**
  * Resolve the session's profile file path. On new session boundaries
  * (`startup`/`resume`/`new`/`fork`) the settings.json marker is authoritative
- * (fallback: the remembered session entry); on `reload` the session entry is
- * authoritative (fallback: the marker) so another session's `/profile` switch
- * cannot change this session's profile. Returns `undefined` when neither source
- * yields a valid name, in which case callers fall back to settings.json.
+ * (fallback: the remembered session entry). On `reload`, only the remembered
+ * session entry is consulted, so another session's `/profile` switch cannot
+ * change this session's profile. Returns `undefined` when the reload has no
+ * remembered entry or when neither source yields a valid name; callers then
+ * fall back to the plain settings document.
  */
 export function resolveSessionProfilePath(
 	entries: readonly unknown[],
@@ -96,7 +97,10 @@ export function resolveSessionProfilePath(
 	reason: string,
 ): string | undefined {
 	const fromEntry = sessionProfileName(entries);
+	if (reason === "reload") {
+		return fromEntry === undefined ? undefined : profilePath(profilesDirectory, fromEntry);
+	}
 	const fromMarker = readActiveProfileName(settingsPath);
-	const name = reason === "reload" ? (fromEntry ?? fromMarker) : (fromMarker ?? fromEntry);
+	const name = fromMarker ?? fromEntry;
 	return name === undefined ? undefined : profilePath(profilesDirectory, name);
 }
