@@ -21,6 +21,7 @@ Deployment/
 
 # Pi
 .pi/plane.json
+.pi/settings.json
 .pi/worktrees/
 .pi/workflow-runs/
 .pi/workflow-approvals/
