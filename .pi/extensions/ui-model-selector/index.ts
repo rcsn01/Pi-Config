@@ -25,11 +25,14 @@ import {
 } from "../_shared/model-command-routing.ts";
 import {
 	applyModelSelection,
+	applyPickedModelSelection,
 	calculateCompactionReserveTokens,
 	currentSelectionMode,
+	ModelSelectionPersistenceError,
 	resolveContextWindow,
 	resolveModelContext,
 	type ModelSelectionMode,
+	type ModelSelectionSettings,
 } from "../_shared/model-selection.ts";
 import {
 	createProjectSettingsStore,
@@ -173,19 +176,21 @@ async function selectThinkingLevel(
 	return ordered[choices.indexOf(selected)];
 }
 
-async function applySelection(
+async function confirmAndApplySelection(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	selectedModel: Model<Api>,
 	thinkingLevel: ModelThinkingLevel,
-	contextWindow: number,
 	compactionThreshold: number,
 	mode: ModelSelectionMode,
 	settingsStore: ProjectSettingsStore,
 ): Promise<void> {
+	const contextWindow = selectedModel.contextWindow;
 	const compactionReserve = calculateCompactionReserveTokens(contextWindow, compactionThreshold);
 	const usage = ctx.getContextUsage();
-	const needsCompaction = usage?.tokens !== null && usage?.tokens !== undefined &&
+	const isContextReduction = ctx.model !== undefined && contextWindow < ctx.model.contextWindow;
+	const needsCompaction = isContextReduction &&
+		usage?.tokens !== null && usage?.tokens !== undefined &&
 		usage.tokens > Math.max(1, contextWindow - compactionReserve);
 
 	if (needsCompaction) {
@@ -196,29 +201,30 @@ async function applySelection(
 		if (!approved) return;
 	}
 
-	const model = { ...selectedModel, contextWindow };
-	const changed = await pi.setModel(model);
-	if (!changed) {
-		ctx.ui.notify(`No configured authentication for ${modelKey(model)}`, "error");
+	let selection: ModelSelectionSettings;
+	try {
+		selection = await applyPickedModelSelection(pi, ctx, selectedModel, thinkingLevel, {
+			mode,
+			persistence: settingsStore,
+		});
+	} catch (error) {
+		if (!(error instanceof ModelSelectionPersistenceError)) throw error;
+		if (needsCompaction) ctx.compact();
+		const cause = error.cause instanceof Error ? error.cause.message : String(error.cause);
+		ctx.ui.notify(
+			`${error.appliedSelection.provider}/${error.appliedSelection.modelId} was applied, but settings were not fully saved: ${cause}`,
+			"warning",
+		);
 		return;
 	}
 
-	pi.setThinkingLevel(thinkingLevel);
-	const effectiveThinking = pi.getThinkingLevel() as ModelThinkingLevel;
-	await settingsStore.save(mode, {
-		provider: model.provider,
-		modelId: model.id,
-		thinkingLevel: effectiveThinking,
-		contextWindow: model.contextWindow,
-	});
 	if (needsCompaction) ctx.compact();
-
-	const thinkingNote = effectiveThinking === thinkingLevel
-		? effectiveThinking
-		: `${effectiveThinking} (requested ${thinkingLevel})`;
+	const thinkingNote = selection.thinkingLevel === thinkingLevel
+		? selection.thinkingLevel
+		: `${selection.thinkingLevel} (requested ${thinkingLevel})`;
 	ctx.ui.notify(
-		`${modelKey(model)} · thinking ${thinkingNote} · context ${formatTokenCount(model.contextWindow)}`,
-		effectiveThinking === thinkingLevel ? "info" : "warning",
+		`${selection.provider}/${selection.modelId} · thinking ${thinkingNote} · context ${formatTokenCount(selection.contextWindow)}`,
+		selection.thinkingLevel === thinkingLevel ? "info" : "warning",
 	);
 }
 
@@ -269,15 +275,12 @@ async function runModelControl(
 	);
 	if (!thinkingLevel) return;
 
-	const contextWindow = resolveContextWindow(selectedModel.contextWindow);
-
 	try {
-		await applySelection(
+		await confirmAndApplySelection(
 			pi,
 			ctx,
 			selectedModel,
 			thinkingLevel,
-			contextWindow,
 			preferences.compactionThreshold,
 			mode,
 			settingsStore,
@@ -335,7 +338,7 @@ export function createModelSelectorExtension(
 					if (preferences.profiles.normal) {
 						await applyModelSelection(pi, ctx, preferences.profiles.normal, {
 							label: "Normal profile",
-							settingsStore,
+							compaction: settingsStore,
 						});
 						appliedNormalProfile = true;
 					}

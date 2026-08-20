@@ -351,7 +351,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			try {
 				activePlanProfile = await applyModelSelection(pi, ctx, storedProfile, {
 					label: "Plan Mode profile",
-					settingsStore: profileStore,
+					compaction: profileStore,
 					nativeDefaults: dependencies.nativeDefaults,
 				});
 				switchedSessionProfile = true;
@@ -371,7 +371,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 					profileTransitionDepth++;
 					await applyModelSelection(pi, ctx, normalProfile, {
 						label: "Normal profile",
-						settingsStore: profileStore,
+						compaction: profileStore,
 						nativeDefaults: dependencies.nativeDefaults,
 					});
 					await preserveDefaults(ctx);
@@ -417,7 +417,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 				profileTransitionDepth++;
 				await applyModelSelection(pi, ctx, normalProfile, {
 					label: "Normal profile",
-					settingsStore: profileStore,
+					compaction: profileStore,
 					nativeDefaults: dependencies.nativeDefaults,
 				});
 				restoredSessionProfile = true;
@@ -428,7 +428,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 					try {
 						await applyModelSelection(pi, ctx, activePlanProfile, {
 							label: "Plan Mode profile",
-							settingsStore: profileStore,
+							compaction: profileStore,
 							nativeDefaults: dependencies.nativeDefaults,
 						});
 						await preserveDefaults(ctx);
