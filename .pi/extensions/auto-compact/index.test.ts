@@ -1,10 +1,12 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import {
+import { afterEach, describe, expect, it, vi } from "vitest";
+import autoCompactExtension, {
+	classifyOverflowCompaction,
 	disableNativeCompaction,
 	disableNativeCompactionInFiles,
+	SEMANTIC_COMPACTION_FOCUS,
 	shouldCompactNow,
 	vetoNativeCompaction,
 } from "./index.ts";
@@ -38,6 +40,381 @@ describe("shouldCompactNow", () => {
 	it("honors a custom threshold", () => {
 		expect(shouldCompactNow({ tokens: 50_000, contextWindow: 200_000, percent: 25 }, 0.25)).toBe(true);
 		expect(shouldCompactNow({ tokens: 49_999, contextWindow: 200_000, percent: 25 }, 0.25)).toBe(false);
+	});
+});
+
+const DEFAULT_USAGE = {
+	input: 100,
+	output: 50,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 150,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+function activeModel(overrides: Record<string, unknown> = {}): any {
+	return {
+		id: "model-1",
+		name: "Model 1",
+		api: "test-api",
+		provider: "provider-1",
+		baseUrl: "http://localhost",
+		reasoning: false,
+		input: ["text"],
+		cost: DEFAULT_USAGE.cost,
+		contextWindow: 1_000,
+		maxTokens: 200,
+		...overrides,
+	};
+}
+
+function assistantMessage(overrides: Record<string, any> = {}): any {
+	const { usage, ...messageOverrides } = overrides;
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: "Response" }],
+		api: "test-api",
+		provider: "provider-1",
+		model: "model-1",
+		usage: { ...DEFAULT_USAGE, ...usage },
+		stopReason: "stop",
+		timestamp: 1,
+		...messageOverrides,
+	};
+}
+
+function makeExtensionHarness(options: {
+	usage?: { tokens: number | null; contextWindow: number; percent: number | null };
+	model?: any;
+	idle?: boolean;
+} = {}) {
+	const handlers = new Map<string, (event: any, ctx: any) => unknown>();
+	const compactions: any[] = [];
+	const sendMessage = vi.fn();
+	let usage = options.usage ?? { tokens: 799, contextWindow: 1_000, percent: 79.9 };
+	let idle = options.idle ?? true;
+	const ctx: any = {
+		cwd: "/workspace",
+		model: options.model ?? activeModel(),
+		getContextUsage: vi.fn(() => usage),
+		isIdle: vi.fn(() => idle),
+		compact: vi.fn((compactOptions: any) => compactions.push(compactOptions)),
+		ui: { notify: vi.fn() },
+	};
+	const pi: any = {
+		on: vi.fn((event: string, handler: (event: any, handlerContext: any) => unknown) => {
+			handlers.set(event, handler);
+		}),
+		sendMessage,
+	};
+	autoCompactExtension(pi);
+	return {
+		handlers,
+		compactions,
+		sendMessage,
+		ctx,
+		setUsage(nextUsage: typeof usage) {
+			usage = nextUsage;
+		},
+		setIdle(nextIdle: boolean) {
+			idle = nextIdle;
+		},
+	};
+}
+
+type ExtensionHarness = ReturnType<typeof makeExtensionHarness>;
+
+function emitTurn(
+	harness: ExtensionHarness,
+	message = assistantMessage(),
+	toolResults: any[] = [],
+): unknown {
+	return harness.handlers.get("turn_end")?.(
+		{ type: "turn_end", turnIndex: 0, message, toolResults },
+		harness.ctx,
+	);
+}
+
+function completeCompaction(harness: ExtensionHarness, index = harness.compactions.length - 1): void {
+	harness.compactions[index]?.onComplete?.({});
+}
+
+function failCompaction(harness: ExtensionHarness, index = harness.compactions.length - 1): void {
+	harness.compactions[index]?.onError?.(new Error("compaction failed"));
+}
+
+const EXPECTED_CONTINUATION = {
+	customType: "auto-compact-continue",
+	content: "Continue the task using the compacted context.",
+	display: false,
+};
+
+const EXPECTED_CONTINUATION_OPTIONS = {
+	deliverAs: "followUp",
+	triggerTurn: true,
+};
+
+describe("classifyOverflowCompaction", () => {
+	it("classifies explicit context errors and zero-output length overflows for resume", () => {
+		expect(
+			classifyOverflowCompaction(
+				assistantMessage({
+					stopReason: "error",
+					errorMessage: "prompt is too long: 1100 tokens > 1000 maximum",
+				}),
+				activeModel(),
+			),
+		).toBe("compact-and-resume");
+		expect(
+			classifyOverflowCompaction(
+				assistantMessage({
+					stopReason: "length",
+					usage: { input: 990, output: 0 },
+				}),
+				activeModel(),
+			),
+		).toBe("compact-and-resume");
+	});
+
+	it("classifies recoverable length truncation for resume", () => {
+		expect(
+			classifyOverflowCompaction(
+				assistantMessage({ stopReason: "length", usage: { input: 500, output: 50 } }),
+				activeModel(),
+			),
+		).toBe("compact-and-resume");
+	});
+
+	it("classifies a successful silent overflow without resume", () => {
+		expect(
+			classifyOverflowCompaction(
+				assistantMessage({ usage: { input: 1_001, output: 50 } }),
+				activeModel(),
+			),
+		).toBe("compact");
+	});
+
+	it("ignores non-assistant, model-mismatched, and ordinary responses", () => {
+		expect(
+			classifyOverflowCompaction({ role: "user" }, activeModel()),
+		).toBeUndefined();
+		expect(
+			classifyOverflowCompaction(
+				assistantMessage({ provider: "old-provider" }),
+				activeModel(),
+			),
+		).toBeUndefined();
+		expect(
+			classifyOverflowCompaction(
+				assistantMessage({ stopReason: "error", errorMessage: "service unavailable" }),
+				activeModel(),
+			),
+		).toBeUndefined();
+	});
+});
+
+describe("auto-compact extension events", () => {
+	it("does not compact below 80% after tool results", () => {
+		const harness = makeExtensionHarness({
+			usage: { tokens: 799, contextWindow: 1_000, percent: 79.9 },
+		});
+		emitTurn(harness, assistantMessage({ stopReason: "toolUse" }), [{}]);
+		expect(harness.compactions).toHaveLength(0);
+	});
+
+	it.each([
+		["exactly", 800],
+		["above", 900],
+	])("compacts %s 80%% after tool results", (_label, tokens) => {
+		const harness = makeExtensionHarness({
+			usage: { tokens, contextWindow: 1_000, percent: tokens / 10 },
+		});
+		emitTurn(harness, assistantMessage({ stopReason: "toolUse" }), [{}]);
+		expect(harness.compactions).toHaveLength(1);
+		expect(harness.compactions[0].customInstructions).toBe(SEMANTIC_COMPACTION_FOCUS);
+	});
+
+	it("sends the hidden continuation after successful mid-turn compaction", () => {
+		const harness = makeExtensionHarness({
+			usage: { tokens: 800, contextWindow: 1_000, percent: 80 },
+		});
+		emitTurn(harness, assistantMessage({ stopReason: "toolUse" }), [{}]);
+		completeCompaction(harness);
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			EXPECTED_CONTINUATION,
+			EXPECTED_CONTINUATION_OPTIONS,
+		);
+	});
+
+	it("uses identical semantic instructions and awaits pre-turn compaction", async () => {
+		const harness = makeExtensionHarness({
+			usage: { tokens: 800, contextWindow: 1_000, percent: 80 },
+		});
+		let settled = false;
+		const pending = Promise.resolve(
+			harness.handlers.get("before_agent_start")?.(
+				{ type: "before_agent_start", prompt: "Next task" },
+				harness.ctx,
+			),
+		).then(() => {
+			settled = true;
+		});
+
+		await Promise.resolve();
+		expect(harness.compactions).toHaveLength(1);
+		expect(harness.compactions[0].customInstructions).toBe(SEMANTIC_COMPACTION_FOCUS);
+		expect(settled).toBe(false);
+
+		completeCompaction(harness);
+		await pending;
+		expect(settled).toBe(true);
+	});
+
+	it("recovers explicit overflow without tool results and resumes once compacted", () => {
+		const harness = makeExtensionHarness();
+		emitTurn(
+			harness,
+			assistantMessage({
+				stopReason: "error",
+				errorMessage: "prompt is too long: 1100 tokens > 1000 maximum",
+			}),
+		);
+
+		expect(harness.compactions).toHaveLength(1);
+		expect(harness.compactions[0].customInstructions).toBe(SEMANTIC_COMPACTION_FOCUS);
+		completeCompaction(harness);
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			EXPECTED_CONTINUATION,
+			EXPECTED_CONTINUATION_OPTIONS,
+		);
+	});
+
+	it("compacts and resumes a recoverable length truncation", () => {
+		const harness = makeExtensionHarness();
+		emitTurn(
+			harness,
+			assistantMessage({ stopReason: "length", usage: { input: 500, output: 50 } }),
+		);
+
+		expect(harness.compactions).toHaveLength(1);
+		completeCompaction(harness);
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			EXPECTED_CONTINUATION,
+			EXPECTED_CONTINUATION_OPTIONS,
+		);
+	});
+
+	it("compacts a successful silent overflow without repeating completed work", () => {
+		const harness = makeExtensionHarness();
+		emitTurn(harness, assistantMessage({ usage: { input: 1_001, output: 50 } }));
+
+		expect(harness.compactions).toHaveLength(1);
+		expect(harness.compactions[0].customInstructions).toBe(SEMANTIC_COMPACTION_FOCUS);
+		completeCompaction(harness);
+		expect(harness.sendMessage).not.toHaveBeenCalled();
+	});
+
+	it("ignores model-mismatched and ordinary provider failures", () => {
+		const harness = makeExtensionHarness();
+		emitTurn(
+			harness,
+			assistantMessage({
+				provider: "old-provider",
+				stopReason: "error",
+				errorMessage: "prompt is too long: 1100 tokens > 1000 maximum",
+			}),
+		);
+		emitTurn(
+			harness,
+			assistantMessage({ stopReason: "error", errorMessage: "service unavailable" }),
+		);
+		expect(harness.compactions).toHaveLength(0);
+	});
+
+	it("does not retry a second consecutive overflow indefinitely", () => {
+		const harness = makeExtensionHarness();
+		const overflow = assistantMessage({
+			stopReason: "error",
+			errorMessage: "prompt is too long: 1100 tokens > 1000 maximum",
+		});
+		emitTurn(harness, overflow);
+		completeCompaction(harness);
+		emitTurn(harness, overflow);
+
+		expect(harness.compactions).toHaveLength(1);
+		expect(harness.sendMessage).toHaveBeenCalledTimes(1);
+	});
+
+	it("allows overflow recovery again after a new user message", () => {
+		const harness = makeExtensionHarness();
+		const overflow = assistantMessage({
+			stopReason: "error",
+			errorMessage: "prompt is too long: 1100 tokens > 1000 maximum",
+		});
+		emitTurn(harness, overflow);
+		completeCompaction(harness);
+		emitTurn(harness, overflow);
+		harness.handlers.get("message_start")?.(
+			{ type: "message_start", message: { role: "user", content: "Try again" } },
+			harness.ctx,
+		);
+		emitTurn(harness, overflow);
+
+		expect(harness.compactions).toHaveLength(2);
+	});
+
+	it("allows overflow recovery again after a successful response", () => {
+		const harness = makeExtensionHarness();
+		const overflow = assistantMessage({
+			stopReason: "error",
+			errorMessage: "prompt is too long: 1100 tokens > 1000 maximum",
+		});
+		emitTurn(harness, overflow);
+		completeCompaction(harness);
+		emitTurn(harness, assistantMessage());
+		emitTurn(harness, overflow);
+
+		expect(harness.compactions).toHaveLength(2);
+	});
+
+	it("does not treat an aborted response as a successful guard reset", () => {
+		const harness = makeExtensionHarness();
+		const overflow = assistantMessage({
+			stopReason: "error",
+			errorMessage: "prompt is too long: 1100 tokens > 1000 maximum",
+		});
+		emitTurn(harness, overflow);
+		completeCompaction(harness);
+		emitTurn(harness, assistantMessage({ stopReason: "aborted" }));
+		emitTurn(harness, overflow);
+
+		expect(harness.compactions).toHaveLength(1);
+	});
+
+	it("clears the in-progress guard after failed compaction", () => {
+		const harness = makeExtensionHarness({
+			usage: { tokens: 800, contextWindow: 1_000, percent: 80 },
+		});
+		emitTurn(harness, assistantMessage({ stopReason: "toolUse" }), [{}]);
+		failCompaction(harness);
+		emitTurn(harness, assistantMessage({ stopReason: "toolUse" }), [{}]);
+
+		expect(harness.compactions).toHaveLength(2);
+	});
+
+	it("resets all guards on session shutdown", () => {
+		const harness = makeExtensionHarness();
+		const overflow = assistantMessage({
+			stopReason: "error",
+			errorMessage: "prompt is too long: 1100 tokens > 1000 maximum",
+		});
+		emitTurn(harness, overflow);
+		completeCompaction(harness);
+		emitTurn(harness, overflow);
+		harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "reload" }, harness.ctx);
+		emitTurn(harness, overflow);
+
+		expect(harness.compactions).toHaveLength(2);
 	});
 });
 

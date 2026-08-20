@@ -1,5 +1,11 @@
 import { join } from "node:path";
 import {
+	isContextOverflow,
+	isRecoverableLength,
+	type AssistantMessage,
+	type Model,
+} from "@earendil-works/pi-ai";
+import {
 	CONFIG_DIR_NAME,
 	getAgentDir,
 	type ContextUsage,
@@ -20,6 +26,54 @@ import { isRecord, readSettingsDocument, writeSettingsDocument } from "../_share
 const CONTINUE_MESSAGE = "Continue the task using the compacted context.";
 const CONTINUE_CUSTOM_TYPE = "auto-compact-continue";
 
+export const SEMANTIC_COMPACTION_FOCUS = `
+Create a loss-aware handoff for continuing the task.
+
+Prioritize:
+- The latest user objective, requirements, corrections, and acceptance criteria.
+- Confirmed repository state, distinguished from planned or assumed work.
+- Files, symbols, commands, test results, and exact important errors.
+- Key decisions and their rationale.
+- Failed approaches and why they failed.
+- Current blockers, unresolved questions, and the exact next action.
+
+Rules:
+- Later user corrections supersede earlier instructions.
+- Do not claim work is complete without supporting tool or test evidence.
+- Preserve uncertainty instead of guessing.
+- Remove verbose reasoning and obsolete conversational detail.
+`;
+
+export type OverflowCompactionAction = "compact-and-resume" | "compact";
+
+/**
+ * Classify provider responses that need extension-owned overflow recovery.
+ * Responses from a previously selected model are ignored so stale errors cannot
+ * compact a session after the user switches models.
+ */
+export function classifyOverflowCompaction(
+	message: { role: string },
+	model: Model<any> | undefined,
+): OverflowCompactionAction | undefined {
+	if (message.role !== "assistant" || !model) return undefined;
+
+	const assistantMessage = message as AssistantMessage;
+	if (
+		assistantMessage.provider !== model.provider ||
+		assistantMessage.model !== model.id
+	) {
+		return undefined;
+	}
+
+	if (isContextOverflow(assistantMessage, model.contextWindow)) {
+		return assistantMessage.stopReason === "stop" ? "compact" : "compact-and-resume";
+	}
+	if (isRecoverableLength(assistantMessage, model.maxTokens)) {
+		return "compact-and-resume";
+	}
+	return undefined;
+}
+
 /**
  * Whether compaction should run now, given the current context usage.
  * Returns false when usage is unknown (undefined, null tokens, or a
@@ -37,9 +91,9 @@ export function shouldCompactNow(
 
 /**
  * Veto Pi's native auto-compaction while letting manual `/compact` and our own
- * extension-triggered compaction pass. Native paths are "threshold" (post-run
- * check) and "overflow" (context overflow recovery); our own compaction and
- * `/compact` both appear as "manual".
+ * extension-triggered compaction pass. Both native paths are blocked because
+ * this extension owns pre-emptive and overflow compaction; extension compaction
+ * and `/compact` both appear as "manual".
  */
 export function vetoNativeCompaction(
 	reason: "manual" | "threshold" | "overflow",
@@ -81,10 +135,29 @@ export function disableNativeCompactionInFiles(settingsPaths: readonly string[])
 
 export default function autoCompactExtension(pi: ExtensionAPI): void {
 	let compactionInProgress = false;
+	let overflowRecoveryAttempted = false;
+
+	const sendContinuation = (ctx: { isIdle(): boolean }): void => {
+		if (!ctx.isIdle()) return;
+		pi.sendMessage(
+			{
+				customType: CONTINUE_CUSTOM_TYPE,
+				content: CONTINUE_MESSAGE,
+				display: false,
+			},
+			{ deliverAs: "followUp", triggerTurn: true },
+		);
+	};
 
 	// Runtime enforcement of the native auto-compact veto. Works immediately,
 	// before the settings-file change is applied by a reload.
 	pi.on("session_before_compact", (event) => vetoNativeCompaction(event.reason));
+
+	// A real user message starts a new recovery budget. The hidden continuation
+	// is a custom message, so it does not accidentally reset this guard.
+	pi.on("message_start", (event) => {
+		if (event.message.role === "user") overflowRecoveryAttempted = false;
+	});
 
 	// Persist the disabled native auto-compact setting on every session start,
 	// in both the global agent settings and the project settings (project
@@ -100,29 +173,47 @@ export default function autoCompactExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	// Mid-task compaction at the loop boundary: fires after each model response
-	// plus tool results, before the next model call. When the context is at or
-	// above the pre-emptive threshold, abort the run, compact, and resume the
-	// same turn with the compacted context via a hidden continue message.
+	// Mid-task compaction at the loop boundary: recover provider overflow first,
+	// even when no tools ran. Otherwise, when context is at or above the
+	// pre-emptive threshold after tool results, compact and resume the same turn.
 	pi.on("turn_end", (event, ctx) => {
+		const overflowAction = classifyOverflowCompaction(event.message, ctx.model);
+		if (
+			event.message.role === "assistant" &&
+			(event.message.stopReason === "stop" || event.message.stopReason === "toolUse")
+		) {
+			overflowRecoveryAttempted = false;
+		}
+
 		if (compactionInProgress) return;
+		if (overflowAction) {
+			const shouldResume = overflowAction === "compact-and-resume";
+			if (shouldResume && overflowRecoveryAttempted) return;
+			if (shouldResume) overflowRecoveryAttempted = true;
+
+			compactionInProgress = true;
+			ctx.compact({
+				customInstructions: SEMANTIC_COMPACTION_FOCUS,
+				onComplete: () => {
+					compactionInProgress = false;
+					if (shouldResume) sendContinuation(ctx);
+				},
+				onError: () => {
+					compactionInProgress = false;
+				},
+			});
+			return;
+		}
+
 		if (event.toolResults.length === 0) return; // run is ending; between-turns path handles it
 		if (!shouldCompactNow(ctx.getContextUsage())) return;
 
 		compactionInProgress = true;
 		ctx.compact({
+			customInstructions: SEMANTIC_COMPACTION_FOCUS,
 			onComplete: () => {
 				compactionInProgress = false;
-				if (ctx.isIdle()) {
-					pi.sendMessage(
-						{
-							customType: CONTINUE_CUSTOM_TYPE,
-							content: CONTINUE_MESSAGE,
-							display: false,
-						},
-						{ deliverAs: "followUp", triggerTurn: true },
-					);
-				}
+				sendContinuation(ctx);
 			},
 			onError: () => {
 				compactionInProgress = false;
@@ -141,6 +232,7 @@ export default function autoCompactExtension(pi: ExtensionAPI): void {
 		compactionInProgress = true;
 		await new Promise<void>((resolve) => {
 			ctx.compact({
+				customInstructions: SEMANTIC_COMPACTION_FOCUS,
 				onComplete: () => resolve(),
 				onError: () => resolve(),
 			});
@@ -148,8 +240,9 @@ export default function autoCompactExtension(pi: ExtensionAPI): void {
 		compactionInProgress = false;
 	});
 
-	// Cleanup: never leave the in-progress flag set across sessions.
+	// Cleanup: never carry in-memory compaction state across sessions.
 	pi.on("session_shutdown", () => {
 		compactionInProgress = false;
+		overflowRecoveryAttempted = false;
 	});
 }

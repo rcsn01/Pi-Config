@@ -1,6 +1,13 @@
 {
 	"version": 1,
 	"extensions": {
+		"auto-compact": {
+			"displayName": "Auto Compact",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"config-profiles": {
 			"displayName": "Settings Profiles",
 			"pack": "core",
