@@ -165,7 +165,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
-		ctx.ui.setStatus("fleet", fleetState.active ? "🚢 FLEET" : undefined);
+		ctx.ui.setStatus("fleet", fleetState.active ? "fleet" : undefined);
 	});
 
 	pi.on("before_agent_start", async (event) => {

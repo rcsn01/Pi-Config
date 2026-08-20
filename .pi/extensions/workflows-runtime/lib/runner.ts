@@ -171,7 +171,7 @@ export class WorkflowRun {
 			}
 			throw error;
 		} finally {
-			this.commandCtx.ui.setStatus?.("workflow", "");
+			this.commandCtx.ui.setStatus?.("workflow", undefined);
 		}
 	}
 
@@ -357,7 +357,7 @@ export class WorkflowRun {
 	}
 
 	private updateStatus(): void {
-		this.commandCtx.ui.setStatus?.("workflow", `${this.entry.name}: ${this.state.currentPhase || "running"} · ${this.state.agentsCompleted}/${this.state.agentsStarted} agents · ${this.state.tokens} tok`);
+		this.commandCtx.ui.setStatus?.("workflow", `${this.entry.name} · ${this.state.currentPhase || "running"} · ${this.state.agentsCompleted}/${this.state.agentsStarted} agents`);
 	}
 
 	private async prepareAgentTarget(options: WorkflowAgentOptions): Promise<{ cwd: string; worktree?: unknown }> {

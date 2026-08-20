@@ -14,6 +14,7 @@ import type {
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
+import { UI_GLYPHS } from "../_shared/ui-style.ts";
 import {
 	applyModelSelection,
 	usesDefaultSentinel,
@@ -126,15 +127,15 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		const ctx = runtimeContext;
 		if (!ctx) return;
 		if (status.phase === "warming") {
-			ctx.ui.setStatus("plan-runtime", "⏳ sandbox");
+			ctx.ui.setStatus("plan-runtime", `${UI_GLYPHS.running} sandbox`);
 			return;
 		}
 		if (status.phase === "disposing") {
-			ctx.ui.setStatus("plan-runtime", "⏳ sandbox cleanup");
+			ctx.ui.setStatus("plan-runtime", `${UI_GLYPHS.running} sandbox cleanup`);
 			return;
 		}
 		if (status.phase === "failed") {
-			ctx.ui.setStatus("plan-runtime", "⚠ sandbox");
+			ctx.ui.setStatus("plan-runtime", `${UI_GLYPHS.error} sandbox`);
 			if (isPlanMode(planState)) {
 				ctx.ui.notify(
 					`Plan Mode remains active, but isolated command execution is unavailable: ${status.error instanceof Error ? status.error.message : String(status.error)}`,
@@ -468,7 +469,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		}
 		beginModeTransition(ctx);
 		modeTransition = "entering";
-		ctx.ui.setStatus("plan", "📋 plan starting");
+		ctx.ui.setStatus("plan", "plan starting");
 		const transition = enqueueLifecycle(() => enterPlanModeInternal(ctx, prompt));
 		modeTransitionPromise = transition;
 		try {
@@ -490,7 +491,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		}
 		beginModeTransition(ctx);
 		modeTransition = "exiting";
-		ctx.ui.setStatus("plan", "📋 plan exiting");
+		ctx.ui.setStatus("plan", "plan exiting");
 		const transition = enqueueLifecycle(() => exitPlanModeInternal(ctx));
 		modeTransitionPromise = transition;
 		try {

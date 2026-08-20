@@ -71,14 +71,7 @@ export default function (pi: ExtensionAPI) {
 	// ── Status Widget ─────────────────────────────────────────────────────
 
 	pi.on("turn_end", async (_event, ctx) => {
-		const labels: Record<string, string | undefined> = {
-			none: undefined,
-			concise: "💬 concise",
-			detailed: "📖 detailed",
-			friendly: "😊 friendly",
-			pragmatic: "🎯 pragmatic",
-		};
-		ctx.ui.setStatus("personality", labels[personality.style]);
+		ctx.ui.setStatus("personality", personality.style === "none" ? undefined : personality.style);
 	});
 
 	// ── Inject into system prompt ─────────────────────────────────────────

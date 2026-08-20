@@ -23,7 +23,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { registerToolErrorHandler, renderToolSummary } from "../_shared/tool-result-ui.ts";
-import { UI_GLYPHS } from "../_shared/ui-style.ts";
+import { fitUiLines, UI_GLYPHS } from "../_shared/ui-style.ts";
 import { buildActiveTodoPrompt } from "./todo-prompt.ts";
 import {
 	applyTodoUpdate,
@@ -268,21 +268,26 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const vm = buildTodoViewModel(todos, false);
-		const counts = vm.counts;
-		const display = selectWidgetTodos(vm);
-		const countParts: string[] = [];
-		if (counts.in_progress) countParts.push(`${counts.in_progress} active`);
-		if (counts.pending) countParts.push(`${counts.pending} pending`);
-		if (counts.completed) countParts.push(`${counts.completed} done`);
-		if (vm.nonCancelled.length > display.length) countParts.push(`showing ${display.length}/${vm.nonCancelled.length}`);
+		ctx.ui.setWidget("todo-list", (_tui, theme) => ({
+			render: (width: number) => {
+				const safeWidth = Math.max(0, width);
+				const vm = buildTodoViewModel(todos, false);
+				const counts = vm.counts;
+				const display = selectWidgetTodos(vm);
+				const countParts: string[] = [];
+				if (counts.in_progress) countParts.push(`${counts.in_progress} active`);
+				if (counts.pending) countParts.push(`${counts.pending} pending`);
+				if (counts.completed) countParts.push(`${counts.completed} done`);
+				if (vm.nonCancelled.length > display.length) countParts.push(`showing ${display.length}/${vm.nonCancelled.length}`);
 
-		const lines = [`Todos ${countParts.join(" · ")}`];
-		for (const t of display) {
-			const explanation = t.explanation && t.status !== "pending" ? ` - ${t.explanation.slice(0, 40)}` : "";
-			lines.push(`${statusIcon(t.status)} #${t.id} ${t.text}${explanation}`);
-		}
-		ctx.ui.setWidget("todo-list", lines);
+				const lines = [
+					theme.fg("accent", theme.bold("Todos")) + theme.fg("muted", ` ${countParts.join(" · ")}`),
+					...display.map((todo) => renderTodoLine(todo, theme, 40)),
+				];
+				return fitUiLines(lines, safeWidth);
+			},
+			invalidate: () => {},
+		}));
 	}
 
 	// ── Lifecycle hooks to keep widget in sync ──────────────────────────────

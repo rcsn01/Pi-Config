@@ -90,10 +90,10 @@ class GoalStatusWidget {
 			lines.push(th.fg("dim", "  No active goal. Use /goal <objective> to set one."));
 		} else {
 			const statusIcon = this.goal.status === "active"
-				? th.fg("accent", "●")
+				? th.fg("accent", UI_GLYPHS.checked)
 				: this.goal.status === "paused"
 					? th.fg("warning", "⏸")
-					: th.fg("success", "✓");
+					: th.fg("success", UI_GLYPHS.confirm);
 
 			const statusLabel = this.goal.status === "active"
 				? th.fg("accent", "ACTIVE")
@@ -130,13 +130,13 @@ class GoalStatusWidget {
 			// Completion summary
 			if (this.goal.completionSummary) {
 				lines.push("");
-				lines.push(truncateToWidth(`  ${th.fg("success", "✓ ")}${th.fg("muted", this.goal.completionSummary)}`, width));
+				lines.push(truncateToWidth(`  ${th.fg("success", `${UI_GLYPHS.confirm} `)}${th.fg("muted", this.goal.completionSummary)}`, width));
 			}
 
 			// Help hint
 			lines.push("");
 			lines.push(truncateToWidth(
-				`  ${th.fg("dim", "/goal pause | resume | clear  •  Press Esc to dismiss")}`,
+				`  ${th.fg("dim", "/goal pause | resume | clear  ·  Press Esc to dismiss")}`,
 				width,
 			));
 		}
@@ -162,6 +162,26 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	let goal: GoalState | null = null;
+
+	// ── Goal Status Widget ────────────────────────────────────────────────
+
+	let goalWidget: GoalStatusWidget | undefined;
+
+	function updateGoalWidget(ctx: ExtensionContext): void {
+		if (!ctx.hasUI) return;
+		if (!goal || goal.status === "cleared") {
+			ctx.ui.setWidget("goal-status", undefined);
+			goalWidget = undefined;
+			return;
+		}
+		ctx.ui.setWidget("goal-status", (_tui, theme) => {
+			goalWidget = new GoalStatusWidget(goal, theme, () => {
+				ctx.ui.setWidget("goal-status", undefined);
+				goalWidget = undefined;
+			});
+			return goalWidget;
+		});
+	}
 
 	// ── State Reconstruction ────────────────────────────────────────────
 
@@ -191,8 +211,14 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Lifecycle Events ────────────────────────────────────────────────
 
-	pi.on("session_start", async (_event, ctx) => reconstructState(ctx));
-	pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
+	pi.on("session_start", async (_event, ctx) => {
+		reconstructState(ctx);
+		updateGoalWidget(ctx);
+	});
+	pi.on("session_tree", async (_event, ctx) => {
+		reconstructState(ctx);
+		updateGoalWidget(ctx);
+	});
 
 	// Inject goal context into the system prompt
 	pi.on("before_agent_start", async (event, _ctx) => {
@@ -212,6 +238,7 @@ export default function (pi: ExtensionAPI) {
 
 	// Show goal status in a widget
 	pi.on("turn_end", async (_event, ctx) => {
+		updateGoalWidget(ctx);
 		if (!goal || goal.status === "cleared") return;
 
 		// If goal was just completed, notify
@@ -385,6 +412,7 @@ export default function (pi: ExtensionAPI) {
 				goal.status = "paused";
 				persistGoal("pause");
 				ctx.ui.notify(`Goal paused: "${goal.objective}"`, "info");
+				updateGoalWidget(ctx);
 				return;
 			}
 
@@ -406,6 +434,7 @@ export default function (pi: ExtensionAPI) {
 				goal.status = "active";
 				persistGoal("resume");
 				ctx.ui.notify(`Goal resumed: "${goal.objective}"`, "info");
+				updateGoalWidget(ctx);
 				return;
 			}
 
@@ -423,6 +452,7 @@ export default function (pi: ExtensionAPI) {
 				goal.objective = nextObjective;
 				persistGoal("set");
 				ctx.ui.notify(`Goal updated: ${nextObjective}`, "info");
+				updateGoalWidget(ctx);
 				return;
 			}
 
@@ -435,6 +465,7 @@ export default function (pi: ExtensionAPI) {
 				goal.checkpointProgress = trimmedArgs.slice("checkpoint ".length).trim();
 				persistGoal("checkpoint");
 				ctx.ui.notify(`Checkpoint saved: ${goal.checkpointProgress}`, "info");
+				updateGoalWidget(ctx);
 				return;
 			}
 
@@ -462,6 +493,7 @@ export default function (pi: ExtensionAPI) {
 					wasCompleted ? "Completed goal cleared." : "Goal cleared.",
 					"info",
 				);
+				updateGoalWidget(ctx);
 				return;
 			}
 
@@ -491,6 +523,7 @@ export default function (pi: ExtensionAPI) {
 			persistGoal("set");
 
 			ctx.ui.notify(`Goal set: "${trimmedArgs}"`, "info");
+			updateGoalWidget(ctx);
 
 			// Kick off the agent to start working on the goal immediately.
 			// sendUserMessage triggers a turn, and the goal prompt injected

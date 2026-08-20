@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import goalExtension from "./index.ts";
 
 function theme() {
@@ -23,7 +24,7 @@ function harness(branch: any[] = []) {
 	};
 	const ctx: any = {
 		sessionManager: { getBranch: () => branch },
-		ui: { notify: vi.fn() },
+		ui: { notify: vi.fn(), setWidget: vi.fn() },
 		hasUI: true,
 	};
 	goalExtension(pi as any);
@@ -68,5 +69,40 @@ describe("goal tool rendering and failure states", () => {
 		})).toEqual({ isError: true });
 		const rendered = tool.renderResult(result, { expanded: false, isPartial: false }, theme(), { isError: true });
 		expect(rendered.render(80).join("\n")).toContain("✗ Cannot checkpoint");
+	});
+});
+
+describe("goal status widget", () => {
+	it("mounts a themed, width-safe goal widget while a goal is active", async () => {
+		const { handlers, ctx } = harness([{
+			type: "custom",
+			customType: "goal-state",
+			data: {
+				action: "set",
+				state: { objective: "Working through the release", status: "active", createdAt: 1, updatedAt: 1 },
+			},
+		}]);
+
+		await handlers.get("session_start")({}, ctx);
+		expect(ctx.ui.setWidget).toHaveBeenCalledWith("goal-status", expect.any(Function));
+
+		const factory = ctx.ui.setWidget.mock.calls.at(-1)?.[1];
+		const widget = factory({}, theme());
+		for (const width of [20, 40, 80]) {
+			const lines = widget.render(width);
+			expect(lines.length).toBeGreaterThan(0);
+			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+		}
+
+		const output = widget.render(80).join("\n");
+		expect(output).toContain("Working through the release");
+		expect(output).toContain("Goal");
+	});
+
+	it("clears the goal widget when no goal is active", async () => {
+		const { handlers, ctx } = harness();
+
+		await handlers.get("session_start")({}, ctx);
+		expect(ctx.ui.setWidget).toHaveBeenCalledWith("goal-status", undefined);
 	});
 });

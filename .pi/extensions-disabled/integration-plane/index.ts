@@ -140,7 +140,7 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	pi.on("turn_end", async (_event, ctx) => {
-		ctx.ui.setStatus("plane", planeGuidanceActive ? "✈ PLANE" : undefined)
+		ctx.ui.setStatus("plane", planeGuidanceActive ? "plane" : undefined);
 	})
 
 	pi.registerTool({

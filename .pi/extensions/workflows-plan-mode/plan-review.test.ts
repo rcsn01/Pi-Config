@@ -445,11 +445,11 @@ describe("plan review lifecycle", () => {
 	it("shows only the Plan Mode phase in the bottom status bar", async () => {
 		const harness = createHarness();
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		expect(harness.setStatus).toHaveBeenCalledWith("plan", "📋 plan");
+		expect(harness.setStatus).toHaveBeenCalledWith("plan", "plan");
 
 		await initializeAndExtract(harness, "# Status Bar Plan");
 		await harness.emit("turn_end");
-		expect(harness.setStatus).toHaveBeenLastCalledWith("plan", "📋 plan review");
+		expect(harness.setStatus).toHaveBeenLastCalledWith("plan", "plan review");
 		expect(harness.setStatus.mock.calls.flat().join(" ")).not.toContain("/");
 	});
 });

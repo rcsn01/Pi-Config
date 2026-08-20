@@ -1,12 +1,23 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { collectUsageSnapshot, normalizeContextUsage } from "../_shared/usage.ts";
 import { isRecord, writeSettingsDocument } from "../_shared/settings-document.ts";
 
-const STATUS_ORDER = ["profile", "approval-mode", "plan"];
+const STATUS_ORDER = ["profile", "approval-mode", "plan", "plan-runtime", "workflow", "side-mode"];
+
+/** Semantic theme status style per status key; unknown keys fall back to muted. */
+const STATUS_STYLES: Record<string, ThemeColor> = {
+	profile: "muted",
+	"approval-mode": "muted",
+	plan: "accent",
+	"plan-runtime": "warning",
+	workflow: "accent",
+	"side-mode": "accent",
+	advisor: "muted",
+};
 const KEYBINDINGS_FILENAME = "keybindings.json";
 const THINKING_CYCLE_KEY = "app.thinking.cycle";
 
@@ -60,10 +71,15 @@ function sanitizeStatusText(text: string): string {
 		.trim();
 }
 
+function styleStatus(theme: Theme, key: string, text: string): string {
+	return theme.fg(STATUS_STYLES[key] ?? "muted", text);
+}
+
 function formatExtensionStatusLine(
 	statuses: ReadonlyMap<string, string>,
 	width: number,
 	ellipsis: string,
+	theme: Theme,
 ): string {
 	const targetWidth = Math.max(0, width);
 	if (targetWidth === 0) return "";
@@ -78,12 +94,14 @@ function formatExtensionStatusLine(
 		.map(([key, text]) => [key, sanitizeStatusText(text)] as const)
 		.filter(([, text]) => Boolean(text));
 	const advisor = entries.find(([key]) => key === "advisor")?.[1];
-	const leftStatuses = entries.filter(([key]) => key !== "advisor").map(([, text]) => text);
+	const leftStatuses = entries
+		.filter(([key]) => key !== "advisor")
+		.map(([key, text]) => styleStatus(theme, key, text));
 	const left = leftStatuses.join(" | ");
 
 	if (!advisor) return truncateToWidth(left, targetWidth, ellipsis);
 
-	const advisorText = truncateToWidth(advisor, targetWidth, ellipsis);
+	const advisorText = truncateToWidth(styleStatus(theme, "advisor", advisor), targetWidth, ellipsis);
 	const advisorWidth = visibleWidth(advisorText);
 	if (advisorWidth >= targetWidth) return advisorText;
 	if (!left) return " ".repeat(targetWidth - advisorWidth) + advisorText;
@@ -201,6 +219,7 @@ function installFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
 					extensionStatuses,
 					width,
 					theme.fg("dim", "..."),
+					theme,
 				);
 				if (statusLine) lines.push(statusLine);
 			}

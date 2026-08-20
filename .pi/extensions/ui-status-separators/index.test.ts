@@ -22,7 +22,7 @@ afterAll(() => {
 	rmSync(testAgentDir, { recursive: true, force: true });
 });
 
-function renderFooter(statuses: ReadonlyMap<string, string>, width: number): string[] {
+function renderFooter(statuses: ReadonlyMap<string, string>, width: number, theme: any = { fg: (_color: string, text: string) => text }): string[] {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 	const setFooter = vi.fn();
 	const pi = {
@@ -47,7 +47,6 @@ function renderFooter(statuses: ReadonlyMap<string, string>, width: number): str
 
 	const factory = setFooter.mock.calls[0]?.[0];
 	if (!factory) throw new Error("Footer extension did not install a footer.");
-	const theme = { fg: (_color: string, text: string) => text };
 	const footerData = {
 		onBranchChange: () => () => {},
 		getGitBranch: () => null,
@@ -159,13 +158,51 @@ describe("keybinding provisioning", () => {
 describe("status footer", () => {
 	it("orders extension statuses and uses one separator between them", () => {
 		const statusLine = renderFooter(new Map([
-			["plan", "📋 plan"],
+			["plan", "plan"],
 			["other", "other"],
 			["approval-mode", "auto-review"],
 			["profile", "openai"],
 		]), 80)[2] ?? "";
 
-		expect(statusLine).toBe("openai | auto-review | 📋 plan | other");
+		expect(statusLine).toBe("openai | auto-review | plan | other");
+	});
+
+	it("orders plan-runtime, workflow, and side-mode explicitly", () => {
+		const statusLine = renderFooter(new Map([
+			["side-mode", "side mode"],
+			["other", "other"],
+			["workflow", "build · running · 1/3 agents"],
+			["plan-runtime", "⟳ sandbox"],
+			["plan", "plan"],
+		]), 120)[2] ?? "";
+
+		expect(statusLine).toBe("plan | ⟳ sandbox | build · running · 1/3 agents | side mode | other");
+	});
+
+	it("applies semantic styling per status key", () => {
+		const colors = new Map<string, string>();
+		const theme = {
+			fg: (color: string, text: string) => {
+				colors.set(color, (colors.get(color) ?? "") + text);
+				return text;
+			},
+		};
+		const statusLine = renderFooter(new Map([
+			["plan", "plan"],
+			["plan-runtime", "⟳ sandbox"],
+			["workflow", "build"],
+			["side-mode", "side mode"],
+			["profile", "openai"],
+			["advisor", "advisor(o/gpt-5.6-sol)"],
+		]), 120, theme)[2] ?? "";
+
+		expect(statusLine).toContain("plan");
+		expect(colors.get("accent")).toContain("plan");
+		expect(colors.get("accent")).toContain("build");
+		expect(colors.get("accent")).toContain("side mode");
+		expect(colors.get("warning")).toContain("⟳ sandbox");
+		expect(colors.get("muted")).toContain("openai");
+		expect(colors.get("muted")).toContain("advisor(o/gpt-5.6-sol)");
 	});
 
 	it("right-aligns the advisor status after other extension statuses", () => {
