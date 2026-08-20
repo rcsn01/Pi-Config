@@ -7,7 +7,6 @@ import {
 } from "@earendil-works/pi-ai";
 import {
 	CONFIG_DIR_NAME,
-	getAgentDir,
 	type ContextUsage,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
@@ -160,12 +159,14 @@ export default function autoCompactExtension(pi: ExtensionAPI): void {
 	});
 
 	// Persist the disabled native auto-compact setting on every session start,
-	// in both the global agent settings and the project settings (project
-	// settings override global settings, so both must be covered). Idempotent:
-	// no write or notify when already disabled.
+	// in the project settings only. Project settings override global settings,
+	// so the project-scoped flag is all that governs this project; writing
+	// globally as well used to pair with a global extension entry, but that
+	// only ever leaked the flag into unrelated projects where auto-compact
+	// does not run (native compaction silently disabled with no replacement).
+	// Idempotent: no write or notify when already disabled.
 	pi.on("session_start", (_event, ctx) => {
 		const written = disableNativeCompactionInFiles([
-			join(getAgentDir(), "settings.json"),
 			join(ctx.cwd, CONFIG_DIR_NAME, "settings.json"),
 		]);
 		if (written.length > 0) {
