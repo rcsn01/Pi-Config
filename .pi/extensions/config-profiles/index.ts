@@ -1,9 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
-import {
-	applyProfileModelSelection,
-	createProjectSettingsStore,
-} from "../ui-model-selector/apply-profile.ts";
+import { applySelectionFromDocument } from "../_shared/model-selection.ts";
+import { createProjectSettingsStore } from "../_shared/model-selection-store.ts";
 import { CONFIG_PROFILES_ENTRY_TYPE, sessionProfileName } from "../_shared/active-profile.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
@@ -130,7 +128,7 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 					try {
 						const document = store.readProfile(name);
 						const selection = document
-							? await applyProfileModelSelection(
+							? await applySelectionFromDocument(
 								pi,
 								ctx,
 								document,

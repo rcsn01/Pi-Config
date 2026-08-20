@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createProjectSettingsStore } from "./settings-store.ts";
+import { createProjectSettingsStore } from "./model-selection-store.ts";
 
 const roots: string[] = [];
 
@@ -10,7 +10,7 @@ function fixture(options: {
 	profile?: Record<string, unknown>;
 	settings?: Record<string, unknown>;
 } = {}) {
-	const root = mkdtempSync(join(tmpdir(), "ui-model-selector-"));
+	const root = mkdtempSync(join(tmpdir(), "model-selection-store-"));
 	roots.push(root);
 	const profilePath = join(root, "profiles", "focused.json");
 	const settingsPath = join(root, "settings.json");
