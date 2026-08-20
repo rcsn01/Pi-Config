@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	CONFIG_PROFILES_ENTRY_TYPE,
+	NON_RELOAD_REASON,
 	createSessionProfileResolver,
+	parseActiveProfileName,
 	profilePath,
 	readActiveProfileName,
 	sessionProfileName,
@@ -44,6 +46,14 @@ describe("active profile helpers", () => {
 		expect(readActiveProfileName(fixture({ configProfiles: "nope" }).settingsPath)).toBeUndefined();
 	});
 
+	it("parses the marker from a supplied settings document", () => {
+		expect(parseActiveProfileName({ configProfiles: { active: "focused" } })).toBe("focused");
+		expect(parseActiveProfileName({})).toBeUndefined();
+		expect(parseActiveProfileName({ configProfiles: { active: 3 } })).toBeUndefined();
+		expect(parseActiveProfileName({ configProfiles: "nope" })).toBeUndefined();
+		expect(parseActiveProfileName({ configProfiles: { active: "../bad" } })).toBeUndefined();
+	});
+
 	it("reads the last configProfiles session entry, validated", () => {
 		expect(sessionProfileName([])).toBeUndefined();
 		expect(sessionProfileName([entry("default")])).toBe("default");
@@ -60,7 +70,7 @@ describe("active profile helpers", () => {
 	});
 
 	describe("session profile resolver", () => {
-		it.each(["startup", "resume", "fork"])("prefers the session entry on %s", (reason) => {
+		it.each(["startup", "resume", "fork"] as const)("prefers the session entry on %s", (reason) => {
 			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
 			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
 
@@ -128,6 +138,63 @@ describe("active profile helpers", () => {
 				profilesDirectory: unmarked.profilesDirectory,
 			});
 			expect(unmarkedResolver.resolve([], "fork")).toBe(unmarked.settingsPath);
+		});
+		describe("resolveName", () => {
+			it("prefers the entry over the marker on non-reload boundaries", () => {
+				const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+				const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+
+				expect(resolver.resolveName([entry("default")], "startup")).toBe("default");
+				expect(resolver.resolveName([entry("default")], "fork")).toBe("default");
+			});
+
+			it("falls back to the marker when no entry binds", () => {
+				const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+				const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+
+				expect(resolver.resolveName([], "new")).toBe("focused");
+			});
+
+			it("falls back to the marker when the entry is invalid", () => {
+				const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+				const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+
+				expect(resolver.resolveName([entry("../bad")], "startup")).toBe("focused");
+			});
+
+			it("consults only the entry on reload", () => {
+				const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+				const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+
+				expect(resolver.resolveName([entry("default")], "reload")).toBe("default");
+				expect(resolver.resolveName([], "reload")).toBeUndefined();
+				expect(resolver.resolveName([entry("../bad")], "reload")).toBeUndefined();
+			});
+
+			it("returns undefined when nothing binds", () => {
+				const { settingsPath, profilesDirectory } = fixture({});
+				const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+
+				expect(resolver.resolveName([], "startup")).toBeUndefined();
+				expect(resolver.resolveName([], "fork")).toBeUndefined();
+			});
+
+			it("composes entry ?? marker for NON_RELOAD_REASON like any non-reload boundary", () => {
+				const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+				const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+
+				expect(resolver.resolveName([entry("default")], NON_RELOAD_REASON)).toBe("default");
+				expect(resolver.resolveName([], NON_RELOAD_REASON)).toBe("focused");
+			});
+
+			it("drives the derived path resolution", () => {
+				const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+				const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+
+				expect(resolver.resolve([entry("default")], "startup")).toBe(join(profilesDirectory, "default.json"));
+				expect(resolver.resolve([], "startup")).toBe(join(profilesDirectory, "focused.json"));
+				expect(resolver.resolve([], "reload")).toBe(settingsPath);
+			});
 		});
 	});
 });

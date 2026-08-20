@@ -53,6 +53,19 @@ describe("profile store", () => {
 		expect(store.loadActiveProfile()).toEqual({ name: "default", document: { model: "old", unknown: { nested: true } } });
 	});
 
+	it("honors a supplied settings document in getActiveProfile", () => {
+		const { store } = fixture();
+		expect(store.getActiveProfile({ configProfiles: { active: "focused" } })).toBe("focused");
+		expect(store.getActiveProfile({ configProfiles: { active: "../bad" } })).toBeUndefined();
+		expect(store.getActiveProfile({})).toBeUndefined();
+	});
+
+	it("throws when settings.json is missing and no document is supplied", () => {
+		const { root, store } = fixture();
+		rmSync(join(root, "settings.json"));
+		expect(() => store.getActiveProfile()).toThrow(/Cannot read/);
+	});
+
 	it("returns undefined without a valid active marker", () => {
 		for (const marker of [undefined, { active: "../bad" }, { active: 3 }]) {
 			const { store, writeProfile } = fixture(

@@ -185,6 +185,14 @@ describe("config profiles extension", () => {
 		);
 	});
 
+	it("clears the profile status on reload without a remembered entry", async () => {
+		const harness = createHarness({ active: "default" });
+		await harness.emit("session_start", "reload");
+		expect(harness.setStatus).toHaveBeenCalledWith("profile", undefined);
+		expect(harness.loadActiveProfile).not.toHaveBeenCalled();
+		expect(harness.appendEntry).not.toHaveBeenCalled();
+	});
+
 	it("publishes the remembered profile when the session tree changes", async () => {
 		const harness = createHarness({
 			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
@@ -426,6 +434,17 @@ describe("config profiles extension", () => {
 		expect(harness.readProfile).not.toHaveBeenCalled();
 		expect(harness.setModel).not.toHaveBeenCalled();
 		expect(harness.reload).not.toHaveBeenCalled();
+	});
+
+	it("follows a marker another session changed when this session never chose", async () => {
+		const harness = createHarness({ active: "focused" });
+		// Another session switches the marker after this session started; without
+		// a remembered entry the new marker is this session's live default.
+		writeFileSync(harness.settingsPath, `${JSON.stringify({ configProfiles: { active: "github" } }, null, 2)}\n`);
+		await harness.commands.get("profile").handler("github", harness.ctx);
+
+		expect(harness.notify).toHaveBeenCalledWith('Profile "github" is already active.', "info");
+		expect(harness.switchProfile).not.toHaveBeenCalled();
 	});
 
 	it("treats the session's own profile as already active even when the marker names another", async () => {

@@ -10,6 +10,7 @@ import {
 	PI_DIRECTORY,
 	PROFILES_DIRECTORY,
 	PROJECT_SETTINGS_PATH,
+	parseActiveProfileName,
 	profilePath as resolveProfilePath,
 	readActiveProfileName,
 	validateProfileName,
@@ -37,16 +38,6 @@ export interface ProfileStore {
 	loadActiveProfile(): ActiveProfile | undefined;
 	switchProfile(name: string): Promise<ProfileSwitchResult>;
 	profilePath(name: string): string;
-}
-
-function activeProfile(document: Record<string, unknown>): string | undefined {
-	const namespace = document[CONFIG_PROFILES_KEY];
-	if (!isRecord(namespace) || typeof namespace.active !== "string") return undefined;
-	try {
-		return validateProfileName(namespace.active);
-	} catch {
-		return undefined;
-	}
 }
 
 function withActiveProfile(document: Record<string, unknown>, name: string): Record<string, unknown> {
@@ -88,7 +79,7 @@ export function createProfileStore(options: {
 		},
 
 		getActiveProfile(settings) {
-			return activeProfile(settings ?? readSettingsDocument(settingsPath, { missing: "throw" }));
+			return parseActiveProfileName(settings ?? readSettingsDocument(settingsPath, { missing: "throw" }));
 		},
 
 		loadActiveProfile() {
@@ -105,7 +96,7 @@ export function createProfileStore(options: {
 			parseSettingsText(readFileSync(destinationPath, "utf-8"), destinationPath);
 			let changed = false;
 			await mutateSettingsDocument(settingsPath, (settings) => {
-				if (activeProfile(settings) === name) return settings;
+				if (parseActiveProfileName(settings) === name) return settings;
 				changed = true;
 				return withActiveProfile(settings, name);
 			});
