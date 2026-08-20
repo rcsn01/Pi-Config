@@ -1,4 +1,5 @@
-import type { ContextUsage, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ContextUsage, FileEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { PLAN_STATE_ENTRY_TYPE } from "./session-entries.ts";
 
 export interface SessionUsageTotals {
 	input: number;
@@ -102,12 +103,177 @@ function finalizeUsage(totals: SessionUsageTotals): SessionUsageTotals {
 	return totals;
 }
 
+export const GLOBAL_MODES = ["main", "plan", "subagent", "advisor", "guardian"] as const;
+export type GlobalMode = (typeof GLOBAL_MODES)[number];
+
+export const GLOBAL_MODE_LABELS: readonly { mode: GlobalMode; label: string }[] = [
+	{ mode: "main", label: "Main" },
+	{ mode: "plan", label: "Plan mode" },
+	{ mode: "subagent", label: "Subagent" },
+	{ mode: "advisor", label: "Advisor" },
+	{ mode: "guardian", label: "Guardian" },
+];
+
+/** One classified usage record. `model` is `provider/model` or "unknown". */
+export interface SessionUsageEntry {
+	id: string;
+	mode: GlobalMode;
+	model: string;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+	turns: number;
+}
+
+/** Resolve the mode a plan-mode-state entry activates; undefined = no change. */
+function planModeFromState(data: Record<string, unknown> | undefined): GlobalMode | undefined {
+	if (!data) return undefined;
+	if (data.mode === "plan") return "plan";
+	if (data.mode === "default") return "main";
+	if (data.active === true) return "plan";
+	if (data.active === false) return "main";
+	return undefined;
+}
+
+interface UsageEntryOptions {
+	/** Base turn count added to the usage-reported turns (assistant messages). */
+	turns?: number;
+	/** Keep the entry even when the usage record is missing entirely. */
+	keepWhenMissing?: boolean;
+}
+
+function usageEntry(
+	id: string,
+	mode: GlobalMode,
+	model: string | undefined,
+	usage: unknown,
+	options: UsageEntryOptions = {},
+): SessionUsageEntry | undefined {
+	const record = asRecord(usage);
+	if (!record && !options.keepWhenMissing) return undefined;
+	const cost = asRecord(record?.cost);
+	const entry: SessionUsageEntry = {
+		id,
+		mode,
+		model: model ?? "unknown",
+		input: finiteNonNegative(record?.input),
+		output: finiteNonNegative(record?.output),
+		cacheRead: finiteNonNegative(record?.cacheRead),
+		cacheWrite: finiteNonNegative(record?.cacheWrite),
+		cost: finiteNonNegative(cost ? cost.total : record?.cost),
+		turns: (options.turns ?? 0) + finiteNonNegative(record?.turns),
+	};
+	// Drop all-zero records (e.g. malformed usage): they carry no information.
+	// Assistant turns are kept even when empty because the turn itself counts.
+	if (!options.keepWhenMissing &&
+		entry.input === 0 && entry.output === 0 && entry.cacheRead === 0 && entry.cacheWrite === 0 &&
+		entry.cost === 0 && entry.turns === 0) {
+		return undefined;
+	}
+	return entry;
+}
+
+/**
+ * One classification pass over a session's entries — the single rule behind
+ * both the per-session snapshot (`collectUsageSnapshot`) and the global view
+ * (`buildGlobalUsageSnapshot`). Plan-mode turns are split out of main;
+ * subagent, advisor, and guardian usage is bucketed by tool/entry type;
+ * compaction and branch summaries follow the current mode. `model_change`
+ * entries repoint the current session model; assistant messages also track
+ * it. Nested subagent results get deterministic synthetic ids (`<entryId>:<i>`)
+ * so they dedup correctly across forked copies.
+ */
+export function classifySessionEntries(entries: readonly FileEntry[]): SessionUsageEntry[] {
+	const result: SessionUsageEntry[] = [];
+	const modeById = new Map<string, GlobalMode>();
+	let currentModel: string | undefined;
+
+	for (const entry of entries) {
+		const inherited = entry.type !== "session" && entry.parentId ? modeById.get(entry.parentId) : undefined;
+		let mode: GlobalMode = inherited ?? "main";
+		if (entry.type === "custom" && entry.customType === PLAN_STATE_ENTRY_TYPE) {
+			const fromState = planModeFromState(asRecord(entry.data));
+			if (fromState) mode = fromState;
+		}
+		modeById.set(entry.id, mode);
+
+		if (entry.type === "model_change") {
+			currentModel = modelKey(entry.provider, entry.modelId) ?? currentModel;
+			continue;
+		}
+
+		if (entry.type !== "message") {
+			if ((entry.type === "custom" || entry.type === "custom_message") &&
+				entry.customType === "auto-review-verdict") {
+				const data = entry.type === "custom_message" ? asRecord(entry.details) : asRecord(entry.data);
+				const verdict = usageEntry(entry.id, "guardian", modelName(data?.model) ?? currentModel, data?.usage);
+				if (verdict) result.push(verdict);
+			} else if (entry.type === "compaction" || entry.type === "branch_summary") {
+				const summary = usageEntry(entry.id, mode === "plan" ? "plan" : "main", currentModel, entry.usage);
+				if (summary) result.push(summary);
+			}
+			continue;
+		}
+
+		const message = entry.message;
+		if (message.role === "assistant") {
+			const assistantModel = modelKey(message.provider, message.model);
+			if (assistantModel) currentModel = assistantModel;
+			const assistant = usageEntry(
+				entry.id,
+				mode === "plan" ? "plan" : "main",
+				assistantModel ?? currentModel,
+				message.usage,
+				{ turns: 1, keepWhenMissing: true },
+			);
+			if (assistant) result.push(assistant);
+		} else if (message.role === "toolResult") {
+			if (message.toolName === "subagent") {
+				// Newer sessions persist aggregate tool usage at the message
+				// level; older sessions only have per-result usage in details.
+				// Never add both.
+				if (message.usage !== undefined) {
+					const aggregate = usageEntry(entry.id, "subagent", currentModel, message.usage);
+					if (aggregate) result.push(aggregate);
+				} else {
+					nestedSubagentResults(message.details).forEach((nestedResult, index) => {
+						const nested = usageEntry(
+							`${entry.id}:${index}`,
+							"subagent",
+							modelName(nestedResult.model) ?? currentModel,
+							nestedResult.usage,
+						);
+						if (nested) result.push(nested);
+					});
+				}
+			} else if (message.toolName === "advisor") {
+				const advisor = usageEntry(
+					entry.id,
+					"advisor",
+					modelName(asRecord(message.details)?.model) ?? currentModel,
+					message.usage,
+				);
+				if (advisor) result.push(advisor);
+			} else {
+				const tool = usageEntry(entry.id, "main", currentModel, message.usage);
+				if (tool) result.push(tool);
+			}
+		}
+	}
+
+	return result;
+}
+
 /**
  * Classify every entry once and accumulate session totals, per-category totals
  * (subagent, advisor, guardian), and per-model attribution into one snapshot.
- * Active-branch usage is attributed to the model that produced or initiated it,
- * split by usage category. Model-specific metadata wins for delegated work; the
- * current session model is the fallback for older entries without that metadata.
+ * `session` is the cumulative union of all usage — subagent, advisor, and
+ * guardian contributions are also counted in `session` — so the four totals
+ * must never be summed together. `models` attributes the same usage to the
+ * model that produced it; main/plan records collapse into the session
+ * category. The classification rule itself lives in `classifySessionEntries`.
  */
 export function collectUsageSnapshot(entries: readonly SessionEntry[]): UsageSnapshot {
 	const session = emptyUsageTotals();
@@ -115,76 +281,43 @@ export function collectUsageSnapshot(entries: readonly SessionEntry[]): UsageSna
 	const advisor = emptyUsageTotals();
 	const guardian = emptyUsageTotals();
 	const byModel = new Map<string, ModelUsageRow>();
-	let currentModel: string | undefined;
 
-	const addToModel = (model: string | undefined, category: ModelUsageCategory, value: unknown, includeTurns = false): void => {
-		const key = model ?? "unknown";
-		let row = byModel.get(key);
+	const addToModel = (record: SessionUsageEntry, includeTurns: boolean): void => {
+		const category: ModelUsageCategory = record.mode === "main" || record.mode === "plan"
+			? "session"
+			: record.mode;
+		let row = byModel.get(record.model);
 		if (!row) {
 			row = {
-				model: key,
+				model: record.model,
 				session: emptyUsageTotals(),
 				subagent: emptyUsageTotals(),
 				advisor: emptyUsageTotals(),
 				guardian: emptyUsageTotals(),
 			};
-			byModel.set(key, row);
+			byModel.set(record.model, row);
 		}
-		addUsage(row[category], value, includeTurns);
+		addUsage(row[category], record, includeTurns);
 	};
 
-	for (const entry of entries) {
-		if (entry.type === "model_change") {
-			currentModel = modelKey(entry.provider, entry.modelId) ?? currentModel;
-			continue;
-		}
-
-		if (entry.type === "message") {
-			if (entry.message.role === "assistant") {
-				const assistantModel = modelKey(entry.message.provider, entry.message.model);
-				if (assistantModel) currentModel = assistantModel;
-				addUsage(session, entry.message.usage);
-				session.turns++;
-				addToModel(currentModel, "session", entry.message.usage);
-				byModel.get(currentModel ?? "unknown")!.session.turns++;
-			} else if (entry.message.role === "toolResult") {
-				if (entry.message.toolName === "subagent") {
-					// Newer sessions persist aggregate tool usage at the message
-					// level. Older sessions only have per-result usage in details;
-					// never add both.
-					if (entry.message.usage !== undefined) {
-						addUsage(session, entry.message.usage);
-						addUsage(subagent, entry.message.usage, true);
-						addToModel(currentModel, "subagent", entry.message.usage, true);
-					} else {
-						for (const result of nestedSubagentResults(entry.message.details)) {
-							addUsage(session, result.usage);
-							addUsage(subagent, result.usage, true);
-							addToModel(modelName(result.model) ?? currentModel, "subagent", result.usage, true);
-						}
-					}
-				} else {
-					addUsage(session, entry.message.usage);
-					if (entry.message.toolName === "advisor") {
-						addUsage(advisor, entry.message.usage);
-						const delegatedModel = modelName(asRecord(entry.message.details)?.model);
-						addToModel(delegatedModel ?? currentModel, "advisor", entry.message.usage);
-					} else {
-						addToModel(currentModel, "session", entry.message.usage);
-					}
-				}
-			}
-			continue;
-		}
-
-		if ((entry.type === "custom_message" || entry.type === "custom") && entry.customType === "auto-review-verdict") {
-			const data = entry.type === "custom_message" ? asRecord(entry.details) : asRecord(entry.data);
-			addUsage(session, data?.usage);
-			addUsage(guardian, data?.usage);
-			addToModel(modelName(data?.model) ?? currentModel, "guardian", data?.usage);
-		} else if (entry.type === "compaction" || entry.type === "branch_summary") {
-			addUsage(session, entry.usage);
-			addToModel(currentModel, "session", entry.usage);
+	for (const record of classifySessionEntries(entries)) {
+		// The union counts assistant turns only; subagent turns are the
+		// reported ones, attributed to the subagent category, never the union.
+		if (record.mode === "main" || record.mode === "plan") {
+			addUsage(session, record, true);
+			addToModel(record, true);
+		} else if (record.mode === "subagent") {
+			addUsage(session, record);
+			addUsage(subagent, record, true);
+			addToModel(record, true);
+		} else if (record.mode === "advisor") {
+			addUsage(session, record);
+			addUsage(advisor, record);
+			addToModel(record, false);
+		} else {
+			addUsage(session, record);
+			addUsage(guardian, record);
+			addToModel(record, false);
 		}
 	}
 
