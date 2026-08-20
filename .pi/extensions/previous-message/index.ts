@@ -33,8 +33,13 @@
  *   shared module state (which is per-extension under the extension loader).
  */
 
-import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { EditorTheme, KeybindingsManager, TUI } from "@earendil-works/pi-tui";
+import {
+	CustomEditor,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type KeybindingsManager,
+} from "@earendil-works/pi-coding-agent";
+import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -170,6 +175,13 @@ class PreviousMessageEditor extends CustomEditor {
 	private onRecord?: (text: string) => void;
 	/** ui-model-selector's model control handler (undefined when absent). */
 	private modelCommandHandler?: ModelCommandHandler;
+	/** App-level manager injected into CustomEditor (whose copy is private). */
+	private readonly appKeybindings: KeybindingsManager;
+
+	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
+		super(tui, theme, keybindings);
+		this.appKeybindings = keybindings;
+	}
 
 	attach(
 		entries: string[],
@@ -202,7 +214,7 @@ class PreviousMessageEditor extends CustomEditor {
 		// Silent /model routing (inherited from ui-model-selector's editor).
 		if (
 			this.modelCommandHandler &&
-			this.keybindings.matches(data, "tui.input.submit")
+			this.appKeybindings.matches(data, "tui.input.submit")
 		) {
 			const args = parseModelCommand(this.getText());
 			if (args !== undefined) {
@@ -213,7 +225,7 @@ class PreviousMessageEditor extends CustomEditor {
 		}
 		// ↑ — enter or continue rollback mode. Only a blank editor enters it;
 		// once inside, ↑ always walks back regardless of cursor position.
-		if (this.keybindings.matches(data, "tui.editor.cursorUp")) {
+		if (this.appKeybindings.matches(data, "tui.editor.cursorUp")) {
 			if (this.isBlank() || this.rollbackIndex >= 0) {
 				this.navigateRollback(-1);
 				return;
@@ -222,7 +234,7 @@ class PreviousMessageEditor extends CustomEditor {
 			return;
 		}
 		// ↓ — walk forward while in rollback mode.
-		if (this.keybindings.matches(data, "tui.editor.cursorDown")) {
+		if (this.appKeybindings.matches(data, "tui.editor.cursorDown")) {
 			if (this.rollbackIndex >= 0) {
 				this.navigateRollback(1);
 				return;
@@ -231,17 +243,17 @@ class PreviousMessageEditor extends CustomEditor {
 			return;
 		}
 		// Dedicated history bindings (bindable via keybindings.json).
-		if (this.keybindings.matches(data, "tui.editor.historyPrevious")) {
+		if (this.appKeybindings.matches(data, "tui.editor.historyPrevious")) {
 			this.navigateRollback(-1);
 			return;
 		}
-		if (this.keybindings.matches(data, "tui.editor.historyNext")) {
+		if (this.appKeybindings.matches(data, "tui.editor.historyNext")) {
 			this.navigateRollback(1);
 			return;
 		}
 		// Ctrl+C (app.clear): remember the text before the built-in clears it.
 		// Clearing ends rollback mode, so a later ↑ starts browsing fresh.
-		if (this.keybindings.matches(data, "app.clear")) {
+		if (this.appKeybindings.matches(data, "app.clear")) {
 			this.exitRollback();
 			const text = this.getText();
 			if (text.trim().length > 0) {
