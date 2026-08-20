@@ -1,6 +1,3 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -98,24 +95,32 @@ describe("startup model selection", () => {
 	});
 });
 
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 function createLifecycleHarness(options: {
 	cancel?: boolean;
+	confirmApproved?: boolean;
 	contextWindows?: Record<string, number>;
 	planActive?: boolean;
 	profiles?: Record<string, {
 		provider: string;
 		modelId: string;
-		thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+		thinkingLevel: ThinkingLevel;
 		contextWindow: number;
 	}>;
-	effectiveThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+	initialThinkingLevel?: ThinkingLevel;
+	requestedThinkingLevel?: ThinkingLevel;
+	effectiveThinkingLevel?: ThinkingLevel;
 	compactionThreshold?: number;
 	keepRecentTokens?: number;
 	hasConversationHistory?: boolean;
 	mode?: "tui" | "print" | "json" | "rpc";
 	refreshError?: Error;
-	selectedModel?: (typeof models)[number];
+	pickedModel?: (typeof models)[number];
+	currentModel?: (typeof models)[number];
 	setModelResult?: boolean;
+	saveError?: Error;
+	usageTokens?: number;
 } = {}) {
 	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => unknown>();
 	const entries = options.hasConversationHistory
@@ -127,13 +132,19 @@ function createLifecycleHarness(options: {
 			message: { role: "user", content: [{ type: "text", text: "Existing conversation" }] },
 		}]
 		: [];
-	const selectedModel = (options.selectedModel ?? models[1]) as any;
-	const custom = vi.fn(async () => options.cancel ? undefined : selectedModel);
+	const pickedModel = (options.pickedModel ?? models[1]) as any;
+	const currentModel = (options.currentModel ?? models[0]) as any;
+	let thinkingLevel: ThinkingLevel = options.initialThinkingLevel ?? "medium";
+	const custom = vi.fn(async () => options.cancel ? undefined : pickedModel);
 	const setModel = vi.fn(async () => options.setModelResult ?? true);
-	const setThinkingLevel = vi.fn();
+	const setThinkingLevel = vi.fn((level: ThinkingLevel) => {
+		thinkingLevel = options.effectiveThinkingLevel ?? level;
+	});
 	const setEditorComponent = vi.fn();
 	const notify = vi.fn();
-	const save = vi.fn(async () => {});
+	const save = vi.fn(async () => {
+		if (options.saveError) throw options.saveError;
+	});
 	const syncCompaction = vi.fn(async () => {});
 	const setPaths = vi.fn();
 	const load = vi.fn(async () => ({
@@ -142,15 +153,21 @@ function createLifecycleHarness(options: {
 		compactionThreshold: options.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD,
 		keepRecentTokens: options.keepRecentTokens ?? DEFAULT_KEEP_RECENT_TOKENS,
 	}));
+	const confirm = vi.fn(async () => options.confirmApproved ?? true);
+	const compact = vi.fn();
+	const select = vi.fn(async (_title: string, choices: string[]) => {
+		const requested = options.requestedThinkingLevel ?? "high";
+		return choices.find((choice) => choice.includes(` ${requested} —`)) ?? choices[0];
+	});
 	const ctx = {
 		mode: options.mode ?? "tui",
-		model: selectedModel,
+		model: currentModel,
 		scopedModels: [],
 		modelRegistry: {
 			refresh: vi.fn(async () => ({
 				aborted: false,
 				errors: options.refreshError
-					? new Map([[selectedModel.provider, options.refreshError]])
+					? new Map([[pickedModel.provider, options.refreshError]])
 					: new Map(),
 			})),
 			getAvailable: vi.fn(() => models),
@@ -158,13 +175,13 @@ function createLifecycleHarness(options: {
 		},
 		ui: {
 			custom,
-			select: vi.fn(async (_title: string, choices: string[]) => choices[0]),
-			confirm: vi.fn(async () => true),
+			select,
+			confirm,
 			notify,
 			setEditorComponent,
 		},
-		getContextUsage: vi.fn(() => ({ tokens: 0 })),
-		compact: vi.fn(),
+		getContextUsage: vi.fn(() => ({ tokens: options.usageTokens ?? 0 })),
+		compact,
 		sessionManager: {
 			getEntries: vi.fn(() => entries),
 			getBranch: vi.fn(() => options.planActive
@@ -176,13 +193,16 @@ function createLifecycleHarness(options: {
 	const pi = {
 		on: (event: string, handler: (event: any, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
 		setModel,
-		getThinkingLevel: vi.fn(() => options.effectiveThinkingLevel ?? "medium"),
+		getThinkingLevel: vi.fn(() => thinkingLevel),
 		setThinkingLevel,
 	} as unknown as ExtensionAPI;
 	createModelSelectorExtension({ load, save, syncCompaction, setPaths })(pi);
 
 	return {
 		custom,
+		select,
+		confirm,
+		compact,
 		setModel,
 		setThinkingLevel,
 		setEditorComponent,
@@ -198,69 +218,109 @@ function createLifecycleHarness(options: {
 }
 
 describe("model selector lifecycle", () => {
-	it("awaits one selector flow for an eligible startup and applies through pi.setModel", async () => {
+	it("opens the picker and applies the selected model", async () => {
 		const harness = createLifecycleHarness();
 		await harness.emit("startup");
 
-		expect(harness.custom).toHaveBeenCalledTimes(1);
-		expect(harness.setModel).toHaveBeenCalledTimes(1);
+		expect(harness.custom).toHaveBeenCalledOnce();
+		expect(harness.select).toHaveBeenCalledOnce();
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "claude-sonnet-4.6" }));
-		expect(harness.setThinkingLevel).toHaveBeenCalledAfter(harness.setModel);
+		expect(harness.save).toHaveBeenCalledOnce();
 	});
 
-	it("does not invoke the selector when startup restores conversation history", async () => {
-		const harness = createLifecycleHarness({ hasConversationHistory: true });
+	it("stops without applying when the picker is cancelled", async () => {
+		const harness = createLifecycleHarness({ cancel: true });
 		await harness.emit("startup");
-		expect(harness.custom).not.toHaveBeenCalled();
-		expect(harness.setModel).not.toHaveBeenCalled();
-		expect(harness.syncCompaction).toHaveBeenCalledWith(1_000_000);
-	});
 
-	it.each(["reload", "resume", "fork"] as const)("does not invoke the selector for %s", async (reason) => {
-		const harness = createLifecycleHarness();
-		await harness.emit(reason);
-		expect(harness.custom).not.toHaveBeenCalled();
+		expect(harness.custom).toHaveBeenCalledOnce();
+		expect(harness.select).not.toHaveBeenCalled();
 		expect(harness.setModel).not.toHaveBeenCalled();
-		expect(harness.syncCompaction).toHaveBeenCalledWith(1_000_000);
-	});
-
-	it("uses the complete normal profile as the fresh-session startup default", async () => {
-		const harness = createLifecycleHarness({
-			cancel: true,
-			profiles: {
-				normal: {
-					provider: "github-copilot",
-					modelId: "gpt-5.6-sol",
-					thinkingLevel: "xhigh",
-					contextWindow: 256_000,
-				},
-			},
-		});
-		await harness.emit("startup");
-		expect(harness.setModel).toHaveBeenCalledOnce();
-		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
-			provider: "github-copilot",
-			id: "gpt-5.6-sol",
-			contextWindow: 256_000,
-		}));
-		expect(harness.setThinkingLevel).toHaveBeenCalledWith("xhigh");
-		expect(harness.syncCompaction).toHaveBeenCalledWith(256_000);
-		expect(harness.custom).not.toHaveBeenCalled();
+		expect(harness.setThinkingLevel).not.toHaveBeenCalled();
 		expect(harness.save).not.toHaveBeenCalled();
 	});
 
-	it("falls back to the selector when no normal startup profile exists", async () => {
-		const harness = createLifecycleHarness();
+	it("prompts before applying a smaller context to a high-usage session", async () => {
+		const harness = createLifecycleHarness({ usageTokens: 950_000 });
 		await harness.emit("startup");
-		expect(harness.custom).toHaveBeenCalledOnce();
+
+		expect(harness.confirm).toHaveBeenCalledWith(
+			"Context window reduction",
+			expect.stringContaining("950K"),
+		);
 	});
 
-	it("does not apply a model when selection is cancelled", async () => {
-		const harness = createLifecycleHarness({ cancel: true });
+	it("declining context reduction prevents apply, persistence, and compaction", async () => {
+		const harness = createLifecycleHarness({ usageTokens: 950_000, confirmApproved: false });
 		await harness.emit("startup");
-		expect(harness.custom).toHaveBeenCalledTimes(1);
+
+		expect(harness.confirm).toHaveBeenCalledOnce();
 		expect(harness.setModel).not.toHaveBeenCalled();
 		expect(harness.setThinkingLevel).not.toHaveBeenCalled();
+		expect(harness.save).not.toHaveBeenCalled();
+		expect(harness.compact).not.toHaveBeenCalled();
+	});
+
+	it("applies and compacts exactly once after context reduction is approved", async () => {
+		const harness = createLifecycleHarness({ usageTokens: 950_000 });
+		await harness.emit("startup");
+
+		expect(harness.setModel).toHaveBeenCalledOnce();
+		expect(harness.save).toHaveBeenCalledOnce();
+		expect(harness.compact).toHaveBeenCalledOnce();
+	});
+
+	it("compacts once and emits one explicit warning when persistence fails after reduction", async () => {
+		const harness = createLifecycleHarness({
+			usageTokens: 950_000,
+			saveError: new Error("settings disk is read-only"),
+		});
+		await harness.emit("startup");
+
+		expect(harness.setModel).toHaveBeenCalledOnce();
+		expect(harness.compact).toHaveBeenCalledOnce();
+		expect(harness.notify).toHaveBeenCalledOnce();
+		expect(harness.notify).toHaveBeenCalledWith(
+			expect.stringMatching(/was applied, but settings were not fully saved: settings disk is read-only/),
+			"warning",
+		);
+		expect(harness.notify).not.toHaveBeenCalledWith(expect.anything(), "error");
+	});
+
+	it("reports authentication failure without persisting or compacting", async () => {
+		const harness = createLifecycleHarness({ usageTokens: 950_000, setModelResult: false });
+		await harness.emit("startup");
+
+		expect(harness.setModel).toHaveBeenCalledOnce();
+		expect(harness.setThinkingLevel).not.toHaveBeenCalled();
+		expect(harness.save).not.toHaveBeenCalled();
+		expect(harness.compact).not.toHaveBeenCalled();
+		expect(harness.notify).toHaveBeenCalledWith(
+			expect.stringContaining("No configured authentication"),
+			"error",
+		);
+	});
+
+	it("uses the returned effective thinking level in success notifications", async () => {
+		const harness = createLifecycleHarness({ requestedThinkingLevel: "high" });
+		await harness.emit("startup");
+
+		expect(harness.notify).toHaveBeenCalledWith(
+			"anthropic/claude-sonnet-4.6 · thinking high · context 1M",
+			"info",
+		);
+	});
+
+	it("warns when the returned effective thinking level was clamped", async () => {
+		const harness = createLifecycleHarness({
+			requestedThinkingLevel: "high",
+			effectiveThinkingLevel: "low",
+		});
+		await harness.emit("startup");
+
+		expect(harness.notify).toHaveBeenCalledWith(
+			"anthropic/claude-sonnet-4.6 · thinking low (requested high) · context 1M",
+			"warning",
+		);
 	});
 
 	it("reports catalogue refresh failures without opening or applying the selector", async () => {
@@ -274,72 +334,33 @@ describe("model selector lifecycle", () => {
 		expect(harness.setModel).not.toHaveBeenCalled();
 	});
 
-	it("does not persist or apply thinking when Pi rejects model authentication", async () => {
-		const harness = createLifecycleHarness({ setModelResult: false });
-		await harness.emit("startup");
-		expect(harness.setModel).toHaveBeenCalledTimes(1);
-		expect(harness.setThinkingLevel).not.toHaveBeenCalled();
-		expect(harness.save).not.toHaveBeenCalled();
-		expect(harness.notify).toHaveBeenCalledWith(
-			expect.stringContaining("No configured authentication"),
-			"error",
-		);
-	});
-
-	it("persists the effective thinking level after Pi clamps it", async () => {
-		const harness = createLifecycleHarness({ effectiveThinkingLevel: "high" });
-		await harness.emit("startup");
-		expect(harness.save).toHaveBeenCalledWith("normal", {
-			provider: "anthropic",
-			modelId: "claude-sonnet-4.6",
-			thinkingLevel: "high",
-			contextWindow: 1_000_000,
-		});
-	});
-
-	it("persists Plan Mode selections under the plan profile instead of normal defaults", async () => {
-		const harness = createLifecycleHarness({ planActive: true, effectiveThinkingLevel: "xhigh" });
-		await harness.emit("startup");
-		expect(harness.save).toHaveBeenCalledWith("plan", {
-			provider: "anthropic",
-			modelId: "claude-sonnet-4.6",
-			thinkingLevel: "xhigh",
-			contextWindow: 1_000_000,
-		});
-	});
-
-	it("applies a saved context to an exact fresh selection", async () => {
+	it("uses the complete normal profile as the fresh-session startup default", async () => {
 		const harness = createLifecycleHarness({
-			cancel: true,
-			hasConversationHistory: true,
-			contextWindows: { "github-copilot/gpt-5.6-sol": 272_000 },
+			profiles: {
+				normal: {
+					provider: "github-copilot",
+					modelId: "gpt-5.6-sol",
+					thinkingLevel: "xhigh",
+					contextWindow: 256_000,
+				},
+			},
 		});
 		await harness.emit("startup");
-		await getModelCommandHandler()?.("github-copilot/gpt-5.6-sol");
+
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			provider: "github-copilot",
 			id: "gpt-5.6-sol",
-			contextWindow: 1_050_000,
+			contextWindow: 256_000,
 		}));
-		expect(harness.save).toHaveBeenCalledWith("normal", expect.objectContaining({
-			contextWindow: 1_050_000,
-		}));
-	});
-
-	it("syncs compaction for an existing session without re-applying the model", async () => {
-		const harness = createLifecycleHarness({
-			hasConversationHistory: true,
-			selectedModel: models[0],
-			contextWindows: { "github-copilot/gpt-5.6-sol": 272_000 },
-		});
-		await harness.emit("startup");
-		expect(harness.setModel).not.toHaveBeenCalled();
-		expect(harness.syncCompaction).toHaveBeenCalledWith(1_050_000);
+		expect(harness.setThinkingLevel).toHaveBeenCalledWith("xhigh");
+		expect(harness.syncCompaction).toHaveBeenCalledWith(256_000);
+		expect(harness.custom).not.toHaveBeenCalled();
 		expect(harness.save).not.toHaveBeenCalled();
 	});
 
-	it("refreshes the session model's context window from the profile on reload", async () => {
+	it("keeps reload/resume context synchronization off the picker path", async () => {
 		const harness = createLifecycleHarness({
-			selectedModel: models[1],
+			currentModel: models[1],
 			profiles: {
 				normal: {
 					provider: "anthropic",
@@ -350,12 +371,20 @@ describe("model selector lifecycle", () => {
 			},
 		});
 		await harness.emit("reload");
-		expect(harness.setModel).toHaveBeenCalledOnce();
+
+		expect(harness.custom).not.toHaveBeenCalled();
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
 			id: "claude-sonnet-4.6",
 			contextWindow: 256_000,
 		}));
 		expect(harness.syncCompaction).toHaveBeenCalledWith(256_000);
+		expect(harness.save).not.toHaveBeenCalled();
+	});
+
+	it("does not invoke the selector when startup restores conversation history", async () => {
+		const harness = createLifecycleHarness({ hasConversationHistory: true });
+		await harness.emit("startup");
+		expect(harness.custom).not.toHaveBeenCalled();
 		expect(harness.save).not.toHaveBeenCalled();
 	});
 

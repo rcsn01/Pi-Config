@@ -1,25 +1,16 @@
 /**
- * Project model selection — the canonical home for `uiModelSelector` profile
- * parsing, validation, merging, sentinel resolution, and the single apply path
- * that turns a stored selection into a live session model.
+ * Project model selection — the canonical home for `uiModelSelector` parsing,
+ * validation, merging, sentinel resolution, and runtime model commits.
  *
- * Consumers: ui-model-selector (startup apply, /model picker), workflows-plan-mode
- * (plan enter/exit through its PlanModeProfileStore adapter), config-profiles
- * (applying a switched profile's saved model selection). The settings store
- * lives in ./model-selection-store.ts; family thinking-level tables in
- * ./model-families.ts.
+ * Two focused entry points share one private runtime implementation:
+ * - `applyModelSelection` resolves a stored Session/Plan profile and syncs its
+ *   model-derived compaction settings without rewriting the stored selection.
+ * - `applyPickedModelSelection` applies an already-refreshed picker model and
+ *   persists the effective selection (including Pi's clamped thinking level).
  *
- * Apply semantics (unified from the two former paths):
- * - `DEFAULT_SENTINEL` fields resolve through Pi's native defaults.
- * - Stored concrete context windows pass through `resolveContextWindow`.
- * - Legacy missing context windows ("inherit") keep the current model's window
- *   when the model already matches; a sentinel ("catalogue") always resolves
- *   through the model registry.
- * - When the current session model already matches the resolved provider/model
- *   and the stored window is concrete, the registry is never refreshed and
- *   `setModel` runs only when the context window changes.
- * - The model-derived compaction values are always synced through the settings
- *   store after applying.
+ * Stored selections preserve legacy context inheritance and default-sentinel
+ * resolution. Picked selections trust the concrete model supplied by the
+ * refreshed picker catalogue and never query the registry a second time.
  */
 
 import type { Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
@@ -74,6 +65,30 @@ export interface ModelSelectionSettings {
 	modelId: string;
 	thinkingLevel: StoredThinkingLevel;
 	contextWindow: number;
+}
+
+/** Narrow seam for synchronizing model-derived compaction settings. */
+export interface ModelCompactionSynchronizer {
+	syncCompaction(contextWindow: number): Promise<void>;
+}
+
+/** Narrow seam for persisting one mode's effective model selection. */
+export interface ModelSelectionPersistence {
+	save(mode: ModelSelectionMode, selection: ModelSelectionSettings): Promise<void>;
+}
+
+/** A picked selection was applied live, but its effective settings did not fully persist. */
+export class ModelSelectionPersistenceError extends Error {
+	readonly appliedSelection: ModelSelectionSettings;
+
+	constructor(appliedSelection: ModelSelectionSettings, cause: unknown) {
+		super(
+		`Model selection was applied, but settings were not fully saved: ${cause instanceof Error ? cause.message : String(cause)}`,
+		{ cause },
+		);
+		this.name = "ModelSelectionPersistenceError";
+		this.appliedSelection = appliedSelection;
+	}
 }
 
 /** A profile selection as stored on disk; fields may defer to Pi's defaults. */
@@ -417,11 +432,41 @@ async function resolveProfileModel(
 	return model;
 }
 
+async function applyResolvedModelSelection(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	model: Model<any>,
+	thinkingLevel: StoredThinkingLevel,
+): Promise<ModelSelectionSettings> {
+	const currentModel = ctx.model;
+	const modelChanged = currentModel?.provider !== model.provider ||
+		currentModel.id !== model.id ||
+		currentModel.contextWindow !== model.contextWindow;
+	if (modelChanged && !(await pi.setModel(model))) {
+		throw new Error(`No configured authentication for ${model.provider}/${model.id}.`);
+	}
+
+	const currentThinkingLevel = typeof pi.getThinkingLevel === "function"
+		? pi.getThinkingLevel() as StoredThinkingLevel
+		: undefined;
+	if (currentThinkingLevel !== thinkingLevel) pi.setThinkingLevel(thinkingLevel);
+	const effectiveThinkingLevel = typeof pi.getThinkingLevel === "function"
+		? pi.getThinkingLevel() as StoredThinkingLevel
+		: thinkingLevel;
+
+	return {
+		provider: model.provider,
+		modelId: model.id,
+		thinkingLevel: effectiveThinkingLevel,
+		contextWindow: model.contextWindow,
+	};
+}
+
 /**
  * Apply a stored selection to the live session: resolve default sentinels,
- * refresh and look up the model when needed, switch the session model and
- * thinking level, and sync the model-derived compaction values. Returns the
- * selection as actually applied (the effective thinking level after Pi clamps).
+ * refresh and look up the model when needed, commit the resolved model and
+ * thinking level, and sync model-derived compaction values. The stored profile
+ * itself is not persisted.
  *
  * The context-window contract preserves legacy plan-mode reads: an explicit
  * sentinel resolves through the catalogue; a missing window inherits the
@@ -434,8 +479,8 @@ export async function applyModelSelection(
 	options: {
 		/** Label used in error messages, e.g. "Normal profile" or "Plan Mode profile". */
 		label: string;
-		/** Receives the compaction sync; only `syncCompaction` is used. */
-		settingsStore: { syncCompaction(contextWindow: number): Promise<void> };
+		/** Receives the model-derived compaction sync. */
+		compaction: ModelCompactionSynchronizer;
 		nativeDefaults?: PiNativeDefaults;
 	},
 ): Promise<ModelSelectionSettings> {
@@ -468,25 +513,34 @@ export async function applyModelSelection(
 		model = { ...resolveModelContext(catalogueModel), contextWindow };
 	}
 
-	if (!sameModel || model.contextWindow !== currentModel?.contextWindow) {
-		const changed = await pi.setModel(model);
-		if (!changed) {
-			throw new Error(`No configured authentication for ${resolved.provider}/${resolved.modelId}.`);
-		}
+	const selection = await applyResolvedModelSelection(pi, ctx, model, resolved.thinkingLevel);
+	await options.compaction.syncCompaction(selection.contextWindow);
+	return selection;
+}
+
+/**
+ * Apply a concrete model selected from an already-refreshed picker catalogue,
+ * then persist Pi's effective selection. Persistence failures happen after the
+ * live commit, so they are surfaced as a typed partial failure without rolling
+ * the runtime model back.
+ */
+export async function applyPickedModelSelection(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	model: Model<any>,
+	thinkingLevel: StoredThinkingLevel,
+	options: {
+		mode: ModelSelectionMode;
+		persistence: ModelSelectionPersistence;
+	},
+): Promise<ModelSelectionSettings> {
+	const selection = await applyResolvedModelSelection(pi, ctx, model, thinkingLevel);
+	try {
+		await options.persistence.save(options.mode, selection);
+	} catch (cause) {
+		throw new ModelSelectionPersistenceError(selection, cause);
 	}
-
-	if (pi.getThinkingLevel?.() !== resolved.thinkingLevel) pi.setThinkingLevel(resolved.thinkingLevel);
-	await options.settingsStore.syncCompaction(model.contextWindow);
-
-	const effectiveThinkingLevel = typeof pi.getThinkingLevel === "function"
-		? pi.getThinkingLevel() as StoredThinkingLevel
-		: resolved.thinkingLevel;
-	return {
-		provider: resolved.provider,
-		modelId: resolved.modelId,
-		thinkingLevel: effectiveThinkingLevel,
-		contextWindow: model.contextWindow,
-	};
+	return selection;
 }
 
 /**
@@ -499,7 +553,7 @@ export async function applySelectionFromDocument(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	document: Record<string, unknown>,
-	settingsStore: { syncCompaction(contextWindow: number): Promise<void> },
+	compaction: ModelCompactionSynchronizer,
 	nativeDefaults?: PiNativeDefaults,
 ): Promise<ModelSelectionSettings | undefined> {
 	const mode = selectionModeFromEntries(ctx.sessionManager.getBranch());
@@ -507,7 +561,7 @@ export async function applySelectionFromDocument(
 	if (!selection) return undefined;
 	return applyModelSelection(pi, ctx, selection, {
 		label: "Profile",
-		settingsStore,
+		compaction,
 		nativeDefaults,
 	});
 }

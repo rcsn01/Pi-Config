@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	applyModelSelection,
+	applyPickedModelSelection,
 	applySelectionFromDocument,
 	calculateCompactionReserveTokens,
 	DEFAULT_COMPACTION_THRESHOLD,
@@ -8,6 +9,7 @@ import {
 	DEFAULT_KEEP_RECENT_TOKENS,
 	mergeProjectCompactionSettings,
 	mergeProjectModelSelection,
+	ModelSelectionPersistenceError,
 	parseProjectModelPreferences,
 	PI_DEFAULT_CONTEXT_WINDOW,
 	resolveContextWindow,
@@ -279,11 +281,12 @@ function createHarness(options: {
 		contextWindow: 256000,
 		reasoning: true,
 	}));
-	const setModel = vi.fn(async () => options.setModelResult ?? true);
+	const setModel = vi.fn(async (_model: unknown) => options.setModelResult ?? true);
 	const setThinkingLevel = vi.fn((level: string) => {
 		thinkingLevel = level;
 	});
 	const syncCompaction = vi.fn(async () => {});
+	const save = vi.fn(async () => {});
 	const ctx = {
 		model: options.model,
 		scopedModels: options.scopedModels ?? [],
@@ -303,6 +306,9 @@ function createHarness(options: {
 		setModel,
 		setThinkingLevel,
 		syncCompaction,
+		save,
+		compaction: { syncCompaction },
+		persistence: { save },
 		settingsStore: { syncCompaction },
 	};
 }
@@ -316,7 +322,7 @@ describe("applyModelSelection", () => {
 
 		const result = await applyModelSelection(harness.pi, harness.ctx, NORMAL_SELECTION, {
 			label: "Normal profile",
-			settingsStore: harness.settingsStore,
+			compaction: harness.compaction,
 		});
 
 		expect(harness.refresh).not.toHaveBeenCalled();
@@ -333,7 +339,7 @@ describe("applyModelSelection", () => {
 
 		await applyModelSelection(harness.pi, harness.ctx, { ...NORMAL_SELECTION, contextWindow: 131072 }, {
 			label: "Normal profile",
-			settingsStore: harness.settingsStore,
+			compaction: harness.compaction,
 		});
 
 		expect(harness.refresh).not.toHaveBeenCalled();
@@ -356,7 +362,7 @@ describe("applyModelSelection", () => {
 			thinkingLevel: "high",
 		}, {
 			label: "Normal profile",
-			settingsStore: harness.settingsStore,
+			compaction: harness.compaction,
 		});
 
 		expect(harness.refresh).not.toHaveBeenCalled();
@@ -372,7 +378,7 @@ describe("applyModelSelection", () => {
 
 		await applyModelSelection(harness.pi, harness.ctx, { ...NORMAL_SELECTION, contextWindow: "default" }, {
 			label: "Normal profile",
-			settingsStore: harness.settingsStore,
+			compaction: harness.compaction,
 		});
 
 		expect(harness.refresh).toHaveBeenCalledWith({ allowNetwork: false, providers: ["ollama"] });
@@ -388,7 +394,7 @@ describe("applyModelSelection", () => {
 
 		await expect(applyModelSelection(harness.pi, harness.ctx, NORMAL_SELECTION, {
 			label: "Normal profile",
-			settingsStore: harness.settingsStore,
+			compaction: harness.compaction,
 		})).rejects.toThrow("outside this session's model scope");
 	});
 
@@ -400,7 +406,7 @@ describe("applyModelSelection", () => {
 
 		await applyModelSelection(harness.pi, harness.ctx, NORMAL_SELECTION, {
 			label: "Normal profile",
-			settingsStore: harness.settingsStore,
+			compaction: harness.compaction,
 		});
 
 		expect(harness.setModel).toHaveBeenCalledOnce();
@@ -417,11 +423,205 @@ describe("applyModelSelection", () => {
 
 		const result = await applyModelSelection(harness.pi, harness.ctx, { ...NORMAL_SELECTION, thinkingLevel: "xhigh" }, {
 			label: "Normal profile",
-			settingsStore: harness.settingsStore,
+			compaction: harness.compaction,
 		});
 
 		expect(harness.pi.setThinkingLevel).toHaveBeenCalledWith("xhigh");
 		expect(result.thinkingLevel).toBe("medium");
+	});
+});
+
+describe("applyPickedModelSelection", () => {
+	const pickedModel = {
+		provider: "anthropic",
+		id: "claude-sonnet-4.6",
+		name: "Claude Sonnet 4.6",
+		contextWindow: 1_000_000,
+		reasoning: true,
+	} as any;
+
+	it("uses the exact concrete picked model without refreshing or looking it up", async () => {
+		const harness = createHarness({
+			model: { provider: "ollama", id: "old-model", contextWindow: 256_000 },
+			thinkingLevel: "medium",
+		});
+
+		await applyPickedModelSelection(harness.pi, harness.ctx, pickedModel, "high", {
+			mode: "normal",
+			persistence: harness.persistence,
+		});
+
+		expect(harness.refresh).not.toHaveBeenCalled();
+		expect(harness.find).not.toHaveBeenCalled();
+		expect(harness.setModel.mock.calls[0]?.[0]).toBe(pickedModel);
+	});
+
+	it("applies and persists a changed provider, model, and context window", async () => {
+		const harness = createHarness({
+			model: { provider: "ollama", id: "old-model", contextWindow: 256_000 },
+			thinkingLevel: "low",
+		});
+
+		const result = await applyPickedModelSelection(harness.pi, harness.ctx, pickedModel, "high", {
+			mode: "normal",
+			persistence: harness.persistence,
+		});
+
+		expect(harness.setModel).toHaveBeenCalledWith(pickedModel);
+		expect(harness.setThinkingLevel).toHaveBeenCalledWith("high");
+		expect(harness.save).toHaveBeenCalledWith("normal", result);
+		expect(result).toEqual({
+			provider: "anthropic",
+			modelId: "claude-sonnet-4.6",
+			thinkingLevel: "high",
+			contextWindow: 1_000_000,
+		});
+	});
+
+	it("skips model application when provider, model, and context already match", async () => {
+		const harness = createHarness({
+			model: pickedModel,
+			thinkingLevel: "high",
+		});
+
+		await applyPickedModelSelection(harness.pi, harness.ctx, pickedModel, "high", {
+			mode: "normal",
+			persistence: harness.persistence,
+		});
+
+		expect(harness.setModel).not.toHaveBeenCalled();
+		expect(harness.setThinkingLevel).not.toHaveBeenCalled();
+		expect(harness.save).toHaveBeenCalledOnce();
+	});
+
+	it("updates thinking and persists when model application is skipped", async () => {
+		const harness = createHarness({
+			model: pickedModel,
+			thinkingLevel: "low",
+		});
+
+		const result = await applyPickedModelSelection(harness.pi, harness.ctx, pickedModel, "xhigh", {
+			mode: "normal",
+			persistence: harness.persistence,
+		});
+
+		expect(harness.setModel).not.toHaveBeenCalled();
+		expect(harness.setThinkingLevel).toHaveBeenCalledWith("xhigh");
+		expect(harness.save).toHaveBeenCalledWith("normal", result);
+	});
+
+	it("applies the model for a context-only change", async () => {
+		const harness = createHarness({
+			model: { ...pickedModel, contextWindow: 256_000 },
+			thinkingLevel: "high",
+		});
+
+		await applyPickedModelSelection(harness.pi, harness.ctx, pickedModel, "high", {
+			mode: "normal",
+			persistence: harness.persistence,
+		});
+
+		expect(harness.setModel).toHaveBeenCalledWith(pickedModel);
+	});
+
+	it("rejects authentication failure before changing thinking or saving", async () => {
+		const harness = createHarness({
+			model: { provider: "ollama", id: "old-model", contextWindow: 256_000 },
+			thinkingLevel: "low",
+			setModelResult: false,
+		});
+
+		await expect(applyPickedModelSelection(harness.pi, harness.ctx, pickedModel, "high", {
+			mode: "normal",
+			persistence: harness.persistence,
+		})).rejects.toThrow("No configured authentication for anthropic/claude-sonnet-4.6.");
+		expect(harness.setThinkingLevel).not.toHaveBeenCalled();
+		expect(harness.save).not.toHaveBeenCalled();
+	});
+
+	it("reads back and persists Pi's effective clamped thinking level", async () => {
+		const harness = createHarness({
+			model: { provider: "ollama", id: "old-model", contextWindow: 256_000 },
+			thinkingLevel: "medium",
+		});
+		harness.pi.setThinkingLevel = vi.fn();
+
+		const result = await applyPickedModelSelection(harness.pi, harness.ctx, pickedModel, "max", {
+			mode: "normal",
+			persistence: harness.persistence,
+		});
+
+		expect(result.thinkingLevel).toBe("medium");
+		expect(harness.save).toHaveBeenCalledWith("normal", expect.objectContaining({
+			thinkingLevel: "medium",
+		}));
+	});
+
+	it.each(["normal", "plan"] as const)("persists effective selections in %s mode", async (mode) => {
+		const harness = createHarness({ model: pickedModel, thinkingLevel: "high" });
+
+		const result = await applyPickedModelSelection(harness.pi, harness.ctx, pickedModel, "high", {
+			mode,
+			persistence: harness.persistence,
+		});
+
+		expect(harness.save).toHaveBeenCalledWith(mode, result);
+	});
+
+	it("wraps post-apply save failures without rolling back the live selection", async () => {
+		const harness = createHarness({
+			model: { provider: "ollama", id: "old-model", contextWindow: 256_000 },
+			thinkingLevel: "medium",
+		});
+		const cause = new Error("disk full");
+		harness.save.mockRejectedValueOnce(cause);
+		const rollback = vi.fn();
+		const persistence = { save: harness.save, rollback };
+		let caught: unknown;
+
+		try {
+			await applyPickedModelSelection(harness.pi, harness.ctx, pickedModel, "high", {
+				mode: "plan",
+				persistence,
+			});
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(caught).toBeInstanceOf(ModelSelectionPersistenceError);
+		if (!(caught instanceof ModelSelectionPersistenceError)) throw caught;
+		expect(caught.appliedSelection).toEqual({
+			provider: "anthropic",
+			modelId: "claude-sonnet-4.6",
+			thinkingLevel: "high",
+			contextWindow: 1_000_000,
+		});
+		expect(caught.cause).toBe(cause);
+		expect(harness.setModel).toHaveBeenCalledOnce();
+		expect(rollback).not.toHaveBeenCalled();
+	});
+
+	it("reports the same typed partial failure when model application was skipped", async () => {
+		const harness = createHarness({ model: pickedModel, thinkingLevel: "high" });
+		const cause = new Error("read-only settings");
+		harness.save.mockRejectedValueOnce(cause);
+
+		const promise = applyPickedModelSelection(harness.pi, harness.ctx, pickedModel, "high", {
+			mode: "normal",
+			persistence: harness.persistence,
+		});
+
+		await expect(promise).rejects.toMatchObject({
+			name: "ModelSelectionPersistenceError",
+			appliedSelection: {
+				provider: "anthropic",
+				modelId: "claude-sonnet-4.6",
+				thinkingLevel: "high",
+				contextWindow: 1_000_000,
+			},
+			cause,
+		});
+		expect(harness.setModel).not.toHaveBeenCalled();
 	});
 });
 
