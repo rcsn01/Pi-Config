@@ -24,6 +24,9 @@ extension.
 - **Accumulator** — a thin consumer that sums classified usage entries into
   an output shape (snapshot totals, per-mode totals). Classification rules
   never live here.
+- **Usage table** — the bordered TUI renderer in `ui-context/usage-tables.ts`
+  that turns usage rows into tables; layout fallbacks live behind its two
+  functions.
 
 ## Settings & profiles
 
