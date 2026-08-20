@@ -16,15 +16,9 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-function profileListMessage(store: ProfileStore): string {
+function profileListMessage(store: ProfileStore, active: string | undefined): string {
 	const profiles = store.listProfiles();
 	if (profiles.length === 0) return "No settings profiles found. Create one in .pi/profiles/<name>.json.";
-	let active: string | undefined;
-	try {
-		active = store.getActiveProfile();
-	} catch {
-		// Listing is still useful when settings.json is temporarily invalid.
-	}
 	return [
 		"Settings profiles:",
 		...profiles.map((name) => `  ${name === active ? "*" : "-"} ${name}`),
@@ -43,18 +37,15 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 
 		pi.on("session_start", async (event, ctx) => {
 			const rememberedProfile = sessionProfileName(ctx.sessionManager.getBranch());
-			// On reload the session keeps its profile: the remembered session entry
-			// persists and the sibling extensions re-read the profile file with it.
-			if (event.reason === "reload") {
+			// The session's own remembered profile wins on every boundary: on
+			// reload it persists, and on startup/resume/fork it survives another
+			// session's marker switch. An existing entry is never re-appended.
+			if (event.reason === "reload" || rememberedProfile !== undefined) {
 				updateStatus(ctx, rememberedProfile);
 				return;
 			}
-			// Intentional fresh-session handoffs can seed the originating profile.
-			// Ordinary unseeded new sessions still load the active marker below.
-			if (event.reason === "new" && rememberedProfile !== undefined) {
-				updateStatus(ctx, rememberedProfile);
-				return;
-			}
+			// No remembered choice: the settings.json marker is the default for
+			// fresh sessions, committed as this session's entry so reloads keep it.
 			try {
 				const active = store.loadActiveProfile();
 				updateStatus(ctx, active?.name);
@@ -87,10 +78,21 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 			},
 			handler: async (args, ctx) => {
 				let name = args.trim();
+				// This session's current profile: its remembered entry, or the marker
+				// default when the session never committed one. A switch is a no-op
+				// only when the requested name matches this session's own profile —
+				// the marker alone is not authoritative, since another session may
+				// have changed it while this session kept its remembered choice.
+				let sessionCurrent: string | undefined;
+				try {
+					sessionCurrent = sessionProfileName(ctx.sessionManager.getBranch()) ?? store.getActiveProfile();
+				} catch {
+					// The switch operation will provide the detailed validation error.
+				}
 				try {
 					if (!name) {
 						if (!ctx.hasUI) {
-							output(profileListMessage(store));
+							output(profileListMessage(store, sessionCurrent));
 							return;
 						}
 						const profiles = store.listProfiles();
@@ -98,29 +100,26 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 							ctx.ui.notify("No settings profiles found in .pi/profiles.", "warning");
 							return;
 						}
-						let active: string | undefined;
-						try {
-							active = store.getActiveProfile();
-						} catch {
-							// The switch operation will provide the detailed validation error.
-						}
 						name = await pickGuiOption(ctx, {
 							title: "Select settings profile",
 							message: "Profiles replace the complete .pi/settings.json document.",
 							options: profiles.map((profile) => ({
 								label: profile,
 								value: profile,
-								checked: profile === active,
+								checked: profile === sessionCurrent,
 							})),
 						}) ?? "";
 						if (!name) return;
 					}
 
-					const result = await store.switchProfile(name);
-					if (!result.changed) {
+					if (name === sessionCurrent) {
 						ctx.ui.notify(`Profile "${name}" is already active.`, "info");
 						return;
 					}
+
+					// The marker write may be a no-op while this session still needs
+					// rebinding (its entry differs), so the switch proceeds regardless.
+					await store.switchProfile(name);
 					// Remember the session's profile before reloading so the sibling
 					// extensions re-read the profile file with this name on reload.
 					pi.appendEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: name });
