@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import { applySelectionFromDocument } from "../_shared/model-selection.ts";
 import { createProjectSettingsStore } from "../_shared/model-selection-store.ts";
-import { CONFIG_PROFILES_ENTRY_TYPE, sessionProfileName } from "../_shared/active-profile.ts";
+import { CONFIG_PROFILES_ENTRY_TYPE, createSessionProfileResolver, NON_RELOAD_REASON, sessionProfileName } from "../_shared/active-profile.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 
@@ -30,6 +30,11 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 	return function configProfilesExtension(pi: ExtensionAPI): void {
 		const store = dependencies.store ?? createProfileStore();
 		const output = dependencies.output ?? console.log;
+
+		const resolver = createSessionProfileResolver({
+			settingsPath: store.settingsPath,
+			profilesDirectory: store.profilesDirectory,
+		});
 
 		const updateStatus = (ctx: ExtensionContext, profile: string | undefined): void => {
 			if (ctx.hasUI) ctx.ui.setStatus("profile", profile);
@@ -83,12 +88,7 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 				// only when the requested name matches this session's own profile —
 				// the marker alone is not authoritative, since another session may
 				// have changed it while this session kept its remembered choice.
-				let sessionCurrent: string | undefined;
-				try {
-					sessionCurrent = sessionProfileName(ctx.sessionManager.getBranch()) ?? store.getActiveProfile();
-				} catch {
-					// The switch operation will provide the detailed validation error.
-				}
+				const sessionCurrent = resolver.resolveName(ctx.sessionManager.getBranch(), NON_RELOAD_REASON);
 				try {
 					if (!name) {
 						if (!ctx.hasUI) {
