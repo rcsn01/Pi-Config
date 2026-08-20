@@ -49,7 +49,7 @@ type ReportedUsage = {
 	turns?: unknown;
 };
 
-function emptyUsageTotals(): SessionUsageTotals {
+export function emptyUsageTotals(): SessionUsageTotals {
 	return {
 		input: 0,
 		output: 0,
@@ -61,13 +61,13 @@ function emptyUsageTotals(): SessionUsageTotals {
 	};
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
+export function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null
 		? value as Record<string, unknown>
 		: undefined;
 }
 
-function addUsage(totals: SessionUsageTotals, value: unknown, includeTurns = false): void {
+export function addUsage(totals: SessionUsageTotals, value: unknown, includeTurns = false): void {
 	const usage = asRecord(value) as ReportedUsage | undefined;
 	totals.input += finiteNonNegative(usage?.input);
 	totals.output += finiteNonNegative(usage?.output);
@@ -78,20 +78,20 @@ function addUsage(totals: SessionUsageTotals, value: unknown, includeTurns = fal
 	if (includeTurns) totals.turns += finiteNonNegative(usage?.turns);
 }
 
-function nestedSubagentResults(details: unknown): Record<string, unknown>[] {
+export function nestedSubagentResults(details: unknown): Record<string, unknown>[] {
 	const results = asRecord(details)?.results;
 	if (!Array.isArray(results)) return [];
 	return results.map(asRecord).filter((result): result is Record<string, unknown> => result !== undefined);
 }
 
-function modelKey(provider: unknown, model: unknown): string | undefined {
+export function modelKey(provider: unknown, model: unknown): string | undefined {
 	if (typeof provider !== "string" || typeof model !== "string") return undefined;
 	const normalizedProvider = provider.trim();
 	const normalizedModel = model.trim();
 	return normalizedProvider && normalizedModel ? `${normalizedProvider}/${normalizedModel}` : undefined;
 }
 
-function modelName(value: unknown): string | undefined {
+export function modelName(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
 	const normalized = value.trim();
 	return normalized || undefined;
@@ -234,7 +234,7 @@ export function normalizeContextUsage(
 	return { tokens, contextWindow, percent };
 }
 
-function finiteNonNegative(value: unknown): number {
+export function finiteNonNegative(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
 

@@ -12,6 +12,16 @@ import {
 } from "@earendil-works/pi-tui";
 import { collectUsageSnapshot } from "../_shared/usage.ts";
 import {
+	GLOBAL_MODE_LABELS,
+	buildGlobalUsageSnapshot,
+	type GlobalModeModelRows,
+	type GlobalModeTotals,
+	type GlobalModelRow,
+	type GlobalUsageSnapshot,
+} from "../_shared/global-usage.ts";
+import type { SessionUsageTotals } from "../_shared/usage.ts";
+import { scanGlobalUsage } from "./global-usage-store.ts";
+import {
 	COMPACT_RESERVE_FRACTION,
 } from "../_shared/auto-compact.ts";
 import { installOverlayInputGuard } from "./overlay-input-guard.ts";
@@ -83,9 +93,13 @@ function rightAlign(line: string, width: number): string {
 	return " ".repeat(Math.max(0, width - visibleWidth(clipped))) + clipped;
 }
 
+function totalTokenCount(usage: { input: number; cacheRead: number; output: number; cacheWrite?: number }): number {
+	return usage.input + usage.cacheRead + usage.output + (usage.cacheWrite ?? 0);
+}
+
 function usageTableLines(
 	title: string,
-	rows: readonly { model: string; usage: SessionTokenUsage }[],
+	rows: readonly { model: string; usage: { input: number; cacheRead: number; output: number; cacheWrite?: number } }[],
 	theme: Theme,
 	width: number,
 ): string[] {
@@ -104,11 +118,12 @@ function usageTableLines(
 	const divider = (): string => border(`├${"─".repeat(safeWidth - 2)}┤`);
 	const contentRow = (content: string): string => border("│ ") + pad(content, contentWidth) + border(" │");
 
-	const numericHeaders = ["Input", "Cache input", "Output"];
-	const numericValues = (usage: SessionTokenUsage): string[] => [
+	const numericHeaders = ["Input", "Cache input", "Output", "Total"];
+	const numericValues = (usage: { input: number; cacheRead: number; output: number; cacheWrite?: number }): string[] => [
 		formatExactTokenCount(usage.input),
 		formatExactTokenCount(usage.cacheRead),
 		formatExactTokenCount(usage.output),
+		formatExactTokenCount(totalTokenCount(usage)),
 	];
 	const longestValue = (index: number): number =>
 		empty ? 0 : Math.max(...rows.map((row) => numericValues(row.usage)[index]!.length));
@@ -146,6 +161,7 @@ function usageTableLines(
 					["Input", usage.input],
 					["Cache input", usage.cacheRead],
 					["Output", usage.output],
+					["Total", totalTokenCount(usage)],
 				] as const) {
 					lines.push(contentRow(`  ${pad(label, 12)} ${formatExactTokenCount(value)}`));
 				}
@@ -156,21 +172,130 @@ function usageTableLines(
 	};
 
 	if (empty) return labelTable();
-	return headerTable(numericHeaders) ?? headerTable(["Input", "Cache", "Output"]) ?? labelTable();
+	return headerTable(numericHeaders) ?? headerTable(["Input", "Cache", "Output", "Total"]) ?? labelTable();
 }
 
 function sortedUsageRows(
-	rows: readonly { model: string; usage: SessionTokenUsage }[],
-): { model: string; usage: SessionTokenUsage }[] {
+	rows: readonly { model: string; usage: { input: number; cacheRead: number; output: number; cacheWrite?: number } }[],
+): { model: string; usage: { input: number; cacheRead: number; output: number; cacheWrite?: number } }[] {
 	return rows
-		.filter(({ usage }) => usage.input + usage.cacheRead + usage.output > 0)
+		.filter(({ usage }) => totalTokenCount(usage) > 0)
 		.sort((left, right) => {
 			if (left.model === "unknown") return 1;
 			if (right.model === "unknown") return -1;
-			const leftTokens = left.usage.input + left.usage.cacheRead + left.usage.output;
-			const rightTokens = right.usage.input + right.usage.cacheRead + right.usage.output;
-			return rightTokens - leftTokens || left.model.localeCompare(right.model);
+			return totalTokenCount(right.usage) - totalTokenCount(left.usage) || left.model.localeCompare(right.model);
 		});
+}
+
+function globalTotalsLines(
+	totals: GlobalModeTotals,
+	grandTotal: SessionUsageTotals,
+	theme: Theme,
+	width: number,
+): string[] {
+	const safeWidth = Math.max(1, width);
+	const border = (text: string) => theme.fg("borderMuted", text);
+	const contentWidth = Math.max(1, safeWidth - 4);
+	const rows: { label: string; usage: SessionUsageTotals }[] = [
+		...GLOBAL_MODE_LABELS.map(({ mode, label }) => ({ label, usage: totals[mode] })),
+		{ label: "Total", usage: grandTotal },
+	];
+	const empty = rows.every((row) => row.usage.tokens === 0 && row.usage.cost === 0 && row.usage.turns === 0);
+
+	const topBorder = (): string => {
+		const prefix = "┌─ ";
+		const label = truncateToWidth("Global token usage", Math.max(1, safeWidth - 5), "…");
+		const dashes = Math.max(0, safeWidth - visibleWidth(prefix + label) - 2);
+		return border(prefix) + theme.fg("accent", theme.bold(label)) + border(` ${"─".repeat(dashes)}┐`);
+	};
+	const bottomBorder = (): string => border(`└${"─".repeat(safeWidth - 2)}┘`);
+	const divider = (): string => border(`├${"─".repeat(safeWidth - 2)}┤`);
+	const contentRow = (content: string): string => border("│ ") + pad(content, contentWidth) + border(" │");
+
+	const numericHeaders = ["Input", "Cache in", "Output", "Cost", "Turns"];
+	const numericValues = (usage: SessionUsageTotals): string[] => [
+		formatExactTokenCount(usage.input),
+		formatExactTokenCount(usage.cacheRead),
+		formatExactTokenCount(usage.output),
+		`$${usage.cost.toFixed(3)}`,
+		String(usage.turns),
+	];
+	const longestValue = (index: number): number =>
+		empty ? 0 : Math.max(...rows.map((row) => numericValues(row.usage)[index]!.length));
+
+	const headerTable = (): string[] | undefined => {
+		const numericWidths = numericHeaders.map((header, index) => Math.max(header.length, longestValue(index)));
+		const labelWidth = contentWidth - numericHeaders.length * 2 - numericWidths.reduce((sum, w) => sum + w, 0);
+		if (labelWidth < 9) return undefined;
+		if (rows.some((row) => visibleWidth(row.label) > labelWidth)) return undefined;
+		const headerRow = contentRow(theme.fg("muted", [
+			pad("Mode", labelWidth),
+			...numericWidths.map((w, index) => rightAlign(numericHeaders[index]!, w)),
+		].join("  ")));
+		const valueRow = (label: string, usage: SessionUsageTotals): string => contentRow([
+			pad(theme.bold(label), labelWidth),
+			...numericValues(usage).map((value, index) => rightAlign(value, numericWidths[index]!)),
+		].join("  "));
+		return [
+			topBorder(),
+			headerRow,
+			divider(),
+			...rows.map(({ label, usage }) => valueRow(label, usage)),
+			bottomBorder(),
+		];
+	};
+
+	const labelTable = (): string[] => {
+		const lines = [topBorder()];
+		if (empty) {
+			lines.push(contentRow(theme.fg("dim", "No usage recorded")));
+		} else {
+			for (const { label, usage } of rows) {
+				lines.push(contentRow(theme.bold(truncateToWidth(label, contentWidth, "…"))));
+				for (const [column, value] of [
+					["Input", numericValues(usage)[0]!],
+					["Cache in", numericValues(usage)[1]!],
+					["Output", numericValues(usage)[2]!],
+					["Cost", numericValues(usage)[3]!],
+					["Turns", numericValues(usage)[4]!],
+				] as const) {
+					lines.push(contentRow(`  ${pad(column, 9)} ${value}`));
+				}
+			}
+		}
+		lines.push(bottomBorder());
+		return lines;
+	};
+
+	if (empty) return labelTable();
+	return headerTable() ?? labelTable();
+}
+
+function globalModelBlocks(models: GlobalModeModelRows, theme: Theme, width: number): string[] {
+	const makeBlocks = (blockWidth: number): string[][] => GLOBAL_MODE_LABELS.map(({ mode, label }) =>
+		usageTableLines(`${label} usage`, models[mode], theme, blockWidth)
+	);
+	if (width < 72) {
+		const blocks = makeBlocks(width);
+		return blocks.flatMap((block, index) => index === 0 ? block : ["", ...block]);
+	}
+
+	const gap = 3;
+	const leftWidth = Math.floor((width - gap) / 2);
+	const rightWidth = Math.max(1, width - gap - leftWidth);
+	const leftBlocks = makeBlocks(leftWidth);
+	const rightBlocks = makeBlocks(rightWidth);
+	const lines: string[] = [];
+	for (let index = 0; index < leftBlocks.length; index += 2) {
+		const left = leftBlocks[index]!;
+		const right = rightBlocks[index + 1] ?? [];
+		const rows = Math.max(left.length, right.length);
+		for (let row = 0; row < rows; row++) {
+			lines.push(`${pad(left[row] ?? "", leftWidth)}${" ".repeat(gap)}${fit(right[row] ?? "", rightWidth)}`);
+		}
+		if (index + 2 < leftBlocks.length) lines.push("");
+	}
+	return lines;
 }
 
 function cumulativeUsageLines(
@@ -237,7 +362,7 @@ function breakdownLines(
 
 const DEFAULT_DETAIL_VISIBLE_ROWS = 8;
 
-type ContextView = "summary" | "systemPrompt" | "extensionTools";
+type ContextView = "summary" | "systemPrompt" | "extensionTools" | "global";
 
 export class ContextDiagnosticsComponent implements Component {
 	private view: ContextView = "summary";
@@ -247,6 +372,10 @@ export class ContextDiagnosticsComponent implements Component {
 	private scrollOffset = 0;
 	private maxScroll = 0;
 	private pageSize = 1;
+	private globalSnapshot: GlobalUsageSnapshot | undefined;
+	private globalLoading = false;
+	private globalProgress: { loaded: number; total: number } | undefined;
+	private globalError: string | undefined;
 
 	constructor(
 		private readonly diagnostics: ContextDiagnostics,
@@ -255,7 +384,14 @@ export class ContextDiagnosticsComponent implements Component {
 		private readonly onClose: () => void,
 		private readonly requestRender: () => void,
 		private readonly getTargetRows?: () => number,
-	) {}
+		private readonly loadGlobal: (onProgress?: (loaded: number, total: number) => void) => Promise<GlobalUsageSnapshot> = async () => buildGlobalUsageSnapshot([]),
+		options: { initialView?: "summary" | "global" } = {},
+	) {
+		if (options.initialView === "global") {
+			this.view = "global";
+			queueMicrotask(() => void this.openGlobal());
+		}
+	}
 
 	private detailLines(innerWidth: number, availableRows: number): string[] {
 		const isSystemPrompt = this.view === "systemPrompt";
@@ -318,12 +454,16 @@ export class ContextDiagnosticsComponent implements Component {
 			: DEFAULT_DETAIL_VISIBLE_ROWS;
 		const titleText = this.view === "summary"
 			? "Context Usage"
-			: this.view === "systemPrompt" ? "System Prompt" : "Extension Tools";
+			: this.view === "systemPrompt" ? "System Prompt"
+			: this.view === "extensionTools" ? "Extension Tools"
+			: "Global Usage";
 		const title = this.theme.fg("accent", this.theme.bold(titleText));
 		let body: string[];
 
-		if (this.view !== "summary") {
+		if (this.view === "systemPrompt" || this.view === "extensionTools") {
 			body = this.detailLines(innerWidth, detailRows).map((line) => `  ${line}`);
+		} else if (this.view === "global") {
+			body = this.globalBody(innerWidth);
 		} else if (innerWidth >= 72) {
 			const meterWidth = 10;
 			const gap = 3;
@@ -347,8 +487,10 @@ export class ContextDiagnosticsComponent implements Component {
 		}
 
 		const hintText = this.view === "summary"
-			? "↑↓ select · Enter details · Esc/q close"
-			: "↑↓ browse · Esc back · q close";
+			? "↑↓ select · Enter details · g global · Esc/q close"
+			: this.view === "systemPrompt" || this.view === "extensionTools"
+				? "↑↓ browse · Esc back · q close"
+				: "↑↓ scroll · r rescan · Esc back · q close";
 		const fixedRows = 6;
 		const availableBodyRows = requestedRows > 0
 			? Math.max(1, requestedRows - fixedRows)
@@ -362,7 +504,9 @@ export class ContextDiagnosticsComponent implements Component {
 			: body;
 		const scrollHint = this.view === "summary"
 			? "↑↓ select · PgUp/PgDn scroll · Enter details · Esc/q close"
-			: "↑↓ browse · Esc back · q close";
+			: this.view === "systemPrompt" || this.view === "extensionTools"
+				? "↑↓ browse · Esc back · q close"
+				: "↑↓ scroll · PgUp/PgDn scroll · r rescan · Esc back · q close";
 		const position = scrollable
 			? ` · ${this.scrollOffset + 1}-${Math.min(this.scrollOffset + availableBodyRows, body.length)} of ${body.length}`
 			: "";
@@ -390,12 +534,27 @@ export class ContextDiagnosticsComponent implements Component {
 			return;
 		}
 		if (this.keybindings.matches(data, "tui.select.cancel")) {
-			if (this.view !== "summary") {
+			if (this.view === "summary") {
+				this.onClose();
+			} else {
 				this.view = "summary";
 				this.scrollOffset = 0;
 				this.requestRender();
-			} else {
-				this.onClose();
+			}
+			return;
+		}
+		if (this.view === "summary" && (data === "g" || data === "G")) {
+			this.view = "global";
+			this.scrollOffset = 0;
+			this.requestRender();
+			void this.openGlobal();
+			return;
+		}
+		if (this.view === "global" && (data === "r" || data === "R")) {
+			if (!this.globalLoading) {
+				this.globalSnapshot = undefined;
+				this.scrollOffset = 0;
+				void this.openGlobal();
 			}
 			return;
 		}
@@ -408,7 +567,11 @@ export class ContextDiagnosticsComponent implements Component {
 				}
 			} else if (this.view === "systemPrompt") {
 				this.systemPromptSelection = Math.max(0, this.systemPromptSelection - 1);
-			} else this.toolSelection = Math.max(0, this.toolSelection - 1);
+			} else if (this.view === "extensionTools") {
+				this.toolSelection = Math.max(0, this.toolSelection - 1);
+			} else {
+				this.scrollOffset = Math.max(0, this.scrollOffset - 1);
+			}
 			this.requestRender();
 			return;
 		}
@@ -424,10 +587,14 @@ export class ContextDiagnosticsComponent implements Component {
 					0,
 					Math.min(this.diagnostics.systemPromptDetails.length - 1, this.systemPromptSelection + 1),
 				);
-			} else this.toolSelection = Math.max(
-				0,
-				Math.min(this.diagnostics.extensionTools.length - 1, this.toolSelection + 1),
-			);
+			} else if (this.view === "extensionTools") {
+				this.toolSelection = Math.max(
+					0,
+					Math.min(this.diagnostics.extensionTools.length - 1, this.toolSelection + 1),
+				);
+			} else {
+				this.scrollOffset = Math.min(this.maxScroll, this.scrollOffset + 1);
+			}
 			this.requestRender();
 			return;
 		}
@@ -436,8 +603,10 @@ export class ContextDiagnosticsComponent implements Component {
 				this.scrollOffset = Math.max(0, this.scrollOffset - this.pageSize);
 			} else if (this.view === "systemPrompt") {
 				this.systemPromptSelection = Math.max(0, this.systemPromptSelection - this.pageSize);
-			} else {
+			} else if (this.view === "extensionTools") {
 				this.toolSelection = Math.max(0, this.toolSelection - this.pageSize);
+			} else {
+				this.scrollOffset = Math.max(0, this.scrollOffset - this.pageSize);
 			}
 			this.requestRender();
 			return;
@@ -450,11 +619,13 @@ export class ContextDiagnosticsComponent implements Component {
 					Math.max(0, this.diagnostics.systemPromptDetails.length - 1),
 					this.systemPromptSelection + this.pageSize,
 				);
-			} else {
+			} else if (this.view === "extensionTools") {
 				this.toolSelection = Math.min(
 					Math.max(0, this.diagnostics.extensionTools.length - 1),
 					this.toolSelection + this.pageSize,
 				);
+			} else {
+				this.scrollOffset = Math.min(this.maxScroll, this.scrollOffset + this.pageSize);
 			}
 			this.requestRender();
 			return;
@@ -467,6 +638,52 @@ export class ContextDiagnosticsComponent implements Component {
 				this.requestRender();
 			}
 		}
+	}
+
+	private async openGlobal(): Promise<void> {
+		if (this.globalLoading) return;
+		this.globalLoading = true;
+		this.globalError = undefined;
+		this.globalProgress = undefined;
+		this.requestRender();
+		try {
+			const snapshot = await this.loadGlobal((loaded, total) => {
+				this.globalProgress = { loaded, total };
+				this.requestRender();
+			});
+			this.globalSnapshot = snapshot;
+		} catch (error) {
+			this.globalError = error instanceof Error ? error.message : String(error);
+		} finally {
+			this.globalLoading = false;
+			this.globalProgress = undefined;
+			this.requestRender();
+		}
+	}
+
+	private globalBody(innerWidth: number): string[] {
+		const theme = this.theme;
+		const lines: string[] = [];
+		if (this.globalLoading) {
+			const progress = this.globalProgress
+				? ` ${this.globalProgress.loaded}/${this.globalProgress.total}`
+				: "";
+			lines.push(theme.fg("warning", `Scanning sessions…${progress}`));
+			if (!this.globalSnapshot && !this.globalError) return lines;
+		}
+		if (this.globalError) {
+			lines.push(theme.fg("error", `Global usage unavailable: ${this.globalError}`));
+			return lines;
+		}
+		const snapshot = this.globalSnapshot;
+		if (!snapshot) return lines;
+		const updated = new Date(snapshot.scannedAt).toLocaleTimeString();
+		lines.push(theme.fg("muted", `${snapshot.sessions.length} sessions · ${snapshot.modelCount} models · updated ${updated}`));
+		lines.push("");
+		lines.push(...globalTotalsLines(snapshot.totals, snapshot.total, theme, innerWidth));
+		lines.push("");
+		lines.push(...globalModelBlocks(snapshot.models, theme, innerWidth));
+		return lines;
 	}
 
 	invalidate(): void {
@@ -572,15 +789,45 @@ export function textualSummary(diagnostics: ContextDiagnostics): string {
 	].join("\n");
 }
 
+export function textualGlobalSummary(snapshot: GlobalUsageSnapshot): string {
+	const modeLines = (label: string, totals: SessionUsageTotals): string =>
+		`  ${label}: ${formatTokenCount(totals.tokens)} tokens · $${totals.cost.toFixed(3)} · ${totals.turns} turns`;
+	const modelLines = (title: string, rows: readonly GlobalModelRow[]): string[] =>
+		rows.length === 0 ? [] : [
+			`${title}:`,
+			...rows.map(({ model, usage }) =>
+				`  ${model}: ${formatTokenCount(usage.tokens)} tokens · $${usage.cost.toFixed(3)} · ${usage.turns} turns`,
+			),
+		];
+	return [
+		`${snapshot.sessions.length} sessions · ${snapshot.modelCount} models (updated ${new Date(snapshot.scannedAt).toLocaleString()})`,
+		`Total: ${formatTokenCount(snapshot.total.tokens)} tokens · $${snapshot.total.cost.toFixed(3)} · ${snapshot.total.turns} turns`,
+		...GLOBAL_MODE_LABELS.map(({ mode, label }) => modeLines(label, snapshot.totals[mode])),
+		...GLOBAL_MODE_LABELS.flatMap(({ mode, label }) => modelLines(label, snapshot.models[mode])),
+	].join("\n");
+}
+
 export default function contextDiagnosticsExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("context", {
-		description: "show model context usage and estimated breakdown",
-		handler: async (_args, ctx) => {
+		description: "show model context usage and estimated breakdown, or 'global' for usage across all sessions",
+		getArgumentCompletions: (prefix: string) =>
+			["global"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
+		handler: async (args, ctx) => {
+			const globalRequested = (args || "").trim().toLowerCase() === "global";
+			const loadGlobal = (onProgress?: (loaded: number, total: number) => void) =>
+				scanGlobalUsage({ onProgress });
 			const diagnostics = collectDiagnostics(pi, ctx);
 			if (ctx.mode !== "tui") {
-				const summary = textualSummary(diagnostics);
-				if (ctx.hasUI) ctx.ui.notify(summary, "info");
-				else process.stderr.write(`${summary}\n`);
+				if (globalRequested) {
+					const snapshot = await loadGlobal();
+					const summary = textualGlobalSummary(snapshot);
+					if (ctx.hasUI) ctx.ui.notify(summary, "info");
+					else process.stderr.write(`${summary}\n`);
+				} else {
+					const summary = textualSummary(diagnostics);
+					if (ctx.hasUI) ctx.ui.notify(summary, "info");
+					else process.stderr.write(`${summary}\n`);
+				}
 				return;
 			}
 
@@ -601,6 +848,8 @@ export default function contextDiagnosticsExtension(pi: ExtensionAPI): void {
 							},
 							() => tui.requestRender(),
 							() => tui.terminal.rows * 0.88,
+							loadGlobal,
+							{ initialView: globalRequested ? "global" : "summary" },
 						);
 						return component;
 					},
