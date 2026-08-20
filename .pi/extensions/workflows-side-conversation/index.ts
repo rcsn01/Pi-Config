@@ -46,7 +46,7 @@ export default function (pi: ExtensionAPI) {
 
 			try {
 				if (!ctx.isIdle()) {
-					ctx.ui.notify("Waiting for the current turn before toggling side mode...", "info");
+					ctx.ui.notify("Waiting for the current turn before toggling side mode…", "info");
 					await ctx.waitForIdle();
 				}
 
@@ -59,7 +59,7 @@ export default function (pi: ExtensionAPI) {
 					const result = await ctx.switchSession(parentSession, {
 						withSession: async (mainCtx: ReplacedSessionContext) => {
 							updateSideModeStatus(mainCtx);
-							mainCtx.ui.notify("↩ Returned to main conversation.", "info");
+							mainCtx.ui.notify("Returned to main conversation.", "info");
 						},
 					});
 
@@ -86,7 +86,7 @@ export default function (pi: ExtensionAPI) {
 				const withSideSession = async (sideCtx: ReplacedSessionContext) => {
 					updateSideModeStatus(sideCtx);
 					sideCtx.ui.notify(
-						"⚡ Side mode active. Use /side again to return to the main conversation.",
+						"Side mode active. Use /side again to return to the main conversation.",
 						"info",
 					);
 

@@ -123,7 +123,7 @@ export default function memoryExtension(pi: ExtensionAPI) {
 			`${memoryMode === "read-write" ? "● " : "  "}on — Read and write MEMORY.md`,
 			`${memoryMode === "read-only" ? "● " : "  "}read-only — Use existing memories, don't update`,
 		];
-		const choice = await ctx.ui.select("Memory Settings:", choices);
+		const choice = await ctx.ui.select("Memory settings", choices);
 		if (!choice) return;
 		if (choice.includes("read-only")) return setMode("read-only", ctx, "Memories");
 		if (choice.includes("on")) return setMode("read-write", ctx, "Memories");

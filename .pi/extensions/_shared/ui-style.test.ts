@@ -1,7 +1,9 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
+import { makeThemeSpy, stripResets } from "./theme-spy.ts";
 import {
 	createSelectListTheme,
+	fitUiLines,
 	formatSelectorHint,
 	renderSelectorFrame,
 	selectorHint,
@@ -61,5 +63,33 @@ describe("shared UI style", () => {
 		])).toBe("k/j navigate · y apply");
 		expect(selectorHint(keybindings, { searchable: true, confirmVerb: "next", cancelVerb: "back" }))
 			.toBe("type to filter · k/j navigate · y next · x back");
+	});
+
+	it("uses semantic tokens under dark and light themes with no ANSI escapes", () => {
+		for (const variant of ["dark", "light"] as const) {
+			const tag = variant === "dark" ? "d" : "l";
+			const th = makeThemeSpy(variant);
+			const output = renderSelectorFrame(th, 80, {
+				title: "Select item",
+				subtitle: "A subtitle",
+				body: ["Body line"],
+				hint: "k/j navigate · y select · x cancel",
+			}).join("\n");
+
+			expect(output).toContain(`border${tag}(`);
+			expect(output).toContain(`accent${tag}(bold${tag}(Select item))`);
+			expect(output).toContain(`dim${tag}(A subtitle)`);
+			expect(output).toContain(`dim${tag}(k/j navigate · y select · x cancel)`);
+			expect(stripResets(output)).not.toMatch(/\x1b\[/);
+		}
+	});
+
+	it("clamps every fitted line to the requested width", () => {
+		const th = makeThemeSpy("dark");
+		for (const width of [20, 40, 80, 120]) {
+			const fitted = fitUiLines([th.fg("text", "x".repeat(200))], width);
+			expect(fitted.length).toBeGreaterThan(0);
+			expect(visibleWidth(fitted[0]!)).toBeLessThanOrEqual(width);
+		}
 	});
 });

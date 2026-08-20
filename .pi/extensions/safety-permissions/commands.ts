@@ -179,7 +179,7 @@ export function registerPermissionCommands(pi: ExtensionAPI, service: CommandSer
 					return;
 				}
 				default:
-					ctx.ui.notify("Usage: /execpolicy check|rules|add|remove|default", "info");
+					ctx.ui.notify("Usage: /execpolicy check|rules|add|remove|default", "warning");
 			}
 		},
 	});

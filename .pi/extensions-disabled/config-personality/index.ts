@@ -111,7 +111,7 @@ export default function (pi: ExtensionAPI) {
 					return `${s === current ? "● " : "  "}${s} — ${desc[s]}`;
 				});
 
-				const choice = await ctx.ui.select("Communication Style:", choices);
+				const choice = await ctx.ui.select("Communication style", choices);
 				if (!choice) return;
 
 				const match = valid.find((s) => choice.includes(s));

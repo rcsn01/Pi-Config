@@ -41,7 +41,7 @@ export default function (pi: ExtensionAPI) {
 					},
 					withSession: async (newCtx) => {
 						newCtx.ui.notify(
-							"✨ Terminal cleared. Fresh session started. Previous session resumable via /resume.",
+							"Terminal cleared. Fresh session started. Previous session resumable via /resume.",
 							"info",
 						);
 					},
@@ -53,7 +53,7 @@ export default function (pi: ExtensionAPI) {
 			} catch (e: any) {
 				ctx.ui.notify(
 					`Cleared terminal but couldn't start new session: ${e.message}`,
-					"warning",
+					"error",
 				);
 			}
 		},
