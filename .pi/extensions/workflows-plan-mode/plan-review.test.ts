@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	actionLabels,
+	activePlanningEntry,
 	assistantWithPlan,
 	createHarness,
 	createProfileDependencies,
@@ -203,13 +204,20 @@ describe("simple plan review UI", () => {
 		});
 	});
 
-	it("starts a fresh implementation automatically when selected", async () => {
-		const harness = createHarness({ selection: "Clear context and implement (recommended)" });
+	it("starts a fresh implementation automatically and preserves the session profile", async () => {
+		const harness = createHarness({
+			selection: "Clear context and implement (recommended)",
+			branch: [
+				activePlanningEntry(),
+				{ type: "custom", customType: "configProfiles", data: { active: "focused" } },
+			],
+		});
 		await initializeAndExtract(harness, "# Fresh Plan");
 		await harness.emit("agent_settled");
 
 		expect(harness.timeline).toContain("submit:/plan-implement-fresh");
 		expect(harness.newSession).toHaveBeenCalledTimes(1);
+		expect(harness.freshAppendCustomEntry).toHaveBeenCalledWith("configProfiles", { active: "focused" });
 		expect(harness.freshSendUserMessage).toHaveBeenCalledWith(
 			expect.stringContaining("Implement the plan in a fresh context"),
 		);

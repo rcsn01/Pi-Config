@@ -42,10 +42,17 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 		};
 
 		pi.on("session_start", async (event, ctx) => {
+			const rememberedProfile = sessionProfileName(ctx.sessionManager.getBranch());
 			// On reload the session keeps its profile: the remembered session entry
 			// persists and the sibling extensions re-read the profile file with it.
 			if (event.reason === "reload") {
-				updateStatus(ctx, sessionProfileName(ctx.sessionManager.getBranch()));
+				updateStatus(ctx, rememberedProfile);
+				return;
+			}
+			// Intentional fresh-session handoffs can seed the originating profile.
+			// Ordinary unseeded new sessions still load the active marker below.
+			if (event.reason === "new" && rememberedProfile !== undefined) {
+				updateStatus(ctx, rememberedProfile);
 				return;
 			}
 			try {
