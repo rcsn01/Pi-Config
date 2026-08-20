@@ -55,7 +55,7 @@ export default function (pi: ExtensionAPI) {
 
 		// Show file picker
 		const choice = await ctx.ui.select(
-			`Files matching "${query}":`,
+			`Files matching "${query}"`,
 			files.map((f) => `@${f}`),
 		);
 
@@ -120,13 +120,13 @@ export default function (pi: ExtensionAPI) {
 			const includeHidden = raw.includes("--hidden") || raw.includes("--all");
 			const query = raw.replace(/--hidden|--all/g, "").trim();
 			if (!query) {
-				ctx.ui.notify("Usage: /files <search-query>", "info");
+				ctx.ui.notify("Usage: /files <search-query>", "warning");
 				return;
 			}
 
 			const files = await findFiles(ctx.cwd, query, 20, { includeHidden });
 			if (files.length === 0) {
-				ctx.ui.notify(`No files matching "${query}".`, "info");
+				ctx.ui.notify(`No files matching "${query}".`, "warning");
 				return;
 			}
 
@@ -136,7 +136,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const choice = await ctx.ui.select(
-				`Files matching "${query}":`,
+				`Files matching "${query}"`,
 				files,
 			);
 

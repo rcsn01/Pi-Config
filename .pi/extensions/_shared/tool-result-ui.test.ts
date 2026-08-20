@@ -1,11 +1,14 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
+import { makeThemeSpy, stripResets } from "./theme-spy.ts";
 import {
 	registerToolErrorHandler,
 	renderToolMarkdown,
 	renderToolSummary,
 	toolStateGlyph,
+	toolStateMarker,
 	truncateToolLine,
+	type ToolResultState,
 } from "./tool-result-ui.ts";
 
 function theme() {
@@ -59,5 +62,37 @@ describe("tool result UI helpers", () => {
 			const line = truncateToolLine("A very long preview that must fit the terminal width", width);
 			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
+	});
+
+	it("maps every state to the matching glyph and semantic token", () => {
+		const expectations: Array<[ToolResultState, string, string]> = [
+			["pending", "○", "dim"],
+			["running", "⟳", "warning"],
+			["success", "✓", "success"],
+			["warning", "!", "warning"],
+			["error", "✗", "error"],
+		];
+		for (const [state, glyph, token] of expectations) {
+			const th = makeThemeSpy("dark");
+			expect(toolStateMarker(th, state)).toBe(`${token}d(${glyph})`);
+			const summary = renderToolSummary(th, state, "Message").render(80).join("\n");
+			expect(summary).toContain(`${token}d(${glyph} )`);
+			// Error/warning bodies use their state color; other states use tool output.
+			const bodyToken = state === "error" || state === "warning" ? token : "toolOutput";
+			expect(summary).toContain(`${bodyToken}d(Message)`);
+		}
+	});
+
+	it("renders summaries and expanded Markdown without ANSI escapes", () => {
+		const th = makeThemeSpy("light");
+		const empty = renderToolSummary(th, "pending", "").render(40).join("\n");
+		expect(empty).toContain("diml(○ )");
+		const expandable = renderToolSummary(th, "success", "Done", true).render(80).join("\n");
+		expect(expandable).toContain("successl(✓ )");
+		expect(expandable).toContain("diml( · expand to view)");
+		const markdown = renderToolMarkdown("# Result\n\nA **document**.", th).render(80).join("\n");
+		expect(markdown).toContain("Result");
+		expect(markdown).toContain("toolOutputl(");
+		expect(stripResets(markdown)).not.toMatch(/\x1b\[/);
 	});
 });

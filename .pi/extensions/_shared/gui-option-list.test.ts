@@ -104,4 +104,32 @@ describe("GUI option list", () => {
 			.resolves.toBe("beta");
 		expect(select).toHaveBeenCalledWith("Choose one", ["● Alpha (current)", "  Beta"]);
 	});
+
+	it("renders disabled rows dim and refreshes cached lines after invalidation", async () => {
+		const currentTheme = theme();
+		const ctx = {
+			hasUI: true,
+			mode: "tui",
+			ui: {
+				custom: vi.fn((builder: any) => new Promise((resolve) => {
+					const component = builder({ requestRender: vi.fn() }, currentTheme, keybindings(), resolve);
+					currentTheme.fg.mockImplementation((color: string, text: string) => `${color}<${text}>`);
+					const first = component.render(80).join("\n");
+					expect(first).toContain("dim<  ○ Locked (disabled)>");
+					expect(first).toContain("accent<→ ● Alpha>");
+
+					currentTheme.fg.mockImplementation((color: string, text: string) => `[${color}]${text}`);
+					component.invalidate();
+					const second = component.render(80).join("\n");
+					expect(second).toContain("[dim]  ○ Locked (disabled)");
+					expect(second).not.toContain("dim<  ○ Locked (disabled)>");
+
+					component.handleInput("x");
+				})),
+				notify: vi.fn(),
+			},
+		} as any;
+		await expect(pickGuiOptions(ctx, { title: "Choose options", options: [...options] }))
+			.resolves.toBeUndefined();
+	});
 });

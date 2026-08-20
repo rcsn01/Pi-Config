@@ -109,7 +109,11 @@ export async function pickSelectScreen<T extends string>(
 				if (input) {
 					body.push(...fitUiLines(input.render(safeWidth), safeWidth), "");
 				}
-				body.push(...fitUiLines(list.render(safeWidth), safeWidth));
+				if (visibleItems.length === 0 && request.search) {
+					body.push(theme.fg("muted", "No matches"));
+				} else {
+					body.push(...fitUiLines(list.render(safeWidth), safeWidth));
+				}
 				return renderSelectorFrame(theme, safeWidth, {
 					title: request.title,
 					subtitle: request.subtitle,

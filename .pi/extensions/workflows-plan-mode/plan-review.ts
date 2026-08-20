@@ -115,7 +115,7 @@ export function createPlanReviewController(host: PlanReviewHost): PlanReviewCont
 
 	async function implementCurrent(ctx: ExtensionContext, plan: string): Promise<void> {
 		if (!(await host.exitPlanMode(ctx))) return;
-		ctx.ui.notify("Plan mode exited. Implementing proposed plan...", "info");
+		ctx.ui.notify("Plan mode exited. Implementing proposed plan…", "info");
 		host.sendUserMessage(
 			`Implement this proposed plan:\n\n${plan}`,
 			ctx.isIdle() ? undefined : { deliverAs: "followUp" },
@@ -127,7 +127,7 @@ export function createPlanReviewController(host: PlanReviewHost): PlanReviewCont
 		const profileName = sessionProfileName(ctx.sessionManager.getBranch());
 		pendingFreshImplementationPlan = undefined;
 		if (!(await host.exitPlanMode(ctx))) return;
-		ctx.ui.notify("Plan mode exited. Starting fresh implementation session...", "info");
+		ctx.ui.notify("Plan mode exited. Starting fresh implementation session…", "info");
 
 		const parentSession = ctx.sessionManager.getSessionFile();
 		const handoffPrompt = `${PLAN_IMPLEMENT_FRESH_PREFIX}\n\n${plan}`;

@@ -356,7 +356,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (sub === "create") {
 				let branchId: string | undefined = parts[1];
-				if (!branchId && ctx.hasUI) branchId = (await ctx.ui.input("Worktree branch id:")) ?? undefined;
+				if (!branchId && ctx.hasUI) branchId = (await ctx.ui.input("Worktree branch id")) ?? undefined;
 				if (!branchId) {
 					ctx.ui.notify("Usage: /worktree create <branch-id>", "warning");
 					return;
@@ -375,8 +375,9 @@ export default function (pi: ExtensionAPI) {
 				if (!branchId && ctx.hasUI) {
 					try {
 						const managed = (await listWorktrees(pi, ctx)).filter((wt) => wt.managed && wt.branchId);
-						const choice = await ctx.ui.select("Remove managed worktree:", managed.map((wt) => wt.branchId!));
-						branchId = choice ?? undefined;
+						const choice = await ctx.ui.select("Remove managed worktree", managed.map((wt) => wt.branchId!));
+						if (!choice) return;
+						branchId = choice;
 					} catch {}
 				}
 				if (!branchId) {

@@ -122,4 +122,54 @@ describe("pickSelectScreen", () => {
 		})).resolves.toBeUndefined();
 		expect(custom).not.toHaveBeenCalled();
 	});
+
+	it("marks the current item and leaves other items unchecked", async () => {
+		const h = harness();
+		void pickSelectScreen(h.ctx, {
+			title: "Select item",
+			items,
+			currentValue: "beta",
+			showCurrentMarker: true,
+		});
+		const output = h.component().render(80).join("\n");
+		expect(output).toContain("○ Alpha");
+		expect(output).toContain("● Beta");
+		expect(output).toContain("○ Gamma");
+	});
+
+	it("renders a no-match line when search yields no items", async () => {
+		const h = harness();
+		const pending = pickSelectScreen(h.ctx, {
+			title: "Search",
+			items,
+			search: { filter: (choices, query) => (query ? [] : choices) },
+		});
+		const component = h.component();
+		component.focused = true;
+		component.handleInput("z");
+		expect(component.render(40).join("\n")).toContain("No matches");
+		component.handleInput("x");
+		await expect(pending).resolves.toBeUndefined();
+	});
+
+	it("re-renders with the current theme after invalidation", async () => {
+		const h = harness();
+		const pending = pickSelectScreen(h.ctx, {
+			title: "Select item",
+			items,
+			currentValue: "alpha",
+			showCurrentMarker: true,
+		});
+		const component = h.component();
+		component.render(80);
+
+		h.theme.fg.mockImplementation((color: string, text: string) => `${color}<${text}>`);
+		component.invalidate();
+		const output = component.render(80).join("\n");
+		expect(output).toContain("border<");
+		expect(output).toContain("accent<Select item>");
+
+		component.handleInput("x");
+		await expect(pending).resolves.toBeUndefined();
+	});
 });

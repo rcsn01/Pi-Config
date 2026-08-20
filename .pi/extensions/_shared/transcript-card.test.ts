@@ -1,6 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import { renderTranscriptCard } from "./transcript-card.ts";
+import { makeThemeSpy, stripResets } from "./theme-spy.ts";
+import { renderTranscriptCard, type TranscriptCardState } from "./transcript-card.ts";
 
 function theme() {
 	const fg = vi.fn((_color: string, text: string) => text);
@@ -63,5 +64,50 @@ describe("transcript cards", () => {
 			}).render(width);
 			expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
 		}
+	});
+
+	it("maps every state to the matching glyph and token under dark and light themes", () => {
+		const expectations: Array<[TranscriptCardState, string, string]> = [
+			["neutral", "", "accent"],
+			["success", "✓", "success"],
+			["warning", "!", "warning"],
+			["error", "✗", "error"],
+		];
+		for (const variant of ["dark", "light"] as const) {
+			const tag = variant === "dark" ? "d" : "l";
+			for (const [state, glyph, color] of expectations) {
+				const th = makeThemeSpy(variant);
+				const output = renderTranscriptCard(th, {
+					title: "Card",
+					state,
+					summary: "Summary",
+					expanded: false,
+				}).render(80).join("\n");
+
+				expect(output).toContain(`bg${tag}(customMessageBg:`);
+				if (glyph) expect(output).toContain(`${color}${tag}(${glyph})`);
+				expect(output).toContain(`accent${tag}(bold${tag}(Card))`);
+				expect(output).toContain("Summary");
+				expect(stripResets(output)).not.toMatch(/\x1b\[/);
+			}
+		}
+	});
+
+	it("renders expanded error cards with Markdown body and metadata", () => {
+		const th = makeThemeSpy("light");
+		const output = renderTranscriptCard(th, {
+			title: "Workflow failed",
+			state: "error",
+			body: "## Failed\n\nA **step** broke.",
+			metadata: ["run: abc"],
+			expanded: true,
+		}).render(80).join("\n");
+
+		expect(output).toContain("errorl(✗)");
+		expect(output).toContain("bgl(customMessageBg:");
+		expect(output).toContain("Failed");
+		expect(output).toContain("step");
+		expect(output).toContain("run: abc");
+		expect(stripResets(output)).not.toMatch(/\x1b\[/);
 	});
 });

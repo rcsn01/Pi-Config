@@ -163,7 +163,7 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 
-				const choice = await ctx.ui.select("Code Review - choose type:", [
+				const choice = await ctx.ui.select("Choose review type", [
 					"Review against base branch (PR review)",
 					"Review uncommitted changes (working tree)",
 					"Review a specific commit",
@@ -182,7 +182,7 @@ export default function (pi: ExtensionAPI) {
 							ctx.ui.notify("No branches found.", "warning");
 							return;
 						}
-						const branch = await ctx.ui.select("Select base branch:", branches);
+						const branch = await ctx.ui.select("Select base branch", branches);
 						if (!branch) return;
 						pi.sendUserMessage(
 							`Please review the changes against the \`${branch}\` branch. ` +
@@ -206,7 +206,7 @@ export default function (pi: ExtensionAPI) {
 							ctx.ui.notify("No commits found.", "warning");
 							return;
 						}
-						const commit = await ctx.ui.select("Select commit to review:", commits);
+						const commit = await ctx.ui.select("Select commit to review", commits);
 						if (!commit) return;
 						const sha = commit.split(" ")[0];
 						pi.sendUserMessage(
