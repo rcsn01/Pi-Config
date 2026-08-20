@@ -4,10 +4,13 @@
  * The active profile file (`.pi/profiles/<name>.json`) is the source of truth
  * for extension-managed settings, while `.pi/settings.json` holds only the
  * `configProfiles.active` marker plus shared pi-core settings. Each session
- * resolves its profile once at start. The marker wins on startup, resume, and
- * fork; an explicitly seeded entry wins for a new session; and the remembered
- * entry alone is used on reload. Sibling extensions therefore read and write
- * the session's profile file instead of fighting over settings.json.
+ * resolves its profile once at start. The session's remembered entry wins on
+ * every boundary — another session's marker switch cannot change this
+ * session's profile — and the marker is only the default for sessions without
+ * a remembered choice. On reload only the remembered entry is consulted, so
+ * reloading never picks up another session's switch. Sibling extensions
+ * therefore read and write the session's profile file instead of fighting
+ * over settings.json.
  *
  * Lifecycle policy: the binding is resolved once per `session_start` and each
  * consuming extension repoints its settings store at the resolved document
@@ -95,14 +98,13 @@ export interface SessionProfileResolver {
 /**
  * Build the session-profile binding for one extension: owns the marker/entry
  * precedence, reload semantics, validation, fallback, and path construction
- * behind one method. On `startup`, `resume`, and `fork`, the settings.json
- * marker is authoritative (fallback: the remembered session entry). On `new`,
- * an explicitly seeded session entry is authoritative (fallback: the marker),
- * allowing intentional handoffs to retain their profile while ordinary new
- * sessions still use the global default. On `reload`, only the remembered
- * session entry is consulted, so another session's `/profile` switch cannot
- * change this session's profile. Always returns a concrete path: the profile
- * file when a name resolves, else the plain settings document.
+ * behind one method. The session's remembered entry is authoritative on every
+ * boundary (`startup`, `resume`, `fork`, `new`, `reload`): another session's
+ * `/profile` switch cannot change this session's profile. The settings.json
+ * marker is only the fallback — the default for sessions without a remembered
+ * choice. On `reload` the marker is not consulted at all. Always returns a
+ * concrete path: the profile file when a name resolves, else the plain
+ * settings document.
  */
 export function createSessionProfileResolver(options: {
 	settingsPath: string;
@@ -115,7 +117,7 @@ export function createSessionProfileResolver(options: {
 				return fromEntry === undefined ? options.settingsPath : profilePath(options.profilesDirectory, fromEntry);
 			}
 			const fromMarker = readActiveProfileName(options.settingsPath);
-			const name = reason === "new" ? fromEntry ?? fromMarker : fromMarker ?? fromEntry;
+			const name = fromEntry ?? fromMarker;
 			return name === undefined ? options.settingsPath : profilePath(options.profilesDirectory, name);
 		},
 	};

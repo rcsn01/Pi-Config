@@ -134,6 +134,20 @@ describe("config profiles extension", () => {
 		}
 	});
 
+	it("keeps the remembered profile on startup, resume, and fork even when the marker changed", async () => {
+		for (const reason of ["startup", "resume", "fork"] as const) {
+			const harness = createHarness({
+				active: "github",
+				branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
+			});
+			await harness.emit("session_start", reason);
+
+			expect(harness.setStatus).toHaveBeenCalledWith("profile", "focused");
+			expect(harness.loadActiveProfile).not.toHaveBeenCalled();
+			expect(harness.appendEntry).not.toHaveBeenCalled();
+		}
+	});
+
 	it("publishes a profile seeded into a new session without replacing it from the active marker", async () => {
 		const harness = createHarness({
 			active: "github",
@@ -348,6 +362,19 @@ describe("config profiles extension", () => {
 		expect(harness.reload).toHaveBeenCalledOnce();
 	});
 
+	it("marks the session's remembered profile in the picker, not the marker", async () => {
+		const harness = createHarness({
+			active: "github",
+			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
+		});
+		harness.select.mockResolvedValue("● focused (current)");
+		await harness.commands.get("profile").handler("", harness.ctx);
+
+		expect(harness.select).toHaveBeenCalledWith("Select settings profile", ["  default", "● focused (current)"]);
+		expect(harness.switchProfile).not.toHaveBeenCalled();
+		expect(harness.reload).not.toHaveBeenCalled();
+	});
+
 	it("provides current filename completions", () => {
 		const harness = createHarness({ profiles: ["default", "focused", "fast"] });
 		const completions = harness.commands.get("profile").getArgumentCompletions("f");
@@ -365,6 +392,20 @@ describe("config profiles extension", () => {
 		expect(harness.output).toHaveBeenCalledWith(expect.stringContaining("Usage: /profile <name>"));
 		expect(harness.notify).not.toHaveBeenCalled();
 		expect(harness.switchProfile).not.toHaveBeenCalled();
+	});
+
+	it("stars the session's remembered profile in non-interactive listings", async () => {
+		const harness = createHarness({
+			active: "github",
+			profiles: ["github", "focused"],
+			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
+		});
+		const context = { ...harness.ctx, hasUI: false, mode: "print" };
+		await harness.commands.get("profile").handler("", context);
+
+		const message = harness.output.mock.calls[0][0] as string;
+		expect(message).toContain("* focused");
+		expect(message).toContain("- github");
 	});
 
 	it("does not install a settings.json watcher", async () => {
@@ -385,6 +426,34 @@ describe("config profiles extension", () => {
 		expect(harness.readProfile).not.toHaveBeenCalled();
 		expect(harness.setModel).not.toHaveBeenCalled();
 		expect(harness.reload).not.toHaveBeenCalled();
+	});
+
+	it("treats the session's own profile as already active even when the marker names another", async () => {
+		const harness = createHarness({
+			active: "github",
+			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
+		});
+		await harness.commands.get("profile").handler("focused", harness.ctx);
+
+		expect(harness.notify).toHaveBeenCalledWith('Profile "focused" is already active.', "info");
+		expect(harness.switchProfile).not.toHaveBeenCalled();
+		expect(harness.appendEntry).not.toHaveBeenCalled();
+		expect(harness.readProfile).not.toHaveBeenCalled();
+		expect(harness.setModel).not.toHaveBeenCalled();
+		expect(harness.reload).not.toHaveBeenCalled();
+	});
+
+	it("rebinds the session when switching to the marker's profile with a differing entry", async () => {
+		const harness = createHarness({
+			active: "github",
+			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
+		});
+		await harness.commands.get("profile").handler("github", harness.ctx);
+
+		expect(harness.switchProfile).toHaveBeenCalledWith("github");
+		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "github" });
+		expect(harness.notify).toHaveBeenCalledWith('Switched to profile "github". Reloading…', "info");
+		expect(harness.reload).toHaveBeenCalledOnce();
 	});
 
 	it("reports failed switches without applying or reloading", async () => {
