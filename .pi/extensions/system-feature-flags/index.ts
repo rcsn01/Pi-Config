@@ -134,7 +134,7 @@ async function featuresToggleUI(
 	}
 
 	const selected = await pickGuiOptions(ctx, {
-		title: "Extension Toggles",
+		title: "Extension toggles",
 		message: `Repository: ${cwd}\nRun /reload after toggling for changes to take effect.`,
 		options: extensions.map((ext) => ({
 			label: ext.metadata?.displayName ?? ext.name,
@@ -143,6 +143,7 @@ async function featuresToggleUI(
 				? "[protected] cannot be disabled"
 				: `${ext.enabled ? "enabled" : "disabled"} · ${ext.metadata?.pack ?? "uncataloged"}`,
 			checked: ext.enabled,
+			disabled: ext.protected,
 		})),
 	});
 

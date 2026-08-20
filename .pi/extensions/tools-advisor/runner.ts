@@ -287,12 +287,13 @@ function resultFromResponse(
 		.join("\n")
 		.trim();
 	const overflow = isContextOverflow(response, undefined) || isExplicitOverflow(response.errorMessage ?? "");
+	const partialAdvice = text ? `\n\nPartial advice:\n\n${text}` : "";
 	if (response.stopReason === "error") {
 		if (overflow && !hasNonzeroUsage(response.usage)) {
 			releaseBudget();
 			return failure(
 				"advisor_context_too_large",
-				`The advisor provider rejected the complete request as too large: ${response.errorMessage ?? "context limit exceeded"}`,
+				`The advisor provider rejected the complete request as too large: ${response.errorMessage ?? "context limit exceeded"}${partialAdvice}`,
 				model,
 				false,
 				false,
@@ -300,11 +301,11 @@ function resultFromResponse(
 			);
 		}
 		releaseBudget();
-		return failure("advisor_provider_error", response.errorMessage ?? "The advisor provider returned an error.", model, true, false, response.usage);
+		return failure("advisor_provider_error", `${response.errorMessage ?? "The advisor provider returned an error."}${partialAdvice}`, model, true, false, response.usage);
 	}
 	if (response.stopReason === "aborted") {
 		releaseBudget();
-		return failure("advisor_aborted", response.errorMessage ?? "The advisor consultation was aborted.", model, true, false, response.usage);
+		return failure("advisor_aborted", `${response.errorMessage ?? "The advisor consultation was aborted."}${partialAdvice}`, model, true, false, response.usage);
 	}
 	if (response.stopReason === "length") {
 		releaseBudget();

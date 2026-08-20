@@ -75,6 +75,16 @@ function harness(options: {
 // instead of depending on the wall clock.
 const FIXTURE_NOW = () => new Date("2026-08-17T12:00:00.000Z");
 
+function rendererTheme() {
+	return {
+		fg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+		italic: (text: string) => text,
+		strikethrough: (text: string) => text,
+		underline: (text: string) => text,
+	};
+}
+
 describe("/usage (unified) and the usage tools", () => {
 	it("shows both providers on a plain /usage", async () => {
 		// Monday 21:20 local: 40 minutes to the full hour, 6 days to Monday —
@@ -210,6 +220,20 @@ describe("/usage (unified) and the usage tools", () => {
 		expect(probe).not.toHaveBeenCalled();
 		expect(probeOllama).not.toHaveBeenCalled();
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Usage: /usage"), "error");
+	});
+
+	it("renders themed collapsed, expanded, partial, and error tool states", () => {
+		const { tools } = harness();
+		const tool = tools.get("subscription_usage");
+		const result = { content: [{ type: "text", text: "usage" }], details: okResult.snapshot };
+		const collapsed = tool.renderResult(result, { expanded: false, isPartial: false }, rendererTheme(), { isError: false });
+		expect(collapsed.render(80).join("\n")).toContain("✓ Plan Pro · 58% of weekly limit used · expand to view");
+		const expanded = tool.renderResult(result, { expanded: true, isPartial: false }, rendererTheme(), { isError: false });
+		expect(expanded.render(80).join("\n")).toContain("ChatGPT Codex");
+		const partial = tool.renderResult(result, { expanded: false, isPartial: true }, rendererTheme(), { isError: false });
+		expect(partial.render(80).join("\n")).toContain("⟳ Loading Codex usage…");
+		const error = tool.renderResult({ content: [{ type: "text", text: "quota unavailable" }] }, { expanded: false, isPartial: false }, rendererTheme(), { isError: true });
+		expect(error.render(80).join("\n")).toContain("✗ quota unavailable");
 	});
 
 	it("returns quota through subscription_usage and reuses the fresh cache", async () => {

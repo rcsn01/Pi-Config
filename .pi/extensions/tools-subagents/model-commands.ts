@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Input, SelectList, truncateToWidth } from "@earendil-works/pi-tui";
+import { pickSelectScreen } from "../_shared/select-screen.ts";
 import type { AgentConfig } from "../_shared/subagent-service.ts";
 import { agentRegistry, type AgentRegistry } from "./agent-registry.ts";
 import {
@@ -344,39 +344,12 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			}),
 		];
 
-		return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
-			const list = new SelectList(items, Math.min(Math.max(items.length, 1), 12), {
-				selectedPrefix: (text) => theme.fg("accent", text),
-				selectedText: (text) => theme.fg("accent", text),
-				description: (text) => theme.fg("muted", text),
-				scrollInfo: (text) => theme.fg("dim", text),
-				noMatch: (text) => theme.fg("warning", text),
-			}, { minPrimaryColumnWidth: 18, maxPrimaryColumnWidth: 28 });
-			list.onSelect = (item) => done(item.value);
-			list.onCancel = () => done(undefined);
-
-			return {
-				render(width: number) {
-					const border = theme.fg("accent", "─".repeat(Math.max(0, width)));
-					return [
-						border,
-						truncateToWidth(theme.fg("accent", theme.bold("Subagent Configuration")), width),
-						truncateToWidth(theme.fg("dim", "Choose all subagents or one agent to change model and thinking"), width),
-						"",
-						...list.render(width),
-						"",
-						truncateToWidth(theme.fg("dim", "↑↓ navigate · Enter select · Esc close"), width),
-						border,
-					];
-				},
-				invalidate() {
-					list.invalidate();
-				},
-				handleInput(data: string) {
-					list.handleInput(data);
-					tui.requestRender();
-				},
-			};
+		return pickSelectScreen(ctx, {
+			title: "Configure subagents",
+			subtitle: "Choose all subagents or one agent to change model and thinking",
+			items,
+			columns: { minPrimaryColumnWidth: 18, maxPrimaryColumnWidth: 28 },
+			cancelVerb: "close",
 		});
 	}
 
@@ -424,7 +397,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			const inherited = effectiveModelForAgent(agent, { ...config, agentModels: inheritedAgentModels });
 			choices.push({
 				value: "inherit",
-				label: `${currentValue === "inherit" ? "●" : "○"} Inherit global/frontmatter setting`,
+				label: "Inherit global/frontmatter setting",
 				description: `Uses ${modelDisplay(inherited.setting, inherited.resolved)}`,
 				searchText: "inherit default global frontmatter",
 			});
@@ -432,7 +405,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 
 		choices.push({
 			value: "main",
-			label: `${currentModelValue === "main" ? "●" : "○"} Main session model`,
+			label: "Main session model",
 			description: `${mainModel} · follows future /model changes`,
 			searchText: `main default ${mainModel}`,
 		});
@@ -445,84 +418,23 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			const isCurrent = reference === configuredReference;
 			choices.push({
 				value: reference,
-				label: `${isCurrent ? "●" : "○"} ${reference}`,
+				label: reference,
 				description: `${model.name} · ${formatContextWindow(model.contextWindow)} · ${model.reasoning ? "thinking" : "no thinking"}${isCurrent && currentValue !== reference ? ` · configured as ${currentValue}` : ""}`,
 				searchText: `${reference} ${model.name}`,
 			});
 		}
 
-		return ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => {
-			const search = new Input();
-			let list: SelectList;
-
-			const rebuildList = () => {
-				const filtered = filterModelChoices(choices, search.getValue());
-				list = new SelectList(
-					filtered.map((choice) => ({
-						value: choice.value,
-						label: choice.label,
-						description: choice.description,
-					})),
-					Math.min(Math.max(filtered.length, 1), 12),
-					{
-						selectedPrefix: (text) => theme.fg("accent", text),
-						selectedText: (text) => theme.fg("accent", text),
-						description: (text) => theme.fg("muted", text),
-						scrollInfo: (text) => theme.fg("dim", text),
-						noMatch: (text) => theme.fg("warning", text),
-					},
-					{ minPrimaryColumnWidth: 30, maxPrimaryColumnWidth: 52 },
-				);
-				list.onSelect = (item) => done(item.value);
-				list.onCancel = () => done(undefined);
-				if (!search.getValue()) {
-					const currentIndex = filtered.findIndex((choice) => choice.value === currentModelValue);
-					if (currentIndex >= 0) list.setSelectedIndex(currentIndex);
-				}
-			};
-
-			rebuildList();
-
-			return {
-				get focused() {
-					return search.focused;
-				},
-				set focused(value: boolean) {
-					search.focused = value;
-				},
-				render(width: number) {
-					const border = theme.fg("accent", "─".repeat(Math.max(0, width)));
-					return [
-						border,
-						truncateToWidth(theme.fg("accent", theme.bold(`Model for ${target === "all" ? "all subagents" : target}`)), width),
-						...search.render(width),
-						"",
-						...list.render(width),
-						"",
-						truncateToWidth(theme.fg("dim", "Type to filter · ↑↓ navigate · Enter next · Esc back"), width),
-						border,
-					];
-				},
-				invalidate() {
-					search.invalidate();
-					list.invalidate();
-				},
-				handleInput(data: string) {
-					if (
-						keybindings.matches(data, "tui.select.up") ||
-						keybindings.matches(data, "tui.select.down") ||
-						keybindings.matches(data, "tui.select.confirm") ||
-						keybindings.matches(data, "tui.select.cancel")
-					) {
-						list.handleInput(data);
-					} else {
-						const before = search.getValue();
-						search.handleInput(data);
-						if (search.getValue() !== before) rebuildList();
-					}
-					tui.requestRender();
-				},
-			};
+		return pickSelectScreen(ctx, {
+			title: `Select model for ${target === "all" ? "all subagents" : target}`,
+			items: choices,
+			currentValue: currentModelValue,
+			showCurrentMarker: true,
+			search: {
+				filter: (_items, query) => filterModelChoices(choices, query),
+			},
+			columns: { minPrimaryColumnWidth: 30, maxPrimaryColumnWidth: 52 },
+			confirmVerb: "next",
+			cancelVerb: "back",
 		});
 	}
 
@@ -605,7 +517,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		if (target === "all") {
 			items.push({
 				value: "default",
-				label: `${currentValue === "default" ? "●" : "○"} Pi default`,
+				label: "Pi default",
 				description: "Do not pass a --thinking override to child Pi processes",
 			});
 		} else {
@@ -617,7 +529,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			const inheritedLevel = inheritedSplit.thinkingLevel ?? inheritedConfig.defaultThinkingLevel;
 			items.push({
 				value: "inherit",
-				label: `${currentValue === "inherit" ? "●" : "○"} Inherit global/Pi default`,
+				label: "Inherit global/Pi default",
 				description: `Uses ${thinkingDisplay(inheritedLevel)}`,
 			});
 		}
@@ -625,47 +537,22 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		for (const level of supported) {
 			items.push({
 				value: level,
-				label: `${currentValue === level ? "●" : "○"} ${level}`,
+				label: level,
 				description: THINKING_DESCRIPTIONS[level],
 			});
 		}
 
-		return ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
-			const list = new SelectList(items, Math.min(Math.max(items.length, 1), 10), {
-				selectedPrefix: (text) => theme.fg("accent", text),
-				selectedText: (text) => theme.fg("accent", text),
-				description: (text) => theme.fg("muted", text),
-				scrollInfo: (text) => theme.fg("dim", text),
-				noMatch: (text) => theme.fg("warning", text),
-			}, { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 36 });
-			list.onSelect = (item) => done(item.value);
-			list.onCancel = () => done(undefined);
-			const currentIndex = items.findIndex((item) => item.value === currentValue);
-			if (currentIndex >= 0) list.setSelectedIndex(currentIndex);
-
-			return {
-				render(width: number) {
-					const border = theme.fg("accent", "─".repeat(Math.max(0, width)));
-					const modelLabel = splitModelThinkingSetting(pendingModelSetting).model;
-					return [
-						border,
-						truncateToWidth(theme.fg("accent", theme.bold(`Thinking for ${target === "all" ? "all subagents" : target}`)), width),
-						truncateToWidth(theme.fg("dim", `Model: ${modelLabel}`), width),
-						"",
-						...list.render(width),
-						"",
-						truncateToWidth(theme.fg("dim", "↑↓ navigate · Enter apply · Esc back"), width),
-						border,
-					];
-				},
-				invalidate() {
-					list.invalidate();
-				},
-				handleInput(data: string) {
-					list.handleInput(data);
-					tui.requestRender();
-				},
-			};
+		const modelLabel = splitModelThinkingSetting(pendingModelSetting).model;
+		return pickSelectScreen(ctx, {
+			title: `Select thinking for ${target === "all" ? "all subagents" : target}`,
+			subtitle: `Model: ${modelLabel}`,
+			items,
+			currentValue,
+			showCurrentMarker: true,
+			maxVisibleRows: 10,
+			columns: { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 36 },
+			confirmVerb: "apply",
+			cancelVerb: "back",
 		});
 	}
 
@@ -685,11 +572,17 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		while (true) {
 			const target = await selectSubagentTarget(availableAgents, ctx);
 			if (!target) return;
-			const model = await selectSubagentModel(target, availableAgents, models, ctx);
-			if (model === undefined) continue;
-			const thinking = await selectSubagentThinking(target, model, availableAgents, models, ctx);
-			if (thinking === undefined) continue;
-			await applyInteractiveConfiguration(target, model, thinking, availableAgents, ctx);
+
+			// Back from thinking returns to model selection for the same target;
+			// Back from model selection returns to target selection.
+			while (true) {
+				const model = await selectSubagentModel(target, availableAgents, models, ctx);
+				if (model === undefined) break;
+				const thinking = await selectSubagentThinking(target, model, availableAgents, models, ctx);
+				if (thinking === undefined) continue;
+				await applyInteractiveConfiguration(target, model, thinking, availableAgents, ctx);
+				break;
+			}
 		}
 	}
 

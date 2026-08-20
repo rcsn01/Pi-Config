@@ -8,7 +8,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
 	convertToLlm,
-	getMarkdownTheme,
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -17,7 +16,9 @@ import {
 	readSettingsDocument,
 } from "../_shared/settings-document.ts";
 import { createSessionProfileResolver } from "../_shared/active-profile.ts";
-import { Input, Markdown, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { pickSelectScreen, type SelectScreenItem } from "../_shared/select-screen.ts";
+import { Text } from "@earendil-works/pi-tui";
+import { registerToolErrorHandler, renderToolMarkdown, renderToolSummary } from "../_shared/tool-result-ui.ts";
 import {
 	ADVISOR_NUDGE_MESSAGE,
 	ADVISOR_PROMPT_GUIDELINES,
@@ -238,57 +239,36 @@ function availableAdvisorModels(ctx: ExtensionContext): Model<Api>[] {
 	return [...unique.values()].sort((left, right) => modelKey(left).localeCompare(modelKey(right)));
 }
 
-async function selectAdvisorModel(ctx: ExtensionContext, models: readonly Model<Api>[]): Promise<Model<Api> | undefined> {
+async function selectAdvisorModel(
+	ctx: ExtensionContext,
+	models: readonly Model<Api>[],
+	currentValue?: string,
+): Promise<Model<Api> | undefined> {
 	if (ctx.mode !== "tui") {
 		const selected = await ctx.ui.select("Select advisor model", models.map(modelKey));
 		return models.find((model) => modelKey(model) === selected);
 	}
-	return ctx.ui.custom<Model<Api> | undefined>((tui, theme, keybindings, done) => {
-		const search = new Input();
-		let displayed = [...models];
-		let list: SelectList;
-		const rebuild = () => {
-			const query = search.getValue().trim().toLowerCase();
-			displayed = models.filter((model) => modelKey(model).toLowerCase().includes(query) || model.name.toLowerCase().includes(query));
-			list = new SelectList(
-				displayed.map((model) => ({
-					value: modelKey(model),
-					label: modelKey(model),
-					description: `${model.name} · ${model.contextWindow.toLocaleString()} context · ${model.input.includes("image") ? "text+image" : "text only"}`,
-				})),
-				Math.min(Math.max(displayed.length, 1), 12),
-				{
-					selectedPrefix: (text) => theme.fg("accent", text),
-					selectedText: (text) => theme.fg("accent", text),
-					description: (text) => theme.fg("muted", text),
-					scrollInfo: (text) => theme.fg("dim", text),
-					noMatch: (text) => theme.fg("warning", text),
-				},
-			);
-			list.onSelect = (item) => done(displayed.find((model) => modelKey(model) === item.value));
-			list.onCancel = () => done(undefined);
-		};
-		rebuild();
-		return {
-			get focused() { return search.focused; },
-			set focused(value: boolean) { search.focused = value; },
-			render(width: number) {
-			const border = theme.fg("accent", "─".repeat(Math.max(0, width)));
-			return [border, truncateToWidth(theme.fg("accent", theme.bold("Select Advisor Model")), width), ...search.render(width), "", ...list.render(width), "", truncateToWidth(theme.fg("dim", "Type to filter · Enter select · Esc cancel"), width), border];
+	const items: SelectScreenItem[] = models.map((model) => ({
+		value: modelKey(model),
+		label: modelKey(model),
+		description: `${model.name} · ${model.contextWindow.toLocaleString()} context · ${model.input.includes("image") ? "text+image" : "text only"}`,
+		searchText: model.name,
+	}));
+	const selected = await pickSelectScreen(ctx, {
+		title: "Select advisor model",
+		items,
+		currentValue,
+		showCurrentMarker: Boolean(currentValue),
+		search: {
+			filter: (choices, query) => {
+				const normalized = query.trim().toLowerCase();
+				return choices.filter((choice) =>
+					choice.value.toLowerCase().includes(normalized) ||
+					choice.searchText?.toLowerCase().includes(normalized));
+			},
 		},
-		invalidate() { search.invalidate(); list.invalidate(); },
-		handleInput(data: string) {
-			if (keybindings.matches(data, "tui.select.up") || keybindings.matches(data, "tui.select.down") || keybindings.matches(data, "tui.select.confirm") || keybindings.matches(data, "tui.select.cancel")) {
-				list.handleInput(data);
-			} else {
-				const before = search.getValue();
-				search.handleInput(data);
-				if (before !== search.getValue()) rebuild();
-			}
-			tui.requestRender();
-		},
-	};
 	});
+	return models.find((model) => modelKey(model) === selected);
 }
 
 const ADVISOR_MODE_OPTIONS = [
@@ -297,40 +277,19 @@ const ADVISOR_MODE_OPTIONS = [
 	{ value: "off", label: "off", description: "Disable advisor consultations." },
 ] as const;
 
-async function selectAdvisorMode(ctx: ExtensionContext): Promise<AdvisorMode | undefined> {
+async function selectAdvisorMode(
+	ctx: ExtensionContext,
+	currentValue: AdvisorMode,
+): Promise<AdvisorMode | undefined> {
 	if (ctx.mode !== "tui") {
 		const selected = await ctx.ui.select("Select advisor mode", ADVISOR_MODE_OPTIONS.map((option) => option.label));
 		return ADVISOR_MODE_OPTIONS.find((option) => option.value === selected)?.value;
 	}
-	return ctx.ui.custom<AdvisorMode | undefined>((tui, theme, keybindings, done) => {
-		const list = new SelectList(
-			ADVISOR_MODE_OPTIONS.map((option) => ({ ...option })),
-			ADVISOR_MODE_OPTIONS.length,
-			{
-				selectedPrefix: (text) => theme.fg("accent", text),
-				selectedText: (text) => theme.fg("accent", text),
-				description: (text) => theme.fg("muted", text),
-				scrollInfo: (text) => theme.fg("dim", text),
-				noMatch: (text) => theme.fg("warning", text),
-			},
-		);
-		list.onSelect = (item) => done(item.value as AdvisorMode);
-		list.onCancel = () => done(undefined);
-		return {
-			render(width: number) {
-				const border = theme.fg("accent", "─".repeat(Math.max(0, width)));
-				return [
-					border,
-					truncateToWidth(theme.fg("accent", theme.bold("Select Advisor Mode")), width),
-					...list.render(width),
-					"",
-					truncateToWidth(theme.fg("dim", "↑↓ navigate · Enter select · Esc cancel"), width),
-					border,
-				];
-			},
-			invalidate() { list.invalidate(); },
-			handleInput(data: string) { list.handleInput(data); tui.requestRender(); },
-		};
+	return pickSelectScreen(ctx, {
+		title: "Select advisor mode",
+		items: ADVISOR_MODE_OPTIONS.map((option) => ({ ...option })),
+		currentValue,
+		showCurrentMarker: true,
 	});
 }
 
@@ -379,6 +338,11 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 		let settingsPath = settingsFilePath;
 		const runner = dependencies.runner ?? createAdvisorRunner();
 		let settings: AdvisorSettings = parseAdvisorSettings({});
+
+		registerToolErrorHandler(pi, ["advisor"], (event) =>
+			event.content.some((content) => content.type === "text" && content.text?.startsWith("advisor_") &&
+				!(event.details && typeof event.details === "object" && "truncated" in event.details && event.details.truncated === true)),
+		);
 
 		const notify = (ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info") => {
 			if (ctx.hasUI) ctx.ui.notify(message, type);
@@ -490,10 +454,11 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 					return {
 						content: [{ type: "text", text: `advisor_settings_error: ${errorText(error)}` }],
 						details: { model: "(invalid settings)", consumesBudget: false, truncated: false },
+						isError: true,
 					};
 				}
 				updateStatus(ctx);
-				return runner.execute({
+				const result = await runner.execute({
 					ctx,
 					settings,
 					callId: toolCallId,
@@ -503,20 +468,29 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 					signal,
 					onStatus: () => updateStatus(ctx),
 				});
+				const text = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+			const details = result.details as AdvisorToolDetails | undefined;
+			const isFailure = text.startsWith("advisor_") && !details?.truncated;
+			return isFailure ? { ...result, isError: true } : result;
 			},
 			renderCall(args, theme) {
 				const focus = args.question ? ` ${theme.fg("muted", args.question)}` : "";
 				return new Text(theme.fg("toolTitle", theme.bold("advisor")) + focus, 0, 0);
 			},
-			renderResult(result, options, theme) {
+			renderResult(result, options, theme, context) {
 				const text = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
-				const details = result.details as AdvisorToolDetails;
-				if (options.isPartial) return new Text(theme.fg("warning", "Advising…"), 0, 0);
-				if (options.expanded) return new Markdown(text, 0, 0, getMarkdownTheme());
-				if (details.truncated || text.startsWith("advisor_")) {
-					return new Text(theme.fg("warning", text), 0, 0);
+				const details = result.details as AdvisorToolDetails | undefined;
+				if (options.isPartial) return renderToolSummary(theme, "running", "Advising…");
+				if (details?.truncated) {
+					if (options.expanded) return renderToolMarkdown(text.replace(/^advisor_truncated:\s*/, ""), theme);
+					return renderToolSummary(theme, "warning", "Advice may be incomplete", true);
 				}
-				return new Text(theme.fg("success", "✓ Advice available (expand to view)"), 0, 0);
+				if (context.isError || text.startsWith("advisor_")) {
+					if (options.expanded) return renderToolMarkdown(text, theme);
+					return renderToolSummary(theme, "error", text || "Advisor consultation failed.");
+				}
+				if (options.expanded) return renderToolMarkdown(text, theme);
+				return renderToolSummary(theme, "success", "Advice available", true);
 			},
 		});
 
@@ -550,7 +524,8 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				let desiredStrict: boolean | undefined;
 				let pickModel = false;
 				if (!reference) {
-					const mode = await selectAdvisorMode(ctx);
+					const currentMode: AdvisorMode = settings.enabled === false ? "off" : settings.strict ? "strict" : "on";
+					const mode = await selectAdvisorMode(ctx, currentMode);
 					if (!mode) return;
 					if (mode === "off") {
 						try {
@@ -587,7 +562,10 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 						notify(ctx, "No authenticated advisor models are available.", "error");
 						return;
 					}
-					selected = await selectAdvisorModel(ctx, models);
+					const currentModel = settings.provider && settings.modelId
+						? `${settings.provider}/${settings.modelId}`
+						: undefined;
+					selected = await selectAdvisorModel(ctx, models, currentModel);
 				} else {
 					const parsed = parseModelReference(reference);
 					if (!parsed) {

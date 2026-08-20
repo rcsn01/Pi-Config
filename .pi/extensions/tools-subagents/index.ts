@@ -4,6 +4,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { registerToolErrorHandler } from "../_shared/tool-result-ui.ts";
 import {
 	registerSubagentService,
 	type AgentConfig,
@@ -60,6 +61,13 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		profilesDirectory: PROFILES_DIRECTORY,
 	});
 	return (pi: ExtensionAPI): void => {
+		registerToolErrorHandler(pi, ["subagent"], (event) => {
+			const details = event.details as { results?: AgentResult[] } | undefined;
+			return details?.results?.some((result) =>
+				result.exitCode !== 0 || result.progress.status === "failed" || Boolean(result.progress.error),
+			) ?? false;
+		});
+
 		const registry = dependencies.registry ?? agentRegistry;
 		const configStore = dependencies.config ?? subagentConfig;
 		const hasInjectedRuntime = dependencies.registry !== undefined || dependencies.config !== undefined;
@@ -198,13 +206,16 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 
 				// Build final output text
 				const outputParts = results.map((r) => {
-					const header = `## ${r.agent}${r.exitCode !== 0 ? " (FAILED)" : ""}`;
+					const failed = r.exitCode !== 0 || r.progress.status === "failed" || Boolean(r.progress.error);
+					const header = `## ${r.agent}${failed ? " (FAILED)" : ""}`;
 					return `${header}\n\n${r.output || "(no output)"}`;
 				});
 
+				const isError = results.some((result) => result.exitCode !== 0 || !!result.progress.error);
 				return {
 					content: [{ type: "text", text: outputParts.join("\n\n---\n\n") }],
 					details: { mode: "parallel" as const, results },
+					...(isError ? { isError: true } : {}),
 				};
 			} else if (params.agent && params.task) {
 				// ── Single mode ──
@@ -255,8 +266,8 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 			return renderSubagentCall(args, theme);
 		},
 
-		renderResult(result, options, theme, _context) {
-			return renderSubagentResult(result, options, theme);
+		renderResult(result, options, theme, context) {
+			return renderSubagentResult(result, options, theme, undefined, context);
 		},
 		});
 	};

@@ -84,9 +84,18 @@ describe("auto-review verdict wiring", () => {
 		expect(renderer).toBeDefined();
 		const box = renderer!(
 			{ data: { allowed: false, title: "Command Review", triggers: ["dangerous", "network"], reason: "unsafe" } },
-			{},
-			{ fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text },
+			{ expanded: true },
+			{
+				fg: (_color: string, text: string) => text,
+				bg: (_color: string, text: string) => text,
+				bold: (text: string) => text,
+				italic: (text: string) => text,
+				strikethrough: (text: string) => text,
+				underline: (text: string) => text,
+			},
 		);
-		expect(box.render(80).join("\n")).toContain("[dangerous, network]");
+		const output = box.render(80).join("\n");
+		expect(output).toContain("Triggers: dangerous, network");
+		expect(output.match(/Triggers:/g)).toHaveLength(1);
 	});
 });

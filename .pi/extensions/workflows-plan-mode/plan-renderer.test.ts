@@ -33,8 +33,8 @@ describe("Plan Mode rendering", () => {
 		}, { expanded: false }, theme());
 		const output = component.render(100).join("\n");
 		expect(output).toContain("Proposed Plan");
-		expect(output).toContain("Legacy Plan");
-		expect(output).toContain("Keep compatibility");
+		expect(output).toContain("Plan ready · expand to view");
+		expect(output).not.toContain("Keep compatibility");
 	});
 
 	it("renders transcript-only proposed-plan-display entries", () => {
@@ -44,8 +44,19 @@ describe("Plan Mode rendering", () => {
 			data: { content: "## Current Plan\n\nUse **Markdown**." },
 		}, { expanded: false }, theme());
 		const output = component.render(100).join("\n");
-		expect(output).toContain("Current Plan");
-		expect(output).toContain("Markdown");
+		expect(output).toContain("Proposed Plan");
+		expect(output).toContain("Plan ready · expand to view");
+	});
+
+	it("normalizes array custom-message content when expanded", () => {
+		const { messages } = registeredRenderers();
+		const component = messages.get("proposed-plan")({
+			content: [{ type: "text", text: "# Array plan" }, { type: "text", text: "\nDone." }],
+			details: { createdAt: 0 },
+		}, { expanded: true }, theme());
+		const output = component.render(100).join("\n");
+		expect(output).toContain("Array plan");
+		expect(output).toContain("Done.");
 	});
 
 	it("shows timestamps only when expanded", () => {

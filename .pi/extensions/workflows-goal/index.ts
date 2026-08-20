@@ -24,6 +24,8 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { registerToolErrorHandler, renderToolSummary } from "../_shared/tool-result-ui.ts";
+import { UI_GLYPHS } from "../_shared/ui-style.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -153,6 +155,12 @@ class GoalStatusWidget {
 // ─── Extension ───────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
+	registerToolErrorHandler(pi, ["goal"], (event) => {
+		const details = event.details as { error?: string } | undefined;
+		const text = event.content.find((content) => content.type === "text")?.text ?? "";
+		return Boolean(details?.error) || /^(Cannot checkpoint|Goal is already|Unknown action)/.test(text);
+	});
+
 	let goal: GoalState | null = null;
 
 	// ── State Reconstruction ────────────────────────────────────────────
@@ -226,9 +234,16 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			if (!goal) {
+				if (params.action === "status") {
+					return {
+						content: [{ type: "text", text: "No active goal." }],
+						details: { action: "status" },
+					};
+				}
 				return {
 					content: [{ type: "text", text: "No active goal." }],
-					details: {},
+					details: { action: params.action, error: "No active goal." },
+					isError: true,
 				};
 			}
 
@@ -252,6 +267,7 @@ export default function (pi: ExtensionAPI) {
 						return {
 							content: [{ type: "text", text: `Cannot checkpoint: goal is ${goal.status}.` }],
 							details: { action: "checkpoint", state: { ...goal } },
+							isError: true,
 						};
 					}
 
@@ -273,6 +289,7 @@ export default function (pi: ExtensionAPI) {
 						return {
 							content: [{ type: "text", text: `Goal is already ${goal.status}.` }],
 							details: { action: "complete", state: { ...goal } },
+							isError: true,
 						};
 					}
 
@@ -295,12 +312,13 @@ export default function (pi: ExtensionAPI) {
 					return {
 						content: [{ type: "text", text: `Unknown action: ${(params as any).action}` }],
 						details: {},
+						isError: true,
 					};
 			}
 		},
 
 		renderCall(args, theme, _context) {
-			const icon = args.action === "complete" ? "✓" : args.action === "checkpoint" ? "▶" : "ℹ";
+			const icon = args.action === "complete" ? UI_GLYPHS.confirm : args.action === "checkpoint" ? UI_GLYPHS.running : "i";
 			let text = theme.fg("toolTitle", theme.bold(`goal ${icon} `)) + theme.fg("muted", args.action);
 			if (args.summary) {
 				text += ` ${theme.fg("dim", `"${args.summary.slice(0, 60)}${args.summary.length > 60 ? "…" : ""}"`)}`;
@@ -308,15 +326,24 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, _options, theme, _context) {
+		renderResult(result, options, theme, context) {
 			const text = result.content[0];
 			const msg = text?.type === "text" ? text.text : "";
+			const details = result.details as { action?: string; error?: string } | undefined;
 			const isComplete = msg.startsWith("✓");
-			return new Text(
-				(isComplete ? theme.fg("success", msg) : theme.fg("muted", msg)),
-				0,
-				0,
-			);
+			const isFailure = context.isError || Boolean(details?.error) || /^(Cannot checkpoint|Goal is already|Unknown action)/.test(msg);
+			if (options.isPartial) return renderToolSummary(theme, "running", "Updating goal…");
+			if (isFailure) return renderToolSummary(theme, "error", msg || "Goal update failed.");
+			if (!options.expanded) {
+				const action = (result.details as { action?: string } | undefined)?.action;
+				const summary = action === "status"
+					? "Goal status available"
+					: isComplete
+						? "Goal completed"
+						: "Goal updated";
+				return renderToolSummary(theme, "success", summary, true);
+			}
+			return new Text(isComplete ? theme.fg("success", msg) : theme.fg("toolOutput", msg), 0, 0);
 		},
 	});
 

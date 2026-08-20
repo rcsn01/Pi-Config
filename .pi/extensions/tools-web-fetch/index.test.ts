@@ -80,7 +80,7 @@ describe("Web Fetch tool registration", () => {
 		const { tool } = register(result);
 		const longUrl = `https://example.com/${"a".repeat(80)}`;
 		const call = tool.renderCall({ url: longUrl }, theme, { lastComponent: undefined });
-		expect(call.render(120).join("\n")).toContain("...");
+		expect(call.render(120).join("\n")).toContain("…");
 
 		const collapsed = tool.renderResult(
 			{ content: [{ type: "text", text: "x".repeat(600) }], details: { title: "Article", chars: 600 } },
@@ -96,6 +96,6 @@ describe("Web Fetch tool registration", () => {
 			theme,
 			{ lastComponent: undefined, isError: false },
 		);
-		expect(expanded.render(1000).join("\n")).toContain(`${"x".repeat(500)}...`);
+		expect(expanded.render(1000).join("\n")).toContain("x".repeat(600));
 	});
 });

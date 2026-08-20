@@ -1,8 +1,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { renderToolMarkdown, renderToolSummary, toolStateMarker, truncateToolLine } from "../_shared/tool-result-ui.ts";
 import type { AgentResult } from "../_shared/subagent-service.ts";
-import { formatDuration, formatTokens, truncateDisplayLine } from "./formatting.ts";
+import { formatDuration, formatTokens } from "./formatting.ts";
 
 export interface SubagentRenderDetails {
 	mode: "single" | "parallel";
@@ -25,21 +25,22 @@ export function renderAgentProgress(
 	const prog = r.progress;
 	const isRunning = prog.status === "running";
 	const isPending = prog.status === "pending";
+	const state = isRunning
+		? "running"
+		: isPending
+			? "pending"
+			: prog.status === "failed" || r.exitCode !== 0 || Boolean(prog.error)
+				? "error"
+				: "success";
 
 	// Header: icon + agent + stats (always one line, truncated)
-	const icon = isRunning
-		? theme.fg("warning", "⟳")
-		: isPending
-			? theme.fg("dim", "○")
-			: r.exitCode === 0
-				? theme.fg("success", "✓")
-				: theme.fg("error", "✗");
+	const icon = toolStateMarker(theme, state);
 	const stats = `${prog.toolCount} tools · ${formatTokens(prog.tokens)} tok · ${formatDuration(prog.durationMs)}`;
 	const configuration = [r.model, r.thinkingLevel ? `thinking ${r.thinkingLevel}` : undefined].filter(Boolean).join(" · ");
 	const configurationStr = configuration ? theme.fg("dim", ` (${configuration})`) : "";
 	c.addChild(
 		new Text(
-			truncateDisplayLine(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${configurationStr} — ${theme.fg("dim", stats)}`, w),
+			truncateToolLine(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${configurationStr} — ${theme.fg("dim", stats)}`, w),
 			0, 0,
 		),
 	);
@@ -52,7 +53,7 @@ export function renderAgentProgress(
 		// Truncate to one line
 		const flat = r.task.replace(/\n/g, " ");
 		c.addChild(
-			new Text(truncateDisplayLine(theme.fg("dim", `Task: ${flat}`), w), 0, 0),
+			new Text(truncateToolLine(theme.fg("dim", `Task: ${flat}`), w), 0, 0),
 		);
 	}
 
@@ -64,7 +65,7 @@ export function renderAgentProgress(
 		if (expanded) {
 			c.addChild(new Text(theme.fg("warning", `▸ ${toolLine}`), 0, 0));
 		} else {
-			c.addChild(new Text(truncateDisplayLine(theme.fg("warning", `▸ ${toolLine}`), w), 0, 0));
+			c.addChild(new Text(truncateToolLine(theme.fg("warning", `▸ ${toolLine}`), w), 0, 0));
 		}
 	}
 
@@ -75,7 +76,7 @@ export function renderAgentProgress(
 		if (expanded) {
 			c.addChild(new Text(theme.fg("muted", line), 0, 0));
 		} else {
-			c.addChild(new Text(truncateDisplayLine(theme.fg("muted", line), w), 0, 0));
+			c.addChild(new Text(truncateToolLine(theme.fg("muted", line), w), 0, 0));
 		}
 	}
 
@@ -85,15 +86,14 @@ export function renderAgentProgress(
 		if (expanded) {
 			c.addChild(new Text(theme.fg("text", prog.lastMessage), 0, 0));
 		} else {
-			c.addChild(new Text(truncateDisplayLine(theme.fg("text", prog.lastMessage), w), 0, 0));
+			c.addChild(new Text(truncateToolLine(theme.fg("text", prog.lastMessage), w), 0, 0));
 		}
 	}
 
 	// Expanded: full final output
 	if (!isRunning && r.output && expanded) {
 		c.addChild(new Spacer(1));
-		const mdTheme = getMarkdownTheme();
-		c.addChild(new Markdown(r.output, 0, 0, mdTheme));
+		c.addChild(renderToolMarkdown(r.output, theme));
 	}
 
 	// Usage breakdown
@@ -115,7 +115,7 @@ export function renderAgentProgress(
 		if (expanded) {
 			c.addChild(new Text(theme.fg("error", `Error: ${prog.error}`), 0, 0));
 		} else {
-			c.addChild(new Text(truncateDisplayLine(theme.fg("error", `Error: ${prog.error}`), w), 0, 0));
+			c.addChild(new Text(truncateToolLine(theme.fg("error", `Error: ${prog.error}`), w), 0, 0));
 		}
 	}
 
@@ -132,7 +132,7 @@ export function renderSubagentCall(args: any, theme: Theme): Text {
 	}
 	if (args.agent) {
 		const taskPreview = args.task
-			? (args.task.length > 60 ? `${args.task.slice(0, 60)}…` : args.task).replace(/\n/g, " ")
+			? truncateToolLine(String(args.task).replace(/\n/g, " "), 60)
 			: "";
 		return new Text(
 			`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", args.agent)} ${theme.fg("dim", taskPreview)}`,
@@ -144,33 +144,47 @@ export function renderSubagentCall(args: any, theme: Theme): Text {
 
 export function renderSubagentResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
-	options: { expanded: boolean },
+	options: { expanded: boolean; isPartial?: boolean },
 	theme: Theme,
 	terminalWidth: () => number = getTermWidth,
+	context: { isError?: boolean } = {},
 ): Text | Container {
 	const details = result.details as SubagentRenderDetails | undefined;
 	if (!details?.results?.length) {
-		const content = result.content[0];
-		const text = content?.type === "text" ? content.text ?? "" : "(no output)";
-		return new Text(text.slice(0, 200), 0, 0);
+		const text = result.content
+			.filter((content) => content.type === "text")
+			.map((content) => content.text ?? "")
+			.join("\n") || "(no output)";
+		if (options.isPartial) return renderToolSummary(theme, "running", "Subagent running…");
+		if (context.isError) return renderToolSummary(theme, "error", text || "Subagent failed.");
+		if (options.expanded) {
+			if (!text) return new Text("(no output)", 0, 0);
+			const markdown = new Container();
+			markdown.addChild(renderToolMarkdown(text, theme));
+			return markdown;
+		}
+		return new Text(truncateToolLine(text || "(no output)", Math.max(1, terminalWidth() - 4)), 0, 0);
 	}
 
-	const width = terminalWidth() - 4;
+	const width = Math.max(1, terminalWidth() - 4);
 	const expanded = options.expanded;
 	const container = new Container();
 
 	if (details.mode === "parallel") {
-		const completed = details.results.filter((agentResult) => agentResult.exitCode === 0).length;
+		const completed = details.results.filter((agentResult) =>
+			agentResult.exitCode === 0 && agentResult.progress?.status !== "failed" && !agentResult.progress?.error,
+		).length;
 		const running = details.results.filter((agentResult) => agentResult.progress?.status === "running").length;
-		const icon = running > 0
-			? theme.fg("warning", "⟳")
-			: completed === details.results.length
-				? theme.fg("success", "✓")
-				: theme.fg("error", "✗");
+		const pending = details.results.filter((agentResult) => agentResult.progress?.status === "pending").length;
+		const failed = details.results.some((agentResult) =>
+			agentResult.progress?.status === "failed" || agentResult.exitCode !== 0,
+		);
+		const state = running > 0 ? "running" : pending > 0 ? "pending" : failed ? "error" : "success";
+		const icon = toolStateMarker(theme, state);
 		const duration = Math.max(...details.results.map((agentResult) => agentResult.progress?.durationMs || 0));
 		const tokens = details.results.reduce((sum, agentResult) => sum + (agentResult.progress?.tokens || 0), 0);
 		container.addChild(new Text(
-			truncateDisplayLine(
+			truncateToolLine(
 				`${icon} ${theme.fg("toolTitle", theme.bold("parallel"))} ${completed}/${details.results.length} completed · ${formatTokens(tokens)} tok · ${formatDuration(duration)}`,
 				width,
 			),

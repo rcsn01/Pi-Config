@@ -53,6 +53,7 @@ function makePi(options: {
 	confirm?: boolean;
 	availableModel?: any;
 	branchEntries?: any[];
+	customResults?: Array<string | undefined>;
 }): any {
 	const handlers = new Map<string, any>();
 	const commands = new Map<string, any>();
@@ -71,6 +72,7 @@ function makePi(options: {
 		getAllTools: vi.fn(() => [...allTools]),
 	};
 	const entries: any[] = options.branchEntries ?? [];
+	const customResults = [...(options.customResults ?? [])];
 	const ctx: any = {
 		cwd: "/workspace",
 		mode: "tui",
@@ -82,7 +84,7 @@ function makePi(options: {
 			notify: vi.fn(),
 			confirm: vi.fn(async () => options.confirm ?? true),
 			select: vi.fn(),
-			custom: vi.fn(),
+			custom: vi.fn(async () => customResults.shift()),
 			setStatus: vi.fn(),
 		},
 		sessionManager: {
@@ -289,6 +291,22 @@ describe("advisor extension", () => {
 		expect(harness.ctx.ui.select).toHaveBeenNthCalledWith(2, "Select advisor model", ["anthropic/strong"]);
 	});
 
+	it("uses the shared TUI selectors for mode and model selection", async () => {
+		const path = settingsFile({});
+		const harness = makePi({
+			settingsPath: path,
+			customResults: ["strict", "anthropic/strong"],
+		});
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.commands.get("advisor").handler("", harness.ctx);
+		expect(harness.ctx.ui.custom).toHaveBeenCalledTimes(2);
+		expect(loadAdvisorSettings(path)).toMatchObject({
+			provider: "anthropic",
+			modelId: "strong",
+			strict: true,
+		});
+	});
+
 	it("flips strict mode without reopening the model picker when explicitly requested", async () => {
 		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
 		const harness = makePi({ settingsPath: path });
@@ -306,6 +324,48 @@ describe("advisor extension", () => {
 		expect(formatAdvisorStatus(false, true, "anthropic/strong")).toBeUndefined();
 		expect(formatConfiguredAdvisorStatus({ provider: "anthropic", modelId: "strong", strict: false })).toBe("advisor(a/strong)");
 		expect(formatConfiguredAdvisorStatus({ provider: "anthropic", modelId: "strong", strict: true, enabled: false })).toBeUndefined();
+	});
+
+	it("marks advisor failures for the native tool shell and renders semantic states", async () => {
+		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
+		const runner: any = {
+			execute: vi.fn(async () => ({
+				content: [{ type: "text", text: "advisor_provider_error: unavailable" }],
+				details: { model: "anthropic/strong", consumesBudget: false, truncated: false },
+			})),
+		};
+		const harness = makePi({ settingsPath: path });
+		createAdvisorExtension({ settingsPath: path, runner })(harness.pi);
+		const result = await harness.tools.get("advisor").execute("call", {}, undefined, undefined, harness.ctx);
+		expect(result).toMatchObject({ isError: true });
+		const rendered = harness.tools.get("advisor").renderResult(
+			result,
+			{ expanded: false, isPartial: false },
+			{ fg: (_color: string, text: string) => text } as any,
+			{ isError: true } as any,
+		);
+		expect(rendered.render(80).join("\\n")).toContain("✗ advisor_provider_error");
+	});
+
+	it("keeps truncated advisor output as a warning rather than a tool error", async () => {
+		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
+		const runner: any = {
+			execute: vi.fn(async () => ({
+				content: [{ type: "text", text: "advisor_truncated: Advice so far" }],
+				details: { model: "anthropic/strong", consumesBudget: true, truncated: true },
+			})),
+		};
+		const harness = makePi({ settingsPath: path });
+		createAdvisorExtension({ settingsPath: path, runner })(harness.pi);
+		const result = await harness.tools.get("advisor").execute("call", {}, undefined, undefined, harness.ctx);
+		expect(result).not.toHaveProperty("isError");
+		const rendered = harness.tools.get("advisor").renderResult(
+			result,
+			{ expanded: false, isPartial: false },
+			{ fg: (_color: string, text: string) => text } as any,
+			{ isError: false } as any,
+		);
+		expect(rendered.render(80).join("\\n")).toContain("! Advice may be incomplete");
 	});
 
 	it("includes strict mode in the active advisor status", async () => {

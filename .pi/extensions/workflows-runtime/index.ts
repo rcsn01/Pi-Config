@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { normalizeTranscriptContent, renderTranscriptCard } from "../_shared/transcript-card.ts";
 import { registerWorkflowCommands } from "./lib/commands.ts";
 
 export { defineWorkflow } from "./lib/definition.ts";
@@ -18,12 +17,25 @@ export { loadAgents, runSubagent, runSubagentsParallel } from "./lib/subagent-ru
 const CUSTOM_TYPE = "workflow-result";
 
 export default function (pi: ExtensionAPI) {
-	pi.registerMessageRenderer(CUSTOM_TYPE, (message: any, _options: any, theme: any) => {
-		const c = new Container();
-		c.addChild(new Text(theme.fg("toolTitle", theme.bold("Workflow result")), 0, 0));
-		c.addChild(new Spacer(1));
-		c.addChild(new Markdown(String(message.content || ""), 0, 0, getMarkdownTheme()));
-		return c;
+	pi.registerMessageRenderer(CUSTOM_TYPE, (message: any, options: any, theme: any) => {
+		const details = message.details as {
+			workflow?: string;
+			runId?: string;
+			background?: boolean;
+		} | undefined;
+		const workflow = details?.workflow ?? "workflow";
+		return renderTranscriptCard(theme, {
+			title: "Workflow result",
+			state: "success",
+			body: normalizeTranscriptContent(message.content),
+			summary: `${workflow} completed · expand to view`,
+			metadata: [
+				`workflow: ${workflow}`,
+				details?.runId ? `run: ${details.runId}` : undefined,
+				details?.background ? "mode: background" : undefined,
+			].filter((line): line is string => Boolean(line)),
+			expanded: Boolean(options?.expanded),
+		});
 	});
 
 	registerWorkflowCommands(pi);

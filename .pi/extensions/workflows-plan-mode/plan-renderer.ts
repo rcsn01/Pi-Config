@@ -1,5 +1,10 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, Text, type MarkdownTheme } from "@earendil-works/pi-tui";
+import type { Box, MarkdownTheme } from "@earendil-works/pi-tui";
+import {
+	createSemanticMarkdownTheme,
+	normalizeTranscriptContent,
+	renderTranscriptCard,
+} from "../_shared/transcript-card.ts";
 import {
 	PROPOSED_PLAN_CUSTOM_TYPE,
 	PROPOSED_PLAN_ENTRY_TYPE,
@@ -7,23 +12,9 @@ import {
 } from "./plan-content.ts";
 import { isPlanMode, type PlanState } from "./plan-state.ts";
 
+/** Backward-compatible export for callers that used the plan-specific Markdown theme. */
 export function createPlanMarkdownTheme(theme: Theme): MarkdownTheme {
-	return {
-		heading: (text) => theme.fg("mdHeading", text),
-		link: (text) => theme.fg("mdLink", text),
-		linkUrl: (text) => theme.fg("mdLinkUrl", text),
-		code: (text) => theme.fg("mdCode", text),
-		codeBlock: (text) => theme.fg("mdCodeBlock", text),
-		codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
-		quote: (text) => theme.fg("mdQuote", text),
-		quoteBorder: (text) => theme.fg("mdQuoteBorder", text),
-		hr: (text) => theme.fg("mdHr", text),
-		listBullet: (text) => theme.fg("mdListBullet", text),
-		bold: (text) => theme.bold(text),
-		italic: (text) => theme.italic(text),
-		strikethrough: (text) => theme.strikethrough(text),
-		underline: (text) => theme.underline(text),
-	};
+	return createSemanticMarkdownTheme(theme);
 }
 
 export function renderProposedPlan(
@@ -32,21 +23,13 @@ export function renderProposedPlan(
 	expanded: boolean,
 	theme: Theme,
 ): Box {
-	const box = new Box(1, 1, (value) => theme.bg("customMessageBg", value));
-	box.addChild(new Text(`${theme.fg("accent", theme.bold("Proposed Plan"))}\n`, 0, 0));
-	box.addChild(
-		new Markdown(
-			content,
-			0,
-			0,
-			createPlanMarkdownTheme(theme),
-			{ color: (text) => theme.fg("customMessageText", text) },
-		),
-	);
-	if (expanded && createdAt) {
-		box.addChild(new Text(theme.fg("dim", `\ncreated ${new Date(createdAt).toLocaleString()}`), 0, 0));
-	}
-	return box;
+	return renderTranscriptCard(theme, {
+		title: "Proposed Plan",
+		body: content,
+		summary: "Plan ready · expand to view",
+		metadata: createdAt ? [`created ${new Date(createdAt).toLocaleString()}`] : undefined,
+		expanded,
+	});
 }
 
 /** Register both durable legacy and transcript-only proposed-plan renderers. */
@@ -54,7 +37,7 @@ export function registerPlanRenderers(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer<ProposedPlanDetails>(
 		PROPOSED_PLAN_CUSTOM_TYPE,
 		(message, { expanded }, theme) => renderProposedPlan(
-			typeof message.content === "string" ? message.content : "",
+			normalizeTranscriptContent(message.content),
 			message.details?.createdAt,
 			expanded,
 			theme,
@@ -62,8 +45,8 @@ export function registerPlanRenderers(pi: ExtensionAPI): void {
 	);
 
 	pi.registerEntryRenderer(PROPOSED_PLAN_ENTRY_TYPE, (entry, { expanded }, theme) => {
-		const data = entry.data as { content?: string; createdAt?: number } | undefined;
-		return renderProposedPlan(data?.content ?? "", data?.createdAt, expanded, theme);
+		const data = entry.data as { content?: unknown; createdAt?: number } | undefined;
+		return renderProposedPlan(normalizeTranscriptContent(data?.content), data?.createdAt, expanded, theme);
 	});
 }
 

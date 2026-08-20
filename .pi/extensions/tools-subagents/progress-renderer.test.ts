@@ -1,3 +1,4 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { renderSubagentCall, renderSubagentResult } from "./progress-renderer.ts";
 import { agentResult, theme } from "./test-harness.ts";
@@ -55,11 +56,29 @@ describe("subagent progress rendering", () => {
 		expect(rendered).toContain("Error: boom");
 	});
 
+	it("keeps pending parallel work in the pending state", () => {
+		const pending = agentResult({
+			exitCode: -1,
+			progress: { ...agentResult().progress, status: "pending" },
+		});
+		const rendered = output(renderSubagentResult({
+			content: [{ type: "text", text: "pending" }],
+			details: { mode: "parallel", results: [pending] },
+		}, { expanded: false }, theme(), () => 100));
+		expect(rendered).toContain("○ parallel 0/1 completed");
+		expect(rendered).not.toContain("✗ parallel");
+	});
+
 	it("falls back to the first text content without details", () => {
 		const fallback = renderSubagentResult({
 			content: [{ type: "text", text: "x".repeat(250) }],
 		}, { expanded: false }, theme()) as any;
-		expect(fallback.text).toHaveLength(200);
+		expect(visibleWidth(fallback.text)).toBeLessThanOrEqual(200);
+		expect(fallback.text).toContain("…");
 		expect((renderSubagentResult({ content: [] }, { expanded: false }, theme()) as any).text).toBe("(no output)");
+		const expanded = renderSubagentResult({ content: [{ type: "text", text: "full output" }] }, { expanded: true }, theme(), () => 100);
+		expect(output(expanded, 100)).toContain("full output");
+		const error = renderSubagentResult({ content: [{ type: "text", text: "failed" }] }, { expanded: false }, theme(), () => 100, { isError: true });
+		expect(output(error, 100)).toContain("✗ failed");
 	});
 });

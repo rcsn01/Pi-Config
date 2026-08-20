@@ -22,6 +22,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { registerToolErrorHandler, renderToolSummary } from "../_shared/tool-result-ui.ts";
+import { UI_GLYPHS } from "../_shared/ui-style.ts";
 import { buildActiveTodoPrompt } from "./todo-prompt.ts";
 import {
 	applyTodoUpdate,
@@ -45,13 +47,13 @@ interface TodoDetails {
 function statusIcon(status: TodoStatus): string {
 	switch (status) {
 		case "pending":
-			return "○";
+			return UI_GLYPHS.unchecked;
 		case "in_progress":
-			return "◐";
+			return UI_GLYPHS.running;
 		case "completed":
-			return "✓";
+			return UI_GLYPHS.confirm;
 		case "cancelled":
-			return "✗";
+			return UI_GLYPHS.cancel;
 	}
 }
 
@@ -95,7 +97,7 @@ function renderTodoLine(todo: Todo, theme: Theme, explanationLimit?: number): st
 		todo.status === "completed"
 			? theme.fg("dim", todo.text)
 			: todo.status === "cancelled"
-				? theme.fg("dim", `✗ ${todo.text}`)
+				? theme.fg("dim", todo.text)
 				: todo.status === "in_progress"
 					? theme.fg("text", theme.bold(todo.text))
 					: theme.fg("muted", todo.text);
@@ -226,6 +228,11 @@ class TodoListComponent {
 // ─── Extension ───────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
+	registerToolErrorHandler(pi, ["todo"], (event) => {
+		const details = event.details as { error?: string } | undefined;
+		return Boolean(details?.error);
+	});
+
 	// In-memory state (reconstructed from session on load)
 	let todos: Todo[] = [];
 	let nextId = "1";
@@ -333,6 +340,7 @@ export default function (pi: ExtensionAPI) {
 						nextId: result.state.nextId,
 						error: result.error,
 					} as TodoDetails,
+					isError: true,
 				};
 			}
 			const newTodos = result.state.todos;
@@ -366,35 +374,32 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
+		renderResult(result, { expanded, isPartial }, theme, context) {
+			if (isPartial) return renderToolSummary(theme, "running", "Updating todos…");
 			const details = result.details as TodoDetails | undefined;
+			if (details?.error || context.isError) {
+				const message = details?.error ?? result.content.find((content) => content.type === "text")?.text ?? "Todo update failed.";
+				return renderToolSummary(theme, "error", message);
+			}
 			if (!details) {
 				const text = result.content[0];
 				return new Text(text?.type === "text" ? text.text : "", 0, 0);
-			}
-
-			if (details.error) {
-				return new Text(theme.fg("error", `Error: ${details.error}`), 0, 0);
 			}
 
 			const todoList = details.todos;
 
 			// Clear / empty result
 			if (todoList.length === 0) {
-				return new Text(theme.fg("success", "✓ ") + theme.fg("muted", "Cleared all todos"), 0, 0);
+				return renderToolSummary(theme, "success", "Cleared all todos");
 			}
 
-			// Normal update result — show summary + items
+			// Normal update result — show a compact summary until expanded.
 			const sorted = buildTodoViewModel(todoList, true).ordered;
-			let text = theme.fg("success", "✓ ") + theme.fg("muted", details.summary || `Updated (${todoList.length} items)`);
+			const summary = details.summary || `Updated (${todoList.length} items)`;
+			if (!expanded) return renderToolSummary(theme, "success", summary, true);
 
-			const display = expanded ? sorted : sorted.slice(0, 5);
-			for (const t of display) {
-				text += `\n${renderTodoLine(t, theme, 50)}`;
-			}
-			if (!expanded && sorted.length > 5) {
-				text += `\n${theme.fg("dim", `... ${sorted.length - 5} more`)}`;
-			}
+			let text = theme.fg("success", `${UI_GLYPHS.confirm} `) + theme.fg("muted", summary);
+			for (const todo of sorted) text += `\n${renderTodoLine(todo, theme)}`;
 			return new Text(text, 0, 0);
 		},
 	});
@@ -404,8 +409,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("todos", {
 		description: "Show all todos on the current branch",
 		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) {
-				ctx.ui.notify("/todos requires interactive mode", "error");
+			if (!ctx.hasUI || ctx.mode !== "tui") {
+				ctx.ui.notify("/todos requires TUI mode", "error");
 				return;
 			}
 

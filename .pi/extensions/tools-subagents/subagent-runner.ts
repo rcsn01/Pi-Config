@@ -203,6 +203,30 @@ async function executeSubagent(
 	let lastToolArgs: string | undefined;
 	let recentToolCount = 0;
 	let lastMessage = "";
+	let streamedText = "";
+
+	const recordAssistantText = (content: unknown) => {
+		const text = extractTextFromContent(content);
+		if (!text) return;
+		result.output = text;
+		// Extract just the prose "thinking" text — skip code blocks
+		const proseLines: string[] = [];
+		let inCodeBlock = false;
+		for (const line of text.split("\n")) {
+			if (line.trimStart().startsWith("```")) {
+				inCodeBlock = !inCodeBlock;
+				continue;
+			}
+			if (!inCodeBlock && line.trim()) proseLines.push(line.trim());
+		}
+		if (proseLines.length > 0) {
+			progress.lastMessage = proseLines.slice(0, 3).join(" ");
+			if (progress.lastMessage !== lastMessage) {
+				lastMessage = progress.lastMessage;
+				emitProgress({ type: "message", agent: agent.name, message: lastMessage, tokens: progress.tokens });
+			}
+		}
+	};
 
 	const emitProgress = (event: SubagentProgressEvent) => { void options.onProgress?.(event, progress); };
 	const fireUpdate = throttle(() => {
@@ -263,6 +287,21 @@ async function executeSubagent(
 					fireUpdate();
 				}
 
+				if (evt.type === "message_start" && evt.message?.role === "assistant") {
+					streamedText = "";
+				}
+
+				if (evt.type === "message_update") {
+					if (evt.message?.role === "assistant") {
+						recordAssistantText(evt.message.content);
+						if (evt.message.errorMessage) progress.error = evt.message.errorMessage;
+					} else if (evt.assistantMessageEvent?.type === "text_delta" && typeof evt.assistantMessageEvent.delta === "string") {
+						streamedText += evt.assistantMessageEvent.delta;
+						recordAssistantText(streamedText);
+					}
+					fireUpdate();
+				}
+
 				if (evt.type === "message_end" && evt.message) {
 					if (evt.message.role === "assistant") {
 						result.usage.turns++;
@@ -277,30 +316,7 @@ async function executeSubagent(
 						}
 						if (evt.message.model) result.model = evt.message.model;
 						if (evt.message.errorMessage) progress.error = evt.message.errorMessage;
-
-						const text = extractTextFromContent(evt.message.content);
-						if (text) {
-							result.output = text;
-							// Extract just the prose "thinking" text — skip code blocks
-							const proseLines: string[] = [];
-							let inCodeBlock = false;
-							for (const line of text.split("\n")) {
-								if (line.trimStart().startsWith("```")) {
-									inCodeBlock = !inCodeBlock;
-									continue;
-								}
-								if (!inCodeBlock && line.trim()) {
-									proseLines.push(line.trim());
-								}
-							}
-							if (proseLines.length > 0) {
-								progress.lastMessage = proseLines.slice(0, 3).join(" ");
-								if (progress.lastMessage !== lastMessage) {
-									lastMessage = progress.lastMessage;
-									emitProgress({ type: "message", agent: agent.name, message: lastMessage, tokens: progress.tokens });
-								}
-							}
-						}
+						recordAssistantText(evt.message.content);
 					}
 
 					fireUpdate();
@@ -329,7 +345,10 @@ async function executeSubagent(
 			resolve(code ?? 1);
 		});
 
-		proc.on("error", () => resolve(1));
+		proc.on("error", (error) => {
+				if (!progress.error) progress.error = error.message;
+				resolve(1);
+			});
 
 		if (signal) {
 			const kill = () => {

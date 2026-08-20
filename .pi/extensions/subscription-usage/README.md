@@ -54,10 +54,11 @@ the same `resets in X on <date>` style (`countdown.ts`): compact web-UI-style
 countdowns (`40m`, `2h 45m`, `6d 12h`) plus the reset date (`24 Aug`), with
 the instants coming from Codex's `resetsAt` and the computed Ollama
 boundaries (next full hour / next week boundary from the API anchor). At the
-notify boundary the output is ANSI-styled for the TUI: header lines and bars
-render bold bright white, and the `N% used` share bold. The plain-text render
-functions and the LLM-facing tools (`subscription_usage`, `ollama_usage`) are
-unaffected; `stripAnsi()` in `style.ts` recovers the unstyled text.
+notify boundary the output stays plain text for portable TUI, RPC, print, and
+JSON consumers. The interactive tool renderers apply the active Pi theme to
+headers, bars, and usage shares. The plain-text render functions and the
+LLM-facing tools (`subscription_usage`, `ollama_usage`) are unchanged;
+`stripAnsi()` in `style.ts` remains available for legacy text.
 
 - Codex semantics mirror Codex's own display: the weekly window is the one Codex labels `weekly` (primary or secondary), falling back to the secondary window; reset times use `HH:MM` today, otherwise `HH:MM on %-d %b`; plan names are remapped like Codex's status card (Team → Business, Business → Enterprise, Pro Lite, Enterprise (Automation)).
 - Ollama semantics mirror the live `/api/usage` contract: `limits.session.usage` / `limits.weekly.usage` are fractions of the window limit (`0.162` → `16%`); the `session_usage`/`weekly_usage` shape proposed in ollama/ollama#16448 is still accepted defensively. The endpoint exposes no reset timestamps, so the countdowns are derived from real anchors where possible: the **weekly** countdown is computed relative to the API's own week boundary — `activity.period.starting_at` (Monday 00:00 UTC in practice), with boundaries repeating every 7 days from that instant — falling back to local Monday 00:00 when the anchor is absent. The **session** countdown mirrors the web UI's observed full-hour alignment (40 minutes at twenty past the hour) and is computed at render time. A proposal-shape `resets_in` value wins when present.

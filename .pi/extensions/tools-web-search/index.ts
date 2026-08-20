@@ -6,7 +6,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { Text } from "@earendil-works/pi-tui";
+import { Container, Text } from "@earendil-works/pi-tui";
+import { renderToolMarkdown, renderToolSummary, truncateToolLine } from "../_shared/tool-result-ui.ts";
 
 interface SearchResult {
 	title: string;
@@ -18,23 +19,19 @@ const searchCache = new Map<string, { at: number; results: SearchResult[] }>();
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 async function duckDuckGoSearch(query: string, count: number, signal?: AbortSignal): Promise<SearchResult[]> {
-	try {
-		const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-		const timeoutSignal = AbortSignal.timeout(15000);
-		const resp = await fetch(url, {
-			signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
-			headers: {
-				"User-Agent": "Mozilla/5.0 (compatible; pi-coding-agent/1.0)",
-			},
-		});
+	const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+	const timeoutSignal = AbortSignal.timeout(15000);
+	const resp = await fetch(url, {
+		signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+		headers: {
+			"User-Agent": "Mozilla/5.0 (compatible; pi-coding-agent/1.0)",
+		},
+	});
 
-		if (!resp.ok) return [];
+	if (!resp.ok) throw new Error(`DuckDuckGo request failed (HTTP ${resp.status}).`);
 
-		const html = await resp.text();
-		return parseDDGResults(html, count);
-	} catch {
-		return [];
-	}
+	const html = await resp.text();
+	return parseDDGResults(html, count);
 }
 
 function decodeEntities(text: string): string {
@@ -107,19 +104,26 @@ export default function (pi: ExtensionAPI) {
 			};
 		},
 
-		renderCall(args, _theme, _context) {
-			const query = (args as any).query || "";
-			const display = query.length > 60 ? query.slice(0, 57) + "..." : query;
-			return new Text(`search "${display}"`, 0, 0);
+		renderCall(args, theme, _context) {
+			const query = String((args as any).query || "");
+			const display = truncateToolLine(query, 60);
+			return new Text(theme.fg("toolTitle", theme.bold("search ")) + theme.fg("muted", `"${display}"`), 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
-			if (!expanded) {
-				const details = result.details as { resultCount?: number };
-				return new Text(`${details?.resultCount ?? 0} results`, 0, 0);
+		renderResult(result, { expanded, isPartial }, theme, context) {
+			if (isPartial) return renderToolSummary(theme, "running", "Searching…");
+			if (context.isError) {
+				const message = result.content.find((content) => content.type === "text")?.text ?? "Search failed.";
+				return renderToolSummary(theme, "error", message);
 			}
-			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-			return new Text(text.slice(0, 500), 0, 0);
+			const details = result.details as { resultCount?: number };
+			const count = details?.resultCount ?? 0;
+			if (!expanded) return renderToolSummary(theme, "success", count === 0 ? "No results found" : `${count} result${count === 1 ? "" : "s"}`, count > 0);
+			const text = result.content[0]?.type === "text" ? result.content[0].text : "No results found.";
+			const container = new Container();
+			container.addChild(renderToolSummary(theme, "success", count === 0 ? "No results found" : `${count} result${count === 1 ? "" : "s"}`));
+			container.addChild(renderToolMarkdown(text, theme));
+			return container;
 		},
 	});
 }

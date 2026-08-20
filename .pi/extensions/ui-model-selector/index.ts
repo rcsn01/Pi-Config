@@ -17,7 +17,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
-import { Input, SelectList, truncateToWidth } from "@earendil-works/pi-tui";
+import { pickSelectScreen, type SelectScreenItem } from "../_shared/select-screen.ts";
 import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
 import {
 	installModelCommandHandler,
@@ -80,83 +80,27 @@ async function selectModel(
 ): Promise<Model<Api> | undefined> {
 	if (ctx.mode !== "tui") return undefined;
 
-	return ctx.ui.custom<Model<Api> | undefined>((tui, theme, keybindings, done) => {
-		const search = new Input();
-		search.setValue(initialQuery);
-		let list: SelectList;
-		let displayed = new Map<string, Model<Api>>();
-
-		const rebuildList = () => {
-			const filtered = filterModels(models, search.getValue());
-			displayed = new Map(filtered.map((model) => [modelKey(model), model]));
-			list = new SelectList(
-				filtered.map((model) => ({
-					value: modelKey(model),
-					label: modelKey(model),
-					description: `${model.name} · ${formatTokenCount(model.contextWindow)} · ${model.reasoning ? "thinking" : "no thinking"}`,
-				})),
-				Math.min(Math.max(filtered.length, 1), 12),
-				{
-					selectedPrefix: (text) => theme.fg("accent", text),
-					selectedText: (text) => theme.fg("accent", text),
-					description: (text) => theme.fg("muted", text),
-					scrollInfo: (text) => theme.fg("dim", text),
-					noMatch: (text) => theme.fg("warning", text),
-				},
-				{ minPrimaryColumnWidth: 28, maxPrimaryColumnWidth: 44 },
-			);
-			list.onSelect = (item) => done(displayed.get(item.value));
-			list.onCancel = () => done(undefined);
-
-			if (!search.getValue() && ctx.model) {
-				const activeIndex = filtered.findIndex((model) => modelKey(model) === modelKey(ctx.model!));
-				if (activeIndex >= 0) list.setSelectedIndex(activeIndex);
-			}
-		};
-
-		rebuildList();
-
-		return {
-			get focused() {
-				return search.focused;
-			},
-			set focused(value: boolean) {
-				search.focused = value;
-			},
-			render(width: number) {
-				const border = theme.fg("accent", "─".repeat(Math.max(0, width)));
-				return [
-					border,
-					truncateToWidth(theme.fg("accent", theme.bold("Select Model")), width),
-					...search.render(width),
-					"",
-					...list.render(width),
-					"",
-					truncateToWidth(theme.fg("dim", "Type to filter · ↑↓ navigate · Enter select · Esc cancel"), width),
-					border,
-				];
-			},
-			invalidate() {
-				search.invalidate();
-				list.invalidate();
-			},
-			handleInput(data: string) {
-				if (
-					keybindings.matches(data, "tui.select.up") ||
-					keybindings.matches(data, "tui.select.down") ||
-					keybindings.matches(data, "tui.select.confirm") ||
-					keybindings.matches(data, "tui.select.cancel")
-				) {
-					list.handleInput(data);
-				} else {
-					const before = search.getValue();
-					search.handleInput(data);
-					if (search.getValue() !== before) rebuildList();
-				}
-				tui.requestRender();
-			},
-		};
+	const items: SelectScreenItem[] = models.map((model) => ({
+		value: modelKey(model),
+		label: modelKey(model),
+		description: `${model.name} · ${formatTokenCount(model.contextWindow)} · ${model.reasoning ? "thinking" : "no thinking"}`,
+		searchText: model.name,
+	}));
+	const itemsByValue = new Map(items.map((item) => [item.value, item]));
+	const selected = await pickSelectScreen(ctx, {
+		title: "Select model",
+		items,
+		currentValue: ctx.model ? modelKey(ctx.model) : undefined,
+		showCurrentMarker: Boolean(ctx.model),
+		search: {
+			initialQuery,
+			filter: (_choices, query) => filterModels(models, query)
+				.map((model) => itemsByValue.get(modelKey(model)))
+				.filter((item): item is SelectScreenItem => Boolean(item)),
+		},
+		columns: { minPrimaryColumnWidth: 28, maxPrimaryColumnWidth: 44 },
 	});
+	return models.find((model) => modelKey(model) === selected);
 }
 
 async function selectThinkingLevel(

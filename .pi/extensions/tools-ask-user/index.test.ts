@@ -27,6 +27,9 @@ const defaultKeys: Record<string, string> = {
 function keybindings(keys = defaultKeys) {
 	return {
 		matches: (data: string, action: string) => keys[data] === action,
+		getKeys: (action: string) => Object.entries(keys)
+			.filter(([, binding]) => binding === action)
+			.map(([key]) => key),
 	} as any;
 }
 
@@ -94,7 +97,7 @@ function makeComponent(done = vi.fn(), keys = defaultKeys) {
 describe("ask_user", () => {
 	it("registers a sequential tool whose schema requires exactly three generated choices", () => {
 		const registerTool = vi.fn();
-		askUserExtension({ registerTool } as any);
+		askUserExtension({ registerTool, on: vi.fn() } as any);
 		expect(registerTool).toHaveBeenCalledOnce();
 
 		const tool = registerTool.mock.calls[0][0];
@@ -139,10 +142,10 @@ describe("ask_user", () => {
 		const component = makeComponent();
 		const renderedLines = component.render(100);
 		const text = renderedLines.join("\n");
-		expect(renderedLines).toContain("> 1. Small (recommended) — Change one module");
+		expect(renderedLines).toContain("→ 1. Small (recommended) — Change one module");
 		expect(text).toContain("4. None of the above — Optionally, add details in notes (tab)");
-		expect(text).toContain("Optionally, add details in notes (tab)");
-		expect(text.match(/Optional notes \(Tab\)/g)).toHaveLength(1);
+		expect(text).toContain("tab notes · up/down navigate · enter select · escape cancel");
+		expect(text.match(/Optionally, add details in notes \(tab\)/g)).toHaveLength(1);
 	});
 
 	it("opens notes with Tab and submits notes immediately with Enter for each option", () => {
@@ -291,23 +294,26 @@ describe("ask_user", () => {
 			keybindings(),
 			vi.fn(),
 		);
-		for (const width of [1, 8, 20]) {
+		for (const width of [1, 8, 20, 40, 80, 120]) {
 			expect(component.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
 		}
 		component.handleInput("tab");
 		component.handleInput("long note text");
-		for (const width of [1, 8, 20]) {
+		for (const width of [1, 8, 20, 40, 80, 120]) {
 			expect(component.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
 		}
 
 		const tool = createAskUserTool();
-		const rendered = tool.renderResult?.({
-			content: [{ type: "text", text: "done" }],
+		const result = {
+			content: [{ type: "text" as const, text: "done" }],
 			details: {
 				answers: [{ id: "scope", question: "Which?", answer: "Small", index: 1, notes: "Only core" }],
 				cancelled: false,
 			},
-		}, {} as any, theme(), {} as any).render(80).join("\n");
+		};
+		const collapsed = tool.renderResult?.(result, { expanded: false, isPartial: false }, theme(), { isError: false } as any).render(80).join("\n");
+		expect(collapsed).toContain("✓ 1 question answered · expand to view");
+		const rendered = tool.renderResult?.(result, { expanded: true, isPartial: false }, theme(), { isError: false } as any).render(80).join("\n");
 		expect(rendered).toContain("✓ scope: 1. Small");
 		expect(rendered).toContain("Notes: Only core");
 	});
