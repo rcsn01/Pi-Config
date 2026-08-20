@@ -144,7 +144,7 @@ describe("simple plan review UI", () => {
 				{ value: "implement", label: "implement" },
 				{ value: "accept", label: "accept" },
 			]);
-		expect(harness.select).toHaveBeenCalledWith("A proposed plan is ready for review.", actionLabels);
+		expect(harness.select).toHaveBeenCalledWith(expect.stringContaining("A proposed plan is ready for review."), actionLabels);
 		expect(harness.timeline.at(-1)).toBe("select");
 		expect(harness.custom).not.toHaveBeenCalled();
 		expect(harness.renderers.has("proposed-plan")).toBe(true);
@@ -318,6 +318,74 @@ describe("simple plan review UI", () => {
 			.filter((entry) => entry.customType === "plan-mode-state")
 			.map((entry) => entry.data);
 		expect(persistedStates.at(-1)).toMatchObject({ mode: "plan", phase: "awaiting_review" });
+	});
+});
+
+describe("context-aware review recommendation", () => {
+	it("shows context usage and recommends fresh implementation above the threshold", async () => {
+		const harness = createHarness({
+			contextUsage: { tokens: 600_000, contextWindow: 1_000_000, percent: 60 },
+		});
+		await initializeAndExtract(harness, "# High Usage Plan");
+		await harness.emit("agent_settled");
+
+		expect(harness.select).toHaveBeenCalledWith(
+			expect.stringContaining("Context: 60% used (600K / 1M tokens)"),
+			[
+				"Clear context and implement (recommended)",
+				"Implement in current session",
+				"Revise current plan",
+				"Stay in Plan Mode",
+			],
+		);
+	});
+
+	it("shows context usage and recommends implementing in the current session at or below the threshold", async () => {
+		const harness = createHarness({
+			contextUsage: { tokens: 200_000, contextWindow: 1_000_000, percent: 20 },
+		});
+		await initializeAndExtract(harness, "# Low Usage Plan");
+		await harness.emit("agent_settled");
+
+		expect(harness.select).toHaveBeenCalledWith(
+			expect.stringContaining("Context: 20% used (200K / 1M tokens)"),
+			[
+				"Clear context and implement",
+				"Implement in current session (recommended)",
+				"Revise current plan",
+				"Stay in Plan Mode",
+			],
+		);
+	});
+
+	it("falls back to fresh recommendation without a usage line when context usage is unknown", async () => {
+		const harness = createHarness({
+			contextUsage: { tokens: null, contextWindow: 1_000_000, percent: null },
+		});
+		await initializeAndExtract(harness, "# Unknown Usage Plan");
+		await harness.emit("agent_settled");
+
+		expect(harness.select).toHaveBeenCalledWith(
+			expect.not.stringContaining("Context:"),
+			[
+				"Clear context and implement (recommended)",
+				"Implement in current session",
+				"Revise current plan",
+				"Stay in Plan Mode",
+			],
+		);
+	});
+
+	it("implements in the current session when the recommended low-usage action is selected", async () => {
+		const plan = "# Low Usage Implement";
+		const harness = createHarness({
+			contextUsage: { tokens: 100_000, contextWindow: 1_000_000, percent: 10 },
+			selection: "Implement in current session (recommended)",
+		});
+		await initializeAndExtract(harness, plan);
+		await harness.emit("agent_settled");
+
+		expect(harness.sendUserMessage).toHaveBeenCalledWith(`Implement this proposed plan:\n\n${plan}`, undefined);
 	});
 });
 

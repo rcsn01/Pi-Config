@@ -1,4 +1,5 @@
 import type {
+	ContextUsage,
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
@@ -16,13 +17,45 @@ import {
 import { isPlanMode, type PlanState } from "./plan-state.ts";
 
 export const PLAN_REVIEW_ACTIONS = [
-	{ value: "fresh", label: "Clear context and implement (recommended)" },
+	{ value: "fresh", label: "Clear context and implement" },
 	{ value: "implement", label: "Implement in current session" },
 	{ value: "revise", label: "Revise current plan" },
 	{ value: "stay", label: "Stay in Plan Mode" },
 ] as const;
 
 export type PlanReviewAction = (typeof PLAN_REVIEW_ACTIONS)[number]["value"];
+
+export const CONTEXT_RECOMMENDATION_THRESHOLD = 35;
+
+/**
+ * Review action labels with the "(recommended)" marker on the suggested action.
+ * Fresh implementation is suggested when context usage is unknown or above the
+ * threshold; implementing in the current session is suggested at or below it.
+ */
+export function reviewActionLabels(percent: number | null): string[] {
+	const freshRecommended = percent === null || percent > CONTEXT_RECOMMENDATION_THRESHOLD;
+	return PLAN_REVIEW_ACTIONS.map((action) => {
+		if (action.value === "fresh") {
+			return freshRecommended ? "Clear context and implement (recommended)" : "Clear context and implement";
+		}
+		if (action.value === "implement") {
+			return freshRecommended ? "Implement in current session" : "Implement in current session (recommended)";
+		}
+		return action.label;
+	});
+}
+
+function formatTokens(tokens: number | null): string {
+	if (tokens === null) return "?";
+	if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M`;
+	if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+	return String(tokens);
+}
+
+function contextUsageNote(usage: ContextUsage | undefined): string {
+	if (!usage || usage.percent === null) return "";
+	return `\n\nContext: ${Math.round(usage.percent)}% used (${formatTokens(usage.tokens)} / ${formatTokens(usage.contextWindow)} tokens).`;
+}
 
 export const PLAN_IMPLEMENT_FRESH_COMMAND = "/plan-implement-fresh";
 export const PLAN_IMPLEMENT_FRESH_PREFIX =
@@ -221,7 +254,14 @@ export function createPlanReviewController(host: PlanReviewHost): PlanReviewCont
 	}
 
 	function printReviewInstructions(ctx: ExtensionContext, reason: string): void {
-		const instructions = `${reason}\n\nUse /plan fresh (recommended), /plan implement, /plan revise, or /plan show.`;
+		const usage = ctx.getContextUsage();
+		const percent = usage?.percent ?? null;
+		const recommended = percent === null || percent > CONTEXT_RECOMMENDATION_THRESHOLD ? "fresh" : "implement";
+		const parts = ["fresh", "implement", "revise", "show"].map((command) =>
+			command === recommended ? `/plan ${command} (recommended)` : `/plan ${command}`,
+		);
+		const [fresh, implement, revise, show] = parts;
+		const instructions = `${reason}${contextUsageNote(usage)}\n\nUse ${fresh}, ${implement}, ${revise}, or ${show}.`;
 		if (ctx.hasUI) {
 			ctx.ui.notify(instructions, "info");
 			return;
@@ -234,8 +274,11 @@ export function createPlanReviewController(host: PlanReviewHost): PlanReviewCont
 			printReviewInstructions(ctx, reason);
 			return "stay";
 		}
-		const selected = await ctx.ui.select(reason, PLAN_REVIEW_ACTIONS.map((action) => action.label));
-		return PLAN_REVIEW_ACTIONS.find((action) => action.label === selected)?.value ?? "stay";
+		const usage = ctx.getContextUsage();
+		const labels = reviewActionLabels(usage?.percent ?? null);
+		const selected = await ctx.ui.select(`${reason}${contextUsageNote(usage)}`, labels);
+		if (selected === undefined) return "stay";
+		return PLAN_REVIEW_ACTIONS[labels.indexOf(selected)]?.value ?? "stay";
 	}
 
 	async function handleAction(ctx: ExtensionContext, plan: string, reason: string): Promise<void> {

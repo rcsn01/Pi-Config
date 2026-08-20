@@ -1,10 +1,11 @@
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { BashOperations, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { BashOperations, ContextUsage, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { vi } from "vitest";
 import {
 	createPlanModeExtension,
 	type PlanModeDependencies,
 	PLAN_REVIEW_ACTIONS,
+	reviewActionLabels,
 } from "./index.ts";
 import type { ModeModelProfile, PlanModeProfileStore } from "./model-profile.ts";
 
@@ -36,6 +37,7 @@ export interface HarnessOptions {
 	activeTools?: string[];
 	idle?: boolean;
 	sandboxInitializeError?: Error;
+	contextUsage?: ContextUsage;
 	dependencies?: PlanModeDependencies;
 }
 
@@ -58,6 +60,12 @@ export function assistantWithPlan(plan: string): any {
 		content: [{ type: "text", text: `Before\n<proposed_plan>\n${plan}\n</proposed_plan>\nAfter` }],
 	};
 }
+
+export const DEFAULT_CONTEXT_USAGE: ContextUsage = {
+	tokens: 500_000,
+	contextWindow: 1_000_000,
+	percent: 50,
+};
 
 export function createHarness(options: HarnessOptions = {}) {
 	const mode = options.mode ?? "tui";
@@ -122,11 +130,13 @@ export function createHarness(options: HarnessOptions = {}) {
 		getEditorComponent,
 		setEditorComponent,
 	} as any;
+	const contextUsage = options.contextUsage ?? DEFAULT_CONTEXT_USAGE;
 	const ctx = {
 		mode,
 		hasUI: mode === "tui" || mode === "rpc",
 		cwd: "/test/project",
 		ui,
+		getContextUsage: vi.fn(() => contextUsage),
 		get model() {
 			return currentModel;
 		},
@@ -292,7 +302,7 @@ export async function initializeAndExtract(harness: ReturnType<typeof createHarn
 	return harness.emit("message_end", { type: "message_end", message: assistantWithPlan(plan) });
 }
 
-export const actionLabels = PLAN_REVIEW_ACTIONS.map((action) => action.label);
+export const actionLabels = reviewActionLabels(DEFAULT_CONTEXT_USAGE.percent);
 
 export const normalModel = {
 	provider: "anthropic",
