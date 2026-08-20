@@ -76,6 +76,34 @@ describe("subagents model command", () => {
 		expect(config.updates).toHaveLength(4);
 	});
 
+	it("applies the three-step shared TUI selector flow", async () => {
+		const config = memoryConfigStore({ defaultModel: "main", defaultThinkingLevel: "minimal" });
+		const command = createSubagentsCommand({ registry: memoryRegistry([agent()]), config });
+		const selections = ["all", "main", "high", undefined];
+		const custom = vi.fn(async () => selections.shift());
+		const ctx = context({ mode: "tui", custom });
+		ctx.modelRegistry.find.mockReturnValue(ctx.model);
+		await command.handler("", ctx);
+		expect(ctx.ui.custom).toHaveBeenCalledTimes(4);
+		expect(config.document).toMatchObject({ defaultModel: "main", defaultThinkingLevel: "high" });
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("All subagents now use main with high thinking"),
+			"info",
+		);
+	});
+
+	it("returns from thinking cancellation to model selection", async () => {
+		const config = memoryConfigStore({ defaultModel: "main", defaultThinkingLevel: "minimal" });
+		const command = createSubagentsCommand({ registry: memoryRegistry([agent()]), config });
+		const selections = ["all", "main", undefined, "main", "high", undefined];
+		const custom = vi.fn(async () => selections.shift());
+		const ctx = context({ mode: "tui", custom });
+		ctx.modelRegistry.find.mockReturnValue(ctx.model);
+		await command.handler("", ctx);
+		expect(ctx.ui.custom).toHaveBeenCalledTimes(6);
+		expect(config.document).toMatchObject({ defaultModel: "main", defaultThinkingLevel: "high" });
+	});
+
 	it("does not mutate configuration for unknown agents or unavailable models", async () => {
 		const config = memoryConfigStore({ defaultModel: "main" });
 		const command = createSubagentsCommand({ registry: memoryRegistry(), config });

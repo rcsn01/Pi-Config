@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Container, Text } from "@earendil-works/pi-tui";
+import { renderToolMarkdown, renderToolSummary, truncateToolLine } from "../_shared/tool-result-ui.ts";
 import { Type } from "typebox";
 import { fetchDocument, type FetchDocument } from "./fetch-document.ts";
 
@@ -50,37 +51,29 @@ export function registerWebFetchTool(pi: ExtensionAPI, fetchAndExtract: FetchDoc
 				text.setText(theme.fg("toolTitle", theme.bold("fetch ")) + theme.fg("error", "(no URL)"));
 				return text;
 			}
-			const display = url.length > 70 ? `${url.slice(0, 67)}...` : url;
+			const display = truncateToolLine(url, 70);
 			text.setText(theme.fg("toolTitle", theme.bold("fetch ")) + theme.fg("accent", display));
 			return text;
 		},
 
 		renderResult(result, { expanded, isPartial }, theme, context) {
-			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			if (isPartial) {
-				text.setText(theme.fg("warning", "Fetching…"));
-				return text;
-			}
+			if (isPartial) return renderToolSummary(theme, "running", "Fetching…");
 
 			if (context.isError) {
-				const message = result.content.find((item) => item.type === "text")?.text || "Error";
-				text.setText(theme.fg("error", message));
-				return text;
+				const message = result.content.find((item) => item.type === "text")?.text || "Fetch failed.";
+				return renderToolSummary(theme, "error", message);
 			}
 
 			const details = result.details as { title?: string; chars?: number };
 			const title = details?.title || "Untitled";
 			const chars = details?.chars ?? 0;
-			const status = theme.fg("success", title) + theme.fg("muted", ` (${chars} chars)`);
-			if (!expanded) {
-				text.setText(status);
-				return text;
-			}
+			if (!expanded) return renderToolSummary(theme, "success", `${title} (${chars} chars)`, true);
 
 			const content = result.content.find((item) => item.type === "text")?.text || "";
-			const preview = content.length > 500 ? `${content.slice(0, 500)}...` : content;
-			text.setText(`${status}\n${theme.fg("dim", preview)}`);
-			return text;
+			const container = new Container();
+			container.addChild(renderToolSummary(theme, "success", `${title} (${chars} chars)`));
+			container.addChild(renderToolMarkdown(content, theme));
+			return container;
 		},
 	});
 }

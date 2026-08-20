@@ -14,6 +14,12 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	formatSelectorHint,
+	renderSelectorFrame,
+	UI_GLYPHS,
+} from "../_shared/ui-style.ts";
+import { registerToolErrorHandler, renderToolSummary } from "../_shared/tool-result-ui.ts";
 
 export interface AskUserAnswer {
 	id: string;
@@ -99,7 +105,7 @@ export class AskUserComponent implements Component {
 		private readonly recommended: string | undefined,
 		private readonly tui: Pick<TUI, "requestRender">,
 		private readonly theme: Theme,
-		private readonly keybindings: Pick<KeybindingsManager, "matches">,
+		private readonly keybindings: Pick<KeybindingsManager, "getKeys" | "matches">,
 		private readonly done: (selection: AskUserSelection | undefined) => void,
 	) {}
 
@@ -173,43 +179,50 @@ export class AskUserComponent implements Component {
 
 	render(width: number): string[] {
 		const renderWidth = Math.max(1, width);
-		const lines: string[] = [this.theme.fg("accent", "─".repeat(renderWidth))];
-		addWrappedWithPrefix(lines, " ", this.theme.fg("text", this.question), renderWidth);
-		lines.push("");
+		const body: string[] = [];
 
 		for (let index = 0; index < this.options.length; index++) {
 			const option = this.options[index]!;
 			const selected = index === this.optionIndex;
-			const prefix = selected ? this.theme.fg("accent", "> ") : "  ";
+			const prefix = selected ? this.theme.fg("accent", `${UI_GLYPHS.cursor} `) : "  ";
 			const recommended = this.recommended === option.label ? " (recommended)" : "";
 			const editMarker = selected && this.editing ? " ✎" : "";
 			const color = selected ? "accent" : "text";
 			const label = this.theme.fg(color, `${index + 1}. ${option.label}${recommended}${editMarker}`);
 			const description = option.description ? this.theme.fg("muted", ` — ${option.description}`) : "";
-			addWrappedWithPrefix(lines, prefix, `${label}${description}`, renderWidth);
+			addWrappedWithPrefix(body, prefix, `${label}${description}`, renderWidth);
 			const savedNotes = this.notes.get(index);
 			if (savedNotes) {
-				addWrappedWithPrefix(lines, "     ", this.theme.fg("dim", `Notes: ${savedNotes} (Tab to edit)`), renderWidth);
+				addWrappedWithPrefix(body, "     ", this.theme.fg("dim", `Notes: ${savedNotes}`), renderWidth);
 			}
 		}
 
 		if (this.editing) {
-			lines.push("");
-			addWrappedWithPrefix(lines, " ", this.theme.fg("muted", "Notes:"), renderWidth);
+			body.push("");
+			addWrappedWithPrefix(body, " ", this.theme.fg("muted", "Notes:"), renderWidth);
 			const inputPrefix = renderWidth > 1 ? " " : "";
 			const inputWidth = Math.max(1, renderWidth - visibleWidth(inputPrefix));
 			for (const line of this.input.render(inputWidth)) {
-				lines.push(`${inputPrefix}${truncateToWidth(line, inputWidth)}`);
+				body.push(`${inputPrefix}${truncateToWidth(line, inputWidth)}`);
 			}
 		}
 
-		lines.push("");
 		const hint = this.editing
-			? "Enter select with notes • Esc discard edit"
-			: "Optional notes (Tab) • ↑↓ navigate • Enter select • Esc cancel";
-		addWrappedWithPrefix(lines, " ", this.theme.fg("dim", hint), renderWidth);
-		lines.push(this.theme.fg("accent", "─".repeat(renderWidth)));
-		return lines;
+			? formatSelectorHint(this.keybindings, [
+				{ keybindings: "tui.input.submit", description: "select with notes", fallback: "enter" },
+				{ keybindings: "tui.select.cancel", description: "discard edit", fallback: "escape" },
+			])
+			: formatSelectorHint(this.keybindings, [
+				{ keybindings: "tui.input.tab", description: "notes", fallback: "tab" },
+				{ keybindings: ["tui.select.up", "tui.select.down"], description: "navigate", fallback: "up/down" },
+				{ keybindings: "tui.select.confirm", description: "select", fallback: "enter" },
+				{ keybindings: "tui.select.cancel", description: "cancel", fallback: "escape" },
+			]);
+		return renderSelectorFrame(this.theme, renderWidth, {
+			title: wrapTextWithAnsi(this.question, renderWidth),
+			body,
+			hint,
+		});
 	}
 
 	invalidate(): void {
@@ -349,22 +362,37 @@ export function createAskUserTool(): ToolDefinition<typeof AskUserParams, AskUse
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, _options, theme, _context) {
+		renderResult(result, options, theme, context) {
+			if (options.isPartial) return renderToolSummary(theme, "running", "Waiting for clarification…");
+			if (context.isError) {
+				const message = result.content.find((content) => content.type === "text")?.text ?? "Could not ask the user.";
+				return renderToolSummary(theme, "error", message);
+			}
 			const details = result.details;
 			if (!details) {
 				const first = result.content[0];
 				return new Text(first?.type === "text" ? first.text : "", 0, 0);
 			}
-			const lines = details.answers.filter((answer) => !answer.cancelled).map((answer) => {
+			const answered = details.answers.filter((answer) => !answer.cancelled);
+			if (!options.expanded) {
+				const summary = details.cancelled
+					? `Clarification cancelled · ${answered.length} answered`
+					: `${answered.length} question${answered.length === 1 ? "" : "s"} answered`;
+				return renderToolSummary(theme, details.cancelled ? "warning" : "success", summary, true);
+			}
+			const lines = answered.map((answer) => {
 				const notes = answer.notes ? `\n  ${theme.fg("muted", `Notes: ${answer.notes}`)}` : "";
-				return `${theme.fg("success", "✓")} ${answer.id}: ${theme.fg("accent", `${answer.index}. ${answer.answer ?? ""}`)}${notes}`;
+				return `${theme.fg("success", UI_GLYPHS.confirm)} ${answer.id}: ${theme.fg("accent", `${answer.index}. ${answer.answer ?? ""}`)}${notes}`;
 			});
-			if (details.cancelled) lines.push(theme.fg("warning", "Clarification cancelled"));
+			if (details.cancelled) lines.push(theme.fg("warning", "! Clarification cancelled"));
 			return new Text(lines.join("\n"), 0, 0);
 		},
 	};
 }
 
 export default function askUserExtension(pi: ExtensionAPI): void {
+	registerToolErrorHandler(pi, ["ask_user"], (event) =>
+		event.content.some((content) => content.type === "text" && content.text?.startsWith("Error:")),
+	);
 	pi.registerTool(createAskUserTool());
 }

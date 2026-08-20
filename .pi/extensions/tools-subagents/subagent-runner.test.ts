@@ -99,6 +99,21 @@ describe("single subagent runner", () => {
 		expect(() => readFileSync(taskPath)).toThrow();
 	});
 
+	it("preserves message-update output when a child is killed", async () => {
+		const spawn = spawnHarness();
+		const run = createSubagentRunner({ registry: memoryRegistry(), config: memoryConfigStore(), spawnProcess: spawn.spawnProcess });
+		const promise = run({ agent: "worker", task: "killed", cwd: process.cwd() });
+		await waitForProcess(spawn.processes);
+		emitProcessResult(spawn.processes[0], {
+			stdout: [
+				`${JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Partial " } })}\n`,
+				`${JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "update" } })}\n`,
+			],
+			exitCode: 143,
+		});
+		await expect(promise).resolves.toMatchObject({ output: "Partial update", exitCode: 143, progress: { status: "failed" } });
+	});
+
 	it("preserves partial assistant output and records stderr on non-zero exit", async () => {
 		const spawn = spawnHarness();
 		const run = createSubagentRunner({ registry: memoryRegistry(), config: memoryConfigStore(), spawnProcess: spawn.spawnProcess });
@@ -151,6 +166,6 @@ describe("single subagent runner", () => {
 		const failedPromise = failedRun({ agent: "worker", task: "error", cwd: process.cwd() });
 		await waitForProcess(failedSpawn.processes);
 		failedSpawn.processes[0].emit("error", new Error("spawn failed"));
-		await expect(failedPromise).resolves.toMatchObject({ exitCode: 1, output: "", progress: { status: "failed" } });
+		await expect(failedPromise).resolves.toMatchObject({ exitCode: 1, output: "Error: spawn failed", progress: { status: "failed", error: "spawn failed" } });
 	});
 });

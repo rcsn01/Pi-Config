@@ -54,7 +54,7 @@ function createHarness(options: HarnessOptions = {}) {
 	const setStatus = vi.fn();
 	const output = vi.fn();
 	const reload = vi.fn(async () => {});
-	const request = vi.fn();
+	const select = vi.fn();
 	const setModel = vi.fn(async () => options.setModelResult ?? true);
 	const setThinkingLevel = vi.fn();
 	const appendEntry = vi.fn();
@@ -71,7 +71,7 @@ function createHarness(options: HarnessOptions = {}) {
 	const ctx = {
 		hasUI: true,
 		mode: "tui",
-		ui: { notify, request, select: vi.fn(), setStatus },
+		ui: { notify, select, setStatus },
 		reload,
 		model: options.model ?? DEFAULT_MODEL,
 		scopedModels: [],
@@ -97,7 +97,7 @@ function createHarness(options: HarnessOptions = {}) {
 		setStatus,
 		output,
 		reload,
-		request,
+		select,
 		switchProfile,
 		readProfile,
 		loadActiveProfile,
@@ -340,16 +340,10 @@ describe("config profiles extension", () => {
 
 	it("uses the shared picker and marks the active profile", async () => {
 		const harness = createHarness({ active: "default" });
-		harness.request.mockResolvedValue({ value: "focused" });
+		harness.select.mockResolvedValue("  focused");
 		await harness.commands.get("profile").handler("", harness.ctx);
 
-		expect(harness.request).toHaveBeenCalledWith(expect.objectContaining({
-			method: "optionList",
-			options: [
-				expect.objectContaining({ value: "default", checked: true }),
-				expect.objectContaining({ value: "focused", checked: false }),
-			],
-		}));
+		expect(harness.select).toHaveBeenCalledWith("Select settings profile", ["● default (current)", "  focused"]);
 		expect(harness.switchProfile).toHaveBeenCalledWith("focused");
 		expect(harness.reload).toHaveBeenCalledOnce();
 	});

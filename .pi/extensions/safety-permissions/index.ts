@@ -19,7 +19,7 @@
  *   - commands.ts           — /permissions, /approve, /execpolicy
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Text } from "@earendil-works/pi-tui";
+import { renderTranscriptCard } from "../_shared/transcript-card.ts";
 import { loadExecPolicy } from "../_shared/command-policy.ts";
 import { createApprovalService } from "./approvals.ts";
 import { registerPermissionCommands, type CommandService, type DeniedAction } from "./commands.ts";
@@ -122,16 +122,19 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Custom rendering for auto-review verdict entries ──────────────
 
-	pi.registerEntryRenderer("auto-review-verdict", (entry, _options, theme) => {
+	pi.registerEntryRenderer("auto-review-verdict", (entry, options, theme) => {
 		const data = entry.data as { allowed?: boolean; title?: string; reason?: string; triggers?: string[] } | undefined;
-		const icon = data?.allowed ? "✅" : "❌";
-		const label = data?.allowed ? "ALLOWED" : "DENIED";
-		const triggers = data?.triggers?.length ? ` [${data.triggers.join(", ")}]` : "";
-		const text = theme.fg("warning", `${icon} ${label}: ${data?.title ?? ""}${triggers} — ${data?.reason ?? ""}`);
-		const bg = data?.allowed ? "toolSuccessBg" : "toolErrorBg";
-		const box = new Box(1, 1, (t) => theme.bg(bg, t));
-		box.addChild(new Text(text, 0, 0));
-		return box;
+		const allowed = data?.allowed === true;
+		const title = data?.title ?? "Command Review";
+		const triggers = data?.triggers?.length ? `Triggers: ${data.triggers.join(", ")}` : undefined;
+		return renderTranscriptCard(theme, {
+			title,
+			state: allowed ? "success" : "error",
+			body: data?.reason ?? "No review reason provided.",
+			summary: `${allowed ? "Allowed" : "Denied"} · ${title} · expand to view`,
+			metadata: triggers ? [triggers] : undefined,
+			expanded: Boolean(options?.expanded),
+		});
 	});
 
 	// ── tool_call handler ──────────────────────────────────────────────

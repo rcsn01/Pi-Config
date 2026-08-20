@@ -1,5 +1,5 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { inspectCodexAuth } from "./codex-auth.ts";
@@ -12,6 +12,7 @@ import { isSnapshotStale } from "./quota.ts";
 import { probeQuota } from "./quota-client.ts";
 import { formatQuotaText } from "./render.ts";
 import { styleUsageText } from "./style.ts";
+import { renderToolSummary } from "../../_shared/tool-result-ui.ts";
 import type { CodexAuthInspection, QuotaProbeResult, QuotaSnapshot } from "./types.ts";
 
 const UsageToolParams = Type.Object({
@@ -21,6 +22,21 @@ const UsageToolParams = Type.Object({
 });
 
 type Provider = "codex" | "ollama" | "both";
+
+const USAGE_BAR = /\[[█░]+\]/g;
+const USAGE_PERCENT = /(\d+(?:\.\d+)?% used)/g;
+
+function renderUsageText(text: string, theme: Theme): Text {
+	const lines = text.split("\n").map((line) => {
+		if (/^(ChatGPT Codex|Ollama Cloud)/.test(line)) {
+			return theme.fg("accent", theme.bold(line));
+		}
+		let styled = line.replace(USAGE_BAR, (bar: string) => theme.fg("accent", theme.bold(bar)));
+		styled = styled.replace(USAGE_PERCENT, (share: string) => theme.bold(share));
+		return theme.fg("toolOutput", styled);
+	});
+	return new Text(lines.join("\n"), 0, 0);
+}
 
 function parseUsageArgs(raw: string): { provider: Provider; action: string } {
 	const tokens = raw.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -216,7 +232,12 @@ export function createSubscriptionUsageExtension(options: {
 					0, 0,
 				);
 			},
-			renderResult(result, { expanded }, theme) {
+			renderResult(result, { expanded, isPartial }, theme, context) {
+				if (isPartial) return renderToolSummary(theme, "running", "Loading Codex usage…");
+				if (context.isError) {
+					const message = result.content.find((content) => content.type === "text")?.text ?? "Usage request failed.";
+					return renderToolSummary(theme, "error", message);
+				}
 				const snapshot = result.details as QuotaSnapshot | undefined;
 				if (!snapshot) {
 					const content = result.content[0];
@@ -225,10 +246,8 @@ export function createSubscriptionUsageExtension(options: {
 				const summary = snapshot.weekly
 					? `${Math.round(snapshot.weekly.usedPercent)}% of weekly limit used`
 					: "weekly limit unavailable";
-				const text = expanded
-					? formatQuotaText(snapshot, new Date())
-					: `✓ Plan ${snapshot.plan ?? "unknown"} · ${summary}`;
-				return new Text(theme.fg("success", text), 0, 0);
+				if (!expanded) return renderToolSummary(theme, "success", `Plan ${snapshot.plan ?? "unknown"} · ${summary}`, true);
+				return renderUsageText(formatQuotaText(snapshot, new Date()), theme);
 			},
 		});
 
@@ -251,7 +270,12 @@ export function createSubscriptionUsageExtension(options: {
 					0, 0,
 				);
 			},
-			renderResult(result, { expanded }, theme) {
+			renderResult(result, { expanded, isPartial }, theme, context) {
+				if (isPartial) return renderToolSummary(theme, "running", "Loading Ollama usage…");
+				if (context.isError) {
+					const message = result.content.find((content) => content.type === "text")?.text ?? "Usage request failed.";
+					return renderToolSummary(theme, "error", message);
+				}
 				const snapshot = result.details as UsageSnapshot | undefined;
 				if (!snapshot) {
 					const content = result.content[0];
@@ -260,8 +284,8 @@ export function createSubscriptionUsageExtension(options: {
 				const summary = snapshot.weekly
 					? `${Math.round(snapshot.weekly.usedPercent)}% of weekly usage used`
 					: "weekly usage unavailable";
-				const text = expanded ? formatUsageText(snapshot, new Date()) : `✓ ${summary}`;
-				return new Text(theme.fg("success", text), 0, 0);
+				if (!expanded) return renderToolSummary(theme, "success", summary, true);
+				return renderUsageText(formatUsageText(snapshot, new Date()), theme);
 			},
 		});
 	};

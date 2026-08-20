@@ -94,6 +94,7 @@ describe("subagent extension interfaces", () => {
 	it("preserves event, command, and tool registration order and metadata", () => {
 		const harness = extensionHarness();
 		expect(harness.registrations).toEqual([
+			"event:tool_result",
 			"event:session_start",
 			"event:model_select",
 			"command:subagents",
@@ -147,7 +148,7 @@ describe("subagent tool adaptation", () => {
 		});
 	});
 
-	it("adapts parallel pending/running/final results in input order without top-level isError", async () => {
+	it("adapts parallel pending/running/final results in input order with top-level isError", async () => {
 		const runSingle = vi.fn(async (options: any) => options.agent.name === "worker"
 			? agentResult({ agent: "worker", task: options.task })
 			: agentResult({ agent: "explorer", task: options.task, exitCode: 1, output: "partial", progress: { ...agentResult().progress, agent: "explorer", status: "failed" } }));
@@ -162,7 +163,7 @@ describe("subagent tool adaptation", () => {
 		expect(updates.length).toBeGreaterThanOrEqual(4);
 		expect(result.content[0].text).toBe("## worker\n\nDone\n\n---\n\n## explorer (FAILED)\n\npartial");
 		expect(result.details.results.map((item: any) => item.agent)).toEqual(["worker", "explorer"]);
-		expect(result).not.toHaveProperty("isError");
+		expect(result).toHaveProperty("isError", true);
 		expect(runSingle.mock.calls[1][0].cwd).toBe("/other");
 		expect(runSingle.mock.calls.map(([options]) => options.cacheAffinitySeed)).toEqual([
 			"main-session-123",

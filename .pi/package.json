@@ -22,18 +22,20 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
-		"test": "pnpm test:core && pnpm test:features && pnpm test:profiles && pnpm test:subscription-usage && pnpm test:safety && pnpm test:ask-user && pnpm test:advisor && pnpm test:todos && pnpm test:web-fetch && pnpm test:plan && pnpm test:workflows && pnpm test:integrations",
+		"test": "pnpm test:core && pnpm test:features && pnpm test:profiles && pnpm test:subscription-usage && pnpm test:safety && pnpm test:ask-user && pnpm test:advisor && pnpm test:subagents && pnpm test:todos && pnpm test:web-fetch && pnpm test:goal && pnpm test:plan && pnpm test:workflows && pnpm test:integrations",
 		"test:core": "vitest run extensions/_shared extensions/auto-compact",
 		"test:safety": "vitest run extensions/safety-permissions",
 		"test:ask-user": "vitest run extensions/tools-ask-user",
 		"test:advisor": "vitest run extensions/tools-advisor",
+		"test:subagents": "vitest run extensions/tools-subagents",
 		"test:subscription-usage": "vitest run extensions/subscription-usage",
 		"test:features": "vitest run extensions/system-feature-flags/catalog.test.ts extensions/ui-model-selector/model-config.test.ts extensions/ui-context/context-model.test.ts",
 		"test:profiles": "vitest run extensions/config-profiles",
-		"test:todos": "vitest run extensions/tools-todo/todo-state.test.ts extensions/tools-todo/todo-prompt.test.ts",
-		"test:web-fetch": "vitest run extensions/tools-web-fetch",
+		"test:todos": "vitest run extensions/tools-todo",
+		"test:web-fetch": "vitest run extensions/tools-web-fetch extensions/tools-web-search",
+		"test:goal": "vitest run extensions/workflows-goal",
 		"test:plan": "vitest run extensions/workflows-plan-mode",
-		"test:workflows": "node --test extensions/workflows-runtime/tests/*.test.mjs",
+		"test:workflows": "pnpm exec vitest run extensions/workflows-runtime/index.test.ts && node --test extensions/workflows-runtime/tests/*.test.mjs",
 		"test:integrations": "vitest run extensions-disabled/integration-plane/lib/plane/client.test.ts"
 	}
 }

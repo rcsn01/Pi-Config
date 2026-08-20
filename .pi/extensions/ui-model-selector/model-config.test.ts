@@ -135,7 +135,7 @@ function createLifecycleHarness(options: {
 	const pickedModel = (options.pickedModel ?? models[1]) as any;
 	const currentModel = (options.currentModel ?? models[0]) as any;
 	let thinkingLevel: ThinkingLevel = options.initialThinkingLevel ?? "medium";
-	const custom = vi.fn(async () => options.cancel ? undefined : pickedModel);
+	const custom = vi.fn(async () => options.cancel ? undefined : `${pickedModel.provider}/${pickedModel.id}`);
 	const setModel = vi.fn(async () => options.setModelResult ?? true);
 	const setThinkingLevel = vi.fn((level: ThinkingLevel) => {
 		thinkingLevel = options.effectiveThinkingLevel ?? level;
