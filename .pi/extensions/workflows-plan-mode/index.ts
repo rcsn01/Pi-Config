@@ -67,7 +67,7 @@ import {
 	type PlanWorkspaceOptions,
 } from "./plan-workspace.ts";
 
-export { PLAN_REVIEW_ACTIONS } from "./plan-review.ts";
+export { PLAN_REVIEW_ACTIONS, reviewActionLabels } from "./plan-review.ts";
 export type { PlanReviewAction } from "./plan-review.ts";
 
 export interface PlanModeDependencies {
