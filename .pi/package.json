@@ -29,7 +29,7 @@
 		"test:advisor": "vitest run extensions/tools-advisor",
 		"test:subagents": "vitest run extensions/tools-subagents",
 		"test:subscription-usage": "vitest run extensions/subscription-usage",
-		"test:features": "vitest run extensions/system-feature-flags/catalog.test.ts extensions/ui-model-selector/model-config.test.ts extensions/ui-context/context-model.test.ts",
+		"test:features": "vitest run extensions/system-feature-flags/catalog.test.ts extensions/ui-model-selector/model-config.test.ts extensions/ui-context/context-model.test.ts extensions/ui-context/global-usage.test.ts extensions/ui-context/global-usage-render.test.ts",
 		"test:profiles": "vitest run extensions/config-profiles",
 		"test:todos": "vitest run extensions/tools-todo",
 		"test:web-fetch": "vitest run extensions/tools-web-fetch extensions/tools-web-search",
