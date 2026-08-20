@@ -160,6 +160,42 @@ describe("classifySessionEntries", () => {
 		expect(result.map((entry) => [entry.id, entry.mode])).toEqual([["a1", "plan"], ["c1", "plan"], ["b1", "main"]]);
 	});
 
+	it("repoints the current model on model_change entries", () => {
+		const result = classifySessionEntries(asEntries([
+			assistant("a1", null, "gpt-5", "openai"),
+			{ type: "model_change", id: "m1", parentId: "a1", timestamp: TS, provider: "anthropic", modelId: "claude-x" },
+			toolResult("t1", "m1", "read", { usage: { input: 3, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } } }),
+			assistant("a2", "t1", "claude-x"),
+		]));
+		expect(result.map((entry) => [entry.id, entry.model])).toEqual([
+			["a1", "openai/gpt-5"],
+			["t1", "anthropic/claude-x"],
+			["a2", "anthropic/claude-x"],
+		]);
+	});
+
+	it("skips session header entries", () => {
+		const result = classifySessionEntries(asEntries([
+			{ type: "session", version: 3, id: "hdr", timestamp: TS, cwd: "/repo" },
+			assistant("a1", null),
+		]));
+		expect(result).toHaveLength(1);
+		expect(result[0]).toMatchObject({ id: "a1", mode: "main" });
+	});
+
+	it("falls back to the current session model for advisor and guardian entries without model metadata", () => {
+		const result = classifySessionEntries(asEntries([
+			assistant("a1", null, "claude-x"),
+			toolResult("t1", "a1", "advisor", { usage: { input: 5, output: 1, cost: { total: 0.02 } } }),
+			{ type: "custom", id: "v1", parentId: "a1", timestamp: TS, customType: "auto-review-verdict", data: { usage: { input: 3, output: 1, cost: { total: 0.01 } } } },
+		]));
+		expect(result.map((entry) => [entry.id, entry.model])).toEqual([
+			["a1", "anthropic/claude-x"],
+			["t1", "anthropic/claude-x"],
+			["v1", "anthropic/claude-x"],
+		]);
+	});
+
 	it("counts non-delegated tool result usage as main with the current model", () => {
 		const result = classifySessionEntries(asEntries([
 			assistant("a1", null, "claude-x"),

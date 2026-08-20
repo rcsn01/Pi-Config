@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { collectUsageSnapshot, normalizeContextUsage } from "./usage.ts";
+import {
+	classifySessionEntries,
+	collectUsageSnapshot,
+	emptyUsageTotals,
+	normalizeContextUsage,
+	type SessionUsageEntry,
+	type SessionUsageTotals,
+} from "./usage.ts";
 import { buildContextEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 
 describe("shared usage snapshot", () => {
@@ -431,6 +438,73 @@ describe("shared usage snapshot", () => {
 			cost: 0.2,
 			turns: 1,
 		});
+	});
+
+	it("accumulates exactly the classified entries into the snapshot", () => {
+		const TS = "2026-01-01T00:00:00.000Z";
+		const entries = [
+			{ type: "message", id: "a1", parentId: null, timestamp: TS, message: { role: "assistant", provider: "anthropic", model: "claude", usage: { input: 100, output: 20, cacheRead: 30, cacheWrite: 5, cost: { total: 0.25 } } } },
+			{ type: "custom", id: "p1", parentId: "a1", timestamp: TS, customType: "plan-mode-state", data: { mode: "plan" } },
+			{ type: "message", id: "a2", parentId: "p1", timestamp: TS, message: { role: "assistant", provider: "anthropic", model: "claude", usage: { input: 40, output: 8, cost: { total: 0.1 } } } },
+			{ type: "message", id: "t1", parentId: "a2", timestamp: TS, message: { role: "toolResult", toolName: "subagent", details: { results: [{ model: "openai/gpt-4o", usage: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, cost: { total: 0.1 }, turns: 3 } }] } } },
+			{ type: "message", id: "t2", parentId: "t1", timestamp: TS, message: { role: "toolResult", toolName: "advisor", details: { model: "openai/advisor" }, usage: { input: 5, output: 1, cacheRead: 2, cost: { total: 0.2 } } } },
+			{ type: "custom", id: "v1", parentId: "t2", timestamp: TS, customType: "auto-review-verdict", data: { model: "openai-codex/guardian", usage: { input: 9, output: 2, cacheRead: 4, cost: { total: 0.4 } } } },
+			{ type: "compaction", id: "c1", parentId: "v1", timestamp: TS, summary: "s", firstKeptEntryId: "a1", tokensBefore: 100, usage: { input: 2, output: 1, cacheRead: 1, cost: { total: 0.25 } } },
+		] as unknown as SessionEntry[];
+
+		const records = classifySessionEntries(entries);
+		const snapshot = collectUsageSnapshot(entries);
+
+		// Hand-computed contract: the union counts assistant turns only;
+		// delegated turns stay in their own bucket.
+		expect(snapshot.session).toMatchObject({
+			input: 166, output: 37, cacheRead: 39, cacheWrite: 6, tokens: 248, turns: 2,
+		});
+		expect(snapshot.session.cost).toBeCloseTo(1.3);
+		expect(snapshot.subagent).toMatchObject({
+			input: 10, output: 5, cacheRead: 2, cacheWrite: 1, tokens: 18, turns: 3,
+		});
+		expect(snapshot.subagent.cost).toBeCloseTo(0.1);
+		expect(snapshot.advisor).toMatchObject({
+			input: 5, output: 1, cacheRead: 2, cacheWrite: 0, tokens: 8, turns: 0,
+		});
+		expect(snapshot.advisor.cost).toBeCloseTo(0.2);
+		expect(snapshot.guardian).toMatchObject({
+			input: 9, output: 2, cacheRead: 4, cacheWrite: 0, tokens: 15, turns: 0,
+		});
+		expect(snapshot.guardian.cost).toBeCloseTo(0.4);
+		expect(snapshot.models.map((row) => row.model)).toEqual([
+			"anthropic/claude",
+			"openai/gpt-4o",
+			"openai-codex/guardian",
+			"openai/advisor",
+		]);
+		expect(snapshot.models[0]).toMatchObject({
+			model: "anthropic/claude",
+			session: { input: 142, output: 29, cacheRead: 31, cacheWrite: 5, tokens: 207, cost: 0.6, turns: 2 },
+		});
+
+		// Equivalence: every bucket equals the sum of its classified records,
+		// main/plan collapsing into session with only assistant turns.
+		const sumRecords = (pick: (record: SessionUsageEntry) => boolean, countTurns: (record: SessionUsageEntry) => boolean): SessionUsageTotals => {
+			const totals = emptyUsageTotals();
+			for (const record of records) {
+				if (!pick(record)) continue;
+				totals.input += record.input;
+				totals.output += record.output;
+				totals.cacheRead += record.cacheRead;
+				totals.cacheWrite += record.cacheWrite;
+				totals.cost += record.cost;
+				if (countTurns(record)) totals.turns += record.turns;
+			}
+			totals.tokens = totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
+			return totals;
+		};
+		const isMainPlan = (record: SessionUsageEntry) => record.mode === "main" || record.mode === "plan";
+		expect(snapshot.session).toEqual(sumRecords(() => true, isMainPlan));
+		expect(snapshot.subagent).toEqual(sumRecords((record) => record.mode === "subagent", () => true));
+		expect(snapshot.advisor).toEqual(sumRecords((record) => record.mode === "advisor", () => false));
+		expect(snapshot.guardian).toEqual(sumRecords((record) => record.mode === "guardian", () => false));
 	});
 
 	it("normalizes reported, derived, and post-compaction context pressure", () => {
