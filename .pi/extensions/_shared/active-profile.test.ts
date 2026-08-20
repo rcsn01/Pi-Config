@@ -60,22 +60,41 @@ describe("active profile helpers", () => {
 	});
 
 	describe("session profile resolver", () => {
-		it("prefers the marker on new session boundaries and the entry on reload", () => {
+		it.each(["startup", "resume", "fork"])("prefers the marker on %s", (reason) => {
 			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
 			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
-			const entries = [entry("default")];
 
-			expect(resolver.resolve(entries, "startup")).toBe(join(profilesDirectory, "focused.json"));
-			expect(resolver.resolve(entries, "reload")).toBe(join(profilesDirectory, "default.json"));
+			expect(resolver.resolve([entry("default")], reason)).toBe(join(profilesDirectory, "focused.json"));
 		});
 
-		it("falls back to the entry when the marker is absent on new sessions", () => {
+		it("prefers a seeded entry over the marker on new sessions", () => {
+			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "github" } });
+			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+
+			expect(resolver.resolve([entry("focused")], "new")).toBe(join(profilesDirectory, "focused.json"));
+		});
+
+		it("falls back to the marker on unseeded new sessions", () => {
+			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "github" } });
+			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+
+			expect(resolver.resolve([], "new")).toBe(join(profilesDirectory, "github.json"));
+		});
+
+		it("uses the entry on reload even when the marker names another profile", () => {
+			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+
+			expect(resolver.resolve([entry("default")], "reload")).toBe(join(profilesDirectory, "default.json"));
+		});
+
+		it("falls back to the entry when the marker is absent on marker-first boundaries", () => {
 			const { settingsPath, profilesDirectory } = fixture({});
 			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
 			expect(resolver.resolve([entry("default")], "startup")).toBe(join(profilesDirectory, "default.json"));
 		});
 
-		it("falls back to the entry when the marker is invalid on new sessions", () => {
+		it("falls back to the entry when the marker is invalid on marker-first boundaries", () => {
 			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "../bad" } });
 			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
 			expect(resolver.resolve([entry("default")], "startup")).toBe(join(profilesDirectory, "default.json"));

@@ -126,12 +126,24 @@ describe("config profiles extension", () => {
 		expect(harness.setStatus).toHaveBeenCalledWith("profile", "default");
 	});
 
-	it("records the active profile on resume and fork boundaries", async () => {
+	it("records the active profile on resume, fork, and unseeded new boundaries", async () => {
 		for (const reason of ["resume", "fork", "new"] as const) {
 			const harness = createHarness({ active: "default" });
 			await harness.emit("session_start", reason);
 			expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "default" });
 		}
+	});
+
+	it("publishes a profile seeded into a new session without replacing it from the active marker", async () => {
+		const harness = createHarness({
+			active: "github",
+			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
+		});
+		await harness.emit("session_start", "new");
+
+		expect(harness.setStatus).toHaveBeenCalledWith("profile", "focused");
+		expect(harness.loadActiveProfile).not.toHaveBeenCalled();
+		expect(harness.appendEntry).not.toHaveBeenCalled();
 	});
 
 	it("publishes the remembered session profile on reload without rewriting it", async () => {

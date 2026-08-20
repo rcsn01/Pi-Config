@@ -86,8 +86,10 @@ export function createHarness(options: HarnessOptions = {}) {
 	const editor = vi.fn(async () => options.editorPromise ? await options.editorPromise : options.editorResult);
 	const setEditorText = vi.fn();
 	const freshSendUserMessage = vi.fn();
+	const freshAppendCustomEntry = vi.fn();
 	const newSession = vi.fn(async (sessionOptions?: any) => {
 		timeline.push("newSession");
+		await sessionOptions?.setup?.({ appendCustomEntry: freshAppendCustomEntry });
 		await sessionOptions?.withSession?.({ sendUserMessage: freshSendUserMessage });
 		return { cancelled: options.newSessionCancelled ?? false };
 	});
@@ -270,6 +272,7 @@ export function createHarness(options: HarnessOptions = {}) {
 		setEditorComponent,
 		newSession,
 		freshSendUserMessage,
+		freshAppendCustomEntry,
 		sendMessage,
 		sendUserMessage,
 		setModel,

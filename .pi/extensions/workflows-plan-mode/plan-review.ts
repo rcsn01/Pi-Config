@@ -4,6 +4,10 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { EditorComponent } from "@earendil-works/pi-tui";
 import {
+	CONFIG_PROFILES_ENTRY_TYPE,
+	sessionProfileName,
+} from "../_shared/active-profile.ts";
+import {
 	isAmbiguousPlanAcceptance,
 	isDuplicatePlanText,
 	planSignature,
@@ -120,6 +124,7 @@ export function createPlanReviewController(host: PlanReviewHost): PlanReviewCont
 
 	async function startFreshImplementation(ctx: ExtensionCommandContext, plan: string): Promise<void> {
 		const signature = planSignature(plan);
+		const profileName = sessionProfileName(ctx.sessionManager.getBranch());
 		pendingFreshImplementationPlan = undefined;
 		if (!(await host.exitPlanMode(ctx))) return;
 		ctx.ui.notify("Plan mode exited. Starting fresh implementation session...", "info");
@@ -128,6 +133,11 @@ export function createPlanReviewController(host: PlanReviewHost): PlanReviewCont
 		const handoffPrompt = `${PLAN_IMPLEMENT_FRESH_PREFIX}\n\n${plan}`;
 		const result = await ctx.newSession({
 			parentSession: parentSession || undefined,
+			setup: async (sessionManager) => {
+				if (profileName) {
+					sessionManager.appendCustomEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: profileName });
+				}
+			},
 			withSession: async (freshCtx) => {
 				await freshCtx.sendUserMessage(handoffPrompt);
 			},
