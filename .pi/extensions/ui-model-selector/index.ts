@@ -18,27 +18,30 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import { Input, SelectList, truncateToWidth } from "@earendil-works/pi-tui";
+import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
 import {
 	installModelCommandHandler,
 	ModelCommandRoutingEditor,
 } from "../_shared/model-command-routing.ts";
-import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
-import { applyStoredProfile, currentSelectionMode } from "./apply-profile.ts";
 import {
+	applyModelSelection,
 	calculateCompactionReserveTokens,
-	filterModels,
-	findExactModel,
-	formatTokenCount,
+	currentSelectionMode,
 	resolveContextWindow,
 	resolveModelContext,
-	shouldOpenStartupModelSelector,
 	type ModelSelectionMode,
-} from "./model-config.ts";
+} from "../_shared/model-selection.ts";
 import {
 	createProjectSettingsStore,
 	PROJECT_SETTINGS_PATH,
 	type ProjectSettingsStore,
-} from "./settings-store.ts";
+} from "../_shared/model-selection-store.ts";
+import {
+	filterModels,
+	findExactModel,
+	formatTokenCount,
+	shouldOpenStartupModelSelector,
+} from "./model-config.ts";
 
 const THINKING_DESCRIPTIONS: Record<ModelThinkingLevel, string> = {
 	off: "No extended thinking",
@@ -330,7 +333,10 @@ export function createModelSelectorExtension(
 				try {
 					const preferences = await settingsStore.load();
 					if (preferences.profiles.normal) {
-						await applyStoredProfile(pi, ctx, preferences.profiles.normal, settingsStore);
+						await applyModelSelection(pi, ctx, preferences.profiles.normal, {
+							label: "Normal profile",
+							settingsStore,
+						});
 						appliedNormalProfile = true;
 					}
 				} catch (error) {
@@ -351,6 +357,7 @@ export function createModelSelectorExtension(
 					const preferences = await settingsStore.load();
 					const profile = preferences.profiles[currentSelectionMode(ctx)];
 					const profileContext = profile && profile.contextWindow !== DEFAULT_SENTINEL &&
+						profile.contextWindow !== undefined &&
 						ctx.model.provider === profile.provider && ctx.model.id === profile.modelId
 						? resolveContextWindow(profile.contextWindow)
 						: restoredModel.contextWindow;

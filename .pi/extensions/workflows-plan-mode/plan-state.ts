@@ -1,4 +1,5 @@
 import type { ModeModelProfile } from "./model-profile.ts";
+import { PLAN_STATE_ENTRY_TYPE } from "../_shared/session-entries.ts";
 import {
 	customMessageFromEntry,
 	extractLegacyCustomMessageContent,
@@ -27,7 +28,7 @@ export interface PlanState extends AgentModeState {
 
 export type LegacyPlanState = Partial<PlanState> & { active?: boolean; setAt?: number };
 
-export const PLAN_STATE_ENTRY_TYPE = "plan-mode-state";
+export { PLAN_STATE_ENTRY_TYPE } from "../_shared/session-entries.ts";
 
 export function createInitialPlanState(mode: AgentMode = "default", revision = 0): PlanState {
 	return { mode, revision, changedAt: new Date().toISOString() };

@@ -2,9 +2,9 @@ import {
 	mutateSettingsDocument,
 	PROJECT_SETTINGS_PATH,
 	readSettingsDocument as readRawDocument,
-} from "../_shared/settings-document.ts";
+} from "./settings-document.ts";
 
-export { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
+export { PROJECT_SETTINGS_PATH } from "./settings-document.ts";
 import {
 	mergeProjectCompactionSettings,
 	mergeProjectModelSelection,
@@ -12,7 +12,7 @@ import {
 	type ModelSelectionMode,
 	type ModelSelectionSettings,
 	type ProjectModelPreferences,
-} from "./model-config.ts";
+} from "./model-selection.ts";
 
 export interface ProjectSettingsStore {
 	load(): Promise<ProjectModelPreferences>;

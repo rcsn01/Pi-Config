@@ -4,11 +4,9 @@ import { join } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import {
-	applySessionProfile,
 	createNormalDefaultsStore,
 	createPlanModeProfileStore,
-	validateModeModelProfile,
-	validateStoredModeModelProfile,
+	type StoredModelSelectionSettings,
 } from "./model-profile.ts";
 import {
 	createHarness,
@@ -107,16 +105,17 @@ describe("Plan Mode model and thinking profiles", () => {
 			contextWindow: 900_000,
 			reasoning: true,
 		};
-		const stored = validateStoredModeModelProfile({
+		const stored: StoredModelSelectionSettings = {
 			provider: "default",
 			modelId: "default",
 			thinkingLevel: "default",
 			contextWindow: "default",
-		});
+		};
 		const profileStore = {
 			load: vi.fn(async () => stored),
 			save: vi.fn(),
 			setPath: vi.fn(),
+			syncCompaction: vi.fn(async () => {}),
 		};
 		const harness = createHarness({
 			branch: [],
@@ -287,6 +286,7 @@ describe("Plan Mode model and thinking profiles", () => {
 					load: vi.fn(async () => { throw new Error("malformed profile"); }),
 					save: vi.fn(),
 					setPath: vi.fn(),
+					syncCompaction: vi.fn(async () => {}),
 				},
 			},
 		});
@@ -474,40 +474,5 @@ describe("Plan Mode profile schema", () => {
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
-	});
-
-	it("accepts current profiles and legacy session profiles without context", () => {
-		expect(validateModeModelProfile(profileFor(planModel, "xhigh")))
-			.toEqual(profileFor(planModel, "xhigh"));
-		expect(validateModeModelProfile({
-			provider: planModel.provider,
-			modelId: planModel.id,
-			thinkingLevel: "high",
-		})).toEqual({ provider: planModel.provider, modelId: planModel.id, thinkingLevel: "high" });
-	});
-
-	it("accepts stored default sentinels without treating them as concrete session profiles", () => {
-		const stored = validateStoredModeModelProfile({
-			provider: "default",
-			modelId: "default",
-			thinkingLevel: "default",
-			contextWindow: "default",
-		});
-		expect(stored).toEqual({
-			provider: "default",
-			modelId: "default",
-			thinkingLevel: "default",
-			contextWindow: "default",
-		});
-		expect(() => validateModeModelProfile(stored)).toThrow(/concrete model settings/);
-	});
-
-	it("rejects malformed thinking levels and contexts", () => {
-		expect(() => validateModeModelProfile({
-			...profileFor(planModel, "high"), thinkingLevel: "turbo",
-		})).toThrow("thinkingLevel is not supported");
-		expect(() => validateModeModelProfile({
-			...profileFor(planModel, "high"), contextWindow: 0,
-		})).toThrow("contextWindow must be a positive integer");
 	});
 });

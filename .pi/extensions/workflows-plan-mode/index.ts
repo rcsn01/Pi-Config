@@ -15,6 +15,11 @@ import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import {
+	applyModelSelection,
+	usesDefaultSentinel,
+	validateConcreteModelSelection,
+} from "../_shared/model-selection.ts";
+import {
 	discardAssistantMessage,
 	extractAssistantText,
 	extractProposedPlan,
@@ -23,7 +28,6 @@ import {
 	replaceProposedPlanBlocks,
 } from "./plan-content.ts";
 import {
-	applySessionProfile,
 	createNormalDefaultsStore,
 	createPlanModeProfileStore,
 	type ModeModelProfile,
@@ -32,8 +36,6 @@ import {
 	preserveNormalGlobalDefaults,
 	profileFromCurrentSession,
 	profileLabel,
-	usesDefaultModeProfile,
-	validateModeModelProfile,
 } from "./model-profile.ts";
 import { buildPlanModeSystemPrompt } from "./plan-prompt.ts";
 import { registerPlanRenderers, updatePlanStatus } from "./plan-renderer.ts";
@@ -232,7 +234,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			previousState,
 			revisionCounter: modeRevisionCounter,
 			hasReconstructedState,
-			validateNormalProfile: validateModeModelProfile,
+			validateNormalProfile: validateConcreteModelSelection,
 		});
 		for (const warning of reconstructed.profileWarnings) ctx.ui.notify(warning, "warning");
 		modeRevisionCounter = reconstructed.revisionCounter;
@@ -347,9 +349,13 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 
 			profileTransitionDepth++;
 			try {
-				activePlanProfile = await applySessionProfile(pi, ctx, storedProfile, dependencies.nativeDefaults);
+				activePlanProfile = await applyModelSelection(pi, ctx, storedProfile, {
+					label: "Plan Mode profile",
+					settingsStore: profileStore,
+					nativeDefaults: dependencies.nativeDefaults,
+				});
 				switchedSessionProfile = true;
-				if (!usesDefaultModeProfile(storedProfile)) await profileStore.save(activePlanProfile);
+				if (!usesDefaultSentinel(storedProfile)) await profileStore.save(activePlanProfile);
 				await preserveDefaults(ctx);
 			} finally {
 				profileTransitionDepth--;
@@ -363,7 +369,11 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			if (switchedSessionProfile) {
 				try {
 					profileTransitionDepth++;
-					await applySessionProfile(pi, ctx, normalProfile, dependencies.nativeDefaults);
+					await applyModelSelection(pi, ctx, normalProfile, {
+						label: "Normal profile",
+						settingsStore: profileStore,
+						nativeDefaults: dependencies.nativeDefaults,
+					});
 					await preserveDefaults(ctx);
 				} catch (failure) {
 					rollbackError = failure;
@@ -405,14 +415,22 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			let restoredSessionProfile = false;
 			try {
 				profileTransitionDepth++;
-				await applySessionProfile(pi, ctx, normalProfile, dependencies.nativeDefaults);
+				await applyModelSelection(pi, ctx, normalProfile, {
+					label: "Normal profile",
+					settingsStore: profileStore,
+					nativeDefaults: dependencies.nativeDefaults,
+				});
 				restoredSessionProfile = true;
 				await preserveDefaults(ctx);
 			} catch (error) {
 				let rollbackError: unknown;
 				if (restoredSessionProfile && activePlanProfile) {
 					try {
-						await applySessionProfile(pi, ctx, activePlanProfile, dependencies.nativeDefaults);
+						await applyModelSelection(pi, ctx, activePlanProfile, {
+							label: "Plan Mode profile",
+							settingsStore: profileStore,
+							nativeDefaults: dependencies.nativeDefaults,
+						});
 						await preserveDefaults(ctx);
 					} catch (failure) {
 						rollbackError = failure;

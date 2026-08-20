@@ -319,7 +319,8 @@ export function createProfileDependencies(initial?: ModeModelProfile) {
 	const capture = vi.fn(async (_cwd: string, fallback: ModeModelProfile) => fallback);
 	const restore = vi.fn(async () => {});
 	const setPath = vi.fn();
-	const profileStore = { load, save, setPath } satisfies PlanModeProfileStore;
+	const syncCompaction = vi.fn(async () => {});
+	const profileStore = { load, save, setPath, syncCompaction } satisfies PlanModeProfileStore;
 	return {
 		dependencies: {
 			profileStore,
@@ -329,6 +330,7 @@ export function createProfileDependencies(initial?: ModeModelProfile) {
 		load,
 		save,
 		setPath,
+		syncCompaction,
 		capture,
 		restore,
 		getStored: () => stored,

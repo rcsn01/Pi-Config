@@ -2,7 +2,7 @@ import type { Api, Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { matchFamily } from "./model-families.ts";
-import { applyFamilyThinkingLevel, resolveModelContext } from "./model-config.ts";
+import { applyFamilyThinkingLevel, resolveModelContext } from "./model-selection.ts";
 
 function familyModel(
 	id: string,
