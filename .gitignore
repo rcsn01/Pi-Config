@@ -25,6 +25,7 @@ Deployment/
 .pi/worktrees/
 .pi/workflow-runs/
 .pi/workflow-approvals/
+.pi/update-skill/
 .pi/profiles/*.json
 !.pi/profiles/default.json
 

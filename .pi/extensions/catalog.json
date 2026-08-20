@@ -232,6 +232,13 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"update-skill": {
+			"displayName": "Update Skills",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"workflows-goal": {
 			"displayName": "Goal Mode",
 			"pack": "autonomy",
