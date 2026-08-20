@@ -57,7 +57,7 @@ This project uses \`MEMORY.md\` as the long-term memory file.
 - Keep entries concise. Prune stale entries.`;
 
 function modeToLabel(mode: MemoryMode): string | undefined {
-	return mode === "read-write" ? "🧠 Memory" : mode === "read-only" ? "🧠 Memory RO" : undefined;
+	return mode === "read-write" ? "memory" : mode === "read-only" ? "memory read-only" : undefined;
 }
 
 function normalizeMode(value: unknown): MemoryMode {

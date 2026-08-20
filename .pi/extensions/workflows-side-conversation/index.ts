@@ -19,7 +19,7 @@ type ReplacedSessionContext = Parameters<NonNullable<NewSessionOptions["withSess
 
 const SIDE_MARKER_TYPE = "side-mode-session";
 const SIDE_STATUS_ID = "side-mode";
-const SIDE_STATUS_TEXT = "currently in /side mode, /side to exit.";
+const SIDE_STATUS_TEXT = "side mode";
 
 function isSideModeSession(ctx: ExtensionContext): boolean {
 	return ctx.sessionManager

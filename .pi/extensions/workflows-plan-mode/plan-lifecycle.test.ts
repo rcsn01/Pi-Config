@@ -228,7 +228,7 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 		expect(activationSettled).toBe(true);
 		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({ mode: "plan", revision: 1 });
 		expect(harness.getActiveToolNames()).toContain("plan_bash");
-		expect(harness.setStatus).toHaveBeenCalledWith("plan-runtime", "⏳ sandbox");
+		expect(harness.setStatus).toHaveBeenCalledWith("plan-runtime", "⟳ sandbox");
 
 		const execution = harness.tools.get("plan_bash").execute(
 			"tool-1", { command: "pwd" }, undefined, undefined, harness.ctx,

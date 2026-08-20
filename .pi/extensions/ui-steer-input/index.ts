@@ -12,7 +12,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { matchesKey, Key } from "@earendil-works/pi-tui";
+import { matchesKey, Key, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	getModelCommandHandler,
 	ModelCommandRoutingEditor,
@@ -83,7 +83,9 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 	function updateWidget(ctx: ExtensionContext): void {
 		if (agentActive) {
 			ctx.ui.setWidget("steer-hint", (_tui, theme) => ({
-				render: () => [theme.fg("dim", "↩ Enter → steer    ⇥ Tab → queue for next turn")],
+				render: (width: number) => [
+					truncateToWidth(theme.fg("dim", "↩ Enter → steer · ⇥ Tab → queue for next turn"), Math.max(0, width), "…"),
+				],
 				invalidate: () => {},
 			}));
 		} else {

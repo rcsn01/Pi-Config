@@ -78,8 +78,8 @@ describe("Plan Mode rendering", () => {
 		updatePlanStatus(ctx, { ...base, mode: "plan", phase: "awaiting_review" });
 		expect(setStatus.mock.calls).toEqual([
 			["plan", undefined],
-			["plan", "📋 plan"],
-			["plan", "📋 plan review"],
+			["plan", "plan"],
+			["plan", "plan review"],
 		]);
 	});
 });
