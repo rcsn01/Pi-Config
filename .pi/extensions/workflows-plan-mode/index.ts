@@ -117,6 +117,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	let latestProposedPlanKey: string | undefined;
 	let modeTransition: "entering" | "exiting" | undefined;
 	let modeTransitionPromise: Promise<boolean> | undefined;
+	let lastPromptedMode: AgentMode | undefined;
 	let runtimeContext: ExtensionContext | undefined;
 	let requestModeRevision: number | undefined;
 	let modeRevisionCounter = planState.revision;
@@ -536,6 +537,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	});
 
 	pi.on("session_start", async (event, ctx) => {
+		lastPromptedMode = undefined;
 		// Point the profile store at the session's profile file so the Plan Mode
 		// model is read/written there; no profile means settings.json.
 		profileStore.setPath(resolver.resolve(ctx.sessionManager.getBranch(), event.reason));
@@ -631,11 +633,16 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 			changedAt: planState.changedAt,
 		};
 		requestModeRevision = snapshot.revision;
+		const modeChange = lastPromptedMode !== undefined && lastPromptedMode !== snapshot.mode
+			? snapshot.mode === "plan" ? "entered" : "exited"
+			: undefined;
+		lastPromptedMode = snapshot.mode;
 		return {
-			systemPrompt: buildPlanModeSystemPrompt(event.systemPrompt, {
-				...snapshot,
-				phase: planState.phase,
-			}),
+			systemPrompt: buildPlanModeSystemPrompt(
+				event.systemPrompt,
+				{ ...snapshot, phase: planState.phase },
+				modeChange,
+			),
 		};
 	});
 

@@ -23,7 +23,7 @@ describe("simple plan review UI", () => {
 
 		const [result] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
 		expect(result.systemPrompt).toContain("BASE");
-		expect(result.systemPrompt).toContain("The final runtime mode marker is authoritative");
+		expect(result.systemPrompt).toContain("The runtime mode marker reflects the mode at the start of this turn");
 		expect(result.systemPrompt).toContain('<runtime mode="default" revision="7"/>');
 		expect(result.systemPrompt).not.toContain("You are in **Plan Mode**");
 	});
