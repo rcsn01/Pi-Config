@@ -24,15 +24,20 @@ export function formatTokenCount(tokens: number): string {
 	return String(tokens);
 }
 
+/** Context-window presets below 128K are not offered by the picker. */
+const MIN_CONTEXT_WINDOW = 128_000;
+
 /**
  * Context-window presets for the picker: the catalogue window, half,
  * three-eighths, and a quarter. Rounded to whole tokens, deduplicated,
- * descending (catalogue default first).
+ * filtered to at least 128K, and descending (catalogue default first).
  */
 export function contextWindowChoices(catalogueWindow: number): number[] {
 	const fractions = [1, 1 / 2, 3 / 8, 1 / 4];
 	const windows = fractions.map((fraction) => Math.round(catalogueWindow * fraction));
-	return [...new Set(windows)].sort((left, right) => right - left);
+	return [...new Set(windows)]
+		.filter((window) => window >= MIN_CONTEXT_WINDOW)
+		.sort((left, right) => right - left);
 }
 
 export function hasExplicitModelArgument(argv: readonly string[]): boolean {

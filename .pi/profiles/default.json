@@ -1,10 +1,4 @@
 {
-  "compaction": {
-    "enabled": true,
-    "threshold": 0.1,
-    "reserveTokens": 20000,
-    "keepRecentTokens": 25600
-  },
   "uiModelSelector": {
     "profiles": {
       "normal": {

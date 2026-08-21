@@ -403,10 +403,13 @@ describe("model selector lifecycle", () => {
 });
 
 describe("context window step", () => {
-	it("derives presets from the catalogue window, rounded and deduplicated", () => {
+	it("derives rounded presets and omits windows below 128K", () => {
 		expect(contextWindowChoices(1_048_576)).toEqual([1_048_576, 524_288, 393_216, 262_144]);
 		expect(contextWindowChoices(1_000_000)).toEqual([1_000_000, 500_000, 375_000, 250_000]);
-		expect(contextWindowChoices(2)).toEqual([2, 1]);
+		expect(contextWindowChoices(512_000)).toEqual([512_000, 256_000, 192_000, 128_000]);
+		expect(contextWindowChoices(500_000)).toEqual([500_000, 250_000, 187_500]);
+		expect(contextWindowChoices(128_000)).toEqual([128_000]);
+		expect(contextWindowChoices(2)).toEqual([]);
 	});
 
 	it("persists and applies a reduced context window, and shows it in the notify", async () => {
