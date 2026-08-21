@@ -5,6 +5,7 @@ import planModeExtension, {
 } from "./index.ts";
 import type { ModeModelProfile } from "./model-profile.ts";
 import {
+	activePlanningEntry,
 	createHarness,
 	createProfileDependencies,
 	deferred,
@@ -51,6 +52,24 @@ describe("Plan Mode tool policy integration", () => {
 			["fresh", "implement", "accept", "revise ", "show", "refresh", "status", "exit"]
 				.map((value) => ({ value, label: value })),
 		);
+	});
+
+	it("passes the resolved Session profile path before Plan Mode reconstruction", async () => {
+		const stores = createProfileDependencies();
+		const harness = createHarness({
+			branch: [
+				activePlanningEntry(),
+				{ type: "custom", customType: "configProfiles", data: { active: "focused" } },
+			],
+			model: normalModel,
+			availableModels: [normalModel],
+			dependencies: stores.dependencies,
+		});
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		expect(stores.setPath).toHaveBeenCalledWith(expect.stringContaining("/profiles/focused.json"));
+		expect(stores.setPath.mock.invocationCallOrder[0]).toBeLessThan(stores.capture.mock.invocationCallOrder[0]);
 	});
 
 	it("uses one monotonic runtime marker across repeated mode switches", async () => {
