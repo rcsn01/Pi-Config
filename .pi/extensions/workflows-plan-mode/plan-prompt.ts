@@ -3,10 +3,11 @@ import { isPlanMode, type PlanPhase, type AgentModeState } from "./plan-state.ts
 export const MODE_POLICY_PROMPT = `
 
 <plan_mode_policy>
-The final runtime mode marker is authoritative.
+The runtime mode marker reflects the mode at the start of this turn.
 A runtime mode of plan means follow Plan Mode behavior.
 A runtime mode of default means Plan Mode is inactive.
 When asked about the current mode, answer from the final runtime marker.
+If the marker conflicts with observable reality — for example, tools that Plan Mode disables (bash, edit, write) are available and working, or the user states the mode — the marker is stale: trust the live evidence and the user.
 </plan_mode_policy>`;
 
 export const DEFAULT_MODE_PROMPT = `
@@ -111,6 +112,7 @@ export function stripGeneratedModeContext(systemPrompt: string): string {
 		.replace(/\n*<collaboration_mode>\s*# Plan Mode \(Conversational\)[\s\S]*?<\/collaboration_mode>/g, "")
 		.replace(/\n*<plan_review_state>[\s\S]*?<\/plan_review_state>/g, "")
 		.replace(/\n*<plan_mode_state>[\s\S]*?<\/plan_mode_state>/g, "")
+		.replace(/\n*<mode_change_note>[\s\S]*?<\/mode_change_note>/g, "")
 		.replace(/\n*<runtime mode="(?:default|plan)" revision="\d+"\/>/g, "");
 }
 
@@ -118,10 +120,27 @@ export interface PlanPromptSnapshot extends AgentModeState {
 	phase?: PlanPhase;
 }
 
+export type ModeChange = "entered" | "exited";
+
+/**
+ * Prominent note announcing a mode flip since the previous turn, so the model
+ * cannot anchor on a stale mode. Placed right after the policy block, before
+ * the long mode prompt.
+ */
+export function modeChangeNote(modeChange: ModeChange | undefined): string {
+	if (modeChange === undefined) return "";
+	return `\n\n<mode_change_note>Plan Mode was ${modeChange} since the previous turn.</mode_change_note>`;
+}
+
 /** Build the complete generated context with exactly one final runtime marker. */
-export function buildPlanModeSystemPrompt(systemPrompt: string, snapshot: PlanPromptSnapshot): string {
+export function buildPlanModeSystemPrompt(
+	systemPrompt: string,
+	snapshot: PlanPromptSnapshot,
+	modeChange?: ModeChange,
+): string {
 	const stablePrompt = stripGeneratedModeContext(systemPrompt) + MODE_POLICY_PROMPT;
-	if (!isPlanMode(snapshot)) return stablePrompt + DEFAULT_MODE_PROMPT + runtimeModeMarker(snapshot);
+	const note = modeChangeNote(modeChange);
+	if (!isPlanMode(snapshot)) return stablePrompt + note + DEFAULT_MODE_PROMPT + runtimeModeMarker(snapshot);
 	const reviewPrompt = snapshot.phase === "awaiting_review" ? REVIEW_STATE_PROMPT : "";
-	return stablePrompt + PLAN_MODE_PROMPT + reviewPrompt + runtimeModeMarker(snapshot);
+	return stablePrompt + note + PLAN_MODE_PROMPT + reviewPrompt + runtimeModeMarker(snapshot);
 }

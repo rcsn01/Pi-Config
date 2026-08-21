@@ -399,3 +399,83 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 	});
 });
 
+describe("mode-change note", () => {
+	it("notes Plan Mode entry and exit between turns and stays silent on stable mode", async () => {
+		const stores = createProfileDependencies();
+		const harness = createHarness({
+			branch: [], model: normalModel, thinkingLevel: "medium",
+			availableModels: [normalModel], dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		const [first] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		expect(first.systemPrompt).not.toContain("<mode_change_note>");
+
+		await harness.commands.get("plan").handler("", harness.ctx);
+		const [afterEnter] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		expect(afterEnter.systemPrompt).toContain(
+			"<mode_change_note>Plan Mode was entered since the previous turn.</mode_change_note>",
+		);
+
+		const [stable] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		expect(stable.systemPrompt).not.toContain("<mode_change_note>");
+
+		await harness.commands.get("plan").handler("exit", harness.ctx);
+		const [afterExit] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		expect(afterExit.systemPrompt).toContain(
+			"<mode_change_note>Plan Mode was exited since the previous turn.</mode_change_note>",
+		);
+		expect(afterExit.systemPrompt).toContain('<runtime mode="default" revision="2"/>');
+	});
+
+	it("does not emit a spurious note after reconstruction", async () => {
+		const harness = createHarness();
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		const [before] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		expect(before.systemPrompt).not.toContain("<mode_change_note>");
+
+		await harness.emit("session_tree", { type: "session_tree" });
+		const [after] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		expect(after.systemPrompt).not.toContain("<mode_change_note>");
+	});
+
+	it("notes mode changes caused by tree navigation", async () => {
+		const stores = createProfileDependencies();
+		const stateEntry = (mode: "default" | "plan", revision: number) => ({
+			type: "custom",
+			customType: "plan-mode-state",
+			data: {
+				mode,
+				revision,
+				changedAt: "2026-01-01T00:00:00.000Z",
+				...(mode === "plan" ? { phase: "planning" } : {}),
+			},
+		});
+		const harness = createHarness({
+			branch: [stateEntry("default", 1)],
+			model: normalModel,
+			thinkingLevel: "medium",
+			availableModels: [normalModel],
+			dependencies: stores.dependencies,
+		});
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		const [initial] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		expect(initial.systemPrompt).not.toContain("<mode_change_note>");
+
+		harness.setBranch([stateEntry("plan", 2)]);
+		await harness.emit("session_tree", { type: "session_tree" });
+		const [entered] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		expect(entered.systemPrompt).toContain(
+			"<mode_change_note>Plan Mode was entered since the previous turn.</mode_change_note>",
+		);
+
+		harness.setBranch([stateEntry("default", 3)]);
+		await harness.emit("session_tree", { type: "session_tree" });
+		const [exited] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		expect(exited.systemPrompt).toContain(
+			"<mode_change_note>Plan Mode was exited since the previous turn.</mode_change_note>",
+		);
+	});
+});
+
