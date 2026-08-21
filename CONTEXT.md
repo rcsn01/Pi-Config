@@ -36,6 +36,9 @@ extension.
   switching replaces the active document.
 - **Session profile binding** — the resolver in `_shared/active-profile.ts`
   that owns the entry-wins/marker-fallback precedence.
+- **Plan Mode lifecycle** — the deep orchestration module that owns live Plan
+  State, transitions, Profile rollback, tool projection, proposed-plan state,
+  and ordering across Plan Runtime and Plan Review.
 
 ## Safety
 
