@@ -9,6 +9,8 @@ interface HarnessOptions {
 	profiles?: string[];
 	active?: string;
 	switchError?: Error;
+	createError?: Error;
+	deleteError?: Error;
 	nativeDefaults?: { provider: string; modelId: string; thinkingLevel?: string };
 	readProfileDocument?: Record<string, unknown>;
 	activeProfile?: { name: string; document: Record<string, unknown> } | undefined;
@@ -35,6 +37,18 @@ function createHarness(options: HarnessOptions = {}) {
 		if (options.switchError) throw options.switchError;
 		return { changed: name !== (options.active ?? "default"), active: name };
 	});
+	const createProfile = vi.fn(async (name: string, source?: string) => {
+		if (options.createError) throw options.createError;
+		return { name, source };
+	});
+	const deleteProfile = vi.fn(async (name: string, deleteOptions?: { replaceMarker?: boolean }) => {
+		if (options.deleteError) throw options.deleteError;
+		return {
+			name,
+			replacement: "default" as const,
+			markerReplaced: deleteOptions?.replaceMarker ?? name === (options.active ?? "default"),
+		};
+	});
 	const readProfile = vi.fn(() => options.readProfileDocument ?? {});
 	const loadActiveProfile = vi.fn(() =>
 		options.activeProfile === undefined
@@ -47,6 +61,8 @@ function createHarness(options: HarnessOptions = {}) {
 		readProfile,
 		getActiveProfile: vi.fn(() => options.active ?? "default"),
 		loadActiveProfile,
+		createProfile,
+		deleteProfile,
 		switchProfile,
 		profilePath: vi.fn((name: string) => join(profilesDirectory, `${name}.json`)),
 	};
@@ -55,6 +71,8 @@ function createHarness(options: HarnessOptions = {}) {
 	const output = vi.fn();
 	const reload = vi.fn(async () => {});
 	const select = vi.fn();
+	const input = vi.fn();
+	const confirm = vi.fn();
 	const setModel = vi.fn(async () => options.setModelResult ?? true);
 	const setThinkingLevel = vi.fn();
 	const appendEntry = vi.fn();
@@ -71,7 +89,7 @@ function createHarness(options: HarnessOptions = {}) {
 	const ctx = {
 		hasUI: true,
 		mode: "tui",
-		ui: { notify, select, setStatus },
+		ui: { notify, select, input, confirm, setStatus },
 		reload,
 		model: options.model ?? DEFAULT_MODEL,
 		scopedModels: [],
@@ -98,7 +116,11 @@ function createHarness(options: HarnessOptions = {}) {
 		output,
 		reload,
 		select,
+		input,
+		confirm,
 		switchProfile,
+		createProfile,
+		deleteProfile,
 		readProfile,
 		loadActiveProfile,
 		setModel,
@@ -199,6 +221,17 @@ describe("config profiles extension", () => {
 		});
 		await harness.emit("session_tree");
 		expect(harness.setStatus).toHaveBeenCalledWith("profile", "focused");
+	});
+
+	it("copies the session startup profile after another session changes the marker", async () => {
+		const harness = createHarness({ active: "default" });
+		await harness.emit("session_start", "startup");
+		writeFileSync(harness.settingsPath, `${JSON.stringify({ configProfiles: { active: "focused" } }, null, 2)}\n`);
+		harness.select.mockResolvedValue("  Add profile");
+		harness.input.mockResolvedValue("copy");
+		await harness.commands.get("profile").handler("", harness.ctx);
+
+		expect(harness.createProfile).toHaveBeenCalledWith("copy", "default");
 	});
 
 	it("clears the profile status on shutdown", async () => {
@@ -360,14 +393,148 @@ describe("config profiles extension", () => {
 		expect(harness.reload).toHaveBeenCalledOnce();
 	});
 
-	it("uses the shared picker and marks the active profile", async () => {
+	it("uses the shared picker and puts profile actions at the bottom", async () => {
 		const harness = createHarness({ active: "default" });
 		harness.select.mockResolvedValue("  focused");
 		await harness.commands.get("profile").handler("", harness.ctx);
 
-		expect(harness.select).toHaveBeenCalledWith("Select settings profile", ["● default (current)", "  focused"]);
+		expect(harness.select).toHaveBeenCalledWith("Select settings profile", [
+			"● default (current)",
+			"  focused",
+			"  Add profile",
+			"  Delete profile",
+		]);
 		expect(harness.switchProfile).toHaveBeenCalledWith("focused");
 		expect(harness.reload).toHaveBeenCalledOnce();
+	});
+
+	it("adds a profile by copying the session profile and activating it", async () => {
+		const harness = createHarness({ active: "default" });
+		harness.select.mockResolvedValue("  Add profile");
+		harness.input.mockResolvedValue(" focused-copy ");
+		await harness.commands.get("profile").handler("", harness.ctx);
+
+		expect(harness.input).toHaveBeenCalledWith("New settings profile name", "profile-name");
+		expect(harness.createProfile).toHaveBeenCalledWith("focused-copy", "default");
+		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "focused-copy" });
+		expect(harness.notify).toHaveBeenCalledWith('Added profile "focused-copy". Reloading…', "info");
+		expect(harness.reload).toHaveBeenCalledOnce();
+	});
+
+	it("can add the first profile when the profile list is empty", async () => {
+		const harness = createHarness({ profiles: [], active: "" });
+		harness.select.mockResolvedValue("  Add profile");
+		harness.input.mockResolvedValue("first");
+		await harness.commands.get("profile").handler("", harness.ctx);
+
+		expect(harness.select).toHaveBeenCalledWith("Select settings profile", ["  Add profile", "  Delete profile"]);
+		expect(harness.createProfile).toHaveBeenCalledWith("first", undefined);
+		expect(harness.reload).toHaveBeenCalledOnce();
+	});
+
+	it("reports profile creation errors without reloading", async () => {
+		const harness = createHarness({ active: "default", createError: new Error('Profile "focused" already exists.') });
+		harness.select.mockResolvedValue("  Add profile");
+		harness.input.mockResolvedValue("focused");
+		await harness.commands.get("profile").handler("", harness.ctx);
+
+		expect(harness.notify).toHaveBeenCalledWith(
+			'Could not add settings profile: Profile "focused" already exists.',
+			"error",
+		);
+		expect(harness.appendEntry).not.toHaveBeenCalled();
+		expect(harness.reload).not.toHaveBeenCalled();
+	});
+
+	it("does not add a profile when the name prompt is cancelled", async () => {
+		const harness = createHarness({ active: "default" });
+		harness.select.mockResolvedValue("  Add profile");
+		harness.input.mockResolvedValue(undefined);
+		await harness.commands.get("profile").handler("", harness.ctx);
+
+		expect(harness.createProfile).not.toHaveBeenCalled();
+		expect(harness.reload).not.toHaveBeenCalled();
+	});
+
+	it("deletes an inactive profile after confirmation without reloading", async () => {
+		const harness = createHarness({ profiles: ["default", "focused", "other"], active: "default" });
+		harness.select
+			.mockResolvedValueOnce("  Delete profile")
+			.mockResolvedValueOnce("  other");
+		harness.confirm.mockResolvedValue(true);
+		await harness.commands.get("profile").handler("", harness.ctx);
+
+		expect(harness.select).toHaveBeenNthCalledWith(2, "Delete settings profile", ["  focused", "  other"]);
+		expect(harness.confirm).toHaveBeenCalledWith(
+			'Delete settings profile "other"?',
+			"This cannot be undone.",
+		);
+		expect(harness.deleteProfile).toHaveBeenCalledWith("other", { replaceMarker: false });
+		expect(harness.notify).toHaveBeenCalledWith('Deleted profile "other".', "info");
+		expect(harness.reload).not.toHaveBeenCalled();
+	});
+
+	it("does not delete a profile when confirmation is cancelled", async () => {
+		const harness = createHarness({ profiles: ["default", "focused"], active: "default" });
+		harness.select
+			.mockResolvedValueOnce("  Delete profile")
+			.mockResolvedValueOnce("  focused");
+		harness.confirm.mockResolvedValue(false);
+		await harness.commands.get("profile").handler("", harness.ctx);
+
+		expect(harness.deleteProfile).not.toHaveBeenCalled();
+		expect(harness.reload).not.toHaveBeenCalled();
+	});
+
+	it("reports when there are no deletable profiles", async () => {
+		const harness = createHarness({ profiles: ["default"], active: "default" });
+		harness.select.mockResolvedValue("  Delete profile");
+		await harness.commands.get("profile").handler("", harness.ctx);
+
+		expect(harness.notify).toHaveBeenCalledWith(
+			"No profiles can be deleted. The default profile is kept as a fallback.",
+			"warning",
+		);
+		expect(harness.confirm).not.toHaveBeenCalled();
+		expect(harness.deleteProfile).not.toHaveBeenCalled();
+	});
+
+	it("reports profile deletion errors without reloading", async () => {
+		const harness = createHarness({ profiles: ["default", "focused"], active: "default", deleteError: new Error("missing default") });
+		harness.select
+			.mockResolvedValueOnce("  Delete profile")
+			.mockResolvedValueOnce("  focused");
+		harness.confirm.mockResolvedValue(true);
+		await harness.commands.get("profile").handler("", harness.ctx);
+
+		expect(harness.notify).toHaveBeenCalledWith(
+			"Could not delete settings profile: missing default",
+			"error",
+		);
+		expect(harness.reload).not.toHaveBeenCalled();
+	});
+
+	it("deletes the session profile by switching to default and reloading", async () => {
+		const harness = createHarness({ profiles: ["default", "focused"], active: "focused" });
+		harness.select
+			.mockResolvedValueOnce("  Delete profile")
+			.mockResolvedValueOnce("● focused (current)");
+		harness.confirm.mockResolvedValue(true);
+		await harness.commands.get("profile").handler("", harness.ctx);
+
+		expect(harness.deleteProfile).toHaveBeenCalledWith("focused", { replaceMarker: true });
+		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "default" });
+		expect(harness.notify).toHaveBeenCalledWith('Deleted profile "focused". Switched to "default". Reloading…', "info");
+		expect(harness.reload).toHaveBeenCalledOnce();
+	});
+
+	it("omits default from the delete picker", async () => {
+		const harness = createHarness({ profiles: ["default", "focused"], active: "default" });
+		harness.select.mockResolvedValueOnce("  Delete profile").mockResolvedValueOnce(undefined);
+		await harness.commands.get("profile").handler("", harness.ctx);
+
+		expect(harness.select).toHaveBeenNthCalledWith(2, "Delete settings profile", ["  focused"]);
+		expect(harness.deleteProfile).not.toHaveBeenCalled();
 	});
 
 	it("marks the session's remembered profile in the picker, not the marker", async () => {
@@ -378,7 +545,12 @@ describe("config profiles extension", () => {
 		harness.select.mockResolvedValue("● focused (current)");
 		await harness.commands.get("profile").handler("", harness.ctx);
 
-		expect(harness.select).toHaveBeenCalledWith("Select settings profile", ["  default", "● focused (current)"]);
+		expect(harness.select).toHaveBeenCalledWith("Select settings profile", [
+			"  default",
+			"● focused (current)",
+			"  Add profile",
+			"  Delete profile",
+		]);
 		expect(harness.switchProfile).not.toHaveBeenCalled();
 		expect(harness.reload).not.toHaveBeenCalled();
 	});

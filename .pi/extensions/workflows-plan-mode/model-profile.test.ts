@@ -115,7 +115,6 @@ describe("Plan Mode model and thinking profiles", () => {
 			load: vi.fn(async () => stored),
 			save: vi.fn(),
 			setPath: vi.fn(),
-			syncCompaction: vi.fn(async () => {}),
 		};
 		const harness = createHarness({
 			branch: [],
@@ -286,7 +285,6 @@ describe("Plan Mode model and thinking profiles", () => {
 					load: vi.fn(async () => { throw new Error("malformed profile"); }),
 					save: vi.fn(),
 					setPath: vi.fn(),
-					syncCompaction: vi.fn(async () => {}),
 				},
 			},
 		});

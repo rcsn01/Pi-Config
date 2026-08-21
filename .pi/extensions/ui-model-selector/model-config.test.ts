@@ -5,11 +5,13 @@ import {
 	installModelCommandHandler,
 	parseModelCommand,
 } from "../_shared/model-command-routing.ts";
-import { DEFAULT_COMPACTION_THRESHOLD, DEFAULT_KEEP_RECENT_TOKENS } from "../_shared/model-selection.ts";
+import { SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
 import { createModelSelectorExtension } from "./index.ts";
 import {
+	contextWindowChoices,
 	filterModels,
 	findExactModel,
+	formatTokenCount,
 	hasExplicitModelArgument,
 	shouldOpenStartupModelSelector,
 } from "./model-config.ts";
@@ -99,6 +101,7 @@ type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "
 
 function createLifecycleHarness(options: {
 	cancel?: boolean;
+	cancelContext?: boolean;
 	confirmApproved?: boolean;
 	contextWindows?: Record<string, number>;
 	planActive?: boolean;
@@ -111,8 +114,8 @@ function createLifecycleHarness(options: {
 	initialThinkingLevel?: ThinkingLevel;
 	requestedThinkingLevel?: ThinkingLevel;
 	effectiveThinkingLevel?: ThinkingLevel;
-	compactionThreshold?: number;
-	keepRecentTokens?: number;
+	requestedContextWindow?: number;
+	idle?: boolean;
 	hasConversationHistory?: boolean;
 	mode?: "tui" | "print" | "json" | "rpc";
 	refreshError?: Error;
@@ -145,19 +148,21 @@ function createLifecycleHarness(options: {
 	const save = vi.fn(async () => {
 		if (options.saveError) throw options.saveError;
 	});
-	const syncCompaction = vi.fn(async () => {});
-	const setPaths = vi.fn();
+	const setPath = vi.fn();
 	const load = vi.fn(async () => ({
 		profiles: options.profiles ?? {},
 		contextWindows: options.contextWindows ?? {},
-		compactionThreshold: options.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD,
-		keepRecentTokens: options.keepRecentTokens ?? DEFAULT_KEEP_RECENT_TOKENS,
 	}));
 	const confirm = vi.fn(async () => options.confirmApproved ?? true);
 	const compact = vi.fn();
-	const select = vi.fn(async (_title: string, choices: string[]) => {
-		const requested = options.requestedThinkingLevel ?? "high";
-		return choices.find((choice) => choice.includes(` ${requested} —`)) ?? choices[0];
+	const select = vi.fn(async (title: string, choices: string[]) => {
+		if (title.startsWith("Thinking ·")) {
+			const requested = options.requestedThinkingLevel ?? "high";
+			return choices.find((choice) => choice.includes(` ${requested} —`)) ?? choices[0];
+		}
+		if (options.cancelContext) return undefined;
+		if (options.requestedContextWindow === undefined) return choices[0];
+		return choices.find((choice) => choice.includes(formatTokenCount(options.requestedContextWindow!)));
 	});
 	const ctx = {
 		mode: options.mode ?? "tui",
@@ -181,6 +186,7 @@ function createLifecycleHarness(options: {
 			setEditorComponent,
 		},
 		getContextUsage: vi.fn(() => ({ tokens: options.usageTokens ?? 0 })),
+		isIdle: vi.fn(() => options.idle ?? true),
 		compact,
 		sessionManager: {
 			getEntries: vi.fn(() => entries),
@@ -196,7 +202,7 @@ function createLifecycleHarness(options: {
 		getThinkingLevel: vi.fn(() => thinkingLevel),
 		setThinkingLevel,
 	} as unknown as ExtensionAPI;
-	createModelSelectorExtension({ load, save, syncCompaction, setPaths })(pi);
+	createModelSelectorExtension({ load, save, setPath })(pi);
 
 	return {
 		custom,
@@ -209,8 +215,6 @@ function createLifecycleHarness(options: {
 		notify,
 		load,
 		save,
-		syncCompaction,
-		setPaths,
 		emit: async (reason: "startup" | "reload" | "new" | "resume" | "fork") => {
 			await handlers.get("session_start")?.({ type: "session_start", reason }, ctx);
 		},
@@ -223,7 +227,7 @@ describe("model selector lifecycle", () => {
 		await harness.emit("startup");
 
 		expect(harness.custom).toHaveBeenCalledOnce();
-		expect(harness.select).toHaveBeenCalledOnce();
+		expect(harness.select).toHaveBeenCalledTimes(2);
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "claude-sonnet-4.6" }));
 		expect(harness.save).toHaveBeenCalledOnce();
 	});
@@ -267,6 +271,9 @@ describe("model selector lifecycle", () => {
 		expect(harness.setModel).toHaveBeenCalledOnce();
 		expect(harness.save).toHaveBeenCalledOnce();
 		expect(harness.compact).toHaveBeenCalledOnce();
+		expect(harness.compact).toHaveBeenCalledWith(expect.objectContaining({
+			customInstructions: SEMANTIC_COMPACTION_FOCUS,
+		}));
 	});
 
 	it("compacts once and emits one explicit warning when persistence fails after reduction", async () => {
@@ -353,7 +360,6 @@ describe("model selector lifecycle", () => {
 			contextWindow: 256_000,
 		}));
 		expect(harness.setThinkingLevel).toHaveBeenCalledWith("xhigh");
-		expect(harness.syncCompaction).toHaveBeenCalledWith(256_000);
 		expect(harness.custom).not.toHaveBeenCalled();
 		expect(harness.save).not.toHaveBeenCalled();
 	});
@@ -377,7 +383,6 @@ describe("model selector lifecycle", () => {
 			id: "claude-sonnet-4.6",
 			contextWindow: 256_000,
 		}));
-		expect(harness.syncCompaction).toHaveBeenCalledWith(256_000);
 		expect(harness.save).not.toHaveBeenCalled();
 	});
 
@@ -394,6 +399,68 @@ describe("model selector lifecycle", () => {
 		expect(harness.setEditorComponent).not.toHaveBeenCalled();
 		expect(harness.custom).not.toHaveBeenCalled();
 		expect(harness.setModel).not.toHaveBeenCalled();
+	});
+});
+
+describe("context window step", () => {
+	it("derives presets from the catalogue window, rounded and deduplicated", () => {
+		expect(contextWindowChoices(1_048_576)).toEqual([1_048_576, 524_288, 393_216, 262_144]);
+		expect(contextWindowChoices(1_000_000)).toEqual([1_000_000, 500_000, 375_000, 250_000]);
+		expect(contextWindowChoices(2)).toEqual([2, 1]);
+	});
+
+	it("persists and applies a reduced context window, and shows it in the notify", async () => {
+		const harness = createLifecycleHarness({ requestedContextWindow: 500_000 });
+		await harness.emit("startup");
+
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			id: "claude-sonnet-4.6",
+			contextWindow: 500_000,
+		}));
+		expect(harness.save).toHaveBeenCalledWith("normal", expect.objectContaining({ contextWindow: 500_000 }));
+		expect(harness.notify).toHaveBeenCalledWith(
+			"anthropic/claude-sonnet-4.6 · thinking high · context 500K",
+			"info",
+		);
+	});
+
+	it("confirms at 80% of the chosen window but not just below it", async () => {
+		const atThreshold = createLifecycleHarness({ requestedContextWindow: 500_000, usageTokens: 400_000 });
+		await atThreshold.emit("startup");
+		expect(atThreshold.confirm).toHaveBeenCalledOnce();
+
+		const belowThreshold = createLifecycleHarness({ requestedContextWindow: 500_000, usageTokens: 399_999 });
+		await belowThreshold.emit("startup");
+		expect(belowThreshold.confirm).not.toHaveBeenCalled();
+		expect(belowThreshold.compact).not.toHaveBeenCalled();
+	});
+
+	it("does not confirm on usage above 70% of a larger catalogue window", async () => {
+		const harness = createLifecycleHarness({ usageTokens: 750_000 });
+		await harness.emit("startup");
+		expect(harness.confirm).not.toHaveBeenCalled();
+	});
+
+	it("aborts without applying when the context step is cancelled", async () => {
+		const harness = createLifecycleHarness({ cancelContext: true });
+		await harness.emit("startup");
+
+		expect(harness.setModel).not.toHaveBeenCalled();
+		expect(harness.setThinkingLevel).not.toHaveBeenCalled();
+		expect(harness.save).not.toHaveBeenCalled();
+		expect(harness.compact).not.toHaveBeenCalled();
+	});
+
+	it("lets auto-compact take over when the agent is busy", async () => {
+		const harness = createLifecycleHarness({ usageTokens: 950_000, idle: false });
+		await harness.emit("startup");
+
+		expect(harness.setModel).toHaveBeenCalledOnce();
+		expect(harness.compact).not.toHaveBeenCalled();
+		expect(harness.notify).toHaveBeenCalledWith(
+			expect.stringContaining("auto-compact"),
+			"info",
+		);
 	});
 });
 

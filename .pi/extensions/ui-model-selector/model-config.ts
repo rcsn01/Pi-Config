@@ -24,6 +24,17 @@ export function formatTokenCount(tokens: number): string {
 	return String(tokens);
 }
 
+/**
+ * Context-window presets for the picker: the catalogue window, half,
+ * three-eighths, and a quarter. Rounded to whole tokens, deduplicated,
+ * descending (catalogue default first).
+ */
+export function contextWindowChoices(catalogueWindow: number): number[] {
+	const fractions = [1, 1 / 2, 3 / 8, 1 / 4];
+	const windows = fractions.map((fraction) => Math.round(catalogueWindow * fraction));
+	return [...new Set(windows)].sort((left, right) => right - left);
+}
+
 export function hasExplicitModelArgument(argv: readonly string[]): boolean {
 	return argv.some((argument) => argument === "--model" || argument.startsWith("--model="));
 }

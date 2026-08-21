@@ -14,6 +14,8 @@ export interface GuiOptionListOption<T extends string = string> {
 	description?: string;
 	checked?: boolean;
 	disabled?: boolean;
+	/** Render a blank, non-selectable row before this option in the TUI. */
+	spacerBefore?: boolean;
 }
 
 export interface GuiOptionListRequest<T extends string = string> {
@@ -38,6 +40,81 @@ function clamp(value: number, min: number, max: number): number {
 
 function splitMessage(message: string | undefined): string[] {
 	return message ? message.split("\n") : [];
+}
+
+function requestCustomSingleChoice<T extends string>(
+	ctx: UiContext,
+	request: Omit<GuiOptionListRequest<T>, "selectionMode">,
+): Promise<T | undefined> | undefined {
+	const custom = ctx.ui.custom;
+	if (
+		!ctx.hasUI
+		|| ctx.mode !== "tui"
+		|| typeof custom !== "function"
+		|| !request.options.some((option) => option.spacerBefore)
+	) return undefined;
+
+	return custom<T | undefined>((tui, theme, keybindings, done) => {
+		const options = request.options.filter((option) => !option.disabled);
+		let cursor = Math.max(0, options.findIndex((option) => option.checked));
+		let scroll = 0;
+		let cachedWidth: number | undefined;
+		let cachedLines: string[] | undefined;
+		const maxVisibleOptions = Math.max(6, Math.min(12, options.length));
+		const invalidate = () => {
+			cachedWidth = undefined;
+			cachedLines = undefined;
+		};
+		const moveCursor = (next: number) => {
+			cursor = (next + options.length) % options.length;
+			if (cursor < scroll) scroll = cursor;
+			if (cursor >= scroll + maxVisibleOptions) scroll = cursor - maxVisibleOptions + 1;
+			invalidate();
+			tui.requestRender();
+		};
+
+		return {
+			render: (width: number) => {
+				if (cachedLines && cachedWidth === width) return cachedLines;
+				const body: string[] = [];
+				const end = Math.min(options.length, scroll + maxVisibleOptions);
+				for (let index = scroll; index < end; index++) {
+					const option = options[index]!;
+					if (option.spacerBefore) body.push("");
+					const active = index === cursor;
+					let line = truncateToWidth(`${active ? `${UI_GLYPHS.cursor} ` : "  "}${fallbackLabel(option)}`, width);
+					if (active) line = theme.fg("accent", line);
+					body.push(line);
+				}
+				if (options.length > maxVisibleOptions) {
+					body.push(truncateToWidth(theme.fg("dim", `${scroll + 1}-${end} of ${options.length}`), width));
+				}
+				const hint = formatSelectorHint(keybindings, [
+					{ keybindings: ["tui.select.up", "tui.select.down"], description: "navigate", fallback: "up/down" },
+					{ keybindings: "tui.select.confirm", description: "select", fallback: "enter" },
+					{ keybindings: "tui.select.cancel", description: "cancel", fallback: "escape" },
+				]);
+				const lines = renderSelectorFrame(theme, width, {
+					title: request.title,
+					subtitle: splitMessage(request.message),
+					body,
+					hint,
+				});
+				cachedWidth = width;
+				cachedLines = lines;
+				return lines;
+			},
+			handleInput: (data: string) => {
+				if (keybindings.matches(data, "tui.select.up")) moveCursor(cursor - 1);
+				else if (keybindings.matches(data, "tui.select.down")) moveCursor(cursor + 1);
+				else if (matchesKey(data, Key.home)) moveCursor(0);
+				else if (matchesKey(data, Key.end)) moveCursor(options.length - 1);
+				else if (keybindings.matches(data, "tui.select.confirm")) done(options[cursor]?.value);
+				else if (keybindings.matches(data, "tui.select.cancel")) done(undefined);
+			},
+			invalidate,
+		};
+	});
 }
 
 function requestCustomChecklist<T extends string>(
@@ -154,6 +231,9 @@ export async function pickGuiOption<T extends string>(
 	ctx: UiContext,
 	request: Omit<GuiOptionListRequest<T>, "selectionMode">,
 ): Promise<T | undefined> {
+	const customSingleChoice = requestCustomSingleChoice(ctx, request);
+	if (customSingleChoice) return customSingleChoice;
+
 	const select = ctx.ui.select;
 	if (typeof select !== "function") return undefined;
 	const enabledOptions = request.options.filter((option) => !option.disabled);

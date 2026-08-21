@@ -3,8 +3,8 @@
  * validation, merging, sentinel resolution, and runtime model commits.
  *
  * Two focused entry points share one private runtime implementation:
- * - `applyModelSelection` resolves a stored Session/Plan profile and syncs its
- *   model-derived compaction settings without rewriting the stored selection.
+ * - `applyModelSelection` resolves a stored Session/Plan profile without
+ *   rewriting the stored selection.
  * - `applyPickedModelSelection` applies an already-refreshed picker model and
  *   persists the effective selection (including Pi's clamped thinking level).
  *
@@ -47,12 +47,6 @@ type StoredProfileValue = typeof DEFAULT_SENTINEL;
 
 export type ModelSelectionMode = "normal" | "plan";
 
-/** Fraction of each model context window reserved for the response before compaction. */
-export const DEFAULT_COMPACTION_THRESHOLD = 0.1;
-
-/** Recent tokens kept (not summarized) when compaction runs, when none is configured. */
-export const DEFAULT_KEEP_RECENT_TOKENS = 25_600;
-
 /** Default context window applied when a model entry declares none. */
 export const DEFAULT_CONTEXT_WINDOW = 256_000;
 
@@ -65,11 +59,6 @@ export interface ModelSelectionSettings {
 	modelId: string;
 	thinkingLevel: StoredThinkingLevel;
 	contextWindow: number;
-}
-
-/** Narrow seam for synchronizing model-derived compaction settings. */
-export interface ModelCompactionSynchronizer {
-	syncCompaction(contextWindow: number): Promise<void>;
 }
 
 /** Narrow seam for persisting one mode's effective model selection. */
@@ -113,10 +102,6 @@ export interface ProjectModelPreferences {
 	profiles: Partial<Record<ModelSelectionMode, StoredModelSelectionSettings>>;
 	/** Legacy model-keyed contexts, read only as a migration fallback. */
 	contextWindows: Record<string, number>;
-	/** Fraction of the active context window reserved for the model response. */
-	compactionThreshold: number;
-	/** Recent tokens to keep (not summarized) when compaction runs. */
-	keepRecentTokens: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -171,31 +156,6 @@ function validateStoredContextWindow(value: unknown, label: string): number | St
 	if (value === DEFAULT_SENTINEL) return DEFAULT_SENTINEL;
 	if (value === undefined) return undefined;
 	return validateContextWindow(value, label);
-}
-
-function validateCompactionThreshold(value: unknown): number {
-	if (value === undefined) return DEFAULT_COMPACTION_THRESHOLD;
-	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value >= 1) {
-		throw new Error("compaction.threshold must be a finite number greater than 0 and less than 1.");
-	}
-	return value;
-}
-
-function validateKeepRecentTokens(value: unknown): number {
-	if (value === undefined) return DEFAULT_KEEP_RECENT_TOKENS;
-	if (!Number.isInteger(value) || (value as number) <= 0) {
-		throw new Error("compaction.keepRecentTokens must be a positive integer.");
-	}
-	return value as number;
-}
-
-export function calculateCompactionReserveTokens(
-	contextWindow: number,
-	threshold = DEFAULT_COMPACTION_THRESHOLD,
-): number {
-	const validatedContextWindow = validateContextWindow(contextWindow, "contextWindow");
-	const validatedThreshold = validateCompactionThreshold(threshold);
-	return Math.ceil(validatedContextWindow * validatedThreshold);
 }
 
 /**
@@ -267,12 +227,9 @@ function validateProfiles(value: unknown): Partial<Record<ModelSelectionMode, St
 export function parseProjectModelPreferences(settings: unknown): ProjectModelPreferences {
 	if (!isRecord(settings)) throw new Error("Project settings must contain a JSON object.");
 	const selector = nestedRecord(settings, "uiModelSelector", "uiModelSelector");
-	const compaction = nestedRecord(settings, "compaction", "compaction");
 	return {
 		profiles: validateProfiles(selector.profiles),
 		contextWindows: validateContextWindows(selector.contextWindows),
-		compactionThreshold: validateCompactionThreshold(compaction.threshold),
-		keepRecentTokens: validateKeepRecentTokens(compaction.keepRecentTokens),
 	};
 }
 
@@ -309,25 +266,6 @@ export function mergeProjectModelSelection(
 				...profiles,
 				[mode]: { provider, modelId, thinkingLevel: selection.thinkingLevel, contextWindow: selection.contextWindow },
 			},
-		},
-	};
-}
-
-/** Return a cloned project settings document with compaction aligned to a context window. */
-export function mergeProjectCompactionSettings(
-	settings: unknown,
-	contextWindow: number,
-): Record<string, unknown> {
-	if (!isRecord(settings)) throw new Error("Project settings must contain a JSON object.");
-	const preferences = parseProjectModelPreferences(settings);
-	const compaction = nestedRecord(settings, "compaction", "compaction");
-	return {
-		...settings,
-		compaction: {
-			...compaction,
-			threshold: preferences.compactionThreshold,
-			reserveTokens: calculateCompactionReserveTokens(contextWindow, preferences.compactionThreshold),
-			keepRecentTokens: preferences.keepRecentTokens,
 		},
 	};
 }
@@ -464,9 +402,8 @@ async function applyResolvedModelSelection(
 
 /**
  * Apply a stored selection to the live session: resolve default sentinels,
- * refresh and look up the model when needed, commit the resolved model and
- * thinking level, and sync model-derived compaction values. The stored profile
- * itself is not persisted.
+ * refresh and look up the model when needed, and commit the resolved model
+ * and thinking level. The stored profile itself is not persisted.
  *
  * The context-window contract preserves legacy plan-mode reads: an explicit
  * sentinel resolves through the catalogue; a missing window inherits the
@@ -479,8 +416,6 @@ export async function applyModelSelection(
 	options: {
 		/** Label used in error messages, e.g. "Normal profile" or "Plan Mode profile". */
 		label: string;
-		/** Receives the model-derived compaction sync. */
-		compaction: ModelCompactionSynchronizer;
 		nativeDefaults?: PiNativeDefaults;
 	},
 ): Promise<ModelSelectionSettings> {
@@ -513,9 +448,7 @@ export async function applyModelSelection(
 		model = { ...resolveModelContext(catalogueModel), contextWindow };
 	}
 
-	const selection = await applyResolvedModelSelection(pi, ctx, model, resolved.thinkingLevel);
-	await options.compaction.syncCompaction(selection.contextWindow);
-	return selection;
+	return applyResolvedModelSelection(pi, ctx, model, resolved.thinkingLevel);
 }
 
 /**
@@ -553,7 +486,6 @@ export async function applySelectionFromDocument(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	document: Record<string, unknown>,
-	compaction: ModelCompactionSynchronizer,
 	nativeDefaults?: PiNativeDefaults,
 ): Promise<ModelSelectionSettings | undefined> {
 	const mode = selectionModeFromEntries(ctx.sessionManager.getBranch());
@@ -561,7 +493,6 @@ export async function applySelectionFromDocument(
 	if (!selection) return undefined;
 	return applyModelSelection(pi, ctx, selection, {
 		label: "Profile",
-		compaction,
 		nativeDefaults,
 	});
 }

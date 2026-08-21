@@ -79,6 +79,31 @@ describe("GUI option list", () => {
 			.resolves.toEqual(["alpha"]);
 	});
 
+	it("renders a non-selectable spacer before a single-choice option group", async () => {
+		const h = tuiHarness((component) => {
+			const lines = component.render(80);
+			const addIndex = lines.indexOf("    Add profile");
+			expect(addIndex).toBeGreaterThan(0);
+			expect(lines[addIndex - 1]).toBe("");
+			for (const width of [1, 8, 20, 40, 80, 120]) {
+				expect(component.render(width).every((line: string) => visibleWidth(line) <= width)).toBe(true);
+			}
+
+			component.handleInput("j");
+			component.handleInput("j");
+			component.handleInput("y");
+		});
+		await expect(pickGuiOption(h.ctx, {
+			title: "Choose profile",
+			options: [
+				{ value: "default", label: "default", checked: true },
+				{ value: "focused", label: "focused" },
+				{ value: "add", label: "Add profile", spacerBefore: true },
+				{ value: "delete", label: "Delete profile" },
+			],
+		})).resolves.toBe("add");
+	});
+
 	it("uses native select for RPC checklists", async () => {
 		const select = vi.fn(async (_title: string, choices: string[]) => choices[choices.length - 2]!);
 		const custom = vi.fn();
