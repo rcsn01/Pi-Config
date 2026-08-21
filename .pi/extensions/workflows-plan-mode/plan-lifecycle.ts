@@ -499,7 +499,6 @@ export function createPlanLifecycle(
 			try {
 				activePlanProfile = await applyModelSelection(pi, ctx, storedProfile, {
 					label: "Plan Mode profile",
-					compaction: profileStore,
 					nativeDefaults: dependencies.nativeDefaults,
 				});
 				switchedSessionProfile = true;
@@ -519,7 +518,6 @@ export function createPlanLifecycle(
 					profileTransitionDepth++;
 					await applyModelSelection(pi, ctx, normalProfile, {
 						label: "Normal profile",
-						compaction: profileStore,
 						nativeDefaults: dependencies.nativeDefaults,
 					});
 					await preserveDefaults(ctx);
@@ -565,7 +563,6 @@ export function createPlanLifecycle(
 				profileTransitionDepth++;
 				await applyModelSelection(pi, ctx, normalProfile, {
 					label: "Normal profile",
-					compaction: profileStore,
 					nativeDefaults: dependencies.nativeDefaults,
 				});
 				restoredSessionProfile = true;
@@ -576,7 +573,6 @@ export function createPlanLifecycle(
 					try {
 						await applyModelSelection(pi, ctx, activePlanProfile, {
 							label: "Plan Mode profile",
-							compaction: profileStore,
 							nativeDefaults: dependencies.nativeDefaults,
 						});
 						await preserveDefaults(ctx);

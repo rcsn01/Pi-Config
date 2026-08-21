@@ -1,9 +1,11 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
 	isRecord,
 	mutateSettingsDocument,
 	parseSettingsText,
 	readSettingsDocument,
+	writeSettingsDocument,
 } from "../_shared/settings-document.ts";
 import {
 	CONFIG_PROFILES_KEY,
@@ -23,6 +25,22 @@ export interface ProfileSwitchResult {
 	active: string;
 }
 
+export interface ProfileCreateResult {
+	name: string;
+	source: string | undefined;
+}
+
+export interface ProfileDeleteOptions {
+	/** Force the project marker to the fallback when this session owns the deleted profile. */
+	replaceMarker?: boolean;
+}
+
+export interface ProfileDeleteResult {
+	name: string;
+	replacement: "default";
+	markerReplaced: boolean;
+}
+
 export interface ActiveProfile {
 	name: string;
 	document: Record<string, unknown>;
@@ -36,9 +54,13 @@ export interface ProfileStore {
 	getActiveProfile(settings?: Record<string, unknown>): string | undefined;
 	/** Marker from settings.json plus the profile document; throws when the active profile file is missing. */
 	loadActiveProfile(): ActiveProfile | undefined;
+	createProfile(name: string, source?: string): Promise<ProfileCreateResult>;
+	deleteProfile(name: string, options?: ProfileDeleteOptions): Promise<ProfileDeleteResult>;
 	switchProfile(name: string): Promise<ProfileSwitchResult>;
 	profilePath(name: string): string;
 }
+
+const DEFAULT_PROFILE_NAME = "default";
 
 function withActiveProfile(document: Record<string, unknown>, name: string): Record<string, unknown> {
 	const current = document[CONFIG_PROFILES_KEY];
@@ -86,6 +108,88 @@ export function createProfileStore(options: {
 			const name = readActiveProfileName(settingsPath);
 			if (!name) return undefined;
 			return { name, document: readSettingsDocument(profilePath(name), { missing: "throw" }) };
+		},
+
+		async createProfile(name, source) {
+			validateProfileName(name);
+			if (source !== undefined) {
+				validateProfileName(source);
+				if (source === name) throw new Error(`Cannot copy profile "${name}" onto itself.`);
+			}
+
+			const destinationPath = profilePath(name);
+			const sourcePath = source === undefined ? settingsPath : profilePath(source);
+			return withFileMutationQueue(destinationPath, async () => {
+				if (existsSync(destinationPath)) throw new Error(`Profile "${name}" already exists.`);
+
+				return withFileMutationQueue(settingsPath, async () => {
+					const settings = readSettingsDocument(settingsPath, { missing: "throw" });
+					const sourceDocument = source === undefined
+						? settings
+						: readSettingsDocument(sourcePath, { missing: "throw" });
+					writeSettingsDocument(destinationPath, withActiveProfile(sourceDocument, name));
+
+					try {
+						writeSettingsDocument(settingsPath, withActiveProfile(settings, name));
+					} catch (error) {
+						try {
+							unlinkSync(destinationPath);
+						} catch {
+							// Keep the original mutation error. The marker was not changed, so
+							// an extra profile file cannot affect the active binding.
+						}
+						throw error;
+					}
+
+					return { name, source };
+				});
+			});
+		},
+
+		async deleteProfile(name, options = {}) {
+			validateProfileName(name);
+			if (name === DEFAULT_PROFILE_NAME) {
+				throw new Error('The "default" profile cannot be deleted.');
+			}
+
+			const targetPath = profilePath(name);
+			const replacementPath = profilePath(DEFAULT_PROFILE_NAME);
+			return withFileMutationQueue(targetPath, async () => {
+				// Validate both documents before changing either file.
+				readSettingsDocument(targetPath, { missing: "throw" });
+				readSettingsDocument(replacementPath, { missing: "throw" });
+
+				return withFileMutationQueue(settingsPath, async () => {
+					const settings = readSettingsDocument(settingsPath, { missing: "throw" });
+					const active = parseActiveProfileName(settings);
+					const shouldReplaceMarker = options.replaceMarker === true || active === name;
+					const markerReplaced = shouldReplaceMarker && active !== DEFAULT_PROFILE_NAME;
+
+					if (markerReplaced) {
+						writeSettingsDocument(settingsPath, withActiveProfile(settings, DEFAULT_PROFILE_NAME));
+					}
+
+					try {
+						unlinkSync(targetPath);
+					} catch (error) {
+						if (markerReplaced) {
+							try {
+								writeSettingsDocument(settingsPath, settings);
+							} catch {
+								// The marker was already changed to a valid fallback. Do not
+								// replace the unlink error with a rollback error.
+							}
+						}
+						throw error;
+					}
+
+					return {
+						name,
+						replacement: DEFAULT_PROFILE_NAME,
+						markerReplaced,
+					};
+				});
+			});
 		},
 
 		async switchProfile(name) {

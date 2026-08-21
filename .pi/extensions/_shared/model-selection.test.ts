@@ -3,11 +3,7 @@ import {
 	applyModelSelection,
 	applyPickedModelSelection,
 	applySelectionFromDocument,
-	calculateCompactionReserveTokens,
-	DEFAULT_COMPACTION_THRESHOLD,
 	DEFAULT_CONTEXT_WINDOW,
-	DEFAULT_KEEP_RECENT_TOKENS,
-	mergeProjectCompactionSettings,
 	mergeProjectModelSelection,
 	ModelSelectionPersistenceError,
 	parseProjectModelPreferences,
@@ -95,18 +91,6 @@ describe("context window helpers", () => {
 });
 
 describe("project model settings", () => {
-	it("defaults the compaction threshold and calculates a 10% reserve", () => {
-		expect(parseProjectModelPreferences({}).compactionThreshold).toBe(DEFAULT_COMPACTION_THRESHOLD);
-		expect(calculateCompactionReserveTokens(272_000)).toBe(27_200);
-		expect(calculateCompactionReserveTokens(1_050_000)).toBe(105_000);
-		expect(calculateCompactionReserveTokens(101, 0.1)).toBe(11);
-	});
-
-	it("reads a manually configured compaction threshold", () => {
-		expect(parseProjectModelPreferences({ compaction: { threshold: 0.2 } }).compactionThreshold).toBe(0.2);
-		expect(calculateCompactionReserveTokens(100_000, 0.2)).toBe(20_000);
-	});
-
 	it("preserves default sentinels in stored normal and Plan selections", () => {
 		expect(parseProjectModelPreferences({
 			uiModelSelector: {
@@ -119,35 +103,6 @@ describe("project model settings", () => {
 			profiles: {
 				normal: { provider: "default", modelId: "default", thinkingLevel: "default", contextWindow: "default" },
 				plan: { provider: "default", modelId: "default", thinkingLevel: "default", contextWindow: "default" },
-			},
-		});
-	});
-
-	it("merges context-sized compaction settings without discarding existing settings", () => {
-		expect(mergeProjectCompactionSettings({
-			theme: "dark",
-			compaction: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 20_000 },
-			uiModelSelector: { label: "kept" },
-		}, 1_050_000)).toEqual({
-			theme: "dark",
-			compaction: {
-				enabled: true,
-				reserveTokens: 105_000,
-				keepRecentTokens: 20_000,
-				threshold: DEFAULT_COMPACTION_THRESHOLD,
-			},
-			uiModelSelector: { label: "kept" },
-		});
-	});
-
-	it("defaults keepRecentTokens when compaction declares none", () => {
-		expect(mergeProjectCompactionSettings({
-			compaction: { threshold: 0.1 },
-		}, 256_000)).toEqual({
-			compaction: {
-				threshold: 0.1,
-				reserveTokens: 25_600,
-				keepRecentTokens: DEFAULT_KEEP_RECENT_TOKENS,
 			},
 		});
 	});
@@ -212,9 +167,6 @@ describe("project model settings", () => {
 		{ uiModelSelector: { contextWindows: [] } },
 		{ uiModelSelector: { contextWindows: { "github-copilot/gpt-5.6-sol": 0 } } },
 		{ uiModelSelector: { profiles: { normal: { provider: "test", modelId: "model", thinkingLevel: "ultra", contextWindow: 1 } } } },
-		{ compaction: [] },
-		{ compaction: { threshold: 0 } },
-		{ compaction: { threshold: 1 } },
 	])("rejects malformed settings %#", (settings) => {
 		expect(() => parseProjectModelPreferences(settings)).toThrow();
 	});
@@ -285,7 +237,6 @@ function createHarness(options: {
 	const setThinkingLevel = vi.fn((level: string) => {
 		thinkingLevel = level;
 	});
-	const syncCompaction = vi.fn(async () => {});
 	const save = vi.fn(async () => {});
 	const ctx = {
 		model: options.model,
@@ -305,11 +256,8 @@ function createHarness(options: {
 		find,
 		setModel,
 		setThinkingLevel,
-		syncCompaction,
 		save,
-		compaction: { syncCompaction },
 		persistence: { save },
-		settingsStore: { syncCompaction },
 	};
 }
 
@@ -322,13 +270,11 @@ describe("applyModelSelection", () => {
 
 		const result = await applyModelSelection(harness.pi, harness.ctx, NORMAL_SELECTION, {
 			label: "Normal profile",
-			compaction: harness.compaction,
 		});
 
 		expect(harness.refresh).not.toHaveBeenCalled();
 		expect(harness.setModel).not.toHaveBeenCalled();
 		expect(harness.setThinkingLevel).not.toHaveBeenCalled();
-		expect(harness.syncCompaction).toHaveBeenCalledWith(256000);
 		expect(result).toEqual(NORMAL_SELECTION);
 	});
 
@@ -339,7 +285,6 @@ describe("applyModelSelection", () => {
 
 		await applyModelSelection(harness.pi, harness.ctx, { ...NORMAL_SELECTION, contextWindow: 131072 }, {
 			label: "Normal profile",
-			compaction: harness.compaction,
 		});
 
 		expect(harness.refresh).not.toHaveBeenCalled();
@@ -348,7 +293,6 @@ describe("applyModelSelection", () => {
 			id: "gpt-5.6-sol",
 			contextWindow: 131072,
 		}));
-		expect(harness.syncCompaction).toHaveBeenCalledWith(131072);
 	});
 
 	it("inherits the current window for legacy selections without a context", async () => {
@@ -362,13 +306,11 @@ describe("applyModelSelection", () => {
 			thinkingLevel: "high",
 		}, {
 			label: "Normal profile",
-			compaction: harness.compaction,
 		});
 
 		expect(harness.refresh).not.toHaveBeenCalled();
 		expect(harness.setModel).not.toHaveBeenCalled();
 		expect(result.contextWindow).toBe(256000);
-		expect(harness.syncCompaction).toHaveBeenCalledWith(256000);
 	});
 
 	it("resolves a sentinel context window through the catalogue", async () => {
@@ -378,12 +320,10 @@ describe("applyModelSelection", () => {
 
 		await applyModelSelection(harness.pi, harness.ctx, { ...NORMAL_SELECTION, contextWindow: "default" }, {
 			label: "Normal profile",
-			compaction: harness.compaction,
 		});
 
 		expect(harness.refresh).toHaveBeenCalledWith({ allowNetwork: false, providers: ["ollama"] });
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({ contextWindow: 256000 }));
-		expect(harness.syncCompaction).toHaveBeenCalledWith(256000);
 	});
 
 	it("rejects when the model is outside the session's scope", async () => {
@@ -394,7 +334,6 @@ describe("applyModelSelection", () => {
 
 		await expect(applyModelSelection(harness.pi, harness.ctx, NORMAL_SELECTION, {
 			label: "Normal profile",
-			compaction: harness.compaction,
 		})).rejects.toThrow("outside this session's model scope");
 	});
 
@@ -406,7 +345,6 @@ describe("applyModelSelection", () => {
 
 		await applyModelSelection(harness.pi, harness.ctx, NORMAL_SELECTION, {
 			label: "Normal profile",
-			compaction: harness.compaction,
 		});
 
 		expect(harness.setModel).toHaveBeenCalledOnce();
@@ -423,7 +361,6 @@ describe("applyModelSelection", () => {
 
 		const result = await applyModelSelection(harness.pi, harness.ctx, { ...NORMAL_SELECTION, thinkingLevel: "xhigh" }, {
 			label: "Normal profile",
-			compaction: harness.compaction,
 		});
 
 		expect(harness.pi.setThinkingLevel).toHaveBeenCalledWith("xhigh");
@@ -630,7 +567,7 @@ describe("applySelectionFromDocument", () => {
 		const harness = createHarness();
 		const document = { uiModelSelector: { profiles: { normal: NORMAL_SELECTION, plan: PLAN_SELECTION } } };
 
-		const result = await applySelectionFromDocument(harness.pi, harness.ctx, document, harness.settingsStore);
+		const result = await applySelectionFromDocument(harness.pi, harness.ctx, document);
 
 		expect(result).toEqual(NORMAL_SELECTION);
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
@@ -639,7 +576,6 @@ describe("applySelectionFromDocument", () => {
 			contextWindow: 256000,
 		}));
 		expect(harness.setThinkingLevel).toHaveBeenCalledWith("high");
-		expect(harness.syncCompaction).toHaveBeenCalledWith(256000);
 	});
 
 	it("applies the plan selection when plan mode is active", async () => {
@@ -648,7 +584,7 @@ describe("applySelectionFromDocument", () => {
 		});
 		const document = { uiModelSelector: { profiles: { normal: NORMAL_SELECTION, plan: PLAN_SELECTION } } };
 
-		const result = await applySelectionFromDocument(harness.pi, harness.ctx, document, harness.settingsStore);
+		const result = await applySelectionFromDocument(harness.pi, harness.ctx, document);
 
 		expect(result).toEqual(PLAN_SELECTION);
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "plan-model", contextWindow: 131072 }));
@@ -669,7 +605,6 @@ describe("applySelectionFromDocument", () => {
 			harness.pi,
 			harness.ctx,
 			document,
-			harness.settingsStore,
 			{ provider: "openai-codex", modelId: "gpt-5.6-luna", thinkingLevel: "max" },
 		);
 
@@ -694,12 +629,11 @@ describe("applySelectionFromDocument", () => {
 	it("returns undefined without applying when the mode has no selection", async () => {
 		const harness = createHarness();
 
-		const result = await applySelectionFromDocument(harness.pi, harness.ctx, {}, harness.settingsStore);
+		const result = await applySelectionFromDocument(harness.pi, harness.ctx, {});
 
 		expect(result).toBeUndefined();
 		expect(harness.setModel).not.toHaveBeenCalled();
 		expect(harness.setThinkingLevel).not.toHaveBeenCalled();
-		expect(harness.syncCompaction).not.toHaveBeenCalled();
 	});
 
 	it("still applies when the session model already matches but the window differs", async () => {
@@ -708,14 +642,12 @@ describe("applySelectionFromDocument", () => {
 			uiModelSelector: { profiles: { normal: { ...NORMAL_SELECTION, thinkingLevel: "max" } } },
 		};
 
-		await applySelectionFromDocument(harness.pi, harness.ctx, document, harness.settingsStore);
+		await applySelectionFromDocument(harness.pi, harness.ctx, document);
 
-		// Thinking level and compaction follow the selection even though the
-		// provider/model pair is already active; the missing context window
-		// forces the update.
+		// Thinking follows a changed selection even when the provider/model pair
+		// is already active; the missing context window forces the update.
 		expect(harness.setModel).toHaveBeenCalledOnce();
 		expect(harness.setThinkingLevel).toHaveBeenCalledWith("max");
-		expect(harness.syncCompaction).toHaveBeenCalledWith(256000);
 	});
 
 	it("rejects with a profile-labeled error when the model is unavailable", async () => {
@@ -724,7 +656,7 @@ describe("applySelectionFromDocument", () => {
 		const document = { uiModelSelector: { profiles: { normal: NORMAL_SELECTION } } };
 
 		await expect(
-			applySelectionFromDocument(harness.pi, harness.ctx, document, harness.settingsStore),
+			applySelectionFromDocument(harness.pi, harness.ctx, document),
 		).rejects.toThrow("Profile model ollama/gpt-5.6-sol is unavailable.");
 		expect(harness.setModel).not.toHaveBeenCalled();
 	});
@@ -734,7 +666,7 @@ describe("applySelectionFromDocument", () => {
 		const document = { uiModelSelector: { profiles: { normal: NORMAL_SELECTION } } };
 
 		await expect(
-			applySelectionFromDocument(harness.pi, harness.ctx, document, harness.settingsStore),
+			applySelectionFromDocument(harness.pi, harness.ctx, document),
 		).rejects.toThrow("No configured authentication for ollama/gpt-5.6-sol.");
 	});
 });

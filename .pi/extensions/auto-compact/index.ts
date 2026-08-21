@@ -10,7 +10,7 @@ import {
 	type ContextUsage,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { COMPACT_THRESHOLD } from "../_shared/auto-compact.ts";
+import { COMPACT_THRESHOLD, SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
 import { isRecord, readSettingsDocument, writeSettingsDocument } from "../_shared/settings-document.ts";
 
 /**
@@ -25,23 +25,9 @@ import { isRecord, readSettingsDocument, writeSettingsDocument } from "../_share
 const CONTINUE_MESSAGE = "Continue the task using the compacted context.";
 const CONTINUE_CUSTOM_TYPE = "auto-compact-continue";
 
-export const SEMANTIC_COMPACTION_FOCUS = `
-Create a loss-aware handoff for continuing the task.
-
-Prioritize:
-- The latest user objective, requirements, corrections, and acceptance criteria.
-- Confirmed repository state, distinguished from planned or assumed work.
-- Files, symbols, commands, test results, and exact important errors.
-- Key decisions and their rationale.
-- Failed approaches and why they failed.
-- Current blockers, unresolved questions, and the exact next action.
-
-Rules:
-- Later user corrections supersede earlier instructions.
-- Do not claim work is complete without supporting tool or test evidence.
-- Preserve uncertainty instead of guessing.
-- Remove verbose reasoning and obsolete conversational detail.
-`;
+// Canonical definition lives in _shared/auto-compact.ts; re-exported for this
+// module's existing consumers.
+export { SEMANTIC_COMPACTION_FOCUS };
 
 export type OverflowCompactionAction = "compact-and-resume" | "compact";
 

@@ -129,6 +129,127 @@ describe("profile store", () => {
 		expect(readFileSync(settingsPath, "utf-8")).toBe(`${JSON.stringify(settings, null, 2)}\n`);
 	});
 
+	it("creates and activates a copy of a named profile", async () => {
+		const current = {
+			compaction: { enabled: true },
+			configProfiles: { active: "default", metadata: "kept" },
+		};
+		const { store, writeProfile, read, settingsPath, profilesDirectory } = fixture(current);
+		writeProfile("default", {
+			model: "original",
+			configProfiles: { active: "default", sourceMetadata: "kept" },
+		});
+
+		expect(await store.createProfile("focused", "default")).toEqual({ name: "focused", source: "default" });
+		expect(read(join(profilesDirectory, "focused.json"))).toEqual({
+			model: "original",
+			configProfiles: { active: "focused", sourceMetadata: "kept" },
+		});
+		expect(read(settingsPath)).toEqual({
+			compaction: { enabled: true },
+			configProfiles: { active: "focused", metadata: "kept" },
+		});
+	});
+
+	it("creates a profile from settings.json when no source profile is bound", async () => {
+		const settings = { theme: "dark", configProfiles: { active: "default" } };
+		const { store, read, settingsPath, profilesDirectory } = fixture(settings);
+
+		expect(await store.createProfile("first")).toEqual({ name: "first", source: undefined });
+		expect(read(join(profilesDirectory, "first.json"))).toEqual({
+			theme: "dark",
+			configProfiles: { active: "first" },
+		});
+		expect(read(settingsPath)).toEqual({
+			theme: "dark",
+			configProfiles: { active: "first" },
+		});
+	});
+
+	it("rejects duplicate profile names without overwriting anything", async () => {
+		const settings = { configProfiles: { active: "default" } };
+		const { store, writeProfile, read, settingsPath, profilesDirectory } = fixture(settings);
+		writeProfile("default", { model: "default" });
+		writeProfile("focused", { model: "existing" });
+		const beforeSettings = read(settingsPath);
+
+		await expect(store.createProfile("focused", "default")).rejects.toThrow('Profile "focused" already exists.');
+		expect(read(join(profilesDirectory, "focused.json"))).toEqual({ model: "existing" });
+		expect(read(settingsPath)).toEqual(beforeSettings);
+	});
+
+	it("deletes an inactive profile without changing the active marker", async () => {
+		const { store, writeProfile, read, settingsPath, profilesDirectory } = fixture({
+			configProfiles: { active: "focused" },
+		});
+		writeProfile("default", { model: "default" });
+		writeProfile("focused", { model: "focused" });
+		writeProfile("other", { model: "other" });
+
+		expect(await store.deleteProfile("other")).toEqual({
+			name: "other",
+			replacement: "default",
+			markerReplaced: false,
+		});
+		expect(readdirSync(profilesDirectory)).toEqual(["default.json", "focused.json"]);
+		expect(read(settingsPath)).toEqual({ configProfiles: { active: "focused" } });
+	});
+
+	it("replaces the active marker before deleting an active profile", async () => {
+		const { store, writeProfile, read, settingsPath, profilesDirectory } = fixture({
+			configProfiles: { active: "focused" },
+		});
+		writeProfile("default", { model: "default" });
+		writeProfile("focused", { model: "focused" });
+
+		expect(await store.deleteProfile("focused")).toEqual({
+			name: "focused",
+			replacement: "default",
+			markerReplaced: true,
+		});
+		expect(readdirSync(profilesDirectory)).toEqual(["default.json"]);
+		expect(read(settingsPath)).toEqual({ configProfiles: { active: "default" } });
+	});
+
+	it("replaces the marker when the session profile is active but another profile is marked", async () => {
+		const { store, writeProfile, read, settingsPath } = fixture({
+			configProfiles: { active: "github" },
+		});
+		writeProfile("default", { model: "default" });
+		writeProfile("focused", { model: "focused" });
+		writeProfile("github", { model: "github" });
+
+		expect(await store.deleteProfile("focused", { replaceMarker: true })).toEqual({
+			name: "focused",
+			replacement: "default",
+			markerReplaced: true,
+		});
+		expect(read(settingsPath)).toEqual({ configProfiles: { active: "default" } });
+	});
+
+	it("keeps default undeletable", async () => {
+		const { store, writeProfile, read, settingsPath, profilesDirectory } = fixture();
+		writeProfile("default", { model: "default" });
+		const beforeSettings = read(settingsPath);
+
+		await expect(store.deleteProfile("default")).rejects.toThrow('The "default" profile cannot be deleted.');
+		expect(readdirSync(profilesDirectory)).toEqual(["default.json"]);
+		expect(read(settingsPath)).toEqual(beforeSettings);
+	});
+
+	it("validates the default replacement before deleting a profile", async () => {
+		const { store, writeProfile, read, settingsPath, profilesDirectory } = fixture({
+			configProfiles: { active: "focused" },
+		});
+		writeProfile("focused", { model: "focused" });
+		writeFileSync(join(profilesDirectory, "default.json"), "{\n");
+		const beforeSettings = read(settingsPath);
+
+		await expect(store.deleteProfile("focused")).rejects.toThrow(/Cannot read/);
+		expect(readdirSync(profilesDirectory)).toEqual(["default.json", "focused.json"]);
+		expect(read(settingsPath)).toEqual(beforeSettings);
+	});
+
 	it("cleans up atomic-write temporary files", async () => {
 		const { store, writeProfile, root, profilesDirectory } = fixture();
 		writeProfile("default", { configProfiles: { active: "default" } });

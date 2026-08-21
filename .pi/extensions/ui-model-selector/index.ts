@@ -2,11 +2,11 @@
  * Custom /model selector.
  *
  * Applies the saved normal profile silently on fresh-session startup and routes
- * the built-in command through a searchable model picker with thinking choices.
- * The context window comes from the model's catalogue value, or the saved
- * profile's contextWindow when a startup profile is applied. On reload and
- * resume, the session model's context window is refreshed from the profile
- * without switching models.
+ * the built-in command through a searchable model picker with thinking and
+ * context-window choices. The context window comes from a preset derived from
+ * the model's catalogue value, or the saved profile's contextWindow when a
+ * startup profile is applied. On reload and resume, the session model's
+ * context window is refreshed from the profile without switching models.
  * Explicit --model startup overrides and resumed sessions preserve their session
  * profile. Normal and Plan Mode selections are persisted separately in
  * .pi/settings.json.
@@ -23,10 +23,10 @@ import {
 	installModelCommandHandler,
 	ModelCommandRoutingEditor,
 } from "../_shared/model-command-routing.ts";
+import { COMPACT_THRESHOLD, SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
 import {
 	applyModelSelection,
 	applyPickedModelSelection,
-	calculateCompactionReserveTokens,
 	currentSelectionMode,
 	ModelSelectionPersistenceError,
 	resolveContextWindow,
@@ -40,6 +40,7 @@ import {
 	type ProjectSettingsStore,
 } from "../_shared/model-selection-store.ts";
 import {
+	contextWindowChoices,
 	filterModels,
 	findExactModel,
 	formatTokenCount,
@@ -120,27 +121,63 @@ async function selectThinkingLevel(
 	return ordered[choices.indexOf(selected)];
 }
 
+async function selectContextWindow(
+	ctx: ExtensionContext,
+	model: Model<Api>,
+): Promise<number | undefined> {
+	const windows = contextWindowChoices(model.contextWindow);
+	const current = ctx.model?.contextWindow;
+	const choices = windows.map((window, index) => {
+		const marker = window === current ? "●" : "○";
+		const description = index === 0 ? " — catalogue default" : "";
+		const currentNote = window === current ? " (current)" : "";
+		return `${marker} ${formatTokenCount(window)}${description}${currentNote}`;
+	});
+	const selected = await ctx.ui.select(`Context · ${modelKey(model)}`, choices);
+	if (!selected) return undefined;
+	return windows[choices.indexOf(selected)];
+}
+
+/**
+ * Compact after a context-window reduction. Only kick compaction off while the
+ * agent is idle; mid-run the auto-compact extension's turn_end and
+ * before_agent_start hooks will compact and resume on their own.
+ */
+function compactWithHandoffFocus(ctx: ExtensionContext): void {
+	if (!ctx.isIdle()) {
+		ctx.ui.notify(
+			"The agent is busy; auto-compact will compact and resume this turn.",
+			"info",
+		);
+		return;
+	}
+	ctx.compact({
+		customInstructions: SEMANTIC_COMPACTION_FOCUS,
+		onError: (error) => {
+			ctx.ui.notify(`Compaction failed: ${error.message}`, "error");
+		},
+	});
+}
+
 async function confirmAndApplySelection(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	selectedModel: Model<Api>,
 	thinkingLevel: ModelThinkingLevel,
-	compactionThreshold: number,
 	mode: ModelSelectionMode,
 	settingsStore: ProjectSettingsStore,
 ): Promise<void> {
 	const contextWindow = selectedModel.contextWindow;
-	const compactionReserve = calculateCompactionReserveTokens(contextWindow, compactionThreshold);
 	const usage = ctx.getContextUsage();
 	const isContextReduction = ctx.model !== undefined && contextWindow < ctx.model.contextWindow;
 	const needsCompaction = isContextReduction &&
 		usage?.tokens !== null && usage?.tokens !== undefined &&
-		usage.tokens > Math.max(1, contextWindow - compactionReserve);
+		usage.tokens >= contextWindow * COMPACT_THRESHOLD;
 
 	if (needsCompaction) {
 		const approved = await ctx.ui.confirm(
 			"Context window reduction",
-			`This session uses about ${formatTokenCount(usage.tokens!)} tokens, above the safe ${formatTokenCount(contextWindow)} window. Apply the selection and compact now?`,
+			`This session uses about ${formatTokenCount(usage.tokens!)} tokens, at or above the auto-compact threshold of the ${formatTokenCount(contextWindow)} window. Apply the selection and compact now?`,
 		);
 		if (!approved) return;
 	}
@@ -153,7 +190,7 @@ async function confirmAndApplySelection(
 		});
 	} catch (error) {
 		if (!(error instanceof ModelSelectionPersistenceError)) throw error;
-		if (needsCompaction) ctx.compact();
+		if (needsCompaction) compactWithHandoffFocus(ctx);
 		const cause = error.cause instanceof Error ? error.cause.message : String(error.cause);
 		ctx.ui.notify(
 			`${error.appliedSelection.provider}/${error.appliedSelection.modelId} was applied, but settings were not fully saved: ${cause}`,
@@ -162,7 +199,7 @@ async function confirmAndApplySelection(
 		return;
 	}
 
-	if (needsCompaction) ctx.compact();
+	if (needsCompaction) compactWithHandoffFocus(ctx);
 	const thinkingNote = selection.thinkingLevel === thinkingLevel
 		? selection.thinkingLevel
 		: `${selection.thinkingLevel} (requested ${thinkingLevel})`;
@@ -201,7 +238,6 @@ async function runModelControl(
 	}
 
 	const mode = currentSelectionMode(ctx);
-	const preferences = await settingsStore.load();
 	const models = availableModels(ctx);
 	if (models.length === 0) {
 		ctx.ui.notify("No authenticated models are available.", "error");
@@ -219,13 +255,19 @@ async function runModelControl(
 	);
 	if (!thinkingLevel) return;
 
+	const contextWindow = await selectContextWindow(ctx, selectedModel);
+	if (!contextWindow) return;
+
+	const adjustedModel = contextWindow === selectedModel.contextWindow
+		? selectedModel
+		: { ...selectedModel, contextWindow };
+
 	try {
 		await confirmAndApplySelection(
 			pi,
 			ctx,
-			selectedModel,
+			adjustedModel,
 			thinkingLevel,
-			preferences.compactionThreshold,
 			mode,
 			settingsStore,
 		);
@@ -247,11 +289,10 @@ export function createModelSelectorExtension(
 		pi.on("session_start", async (event, ctx) => {
 			uninstallModelCommandHandler?.();
 			uninstallModelCommandHandler = undefined;
-			// Point the store at the session's profile file (uiModelSelector) while
-			// compaction stays in settings.json; no profile means settings.json.
-			settingsStore.setPaths(
+			// Point the store at the session's profile file; no profile means
+			// settings.json.
+			settingsStore.setPath(
 				resolver.resolve(ctx.sessionManager.getBranch(), event.reason),
-				PROJECT_SETTINGS_PATH,
 			);
 			if (ctx.mode !== "tui") return;
 
@@ -282,7 +323,6 @@ export function createModelSelectorExtension(
 					if (preferences.profiles.normal) {
 						await applyModelSelection(pi, ctx, preferences.profiles.normal, {
 							label: "Normal profile",
-							compaction: settingsStore,
 						});
 						appliedNormalProfile = true;
 					}
@@ -313,8 +353,6 @@ export function createModelSelectorExtension(
 						: restoredModel;
 					if (targetModel !== ctx.model && !(await pi.setModel(targetModel))) {
 						ctx.ui.notify(`No configured authentication for ${modelKey(targetModel)}`, "error");
-					} else {
-						await settingsStore.syncCompaction(targetModel.contextWindow);
 					}
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");

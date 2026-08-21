@@ -5,9 +5,8 @@
  * lives in `../_shared/model-selection.ts` (and its store in
  * `../_shared/model-selection-store.ts`). This module keeps only what is
  * genuinely plan-mode-specific: the PlanModeProfileStore adapter that reads
- * and writes `uiModelSelector.profiles.plan` (with compaction synced through
- * the shared store), and the capture/restore of Pi's normal global defaults
- * while Plan Mode is active.
+ * and writes `uiModelSelector.profiles.plan`, and the capture/restore of Pi's
+ * normal global defaults while Plan Mode is active.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -25,10 +24,6 @@ import {
 	type ConcreteModelSelection,
 	type StoredModelSelectionSettings,
 } from "../_shared/model-selection.ts";
-import {
-	createProjectSettingsStore,
-	type ProjectSettingsStore,
-} from "../_shared/model-selection-store.ts";
 
 export type { ModelSelectionSettings, StoredModelSelectionSettings } from "../_shared/model-selection.ts";
 
@@ -40,8 +35,6 @@ export interface PlanModeProfileStore {
 	save(selection: ModeModelProfile): Promise<void>;
 	/** Repoint the store at the session's profile file (default: settings.json). */
 	setPath(path: string): void;
-	/** Sync the model-derived compaction values into settings.json. */
-	syncCompaction(contextWindow: number): Promise<void>;
 }
 
 export interface NormalDefaultsStore {
@@ -74,13 +67,9 @@ export function profileFromCurrentSession(
 /**
  * Plan-mode profile store. Reads/writes `uiModelSelector.profiles.plan` in the
  * session's settings document (a profile file when one is bound, else
- * settings.json); compaction syncs go to settings.json through the shared
- * split-path store.
+ * settings.json).
  */
-export function createPlanModeProfileStore(
-	path = PROJECT_SETTINGS_PATH,
-	compactionStore: ProjectSettingsStore = createProjectSettingsStore(PROJECT_SETTINGS_PATH, PROJECT_SETTINGS_PATH),
-): PlanModeProfileStore {
+export function createPlanModeProfileStore(path = PROJECT_SETTINGS_PATH): PlanModeProfileStore {
 	let currentPath = path;
 	return {
 		async load() {
@@ -110,11 +99,6 @@ export function createPlanModeProfileStore(
 
 		setPath(nextPath) {
 			currentPath = nextPath;
-			compactionStore.setPaths(nextPath, PROJECT_SETTINGS_PATH);
-		},
-
-		async syncCompaction(contextWindow) {
-			await compactionStore.syncCompaction(contextWindow);
 		},
 	};
 }
