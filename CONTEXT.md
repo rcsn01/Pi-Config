@@ -28,6 +28,19 @@ extension.
   that turns usage rows into tables; layout fallbacks live behind its two
   functions.
 
+## Subscriptions & quotas
+
+- **Subscription probe** — the shared probe machinery in
+  `subscription-usage/src/probe.ts`: bounded fetch (timeout, abort,
+  response-size limit), the 15-minute staleness policy, the result states
+  (`ok`, `auth-required`, `unavailable`, `contract-unknown`), and the card
+  row builders in `card.ts`. One probe, N provider adapters.
+- **Provider probe adapter** — one provider's wire contract behind the
+  probe seam (`codex` and `ollama` in `subscription-usage/`): auth
+  inspection, request header candidates, contract check, normalization,
+  and card text. Adding a provider means adding an adapter, never copying
+  the probe.
+
 ## Settings & profiles
 
 - **Settings document** — the `.pi/settings.json` document and the shared

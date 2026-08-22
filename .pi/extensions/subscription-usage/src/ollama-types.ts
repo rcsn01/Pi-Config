@@ -1,3 +1,5 @@
+import type { ProbeResult } from "./probe.ts";
+
 export interface OllamaCredential {
 	pem: string;
 	path: string;
@@ -32,8 +34,4 @@ export interface UsageSnapshot {
 	fetchedAt: string;
 }
 
-export type UsageProbeResult =
-	| { state: "ok"; fetchedAt: string; snapshot: UsageSnapshot }
-	| { state: "auth-required"; message: string }
-	| { state: "unavailable"; message: string }
-	| { state: "contract-unknown"; message: string };
+export type UsageProbeResult = ProbeResult<UsageSnapshot>;
