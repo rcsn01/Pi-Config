@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isUsageStale, normalizeUsage } from "./ollama-usage.ts";
+import { normalizeUsage } from "./ollama-usage.ts";
 
 describe("usage snapshot normalization", () => {
 	it("normalizes session and weekly windows with percentages and resets_in", () => {
@@ -89,20 +89,5 @@ describe("usage snapshot normalization", () => {
 		expect(normalizeUsage({}, "2026-08-17T12:00:00.000Z")).toBeUndefined();
 		expect(normalizeUsage("nope", "2026-08-17T12:00:00.000Z")).toBeUndefined();
 		expect(normalizeUsage([1, 2], "2026-08-17T12:00:00.000Z")).toBeUndefined();
-	});
-});
-
-describe("usage snapshot staleness", () => {
-	const fetchedAt = "2026-08-17T12:00:00.000Z";
-
-	it("is fresh within 15 minutes and stale after", () => {
-		expect(isUsageStale(fetchedAt, new Date("2026-08-17T12:14:59.000Z"))).toBe(false);
-		expect(isUsageStale(fetchedAt, new Date("2026-08-17T12:15:00.000Z"))).toBe(false);
-		expect(isUsageStale(fetchedAt, new Date("2026-08-17T12:15:01.000Z"))).toBe(true);
-		expect(isUsageStale(fetchedAt, new Date("2026-08-17T13:00:00.000Z"))).toBe(true);
-	});
-
-	it("treats an unparsable fetch time as stale", () => {
-		expect(isUsageStale("not-a-date", new Date("2026-08-17T12:15:00.000Z"))).toBe(true);
 	});
 });

@@ -1,17 +1,15 @@
-import { isSnapshotStale } from "./quota.ts";
-import { usageBar } from "./bar.ts";
+import { isStale } from "./probe.ts";
+import { planHeader, usageRow } from "./card.ts";
 import { resetsInText } from "./countdown.ts";
 import type { QuotaSnapshot } from "./types.ts";
 
 export function formatQuotaText(snapshot: QuotaSnapshot, now = new Date()): string {
-	const header = snapshot.plan ? `ChatGPT Codex · Plan: ${snapshot.plan}` : "ChatGPT Codex";
-	const lines = [isSnapshotStale(snapshot.fetchedAt, now) ? `${header} (stale)` : header];
+	const lines = [planHeader("ChatGPT Codex", snapshot.plan, isStale(snapshot.fetchedAt, now))];
 	if (snapshot.weekly) {
-		const used = `${Math.round(snapshot.weekly.usedPercent)}% used`;
-		const resets = snapshot.weekly.resetsAt
-			? ` · ${resetsInText(new Date(snapshot.weekly.resetsAt), now)}`
-			: "";
-		lines.push(`Weekly limit: ${usageBar(snapshot.weekly.usedPercent)} ${used}${resets}`);
+		const resetPhrase = snapshot.weekly.resetsAt
+			? resetsInText(new Date(snapshot.weekly.resetsAt), now)
+			: undefined;
+		lines.push(usageRow("Weekly limit", snapshot.weekly.usedPercent, resetPhrase));
 	} else {
 		lines.push("Weekly limit: unavailable");
 	}

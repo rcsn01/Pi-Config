@@ -1,5 +1,5 @@
-import { isUsageStale } from "./ollama-usage.ts";
-import { usageBar } from "./bar.ts";
+import { isStale } from "./probe.ts";
+import { planHeader, usageRow } from "./card.ts";
 import { resetsInText } from "./countdown.ts";
 import type { UsageSnapshot } from "./ollama-types.ts";
 
@@ -44,20 +44,15 @@ export function weeklyResetsIn(now = new Date(), weekStartsAt?: string): string 
 	return resetsInText(weeklyResetAt(now, weekStartsAt), now);
 }
 
-function windowLine(label: string, usedPercent: number, resetPhrase: string): string {
-	return `${label}: ${usageBar(usedPercent)} ${Math.round(usedPercent)}% used · ${resetPhrase}`;
-}
-
 export function formatUsageText(snapshot: UsageSnapshot, now = new Date()): string {
-	const header = snapshot.plan ? `Ollama Cloud · Plan: ${snapshot.plan}` : "Ollama Cloud";
-	const lines = [isUsageStale(snapshot.fetchedAt, now) ? `${header} (stale)` : header];
+	const lines = [planHeader("Ollama Cloud", snapshot.plan, isStale(snapshot.fetchedAt, now))];
 	if (snapshot.session) {
-		lines.push(windowLine("Session usage", snapshot.session.usedPercent, snapshot.session.resetsIn
+		lines.push(usageRow("Session usage", snapshot.session.usedPercent, snapshot.session.resetsIn
 			? `resets in ${snapshot.session.resetsIn}`
 			: sessionResetsIn(now)));
 	}
 	if (snapshot.weekly) {
-		lines.push(windowLine("Weekly usage", snapshot.weekly.usedPercent, snapshot.weekly.resetsIn
+		lines.push(usageRow("Weekly usage", snapshot.weekly.usedPercent, snapshot.weekly.resetsIn
 			? `resets in ${snapshot.weekly.resetsIn}`
 			: weeklyResetsIn(now, snapshot.weekStartsAt)));
 	}

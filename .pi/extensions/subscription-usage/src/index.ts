@@ -2,13 +2,13 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { isStale } from "./probe.ts";
+import type { ProbeResult } from "./probe.ts";
 import { inspectCodexAuth } from "./codex-auth.ts";
 import { inspectOllamaAuth } from "./ollama-auth.ts";
 import { formatUsageText } from "./ollama-render.ts";
-import { isUsageStale } from "./ollama-usage.ts";
 import { probeUsage } from "./ollama-client.ts";
 import type { OllamaAuthInspection, UsageProbeResult, UsageSnapshot } from "./ollama-types.ts";
-import { isSnapshotStale } from "./quota.ts";
 import { probeQuota } from "./quota-client.ts";
 import { formatQuotaText } from "./render.ts";
 import { styleUsageText } from "./style.ts";
@@ -74,18 +74,19 @@ export function formatOllamaAuthStatus(status: OllamaAuthInspection): string {
 	return lines.join("\n");
 }
 
-export function formatProbeResult(result: QuotaProbeResult): string {
+function formatProbeResultText(probeLabel: string, result: ProbeResult<{ plan?: string }>): string {
 	if (result.state === "ok") {
-		return `Codex quota probe: connected · plan ${result.snapshot.plan ?? "unknown"}`;
+		return `${probeLabel}: connected · plan ${result.snapshot.plan ?? "unknown"}`;
 	}
-	return `Codex quota probe: ${result.state}\n${result.message}`;
+	return `${probeLabel}: ${result.state}\n${result.message}`;
+}
+
+export function formatProbeResult(result: QuotaProbeResult): string {
+	return formatProbeResultText("Codex quota probe", result);
 }
 
 export function formatOllamaProbeResult(result: UsageProbeResult): string {
-	if (result.state === "ok") {
-		return `Ollama usage probe: connected · plan ${result.snapshot.plan ?? "unknown"}`;
-	}
-	return `Ollama usage probe: ${result.state}\n${result.message}`;
+	return formatProbeResultText("Ollama usage probe", result);
 }
 
 export function createSubscriptionUsageExtension(options: {
@@ -105,7 +106,7 @@ export function createSubscriptionUsageExtension(options: {
 		let latestOllama: UsageSnapshot | undefined;
 
 		const fetchCodex = async (force: boolean, signal?: AbortSignal): Promise<QuotaSnapshot> => {
-			if (!force && latestCodex && !isSnapshotStale(latestCodex.fetchedAt, now())) return latestCodex;
+			if (!force && latestCodex && !isStale(latestCodex.fetchedAt, now())) return latestCodex;
 			const result = await probe({ signal });
 			if (result.state !== "ok") throw new Error(result.message);
 			latestCodex = result.snapshot;
@@ -113,7 +114,7 @@ export function createSubscriptionUsageExtension(options: {
 		};
 
 		const fetchOllama = async (force: boolean, signal?: AbortSignal): Promise<UsageSnapshot> => {
-			if (!force && latestOllama && !isUsageStale(latestOllama.fetchedAt, now())) return latestOllama;
+			if (!force && latestOllama && !isStale(latestOllama.fetchedAt, now())) return latestOllama;
 			const result = await probeOllama({ signal });
 			if (result.state !== "ok") throw new Error(result.message);
 			latestOllama = result.snapshot;

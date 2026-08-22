@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
 	getLimitsDuration,
-	isSnapshotStale,
 	normalizeQuota,
 	planTypeDisplayName,
 	selectWeeklyWindow,
@@ -90,21 +89,6 @@ describe("plan display names (codex plan_type_display_name port)", () => {
 		expect(planTypeDisplayName("free")).toBe("Free");
 		expect(planTypeDisplayName("edu")).toBe("Edu");
 		expect(planTypeDisplayName("enterprise")).toBe("Enterprise");
-	});
-});
-
-describe("snapshot staleness (codex RATE_LIMIT_STALE_THRESHOLD_MINUTES port)", () => {
-	const fetchedAt = "2026-08-17T12:00:00.000Z";
-
-	it("is fresh within 15 minutes and stale after", () => {
-		expect(isSnapshotStale(fetchedAt, new Date("2026-08-17T12:14:59.000Z"))).toBe(false);
-		expect(isSnapshotStale(fetchedAt, new Date("2026-08-17T12:15:00.000Z"))).toBe(false);
-		expect(isSnapshotStale(fetchedAt, new Date("2026-08-17T12:15:01.000Z"))).toBe(true);
-		expect(isSnapshotStale(fetchedAt, new Date("2026-08-17T13:00:00.000Z"))).toBe(true);
-	});
-
-	it("treats an unparsable fetch time as stale", () => {
-		expect(isSnapshotStale("not-a-date", new Date("2026-08-17T12:15:00.000Z"))).toBe(true);
 	});
 });
 

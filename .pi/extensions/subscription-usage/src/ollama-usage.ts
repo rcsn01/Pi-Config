@@ -1,27 +1,5 @@
+import { finite, record } from "./probe.ts";
 import type { UsageSnapshot, UsageWindow } from "./ollama-types.ts";
-
-// Same staleness threshold pattern as the Codex quota card: a snapshot older
-// than 15 minutes is marked stale.
-export const USAGE_STALE_THRESHOLD_MINUTES = 15;
-
-function record(value: unknown): Record<string, unknown> | undefined {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? value as Record<string, unknown>
-		: undefined;
-}
-
-function finite(value: unknown): number | undefined {
-	const parsed = typeof value === "number"
-		? value
-		: typeof value === "string" && value.trim() ? Number(value) : Number.NaN;
-	return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
-}
-
-export function isUsageStale(fetchedAt: string, now = new Date()): boolean {
-	const ageMs = Date.parse(fetchedAt);
-	if (!Number.isFinite(ageMs)) return true;
-	return now.getTime() - ageMs > USAGE_STALE_THRESHOLD_MINUTES * 60_000;
-}
 
 // Two accepted window shapes:
 // 1. The web UI contract proposed in ollama/ollama#16448: `{ percentage,

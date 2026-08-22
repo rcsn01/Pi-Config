@@ -1,20 +1,5 @@
+import { finite, record } from "./probe.ts";
 import type { QuotaSnapshot, QuotaWindow } from "./types.ts";
-
-// Port of codex `RATE_LIMIT_STALE_THRESHOLD_MINUTES` (codex-rs/tui/src/status/rate_limits.rs).
-export const RATE_LIMIT_STALE_THRESHOLD_MINUTES = 15;
-
-function record(value: unknown): Record<string, unknown> | undefined {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? value as Record<string, unknown>
-		: undefined;
-}
-
-function finite(value: unknown): number | undefined {
-	const parsed = typeof value === "number"
-		? value
-		: typeof value === "string" && value.trim() ? Number(value) : Number.NaN;
-	return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
-}
 
 function timestamp(value: unknown): string | undefined {
 	const numeric = finite(value);
@@ -85,13 +70,6 @@ export function planTypeDisplayName(raw: string): string {
 	if (BUSINESS_LIKE.has(normalized)) return "Enterprise";
 	if (normalized === "pro_lite") return "Pro Lite";
 	return normalized.split("_").filter(Boolean).map(titleCase).join(" ");
-}
-
-// Port of codex staleness check: a snapshot older than 15 minutes is marked stale.
-export function isSnapshotStale(fetchedAt: string, now = new Date()): boolean {
-	const ageMs = Date.parse(fetchedAt);
-	if (!Number.isFinite(ageMs)) return true;
-	return now.getTime() - ageMs > RATE_LIMIT_STALE_THRESHOLD_MINUTES * 60_000;
 }
 
 function windowOf(value: unknown): QuotaWindow | undefined {

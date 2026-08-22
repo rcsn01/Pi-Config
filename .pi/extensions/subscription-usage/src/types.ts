@@ -1,3 +1,5 @@
+import type { ProbeResult } from "./probe.ts";
+
 export interface CodexCredential {
 	accessToken: string;
 	accountId: string;
@@ -35,8 +37,4 @@ export interface QuotaSnapshot {
 	fetchedAt: string;
 }
 
-export type QuotaProbeResult =
-	| { state: "ok"; fetchedAt: string; snapshot: QuotaSnapshot }
-	| { state: "auth-required"; message: string }
-	| { state: "unavailable"; message: string }
-	| { state: "contract-unknown"; message: string };
+export type QuotaProbeResult = ProbeResult<QuotaSnapshot>;
