@@ -21,8 +21,8 @@ import { Text } from "@earendil-works/pi-tui";
 import { registerToolErrorHandler, renderToolMarkdown, renderToolSummary } from "../_shared/tool-result-ui.ts";
 import {
 	ADVISOR_NUDGE_MESSAGE,
-	ADVISOR_PROMPT_GUIDELINES,
 	ADVISOR_TOOL_DESCRIPTION,
+	transformAdvisorPrompt,
 } from "./prompt.ts";
 import {
 	ADVISOR_NUDGE_CUSTOM_TYPE,
@@ -434,12 +434,21 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			}
 		};
 
+		pi.on("before_agent_start", async (event) => {
+			if (
+				settings.enabled === false ||
+				!settings.provider ||
+				!settings.modelId ||
+				!pi.getActiveTools().includes("advisor")
+			) return;
+			return { systemPrompt: transformAdvisorPrompt(event.systemPrompt) };
+		});
+
 		pi.registerTool({
 			name: "advisor",
 			label: "Advisor",
 			description: ADVISOR_TOOL_DESCRIPTION,
 			promptSnippet: "Consult a stronger read-only model at important decision points",
-			promptGuidelines: ADVISOR_PROMPT_GUIDELINES,
 			executionMode: "sequential",
 			parameters: Type.Object({
 				question: Type.Optional(Type.String({

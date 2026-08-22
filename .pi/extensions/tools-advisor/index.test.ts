@@ -25,6 +25,7 @@ import advisorExtension, {
 } from "./index.ts";
 import { createAdvisorRunner } from "./runner.ts";
 import { DEFAULT_CONTEXT_BUDGET } from "./transcript.ts";
+import { ADVISOR_EXECUTOR_ROLE, PI_DEFAULT_OPENING } from "./prompt.ts";
 
 const roots: string[] = [];
 
@@ -158,9 +159,10 @@ describe("advisor extension", () => {
 		expect(advisorExtension).toEqual(expect.any(Function));
 		expect(configured.tools.get("advisor")).toMatchObject({
 		name: "advisor", label: "Advisor", executionMode: "sequential",
-		promptSnippet: expect.any(String), promptGuidelines: expect.arrayContaining([expect.stringContaining("advisor")]),
+		promptSnippet: expect.any(String),
 		parameters: expect.any(Object),
 		});
+		expect(configured.tools.get("advisor")).not.toHaveProperty("promptGuidelines");
 		expect(configured.tools.get("advisor").description).toContain("forwarded automatically");
 		await configured.handlers.get("session_start")({ reason: "startup" }, configured.ctx);
 		expect(configured.getActiveTools()).toContain("advisor");
@@ -172,7 +174,86 @@ describe("advisor extension", () => {
 		expect(disabled.getActiveTools()).not.toContain("advisor");
 	});
 
-	it("reads advisor settings from the session's profile file at session start", async () => {
+	it("reframes the default executor prompt when advisor is configured and active", async () => {
+		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
+		const harness = makePi({ settingsPath: path });
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+
+		const remainder = "\n\nAvailable tools:\n- read";
+		const result = await harness.handlers.get("before_agent_start")({
+			systemPrompt: `${PI_DEFAULT_OPENING}${remainder}`,
+		}, harness.ctx);
+
+		expect(result).toEqual({ systemPrompt: `${ADVISOR_EXECUTOR_ROLE}${remainder}` });
+	});
+
+	it("leaves the executor prompt unchanged when advisor is unconfigured", async () => {
+		const path = settingsFile({});
+		const harness = makePi({ settingsPath: path });
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+
+		const result = await harness.handlers.get("before_agent_start")({
+			systemPrompt: PI_DEFAULT_OPENING,
+		}, harness.ctx);
+
+		expect(result).toBeUndefined();
+	});
+
+	it("leaves the executor prompt unchanged when advisor is explicitly disabled", async () => {
+		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong", enabled: false } });
+		const harness = makePi({ settingsPath: path, activeTools: ["read", "advisor"] });
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+		harness.pi.setActiveTools(["read", "advisor"]);
+
+		const result = await harness.handlers.get("before_agent_start")({
+			systemPrompt: PI_DEFAULT_OPENING,
+		}, harness.ctx);
+
+		expect(result).toBeUndefined();
+	});
+
+	it("leaves the executor prompt unchanged when advisor is not an active tool", async () => {
+		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
+		const harness = makePi({ settingsPath: path });
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+		harness.pi.setActiveTools(["read"]);
+
+		const result = await harness.handlers.get("before_agent_start")({
+			systemPrompt: PI_DEFAULT_OPENING,
+		}, harness.ctx);
+
+		expect(result).toBeUndefined();
+	});
+
+	it("updates prompt framing immediately when advisor mode changes", async () => {
+		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
+		const harness = makePi({ settingsPath: path });
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+
+		const event = { systemPrompt: PI_DEFAULT_OPENING };
+		const enabled = await harness.handlers.get("before_agent_start")(event, harness.ctx);
+		expect(enabled).toEqual({ systemPrompt: ADVISOR_EXECUTOR_ROLE });
+
+		await harness.commands.get("advisor").handler("off", harness.ctx);
+		expect(harness.getActiveTools()).toContain("advisor");
+		const disabled = await harness.handlers.get("before_agent_start")(event, harness.ctx);
+		expect(disabled).toBeUndefined();
+
+		await harness.commands.get("advisor").handler("on", harness.ctx);
+		const on = await harness.handlers.get("before_agent_start")(event, harness.ctx);
+		expect(on).toEqual({ systemPrompt: ADVISOR_EXECUTOR_ROLE });
+
+		await harness.commands.get("advisor").handler("strict", harness.ctx);
+		const strict = await harness.handlers.get("before_agent_start")(event, harness.ctx);
+		expect(strict).toEqual({ systemPrompt: ADVISOR_EXECUTOR_ROLE });
+	});
+
+	it("reads advisor prompt settings from the session's profile file at session start", async () => {
 		const root = mkdtempSync(join(tmpdir(), "advisor-profile-"));
 		roots.push(root);
 		const settingsPath = join(root, "settings.json");
@@ -186,6 +267,8 @@ describe("advisor extension", () => {
 		createAdvisorExtension({ settingsPath })(harness.pi);
 		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
 		expect(harness.getActiveTools()).toContain("advisor");
+		const prompt = await harness.handlers.get("before_agent_start")({ systemPrompt: PI_DEFAULT_OPENING }, harness.ctx);
+		expect(prompt).toEqual({ systemPrompt: ADVISOR_EXECUTOR_ROLE });
 	});
 
 	it("ignores settings.json advisor values when the session has a profile", async () => {
@@ -203,6 +286,8 @@ describe("advisor extension", () => {
 		createAdvisorExtension({ settingsPath })(harness.pi);
 		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
 		expect(harness.getActiveTools()).not.toContain("advisor");
+		const prompt = await harness.handlers.get("before_agent_start")({ systemPrompt: PI_DEFAULT_OPENING }, harness.ctx);
+		expect(prompt).toBeUndefined();
 	});
 
 	it("keeps the session's profile on reload even when the marker changed", async () => {
@@ -462,7 +547,11 @@ describe("advisor extension", () => {
 			tools: ["advisor"],
 		});
 		try {
+			await session.session.bindExtensions({});
 			await session.session.prompt("Start the task");
+			const capturedContext = captured?.messages?.[0]?.content?.[0]?.text ?? "";
+			expect(capturedContext).toContain(JSON.stringify(ADVISOR_EXECUTOR_ROLE).slice(1, -1));
+			expect(capturedContext).toContain("Executor system prompt");
 			expect(JSON.stringify(captured?.messages ?? [])).toContain("Prose before the consultation.");
 			expect(JSON.stringify(captured?.messages ?? [])).not.toContain("advisor-call");
 		} finally {

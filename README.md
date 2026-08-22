@@ -33,9 +33,9 @@ The opt-in `tools-advisor` extension lets the executor consult one stronger, rea
 
 - `/advisor` opens the authenticated advisor-model picker.
 - `/advisor <provider>/<model>` selects a model directly.
-- `/advisor off` disables future consultations.
+- `/advisor off` disables future consultations and restores Pi's normal executor prompt on the next turn.
 
-The default budget is three consultations per session. The advisor receives the executor system prompt, active tool manifest, conversation, code, and tool output; selecting a different provider requires explicit confirmation. Advice is experimental and remains disabled until configured in the `advisor` namespace of `.pi/settings.json`.
+When advisor is enabled, the executor's opening role changes to describe the executor-advisor workflow. The default budget is three consultations per session. The advisor receives the executor system prompt, active tool manifest, conversation, code, and tool output; selecting a different provider requires explicit confirmation. Advice is experimental and remains disabled until configured in the `advisor` namespace of `.pi/settings.json`.
 
 ## Settings profiles
 
