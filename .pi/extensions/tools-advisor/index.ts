@@ -1,5 +1,6 @@
 import { dirname, join } from "node:path";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type {
 	ExtensionAPI,
@@ -16,7 +17,14 @@ import {
 	readSettingsDocument,
 } from "../_shared/settings-document.ts";
 import { createSessionProfileResolver } from "../_shared/active-profile.ts";
-import { pickSelectScreen, type SelectScreenItem } from "../_shared/select-screen.ts";
+import {
+	formatTokenCount,
+	modelKey,
+	pickModelConfiguration,
+	type ModelPickerSelection,
+} from "../_shared/model-picker.ts";
+import { pickSelectScreen } from "../_shared/select-screen.ts";
+import { resolveModelContext } from "../_shared/model-selection.ts";
 import { Text } from "@earendil-works/pi-tui";
 import { registerToolErrorHandler, renderToolMarkdown, renderToolSummary } from "../_shared/tool-result-ui.ts";
 import {
@@ -88,6 +96,39 @@ function nonNegativeInteger(value: unknown, fallback: number, label: string): nu
 	return value as number;
 }
 
+function optionalThinkingLevel(value: unknown): ModelThinkingLevel | undefined {
+	if (value === undefined) return undefined;
+	const levels: ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+	if (typeof value !== "string" || !levels.includes(value as ModelThinkingLevel)) {
+		throw new Error("advisor.thinkingLevel must be one of off, minimal, low, medium, high, xhigh, or max.");
+	}
+	return value as ModelThinkingLevel;
+}
+
+function optionalContextWindow(value: unknown): number | undefined {
+	if (value === undefined) return undefined;
+	if (!Number.isInteger(value) || (value as number) <= 0) {
+		throw new Error("advisor.contextWindow must be a positive integer.");
+	}
+	return value as number;
+}
+
+function safeThinkingLevel(value: unknown): ModelThinkingLevel | undefined {
+	try {
+		return optionalThinkingLevel(value);
+	} catch {
+		return undefined;
+	}
+}
+
+function safeContextWindow(value: unknown): number | undefined {
+	try {
+		return optionalContextWindow(value);
+	} catch {
+		return undefined;
+	}
+}
+
 const THINKING_MODES = ["all", "recent", "none"] as const;
 type AdvisorMode = "on" | "strict" | "off";
 
@@ -138,10 +179,14 @@ export function parseAdvisorSettings(document: unknown): AdvisorSettings {
 	}
 	if (!isRecord(raw)) throw new Error("advisor must be a JSON object.");
 	const enabled = optionalBoolean(raw.enabled, "enabled");
+	const thinkingLevel = optionalThinkingLevel(raw.thinkingLevel);
+	const contextWindow = optionalContextWindow(raw.contextWindow);
 	return {
 		provider: requiredOptionalString(raw.provider, "provider"),
 		modelId: requiredOptionalString(raw.modelId, "modelId"),
 		...(enabled === undefined ? {} : { enabled }),
+		...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+		...(contextWindow === undefined ? {} : { contextWindow }),
 		strict: raw.strict === undefined
 			? false
 			: typeof raw.strict === "boolean"
@@ -170,6 +215,8 @@ function serializedAdvisorSettings(settings: AdvisorSettings): Record<string, un
 		...(settings.provider ? { provider: settings.provider } : {}),
 		...(settings.modelId ? { modelId: settings.modelId } : {}),
 		...(settings.enabled === undefined ? {} : { enabled: settings.enabled }),
+		...(settings.thinkingLevel === undefined ? {} : { thinkingLevel: settings.thinkingLevel }),
+		...(settings.contextWindow === undefined ? {} : { contextWindow: settings.contextWindow }),
 		strict: settings.strict,
 		nudgeTurn: settings.nudgeTurn,
 		maxUses: settings.maxUses,
@@ -192,11 +239,38 @@ async function updateAdvisorSettings(
 	return next!;
 }
 
+/** Fill fields introduced after the original advisor settings format. */
+export async function migrateAdvisorSettings(
+	path: string,
+	ctx: ExtensionContext,
+): Promise<AdvisorSettings> {
+	const current = loadAdvisorSettings(path);
+	if (!current.provider || !current.modelId ||
+		(current.thinkingLevel !== undefined && current.contextWindow !== undefined)) {
+		return current;
+	}
+
+	const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false, providers: [current.provider], signal: ctx.signal });
+	if (refresh.aborted || refresh.errors.has(current.provider)) return current;
+	const catalogue = ctx.modelRegistry.find(current.provider, current.modelId);
+	if (!catalogue) return current;
+	const model = resolveModelContext(catalogue);
+	const thinkingLevel = current.thinkingLevel ?? clampThinkingLevel(model, "medium");
+	const contextWindow = current.contextWindow ?? model.contextWindow;
+	return updateAdvisorSettings(path, (settings) => ({
+		...settings,
+		thinkingLevel,
+		contextWindow,
+	}));
+}
+
 /** Disable without first validating the advisor namespace, so the kill switch works on malformed advisor settings. */
 async function disableAdvisorSettings(path: string): Promise<AdvisorSettings> {
 	let next: AdvisorSettings;
 	await mutateSettingsDocument(path, (document) => {
 		const raw = isRecord(document.advisor) ? document.advisor : {};
+		const thinkingLevel = safeThinkingLevel(raw.thinkingLevel);
+		const contextWindow = safeContextWindow(raw.contextWindow);
 		let contextBudget = DEFAULT_CONTEXT_BUDGET;
 		try {
 			contextBudget = parseContextBudget(raw.contextBudget);
@@ -206,6 +280,8 @@ async function disableAdvisorSettings(path: string): Promise<AdvisorSettings> {
 		next = {
 			provider: preservedOptionalString(raw.provider),
 			modelId: preservedOptionalString(raw.modelId),
+			...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+			...(contextWindow === undefined ? {} : { contextWindow }),
 			enabled: false,
 			strict: false,
 			nudgeTurn: Number.isInteger(raw.nudgeTurn) && (raw.nudgeTurn as number) > 0
@@ -224,52 +300,6 @@ async function disableAdvisorSettings(path: string): Promise<AdvisorSettings> {
 	return next!;
 }
 
-function modelKey(model: Pick<Model<Api>, "provider" | "id">): string {
-	return `${model.provider}/${model.id}`;
-}
-
-function availableAdvisorModels(ctx: ExtensionContext): Model<Api>[] {
-	const source = ctx.scopedModels.length > 0
-		? ctx.scopedModels.map((entry) => ctx.modelRegistry.find(entry.model.provider, entry.model.id) ?? entry.model)
-		: ctx.modelRegistry.getAvailable();
-	const unique = new Map<string, Model<Api>>();
-	for (const model of source) {
-		if (ctx.modelRegistry.hasConfiguredAuth(model)) unique.set(modelKey(model), model);
-	}
-	return [...unique.values()].sort((left, right) => modelKey(left).localeCompare(modelKey(right)));
-}
-
-async function selectAdvisorModel(
-	ctx: ExtensionContext,
-	models: readonly Model<Api>[],
-	currentValue?: string,
-): Promise<Model<Api> | undefined> {
-	if (ctx.mode !== "tui") {
-		const selected = await ctx.ui.select("Select advisor model", models.map(modelKey));
-		return models.find((model) => modelKey(model) === selected);
-	}
-	const items: SelectScreenItem[] = models.map((model) => ({
-		value: modelKey(model),
-		label: modelKey(model),
-		description: `${model.name} · ${model.contextWindow.toLocaleString()} context · ${model.input.includes("image") ? "text+image" : "text only"}`,
-		searchText: model.name,
-	}));
-	const selected = await pickSelectScreen(ctx, {
-		title: "Select advisor model",
-		items,
-		currentValue,
-		showCurrentMarker: Boolean(currentValue),
-		search: {
-			filter: (choices, query) => {
-				const normalized = query.trim().toLowerCase();
-				return choices.filter((choice) =>
-					choice.value.toLowerCase().includes(normalized) ||
-					choice.searchText?.toLowerCase().includes(normalized));
-			},
-		},
-	});
-	return models.find((model) => modelKey(model) === selected);
-}
 
 const ADVISOR_MODE_OPTIONS = [
 	{ value: "on", label: "on", description: "Advisor available; the model decides when to consult." },
@@ -301,10 +331,10 @@ function hasImagesInContext(ctx: ExtensionContext): boolean {
 	});
 }
 
-function parseModelReference(reference: string): { provider: string; modelId: string } | undefined {
+function isModelReferenceArgument(reference: string): boolean {
 	const slash = reference.indexOf("/");
-	if (slash <= 0 || slash === reference.length - 1) return undefined;
-	return { provider: reference.slice(0, slash), modelId: reference.slice(slash + 1) };
+	if (slash <= 0 || slash === reference.length - 1) return false;
+	return Boolean(reference.slice(0, slash).trim() && reference.slice(slash + 1).trim());
 }
 
 function errorText(error: unknown): string {
@@ -352,12 +382,21 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			if (ctx.hasUI) ctx.ui.setStatus("advisor", formatConfiguredAdvisorStatus(settings));
 		};
 
-		const loadForSession = (ctx: ExtensionContext): void => {
+		const loadForSession = async (ctx: ExtensionContext): Promise<void> => {
+			let loaded = true;
 			try {
 				settings = loadAdvisorSettings(settingsPath);
 			} catch (error) {
+				loaded = false;
 				settings = parseAdvisorSettings({});
 				notify(ctx, `Advisor is disabled because its settings are invalid: ${errorText(error)}`, "error");
+			}
+			if (loaded) {
+				try {
+					settings = await migrateAdvisorSettings(settingsPath, ctx);
+				} catch (error) {
+					notify(ctx, `Could not migrate advisor settings: ${errorText(error)}`, "warning");
+				}
 			}
 			const active = pi.getActiveTools();
 			if (settings.enabled !== false && settings.provider && settings.modelId) {
@@ -377,7 +416,13 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			}
 		};
 
-		const configureModel = async (model: Model<Api>, ctx: ExtensionContext, strict?: boolean): Promise<void> => {
+		const configureModel = async (
+			model: Model<Api>,
+			thinkingLevel: ModelThinkingLevel,
+			contextWindow: number,
+			ctx: ExtensionContext,
+			strict?: boolean,
+		): Promise<void> => {
 			if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
 				notify(ctx, `Advisor model ${modelKey(model)} is unavailable or unauthenticated.`, "error");
 				return;
@@ -409,6 +454,8 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 					enabled: true,
 					provider: model.provider,
 					modelId: model.id,
+					thinkingLevel,
+					contextWindow,
 					strict: strict ?? current.strict,
 					allowCrossProvider,
 				}));
@@ -416,11 +463,14 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				if (!active.includes("advisor")) pi.setActiveTools([...active, "advisor"]);
 				updateStatus(ctx);
 				warnAboutModel(model, ctx);
-				notify(ctx, `Advisor set to ${modelKey(model)}.`, "info");
+				notify(ctx, `Advisor set to ${modelKey(model)} · thinking ${thinkingLevel} · context ${formatTokenCount(contextWindow)}.`, "info");
 			} catch (error) {
 				notify(ctx, `Could not save advisor settings: ${errorText(error)}`, "error");
 			}
 		};
+
+		const hasCompleteSelection = (value: AdvisorSettings): boolean =>
+			Boolean(value.provider && value.modelId && value.thinkingLevel !== undefined && value.contextWindow !== undefined);
 
 		const setStrictMode = async (strict: boolean, ctx: ExtensionContext): Promise<void> => {
 			try {
@@ -428,7 +478,10 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				const active = pi.getActiveTools();
 				if (!active.includes("advisor")) pi.setActiveTools([...active, "advisor"]);
 				updateStatus(ctx);
-				notify(ctx, `Advisor strict mode ${strict ? "enabled" : "disabled"}.`, "info");
+				const detail = settings.provider && settings.modelId && settings.thinkingLevel && settings.contextWindow
+					? ` · ${settings.provider}/${settings.modelId} · thinking ${settings.thinkingLevel} · context ${formatTokenCount(settings.contextWindow)}`
+					: "";
+				notify(ctx, `Advisor strict mode ${strict ? "enabled" : "disabled"}.${detail}`, "info");
 			} catch (error) {
 				notify(ctx, `Could not save advisor settings: ${errorText(error)}`, "error");
 			}
@@ -531,8 +584,12 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				}
 
 				let desiredStrict: boolean | undefined;
-				let pickModel = false;
+				let needsPicker = false;
 				if (!reference) {
+					if (ctx.mode !== "tui") {
+						notify(ctx, "The full /advisor picker requires TUI mode.", "error");
+						return;
+					}
 					const currentMode: AdvisorMode = settings.enabled === false ? "off" : settings.strict ? "strict" : "on";
 					const mode = await selectAdvisorMode(ctx, currentMode);
 					if (!mode) return;
@@ -547,47 +604,47 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 						return;
 					}
 					desiredStrict = mode === "strict";
-					pickModel = true;
+					needsPicker = true;
 				} else if (normalized === "on" || normalized === "strict") {
 					desiredStrict = normalized === "strict";
-					if (settings.provider && settings.modelId) {
+					if (hasCompleteSelection(settings)) {
 						await setStrictMode(desiredStrict, ctx);
 						return;
 					}
-					pickModel = true;
+					needsPicker = true;
+				} else {
+					const message = isModelReferenceArgument(reference)
+						? "Direct advisor model arguments are not supported. Use /advisor to open the full picker."
+						: "Unknown /advisor argument. Accepted forms are /advisor, /advisor on, /advisor strict, and /advisor off.";
+					notify(ctx, message, "error");
+					return;
 				}
 
-				let selected: Model<Api> | undefined;
-				if (pickModel) {
-					try {
-						const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false });
-						if (refresh.aborted || refresh.errors.size > 0) throw new Error("Could not refresh the authenticated model catalogue.");
-					} catch (error) {
-						notify(ctx, errorText(error), "error");
-						return;
-					}
-					const models = availableAdvisorModels(ctx);
-					if (models.length === 0) {
-						notify(ctx, "No authenticated advisor models are available.", "error");
-						return;
-					}
-					const currentModel = settings.provider && settings.modelId
-						? `${settings.provider}/${settings.modelId}`
-						: undefined;
-					selected = await selectAdvisorModel(ctx, models, currentModel);
-				} else {
-					const parsed = parseModelReference(reference);
-					if (!parsed) {
-						notify(ctx, "Usage: /advisor, /advisor on, /advisor strict, /advisor <provider>/<model>, or /advisor off", "error");
-						return;
-					}
-					selected = ctx.modelRegistry.find(parsed.provider, parsed.modelId);
-					if (!selected || !ctx.modelRegistry.hasConfiguredAuth(selected)) {
-						notify(ctx, `Advisor model ${reference} is unavailable or unauthenticated.`, "error");
-						return;
-					}
+				if (!needsPicker) return;
+				if (ctx.mode !== "tui") {
+					notify(ctx, "The full /advisor picker requires TUI mode.", "error");
+					return;
 				}
-				if (selected) await configureModel(selected, ctx, desiredStrict);
+				const configuredModel = settings.provider && settings.modelId
+					? ctx.modelRegistry.find(settings.provider, settings.modelId)
+					: undefined;
+				let selection: ModelPickerSelection | undefined;
+				try {
+					selection = await pickModelConfiguration(ctx, {
+						previous: {
+							provider: settings.provider,
+							modelId: settings.modelId,
+							thinkingLevel: settings.thinkingLevel,
+							contextWindow: settings.contextWindow,
+						},
+						currentModel: configuredModel ? resolveModelContext(configuredModel) : undefined,
+					});
+				} catch (error) {
+					notify(ctx, errorText(error), "error");
+					return;
+				}
+				if (!selection) return;
+				await configureModel(selection.model, selection.thinkingLevel, selection.contextWindow, ctx, desiredStrict);
 			},
 		});
 
@@ -615,7 +672,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			// Point the advisor at the session's profile file; no profile means
 			// settings.json.
 			settingsPath = resolver.resolve(ctx.sessionManager.getBranch(), event.reason);
-			loadForSession(ctx);
+			await loadForSession(ctx);
 		});
 		pi.on("session_shutdown", async (_event, ctx) => {
 			if (ctx.hasUI) ctx.ui.setStatus("advisor", undefined);

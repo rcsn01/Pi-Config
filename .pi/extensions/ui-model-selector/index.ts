@@ -13,11 +13,9 @@
  */
 
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
-import { pickSelectScreen, type SelectScreenItem } from "../_shared/select-screen.ts";
 import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
 import {
 	installModelCommandHandler,
@@ -40,103 +38,12 @@ import {
 	type ProjectSettingsStore,
 } from "../_shared/model-selection-store.ts";
 import {
-	contextWindowChoices,
-	filterModels,
-	findExactModel,
 	formatTokenCount,
-	shouldOpenStartupModelSelector,
-} from "./model-config.ts";
-
-const THINKING_DESCRIPTIONS: Record<ModelThinkingLevel, string> = {
-	off: "No extended thinking",
-	minimal: "Fastest reasoning",
-	low: "Light reasoning",
-	medium: "Balanced reasoning",
-	high: "Deep reasoning",
-	xhigh: "Extra-high reasoning",
-	max: "Maximum reasoning",
-};
-
-function modelKey(model: Pick<Model<Api>, "provider" | "id">): string {
-	return `${model.provider}/${model.id}`;
-}
-
-function availableModels(ctx: ExtensionContext): Model<Api>[] {
-	const models = ctx.scopedModels.length > 0
-		? ctx.scopedModels.map((entry) =>
-			ctx.modelRegistry.find(entry.model.provider, entry.model.id) ?? entry.model)
-		: ctx.modelRegistry.getAvailable();
-	const unique = new Map<string, Model<Api>>();
-	for (const model of models) {
-		const configured = resolveModelContext(model);
-		unique.set(modelKey(configured), configured);
-	}
-	return [...unique.values()];
-}
-
-async function selectModel(
-	ctx: ExtensionContext,
-	models: readonly Model<Api>[],
-	initialQuery: string,
-): Promise<Model<Api> | undefined> {
-	if (ctx.mode !== "tui") return undefined;
-
-	const items: SelectScreenItem[] = models.map((model) => ({
-		value: modelKey(model),
-		label: modelKey(model),
-		description: `${model.name} · ${formatTokenCount(model.contextWindow)} · ${model.reasoning ? "thinking" : "no thinking"}`,
-		searchText: model.name,
-	}));
-	const itemsByValue = new Map(items.map((item) => [item.value, item]));
-	const selected = await pickSelectScreen(ctx, {
-		title: "Select model",
-		items,
-		currentValue: ctx.model ? modelKey(ctx.model) : undefined,
-		showCurrentMarker: Boolean(ctx.model),
-		search: {
-			initialQuery,
-			filter: (_choices, query) => filterModels(models, query)
-				.map((model) => itemsByValue.get(modelKey(model)))
-				.filter((item): item is SelectScreenItem => Boolean(item)),
-		},
-		columns: { minPrimaryColumnWidth: 28, maxPrimaryColumnWidth: 44 },
-	});
-	return models.find((model) => modelKey(model) === selected);
-}
-
-async function selectThinkingLevel(
-	ctx: ExtensionContext,
-	model: Model<Api>,
-	current: ModelThinkingLevel,
-): Promise<ModelThinkingLevel | undefined> {
-	const supported = getSupportedThinkingLevels(model);
-	const ordered = supported.includes(current)
-		? [current, ...supported.filter((level) => level !== current)]
-		: supported;
-	const choices = ordered.map((level) =>
-		`${level === current ? "●" : "○"} ${level} — ${THINKING_DESCRIPTIONS[level]}${level === current ? " (current)" : ""}`,
-	);
-	const selected = await ctx.ui.select(`Thinking · ${modelKey(model)}`, choices);
-	if (!selected) return undefined;
-	return ordered[choices.indexOf(selected)];
-}
-
-async function selectContextWindow(
-	ctx: ExtensionContext,
-	model: Model<Api>,
-): Promise<number | undefined> {
-	const windows = contextWindowChoices(model.contextWindow);
-	const current = ctx.model?.contextWindow;
-	const choices = windows.map((window, index) => {
-		const marker = window === current ? "●" : "○";
-		const description = index === 0 ? " — catalogue default" : "";
-		const currentNote = window === current ? " (current)" : "";
-		return `${marker} ${formatTokenCount(window)}${description}${currentNote}`;
-	});
-	const selected = await ctx.ui.select(`Context · ${modelKey(model)}`, choices);
-	if (!selected) return undefined;
-	return windows[choices.indexOf(selected)];
-}
+	modelKey,
+	pickModelConfiguration,
+	type ModelPickerPreviousSelection,
+} from "../_shared/model-picker.ts";
+import { shouldOpenStartupModelSelector } from "./model-config.ts";
 
 /**
  * Compact after a context-window reduction. Only kick compaction off while the
@@ -220,54 +127,44 @@ async function runModelControl(
 		return;
 	}
 
-	try {
-		const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false });
-		if (refresh.aborted) throw new Error("Model catalogue refresh was aborted.");
-		if (refresh.errors.size > 0) {
-			const details = [...refresh.errors.entries()]
-				.map(([provider, error]) => `${provider}: ${error.message}`)
-				.join("; ");
-			throw new Error(details);
-		}
-	} catch (error) {
-		ctx.ui.notify(
-			`Could not reload the model catalogue: ${error instanceof Error ? error.message : String(error)}`,
-			"error",
-		);
-		return;
-	}
-
 	const mode = currentSelectionMode(ctx);
-	const models = availableModels(ctx);
-	if (models.length === 0) {
-		ctx.ui.notify("No authenticated models are available.", "error");
-		return;
+	const liveThinking = typeof pi.getThinkingLevel === "function"
+		? pi.getThinkingLevel() as ModelThinkingLevel
+		: undefined;
+	let previous: ModelPickerPreviousSelection | undefined;
+	try {
+		const preferences = await settingsStore.load();
+		const profile = preferences.profiles[mode];
+		previous = profile && profile.provider !== DEFAULT_SENTINEL && profile.modelId !== DEFAULT_SENTINEL
+			? {
+				provider: profile.provider,
+				modelId: profile.modelId,
+				thinkingLevel: profile.thinkingLevel !== DEFAULT_SENTINEL ? profile.thinkingLevel : liveThinking,
+				contextWindow: typeof profile.contextWindow === "number" ? resolveContextWindow(profile.contextWindow) : undefined,
+			}
+			: undefined;
+	} catch (error) {
+		ctx.ui.notify(`Could not read the saved model selection: ${error instanceof Error ? error.message : String(error)}. Using picker defaults.`, "warning");
+		previous = undefined;
 	}
 
-	const query = args.trim();
-	const selectedModel = findExactModel(models, query) ?? await selectModel(ctx, models, query);
-	if (!selectedModel) return;
-
-	const thinkingLevel = await selectThinkingLevel(
-		ctx,
-		selectedModel,
-		pi.getThinkingLevel() as ModelThinkingLevel,
-	);
-	if (!thinkingLevel) return;
-
-	const contextWindow = await selectContextWindow(ctx, selectedModel);
-	if (!contextWindow) return;
-
-	const adjustedModel = contextWindow === selectedModel.contextWindow
-		? selectedModel
-		: { ...selectedModel, contextWindow };
+	const pickerSelection = await pickModelConfiguration(ctx, {
+		initialQuery: args.trim(),
+		previous: previous ?? {
+			provider: ctx.model?.provider,
+			modelId: ctx.model?.id,
+			thinkingLevel: liveThinking,
+		},
+		currentModel: ctx.model,
+	});
+	if (!pickerSelection) return;
 
 	try {
 		await confirmAndApplySelection(
 			pi,
 			ctx,
-			adjustedModel,
-			thinkingLevel,
+			pickerSelection.model,
+			pickerSelection.thinkingLevel,
 			mode,
 			settingsStore,
 		);

@@ -1,7 +1,18 @@
 import { createHash } from "node:crypto";
-import type { Api, AssistantMessage, Usage } from "@earendil-works/pi-ai";
-import { isContextOverflow } from "@earendil-works/pi-ai";
+import {
+	clampThinkingLevel,
+	isContextOverflow,
+	type Api,
+	type AssistantMessage,
+	type Context,
+	type Model,
+	type ModelThinkingLevel,
+	type ProviderHeaders,
+	type SimpleStreamOptions,
+	type Usage,
+} from "@earendil-works/pi-ai";
 import type { ExtensionContext, SessionEntry, ToolInfo } from "@earendil-works/pi-coding-agent";
+import { resolveModelContext } from "../_shared/model-selection.ts";
 import {
 	type AdvisorContextBudget,
 	projectTranscript,
@@ -29,6 +40,10 @@ export interface AdvisorSettings {
 	allowCrossProvider: boolean;
 	/** Omit to use DEFAULT_CONTEXT_BUDGET. */
 	contextBudget?: AdvisorContextBudget;
+	/** Semantic reasoning level selected in the advisor picker. */
+	thinkingLevel?: ModelThinkingLevel;
+	/** Context window selected in the advisor picker. */
+	contextWindow?: number;
 }
 
 export interface AdvisorToolDetails {
@@ -110,15 +125,25 @@ export function createAdvisorRunner(): AdvisorRunner {
 				`The advisor consultation budget for this turn is exhausted (${maxUses} uses per turn). Continue without another consultation; the budget resets on the next user message.`,
 			);
 		}
-		let model;
+		let model: Model<Api>;
+		let auth: Awaited<ReturnType<ExtensionContext["modelRegistry"]["getApiKeyAndHeaders"]>> | undefined;
 		try {
-			model = input.ctx.modelRegistry.find(input.settings.provider, input.settings.modelId);
-			if (!model) {
+			const catalogueModel = input.ctx.modelRegistry.find(input.settings.provider, input.settings.modelId);
+			if (!catalogueModel) {
 				return localFailure("advisor_model_unavailable", `Configured advisor model ${modelName} is unavailable.`);
 			}
-			if (!input.ctx.modelRegistry.hasConfiguredAuth(model)) {
+			const scopedModels = input.ctx.scopedModels ?? [];
+			if (
+				scopedModels.length > 0 &&
+				!scopedModels.some((entry) =>
+					entry.model.provider === catalogueModel.provider && entry.model.id === catalogueModel.id)
+			) {
+				return localFailure("advisor_model_unavailable", `Configured advisor model ${modelName} is outside this session's model scope.`);
+			}
+			if (!input.ctx.modelRegistry.hasConfiguredAuth(catalogueModel)) {
 				return localFailure("advisor_auth_unavailable", `No authentication is configured for advisor model ${modelName}.`);
 			}
+			model = resolveModelContext(catalogueModel);
 		} catch (error) {
 			return localFailure("advisor_preflight_error", error instanceof Error ? error.message : String(error));
 		}
@@ -131,6 +156,39 @@ export function createAdvisorRunner(): AdvisorRunner {
 				"advisor_cross_provider_denied",
 				`Cross-provider transfer to ${modelName} is not approved. Select it with /advisor and confirm the transfer first.`,
 			);
+		}
+
+		const configuredContextWindow = input.settings.contextWindow;
+		if (
+			configuredContextWindow !== undefined &&
+			(!Number.isInteger(configuredContextWindow) || configuredContextWindow <= 0 || configuredContextWindow > model.contextWindow)
+		) {
+			return localFailure(
+				"advisor_context_window_invalid",
+				`The saved advisor context window (${String(configuredContextWindow)}) exceeds the catalogue maximum of ${model.contextWindow}. Reopen /advisor and choose a valid context window.`,
+			);
+		}
+		if (configuredContextWindow !== undefined && configuredContextWindow !== model.contextWindow) {
+			model = { ...model, contextWindow: configuredContextWindow };
+		}
+		const thinkingLevel = clampThinkingLevel(model, input.settings.thinkingLevel ?? "medium");
+
+		const registry = input.ctx.modelRegistry;
+		if (typeof registry.getApiKeyAndHeaders !== "function" || typeof registry.getProvider !== "function") {
+			return localFailure("advisor_provider_unavailable", "The model registry does not expose a native simple-completion provider.");
+		}
+		let nativeProvider;
+		try {
+			auth = await registry.getApiKeyAndHeaders(model);
+			if (!auth?.ok) {
+				return localFailure("advisor_auth_unavailable", auth?.error ?? `No authentication is configured for advisor model ${modelName}.`);
+			}
+			nativeProvider = registry.getProvider(model.provider);
+			if (!nativeProvider) {
+				return localFailure("advisor_provider_unavailable", `The native provider for ${modelName} is unavailable.`);
+			}
+		} catch (error) {
+			return localFailure("advisor_preflight_error", error instanceof Error ? error.message : String(error));
 		}
 
 		let projection: ReturnType<typeof projectTranscript>;
@@ -168,20 +226,25 @@ export function createAdvisorRunner(): AdvisorRunner {
 		};
 		setStatus(true);
 		try {
-			const response = await input.ctx.modelRegistry.complete(
-			model,
-			{
+			const context: Context = {
 				systemPrompt: projection.systemPrompt,
 				messages: projection.messages,
 				tools: [],
-			},
-			{
+			};
+			const sessionId = deriveAdvisorSessionId(input.ctx.sessionManager.getSessionId(), resolvedModel);
+			const requestModel = auth?.ok && auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+			const headers = mergeProviderHeaders(model.headers, auth?.ok ? auth.headers : undefined);
+			const simpleOptions: SimpleStreamOptions = {
 				signal,
 				maxTokens: projection.effectiveMaxTokens,
 				cacheRetention: "short",
-				sessionId: deriveAdvisorSessionId(input.ctx.sessionManager.getSessionId(), resolvedModel),
-			},
-			);
+				sessionId,
+				...(auth?.ok && auth.apiKey === undefined ? {} : auth?.ok ? { apiKey: auth.apiKey } : {}),
+				...(headers && Object.keys(headers).length > 0 ? { headers } : {}),
+				...(auth?.ok && auth.env === undefined ? {} : auth?.ok ? { env: auth.env } : {}),
+				...(thinkingLevel === "off" ? {} : { reasoning: thinkingLevel }),
+			};
+			const response = await nativeProvider!.streamSimple(requestModel, context, simpleOptions).result();
 			return resultFromResponse(response, resolvedModel, () => {
 				inFlight--;
 			});
@@ -351,6 +414,22 @@ function configuredModelName(settings: AdvisorSettings): string {
 
 function validPositiveInteger(value: number | undefined, fallback: number): number {
 	return Number.isInteger(value) && value! > 0 ? value! : fallback;
+}
+
+function mergeProviderHeaders(
+	base: ProviderHeaders | undefined,
+	override: ProviderHeaders | undefined,
+): ProviderHeaders | undefined {
+	if (!base && !override) return undefined;
+	const merged: ProviderHeaders = { ...(base ?? {}) };
+	for (const [name, value] of Object.entries(override ?? {})) {
+		const lowerName = name.toLowerCase();
+		for (const existingName of Object.keys(merged)) {
+			if (existingName.toLowerCase() === lowerName) delete merged[existingName];
+		}
+		merged[name] = value;
+	}
+	return merged;
 }
 
 function hasNonzeroUsage(usage: unknown): boolean {

@@ -1,44 +1,20 @@
 /**
- * Picker-side model selection helpers for the custom /model selector.
+ * Startup and command-specific helpers for the custom /model selector.
  *
- * Parsing, validation, merging, and the apply path live in
- * `../_shared/model-selection.ts`; this module keeps only the searchable-picker
- * helpers and the startup-open decision.
+ * The model, thinking, and context picker lives in the shared model-picker
+ * module so advisor and executor selection cannot drift apart.
  */
 
-import type { ModelChoiceLike } from "../_shared/model-selection.ts";
-
+export {
+	contextWindowChoices,
+	filterModels,
+	findExactModel,
+	formatTokenCount,
+	THINKING_DESCRIPTIONS,
+} from "../_shared/model-picker.ts";
 export type { ModelChoiceLike } from "../_shared/model-selection.ts";
 
 export type SessionStartReason = "startup" | "reload" | "new" | "resume" | "fork";
-
-export function formatTokenCount(tokens: number): string {
-	if (tokens >= 1_000_000) {
-		const millions = tokens / 1_000_000;
-		return `${Number.isInteger(millions) ? millions.toFixed(0) : millions.toFixed(2)}M`;
-	}
-	if (tokens >= 1_000) {
-		const thousands = tokens / 1_000;
-		return `${Number.isInteger(thousands) ? thousands.toFixed(0) : thousands.toFixed(1)}K`;
-	}
-	return String(tokens);
-}
-
-/** Context-window presets below 128K are not offered by the picker. */
-const MIN_CONTEXT_WINDOW = 128_000;
-
-/**
- * Context-window presets for the picker: the catalogue window, half,
- * three-eighths, and a quarter. Rounded to whole tokens, deduplicated,
- * filtered to at least 128K, and descending (catalogue default first).
- */
-export function contextWindowChoices(catalogueWindow: number): number[] {
-	const fractions = [1, 1 / 2, 3 / 8, 1 / 4];
-	const windows = fractions.map((fraction) => Math.round(catalogueWindow * fraction));
-	return [...new Set(windows)]
-		.filter((window) => window >= MIN_CONTEXT_WINDOW)
-		.sort((left, right) => right - left);
-}
 
 export function hasExplicitModelArgument(argv: readonly string[]): boolean {
 	return argv.some((argument) => argument === "--model" || argument.startsWith("--model="));
@@ -52,45 +28,4 @@ export function shouldOpenStartupModelSelector(
 	if (hasExplicitModelArgument(argv)) return false;
 	if (reason === "new") return true;
 	return reason === "startup" && !hasConversationHistory;
-}
-
-export function findExactModel<T extends ModelChoiceLike>(models: readonly T[], reference: string): T | undefined {
-	const normalized = reference.trim().toLowerCase();
-	if (!normalized) return undefined;
-
-	const canonical = models.find(
-		(model) => `${model.provider}/${model.id}`.toLowerCase() === normalized,
-	);
-	if (canonical) return canonical;
-
-	const idMatches = models.filter((model) => model.id.toLowerCase() === normalized);
-	return idMatches.length === 1 ? idMatches[0] : undefined;
-}
-
-export function filterModels<T extends ModelChoiceLike>(models: readonly T[], query: string): T[] {
-	const normalized = query.trim().toLowerCase();
-	const terms = normalized.split(/\s+/).filter(Boolean);
-
-	return models
-		.map((model) => {
-			const canonical = `${model.provider}/${model.id}`.toLowerCase();
-			const id = model.id.toLowerCase();
-			const name = model.name.toLowerCase();
-			const searchText = `${canonical} ${name}`;
-			if (!terms.every((term) => searchText.includes(term))) return undefined;
-
-			let score = 100;
-			if (!normalized) score = 0;
-			else if (canonical === normalized) score = -100;
-			else if (id === normalized) score = -90;
-			else if (canonical.startsWith(normalized)) score = -70;
-			else if (id.startsWith(normalized)) score = -60;
-			else if (name.startsWith(normalized)) score = -50;
-			else score = terms.reduce((total, term) => total + searchText.indexOf(term), 0);
-
-			return { model, canonical, score };
-		})
-		.filter((entry): entry is { model: T; canonical: string; score: number } => entry !== undefined)
-		.sort((left, right) => left.score - right.score || left.canonical.localeCompare(right.canonical))
-		.map((entry) => entry.model);
 }
