@@ -62,6 +62,8 @@ function currentEntries(): any[] {
 
 function context(overrides: Record<string, unknown> = {}): any {
 	const entries = currentEntries();
+	const complete = vi.fn(async (..._args: unknown[]) => assistantResponse());
+	const streamSimple = vi.fn((model: unknown, context: unknown, options: unknown) => ({ result: () => complete(model, context, options) }));
 	return {
 		cwd: "/workspace",
 		model: { provider: "executor", id: "cheap" },
@@ -75,7 +77,9 @@ function context(overrides: Record<string, unknown> = {}): any {
 		modelRegistry: {
 			find: vi.fn(() => advisorModel),
 			hasConfiguredAuth: vi.fn(() => true),
-			complete: vi.fn(async () => assistantResponse()),
+			getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "test-key", headers: { "x-test": "yes" }, env: { TEST_ENV: "yes" } })),
+			getProvider: vi.fn(() => ({ streamSimple })),
+			complete,
 		},
 		...overrides,
 	};
@@ -146,6 +150,88 @@ describe("advisor runner", () => {
 			details: { model: "anthropic/strong", consumesBudget: true, truncated: false },
 			usage,
 		});
+	});
+
+	it("dispatches through the native provider with resolved credentials and semantic reasoning", async () => {
+		const ctx = context();
+		const resultResponse = assistantResponse();
+		const streamSimple = vi.fn((..._args: unknown[]) => ({ result: vi.fn(async () => resultResponse) }));
+		ctx.modelRegistry.getApiKeyAndHeaders.mockResolvedValue({
+			ok: true,
+			apiKey: "resolved-key",
+			headers: { "x-auth": "yes" },
+			env: { REGION: "test" },
+			baseUrl: "https://authenticated.invalid",
+		});
+		ctx.modelRegistry.getProvider.mockReturnValue({ streamSimple });
+
+		await createAdvisorRunner().execute(runInput(ctx, {
+			settings: {
+				provider: "anthropic", modelId: "strong", thinkingLevel: "high", contextWindow: 90_000,
+				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true,
+			},
+		}));
+
+		expect(streamSimple).toHaveBeenCalledOnce();
+		const [requestModel, requestContext, options] = streamSimple.mock.calls[0];
+		expect(requestModel).toMatchObject({ provider: "anthropic", id: "strong", baseUrl: "https://authenticated.invalid", contextWindow: 90_000 });
+		expect(requestContext).toMatchObject({ systemPrompt: expect.any(String), messages: expect.any(Array), tools: [] });
+		expect(options).toMatchObject({ apiKey: "resolved-key", headers: { "x-auth": "yes" }, env: { REGION: "test" }, reasoning: "high", cacheRetention: "short", maxTokens: 2048, sessionId: expect.stringMatching(/^advisor-/) });
+		expect(ctx.modelRegistry.complete).not.toHaveBeenCalled();
+
+		const offStream = vi.fn((..._args: unknown[]) => ({ result: vi.fn(async () => resultResponse) }));
+		ctx.modelRegistry.getProvider.mockReturnValue({ streamSimple: offStream });
+		await createAdvisorRunner().execute(runInput(ctx, {
+			settings: {
+				provider: "anthropic", modelId: "strong", thinkingLevel: "off", contextWindow: 90_000,
+				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true,
+			},
+		}));
+		expect(offStream.mock.calls[0][2]).not.toHaveProperty("reasoning");
+	});
+
+	it("rejects a saved context window above the normalized catalogue maximum", async () => {
+		const ctx = context();
+		const result = await createAdvisorRunner().execute(runInput(ctx, {
+			settings: {
+				provider: "anthropic", modelId: "strong", contextWindow: 100_001,
+				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true,
+			},
+		}));
+		expect(result.content[0].text).toMatch(/^advisor_context_window_invalid/);
+		expect(ctx.modelRegistry.getProvider).not.toHaveBeenCalled();
+	});
+
+	it("clamps a saved thinking level against the current family capabilities", async () => {
+		const deepseek = {
+			...advisorModel,
+			provider: "openai",
+			id: "deepseek-v4",
+			thinkingLevelMap: { off: "none", minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+		};
+		const ctx = context();
+		ctx.modelRegistry.find.mockReturnValue(deepseek);
+		const streamSimple = vi.fn((..._args: unknown[]) => ({ result: vi.fn(async () => assistantResponse()) }));
+		ctx.modelRegistry.getProvider.mockReturnValue({ streamSimple });
+		await createAdvisorRunner().execute(runInput(ctx, {
+			settings: {
+				provider: "openai", modelId: "deepseek-v4", thinkingLevel: "medium",
+				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true,
+			},
+		}));
+		expect(streamSimple.mock.calls[0][2]).toMatchObject({ reasoning: "high" });
+	});
+
+	it("rejects a configured model outside the session scope before auth or provider dispatch", async () => {
+		const ctx = context({ scopedModels: [{ model: { provider: "anthropic", id: "other" } }] });
+		const result = await createAdvisorRunner().execute(runInput(ctx));
+
+		expect(result.content[0].text).toMatch(/^advisor_model_unavailable/);
+		expect(result.details.consumesBudget).toBe(false);
+		expect(ctx.modelRegistry.hasConfiguredAuth).not.toHaveBeenCalled();
+		expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
+		expect(ctx.modelRegistry.getProvider).not.toHaveBeenCalled();
+		expect(ctx.modelRegistry.complete).not.toHaveBeenCalled();
 	});
 
 	it("returns visible fail-soft results for empty, truncated, aborted, and provider-error responses", async () => {
@@ -251,7 +337,8 @@ describe("advisor runner", () => {
 			modelRegistry: {
 				find: vi.fn(() => model),
 				hasConfiguredAuth: vi.fn(() => true),
-				complete: runtime.complete.bind(runtime),
+				getApiKeyAndHeaders: vi.fn(async () => ({ ok: true })),
+				getProvider: runtime.getProvider.bind(runtime),
 			},
 		});
 		const runner = createAdvisorRunner();

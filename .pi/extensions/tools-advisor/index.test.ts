@@ -39,6 +39,15 @@ const model: any = {
 	maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
 
+const legacyDeepSeekModel: any = {
+	...model,
+	provider: "deepseek",
+	id: "deepseek-v4",
+	name: "DeepSeek V4",
+	api: "openai-completions",
+	contextWindow: 128_000,
+};
+
 function settingsFile(value: unknown): string {
 	const root = mkdtempSync(join(tmpdir(), "advisor-index-"));
 	roots.push(root);
@@ -84,7 +93,7 @@ function makePi(options: {
 		ui: {
 			notify: vi.fn(),
 			confirm: vi.fn(async () => options.confirm ?? true),
-			select: vi.fn(),
+			select: vi.fn(async (_title: string, choices: string[]) => choices[0]),
 			custom: vi.fn(async () => customResults.shift()),
 			setStatus: vi.fn(),
 		},
@@ -138,6 +147,52 @@ describe("advisor settings", () => {
 		expect(() => parseAdvisorSettings({ advisor: { contextBudget: { thinking: "some" } } })).toThrow(/thinking/);
 		expect(() => parseAdvisorSettings({ advisor: { contextBudget: { recentMessages: -1 } } })).toThrow(/recentMessages/);
 		expect(() => parseAdvisorSettings({ advisor: { contextBudget: { toolSchemas: "yes" } } })).toThrow(/toolSchemas/);
+		expect(() => parseAdvisorSettings({ advisor: { thinkingLevel: "turbo" } })).toThrow(/thinkingLevel/);
+		expect(() => parseAdvisorSettings({ advisor: { contextWindow: 0 } })).toThrow(/contextWindow/);
+		expect(parseAdvisorSettings({ advisor: { thinkingLevel: "off", contextWindow: 128_000 } })).toMatchObject({ thinkingLevel: "off", contextWindow: 128_000 });
+	});
+});
+
+describe("advisor migration", () => {
+	it("fills legacy thinking and context in the active settings document", async () => {
+		const path = settingsFile({ advisor: { provider: "deepseek", modelId: "deepseek-v4", enabled: false } });
+		const harness = makePi({ settingsPath: path, availableModel: legacyDeepSeekModel });
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+
+		expect(loadAdvisorSettings(path)).toMatchObject({
+			provider: "deepseek",
+			modelId: "deepseek-v4",
+			enabled: false,
+			thinkingLevel: "high",
+			contextWindow: 256_000,
+		});
+	});
+
+	it("leaves an unavailable legacy model untouched", async () => {
+		const path = settingsFile({ advisor: { provider: "missing", modelId: "model" } });
+		const harness = makePi({ settingsPath: path });
+		harness.ctx.modelRegistry.find.mockReturnValue(undefined);
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+
+		expect(JSON.parse(readFileSync(path, "utf8")).advisor).toEqual({ provider: "missing", modelId: "model" });
+	});
+
+	it("migrates the profile selected by the session instead of the root settings document", async () => {
+		const root = mkdtempSync(join(tmpdir(), "advisor-migration-profile-"));
+		roots.push(root);
+		const settingsPath = join(root, "settings.json");
+		const profilesDirectory = join(root, "profiles");
+		mkdirSync(profilesDirectory);
+		writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+		writeFileSync(join(profilesDirectory, "focused.json"), JSON.stringify({ advisor: { provider: "deepseek", modelId: "deepseek-v4" } }));
+		const harness = makePi({ settingsPath, availableModel: legacyDeepSeekModel });
+		createAdvisorExtension({ settingsPath })(harness.pi);
+		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+
+		expect(JSON.parse(readFileSync(join(profilesDirectory, "focused.json"), "utf8")).advisor).toMatchObject({ thinkingLevel: "high", contextWindow: 256_000 });
+		expect(JSON.parse(readFileSync(settingsPath, "utf8")).advisor).toBeUndefined();
 	});
 });
 
@@ -312,15 +367,20 @@ describe("advisor extension", () => {
 		expect(harness.getActiveTools()).toContain("advisor");
 	});
 
-	it("supports direct selection, requires cross-provider consent, and writes atomically without losing settings", async () => {
+	it("uses the full picker, requires cross-provider consent, and writes atomically without losing settings", async () => {
 		const path = settingsFile({ compaction: { threshold: 0.1 }, other: { keep: true }, advisor: { maxUses: 2, maxTokens: 1000, strict: true } });
-		const harness = makePi({ settingsPath: path, model: { provider: "openai", id: "executor" }, confirm: true });
+		const harness = makePi({
+			settingsPath: path,
+			model: { provider: "openai", id: "executor" },
+			confirm: true,
+			customResults: ["on", "anthropic/strong"],
+		});
 		createAdvisorExtension({ settingsPath: path })(harness.pi);
-		await harness.commands.get("advisor").handler("anthropic/strong", harness.ctx);
+		await harness.commands.get("advisor").handler("", harness.ctx);
 		const saved = JSON.parse(readFileSync(path, "utf8"));
 		expect(saved).toMatchObject({
 			compaction: { threshold: 0.1 }, other: { keep: true },
-			advisor: { provider: "anthropic", modelId: "strong", maxUses: 2, maxTokens: 1000, strict: true, allowCrossProvider: true },
+			advisor: { provider: "anthropic", modelId: "strong", maxUses: 2, maxTokens: 1000, strict: false, allowCrossProvider: true, thinkingLevel: "medium", contextWindow: 100_000 },
 		});
 		expect(harness.ctx.ui.confirm).toHaveBeenCalledOnce();
 		expect(harness.getActiveTools()).toContain("advisor");
@@ -331,6 +391,7 @@ describe("advisor extension", () => {
 		expect(afterOff.advisor).toMatchObject({
 			provider: "anthropic", modelId: "strong", enabled: false,
 			maxUses: 2, maxTokens: 1000, strict: false, allowCrossProvider: false,
+			thinkingLevel: "medium", contextWindow: 100_000,
 		});
 		expect(harness.getActiveTools()).toContain("advisor");
 
@@ -360,11 +421,10 @@ describe("advisor extension", () => {
 		});
 	});
 
-	it("shows the three advisor modes before the model picker on a bare command", async () => {
+	it("requires TUI mode for the bare full picker", async () => {
 		const path = settingsFile({});
 		const harness = makePi({ settingsPath: path });
 		harness.ctx.mode = "print";
-		harness.ctx.ui.select.mockResolvedValueOnce("on").mockResolvedValueOnce(undefined);
 		createAdvisorExtension({ settingsPath: path })(harness.pi);
 		expect(harness.commands.get("advisor").getArgumentCompletions("")).toEqual([
 			{ value: "on", label: "on" },
@@ -372,8 +432,17 @@ describe("advisor extension", () => {
 			{ value: "off", label: "off" },
 		]);
 		await harness.commands.get("advisor").handler("", harness.ctx);
-		expect(harness.ctx.ui.select).toHaveBeenNthCalledWith(1, "Select advisor mode", ["on", "strict", "off"]);
-		expect(harness.ctx.ui.select).toHaveBeenNthCalledWith(2, "Select advisor model", ["anthropic/strong"]);
+		expect(harness.ctx.ui.select).not.toHaveBeenCalled();
+		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("TUI mode"), "error");
+	});
+
+	it("reports shared-picker refresh and catalogue failures instead of rejecting the command", async () => {
+		const path = settingsFile({});
+		const harness = makePi({ settingsPath: path, customResults: ["on"] });
+		harness.ctx.modelRegistry.getAvailable.mockReturnValue([]);
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.commands.get("advisor").handler("", harness.ctx);
+		expect(harness.ctx.ui.notify).toHaveBeenCalledWith("No authenticated models are available.", "error");
 	});
 
 	it("uses the shared TUI selectors for mode and model selection", async () => {
@@ -389,11 +458,13 @@ describe("advisor extension", () => {
 			provider: "anthropic",
 			modelId: "strong",
 			strict: true,
+			thinkingLevel: "medium",
+			contextWindow: 100_000,
 		});
 	});
 
 	it("flips strict mode without reopening the model picker when explicitly requested", async () => {
-		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
+		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong", thinkingLevel: "medium", contextWindow: 100_000 } });
 		const harness = makePi({ settingsPath: path });
 		createAdvisorExtension({ settingsPath: path })(harness.pi);
 		await harness.commands.get("advisor").handler("strict", harness.ctx);
@@ -472,19 +543,29 @@ describe("advisor extension", () => {
 		expect(harness.ctx.ui.setStatus).toHaveBeenNthCalledWith(2, "advisor", "advisor.s(a/strong)");
 	});
 
-	it("denies cross-provider selection without UI consent and filters unavailable direct models", async () => {
+	it("rejects direct advisor model arguments and points to the full picker", async () => {
 		const path = settingsFile({});
-		const denied = makePi({ settingsPath: path, model: { provider: "openai", id: "executor" }, confirm: false });
-		createAdvisorExtension({ settingsPath: path })(denied.pi);
-		await denied.commands.get("advisor").handler("anthropic/strong", denied.ctx);
+		const harness = makePi({ settingsPath: path });
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.commands.get("advisor").handler("anthropic/strong", harness.ctx);
 		expect(loadAdvisorSettings(path).provider).toBeUndefined();
-		expect(denied.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("cancel"), "info");
+		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(
+			"Direct advisor model arguments are not supported. Use /advisor to open the full picker.",
+			"error",
+		);
+	});
 
-		const missing = makePi({ settingsPath: path, availableModel: undefined });
-		missing.ctx.modelRegistry.find.mockReturnValue(undefined);
-		createAdvisorExtension({ settingsPath: path })(missing.pi);
-		await missing.commands.get("advisor").handler("anthropic/missing", missing.ctx);
-		expect(missing.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("unavailable"), "error");
+	it("reports generic unknown advisor arguments with the accepted forms", async () => {
+		const path = settingsFile({});
+		const harness = makePi({ settingsPath: path });
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.commands.get("advisor").handler("bogus", harness.ctx);
+
+		expect(loadAdvisorSettings(path).provider).toBeUndefined();
+		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(
+			"Unknown /advisor argument. Accepted forms are /advisor, /advisor on, /advisor strict, and /advisor off.",
+			"error",
+		);
 	});
 
 	it("keeps the advertised tool after /advisor off", async () => {
