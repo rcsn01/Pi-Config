@@ -96,7 +96,6 @@ function runInput(ctx: any, overrides: Partial<AdvisorRunInput> = {}): AdvisorRu
 			maxUses: 3,
 			maxUsesPerSession: 20,
 			maxTokens: 2048,
-			allowCrossProvider: true,
 		},
 		callId: "advisor-call",
 		question: "Should I change the parser interface?",
@@ -168,7 +167,7 @@ describe("advisor runner", () => {
 		await createAdvisorRunner().execute(runInput(ctx, {
 			settings: {
 				provider: "anthropic", modelId: "strong", thinkingLevel: "high", contextWindow: 90_000,
-				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true,
+				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
 			},
 		}));
 
@@ -184,7 +183,7 @@ describe("advisor runner", () => {
 		await createAdvisorRunner().execute(runInput(ctx, {
 			settings: {
 				provider: "anthropic", modelId: "strong", thinkingLevel: "off", contextWindow: 90_000,
-				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true,
+				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
 			},
 		}));
 		expect(offStream.mock.calls[0][2]).not.toHaveProperty("reasoning");
@@ -195,7 +194,7 @@ describe("advisor runner", () => {
 		const result = await createAdvisorRunner().execute(runInput(ctx, {
 			settings: {
 				provider: "anthropic", modelId: "strong", contextWindow: 100_001,
-				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true,
+				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
 			},
 		}));
 		expect(result.content[0].text).toMatch(/^advisor_context_window_invalid/);
@@ -216,7 +215,7 @@ describe("advisor runner", () => {
 		await createAdvisorRunner().execute(runInput(ctx, {
 			settings: {
 				provider: "openai", modelId: "deepseek-v4", thinkingLevel: "medium",
-				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true,
+				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
 			},
 		}));
 		expect(streamSimple.mock.calls[0][2]).toMatchObject({ reasoning: "high" });
@@ -255,7 +254,7 @@ describe("advisor runner", () => {
 		const ctx = context();
 		const settings: AdvisorSettings = {
 			provider: "anthropic", modelId: "strong", enabled: false, strict: false,
-			nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true,
+			nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
 		};
 		const result = await createAdvisorRunner().execute(runInput(ctx, { settings }));
 		expect(result.content[0].text).toMatch(/^advisor_off/);
@@ -267,7 +266,7 @@ describe("advisor runner", () => {
 		const entries = [...currentEntries()];
 		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
 		const runner = createAdvisorRunner();
-		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true };
+		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048 };
 		await runner.execute(runInput(ctx, { settings }));
 		entries.push({
 			type: "message", id: "advisor-result", parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
@@ -287,7 +286,7 @@ describe("advisor runner", () => {
 		const entries = [...currentEntries()];
 		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
 		const runner = createAdvisorRunner();
-		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true };
+		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048 };
 		await runner.execute(runInput(ctx, { settings }));
 		entries.push({
 			type: "message", id: "advisor-result", parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
@@ -309,7 +308,7 @@ describe("advisor runner", () => {
 		const entries = [...currentEntries()];
 		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
 		const runner = createAdvisorRunner();
-		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 1, maxTokens: 2048, allowCrossProvider: true };
+		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 1, maxTokens: 2048 };
 		await runner.execute(runInput(ctx, { settings }));
 		entries.push({
 			type: "message", id: "advisor-result", parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
@@ -324,6 +323,49 @@ describe("advisor runner", () => {
 		expect(ctx.modelRegistry.complete).toHaveBeenCalledOnce();
 		expect(second.content[0].text).toMatch(/^advisor_budget_exhausted/);
 		expect(second.details.consumesBudget).toBe(false);
+	});
+
+	it("treats a per-turn budget of 0 as unlimited", async () => {
+		const entries = [...currentEntries()];
+		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
+		const runner = createAdvisorRunner();
+		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 0, maxUsesPerSession: 20, maxTokens: 2048 };
+		for (let consultation = 0; consultation < 4; consultation++) {
+			const result = await runner.execute(runInput(ctx, { settings }));
+			expect(result.content[0].text).toBe("Use the narrow change and verify it.");
+			expect(result.details.consumesBudget).toBe(true);
+			entries.push({
+				type: "message", id: `advisor-result-${consultation}`, parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
+				message: {
+					role: "toolResult", toolCallId: "advisor-call", toolName: "advisor", isError: false,
+					content: [{ type: "text", text: "Advice" }],
+					details: { model: "anthropic/strong", consumesBudget: true, truncated: false }, timestamp: 0,
+				},
+			});
+		}
+		expect(ctx.modelRegistry.complete).toHaveBeenCalledTimes(4);
+	});
+
+	it("treats a session budget of 0 as unlimited", async () => {
+		const entries = [...currentEntries()];
+		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
+		const runner = createAdvisorRunner();
+		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 0, maxTokens: 2048 };
+		// Run past the finite default of 20 session uses to prove the 0 sentinel bypasses it.
+		for (let turn = 0; turn < 21; turn++) {
+			const result = await runner.execute(runInput(ctx, { settings }));
+			expect(result.details.consumesBudget).toBe(true);
+			entries.push({
+				type: "message", id: `advisor-result-${turn}`, parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
+				message: {
+					role: "toolResult", toolCallId: "advisor-call", toolName: "advisor", isError: false,
+					content: [{ type: "text", text: "Advice" }],
+					details: { model: "anthropic/strong", consumesBudget: true, truncated: false }, timestamp: 0,
+				},
+			});
+			entries.push({ type: "message", id: `user-${turn}`, parentId: `advisor-result-${turn}`, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "Next turn", timestamp: 0 } });
+		}
+		expect(ctx.modelRegistry.complete).toHaveBeenCalledTimes(21);
 	});
 
 	it("reuses the advisor cache identity and exposes faux-provider cache-read usage on a compatible second consultation", async () => {
@@ -342,14 +384,14 @@ describe("advisor runner", () => {
 			},
 		});
 		const runner = createAdvisorRunner();
-		const first = await runner.execute(runInput(ctx, { settings: { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true } }));
-		const second = await runner.execute(runInput(ctx, { settings: { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: true } }));
+		const first = await runner.execute(runInput(ctx, { settings: { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048 } }));
+		const second = await runner.execute(runInput(ctx, { settings: { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048 } }));
 		expect(first.usage?.cacheWrite).toBeGreaterThan(0);
 		expect(second.usage?.cacheRead).toBeGreaterThan(0);
 		expect(first.details.model).toBe(second.details.model);
 	});
 
-	it("rejects missing model/auth, denied cross-provider transfer, and explicit zero-usage overflow without consuming", async () => {
+	it("rejects missing model/auth and explicit zero-usage overflow without consuming budget", async () => {
 		const missingModel = context();
 		missingModel.modelRegistry.find.mockReturnValue(undefined);
 		let result = await createAdvisorRunner().execute(runInput(missingModel));
@@ -360,13 +402,6 @@ describe("advisor runner", () => {
 		missingAuth.modelRegistry.hasConfiguredAuth.mockReturnValue(false);
 		result = await createAdvisorRunner().execute(runInput(missingAuth));
 		expect(result.content[0].text).toMatch(/^advisor_auth_unavailable/);
-		expect(result.details.consumesBudget).toBe(false);
-
-		const denied = context();
-		result = await createAdvisorRunner().execute(runInput(denied, {
-			settings: { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, allowCrossProvider: false },
-		}));
-		expect(result.content[0].text).toMatch(/^advisor_cross_provider_denied/);
 		expect(result.details.consumesBudget).toBe(false);
 
 		const overflow = context();

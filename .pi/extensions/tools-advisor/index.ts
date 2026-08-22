@@ -173,7 +173,6 @@ export function parseAdvisorSettings(document: unknown): AdvisorSettings {
 			maxUses: DEFAULT_MAX_USES,
 			maxUsesPerSession: DEFAULT_MAX_USES_PER_SESSION,
 			maxTokens: DEFAULT_MAX_TOKENS,
-			allowCrossProvider: false,
 			contextBudget: DEFAULT_CONTEXT_BUDGET,
 		};
 	}
@@ -193,15 +192,10 @@ export function parseAdvisorSettings(document: unknown): AdvisorSettings {
 				? raw.strict
 				: (() => { throw new Error("advisor.strict must be a boolean."); })(),
 		nudgeTurn: positiveInteger(raw.nudgeTurn, DEFAULT_NUDGE_TURN, "nudgeTurn"),
-		// Per user turn; resets on each new user message.
-		maxUses: positiveInteger(raw.maxUses, DEFAULT_MAX_USES, "maxUses"),
-		maxUsesPerSession: positiveInteger(raw.maxUsesPerSession, DEFAULT_MAX_USES_PER_SESSION, "maxUsesPerSession"),
+		// Per user turn; resets on each new user message. 0 disables the limit.
+		maxUses: nonNegativeInteger(raw.maxUses, DEFAULT_MAX_USES, "maxUses"),
+		maxUsesPerSession: nonNegativeInteger(raw.maxUsesPerSession, DEFAULT_MAX_USES_PER_SESSION, "maxUsesPerSession"),
 		maxTokens: positiveInteger(raw.maxTokens, DEFAULT_MAX_TOKENS, "maxTokens"),
-		allowCrossProvider: raw.allowCrossProvider === undefined
-			? false
-			: typeof raw.allowCrossProvider === "boolean"
-				? raw.allowCrossProvider
-				: (() => { throw new Error("advisor.allowCrossProvider must be a boolean."); })(),
 		contextBudget: parseContextBudget(raw.contextBudget),
 	};
 }
@@ -222,7 +216,6 @@ function serializedAdvisorSettings(settings: AdvisorSettings): Record<string, un
 		maxUses: settings.maxUses,
 		maxUsesPerSession: settings.maxUsesPerSession,
 		maxTokens: settings.maxTokens,
-		allowCrossProvider: settings.allowCrossProvider,
 		contextBudget: settings.contextBudget ?? DEFAULT_CONTEXT_BUDGET,
 	};
 }
@@ -287,12 +280,11 @@ async function disableAdvisorSettings(path: string): Promise<AdvisorSettings> {
 			nudgeTurn: Number.isInteger(raw.nudgeTurn) && (raw.nudgeTurn as number) > 0
 				? raw.nudgeTurn as number
 				: DEFAULT_NUDGE_TURN,
-			maxUses: Number.isInteger(raw.maxUses) && (raw.maxUses as number) > 0 ? raw.maxUses as number : DEFAULT_MAX_USES,
-			maxUsesPerSession: Number.isInteger(raw.maxUsesPerSession) && (raw.maxUsesPerSession as number) > 0
+			maxUses: Number.isInteger(raw.maxUses) && (raw.maxUses as number) >= 0 ? raw.maxUses as number : DEFAULT_MAX_USES,
+			maxUsesPerSession: Number.isInteger(raw.maxUsesPerSession) && (raw.maxUsesPerSession as number) >= 0
 				? raw.maxUsesPerSession as number
 				: DEFAULT_MAX_USES_PER_SESSION,
 			maxTokens: Number.isInteger(raw.maxTokens) && (raw.maxTokens as number) > 0 ? raw.maxTokens as number : DEFAULT_MAX_TOKENS,
-			allowCrossProvider: false,
 			contextBudget,
 		};
 		return { ...document, advisor: serializedAdvisorSettings(next) };
@@ -427,27 +419,6 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				notify(ctx, `Advisor model ${modelKey(model)} is unavailable or unauthenticated.`, "error");
 				return;
 			}
-			const crossProvider = !!ctx.model && ctx.model.provider !== model.provider;
-			let allowCrossProvider = false;
-			if (crossProvider) {
-				if (settings.allowCrossProvider) {
-					allowCrossProvider = true;
-				} else {
-					if (!ctx.hasUI) {
-						notify(ctx, "Advisor selection denied: cross-provider transfer requires explicit confirmation in the UI.", "error");
-						return;
-					}
-					const approved = await ctx.ui.confirm(
-						"Cross-provider advisor",
-						`Send the executor system prompt, conversation, code, and tool output to ${modelKey(model)}?`,
-					);
-					if (!approved) {
-						notify(ctx, "Advisor selection cancelled; no context was transferred.", "info");
-						return;
-					}
-					allowCrossProvider = true;
-				}
-			}
 			try {
 				settings = await updateAdvisorSettings(settingsPath, (current) => ({
 					...current,
@@ -457,7 +428,6 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 					thinkingLevel,
 					contextWindow,
 					strict: strict ?? current.strict,
-					allowCrossProvider,
 				}));
 				const active = pi.getActiveTools();
 				if (!active.includes("advisor")) pi.setActiveTools([...active, "advisor"]);
@@ -653,10 +623,10 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			const branch = ctx.sessionManager.getBranch();
 			const currentAssistant = event.message.role === "assistant" ? event.message : undefined;
 			if (countAssistantTurns(branch, currentAssistant) < settings.nudgeTurn) return;
-			if (countAdvisorUses(branch, false) >= settings.maxUsesPerSession) return;
+			if (settings.maxUsesPerSession > 0 && countAdvisorUses(branch, false) >= settings.maxUsesPerSession) return;
 			const turnUses = countAdvisorUses(branch, true);
 			if (turnUses > 0) return;
-			if (turnUses >= settings.maxUses) return;
+			if (settings.maxUses > 0 && turnUses >= settings.maxUses) return;
 			if (countCustomMessages(branch, ADVISOR_NUDGE_CUSTOM_TYPE) > 0) return;
 			pi.sendMessage(
 				{

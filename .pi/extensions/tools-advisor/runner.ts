@@ -34,10 +34,11 @@ export interface AdvisorSettings {
 	enabled?: boolean;
 	strict: boolean;
 	nudgeTurn: number;
+	/** 0 disables the limit. */
 	maxUses: number;
+	/** 0 disables the limit. */
 	maxUsesPerSession: number;
 	maxTokens: number;
-	allowCrossProvider: boolean;
 	/** Omit to use DEFAULT_CONTEXT_BUDGET. */
 	contextBudget?: AdvisorContextBudget;
 	/** Semantic reasoning level selected in the advisor picker. */
@@ -110,16 +111,16 @@ export function createAdvisorRunner(): AdvisorRunner {
 		const branch = input.ctx.sessionManager.getBranch();
 		const turnUses = countTurnUses(branch);
 		const sessionUses = countSessionUses(branch);
-		const maxUses = validPositiveInteger(input.settings.maxUses, DEFAULT_MAX_USES);
-		const maxUsesPerSession = validPositiveInteger(input.settings.maxUsesPerSession, DEFAULT_MAX_USES_PER_SESSION);
+		const maxUses = validNonNegativeInteger(input.settings.maxUses, DEFAULT_MAX_USES);
+		const maxUsesPerSession = validNonNegativeInteger(input.settings.maxUsesPerSession, DEFAULT_MAX_USES_PER_SESSION);
 		// Session ceiling first: when both are hit, the terminal message must win.
-		if (sessionUses + inFlight >= maxUsesPerSession) {
+		if (maxUsesPerSession > 0 && sessionUses + inFlight >= maxUsesPerSession) {
 			return localFailure(
 				"advisor_budget_exhausted",
 				`The advisor consultation budget is exhausted (${maxUsesPerSession} uses per session). Continue without another consultation.`,
 			);
 		}
-		if (turnUses + inFlight >= maxUses) {
+		if (maxUses > 0 && turnUses + inFlight >= maxUses) {
 			return localFailure(
 				"advisor_turn_budget_exhausted",
 				`The advisor consultation budget for this turn is exhausted (${maxUses} uses per turn). Continue without another consultation; the budget resets on the next user message.`,
@@ -147,17 +148,6 @@ export function createAdvisorRunner(): AdvisorRunner {
 		} catch (error) {
 			return localFailure("advisor_preflight_error", error instanceof Error ? error.message : String(error));
 		}
-		if (
-			input.ctx.model &&
-			input.ctx.model.provider !== model.provider &&
-			!input.settings.allowCrossProvider
-		) {
-			return localFailure(
-				"advisor_cross_provider_denied",
-				`Cross-provider transfer to ${modelName} is not approved. Select it with /advisor and confirm the transfer first.`,
-			);
-		}
-
 		const configuredContextWindow = input.settings.contextWindow;
 		if (
 			configuredContextWindow !== undefined &&
@@ -410,6 +400,10 @@ function failure(
 
 function configuredModelName(settings: AdvisorSettings): string {
 	return settings.provider && settings.modelId ? `${settings.provider}/${settings.modelId}` : "(unconfigured)";
+}
+
+function validNonNegativeInteger(value: number | undefined, fallback: number): number {
+	return Number.isInteger(value) && value! >= 0 ? value! : fallback;
 }
 
 function validPositiveInteger(value: number | undefined, fallback: number): number {
