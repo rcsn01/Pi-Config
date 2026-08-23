@@ -1,7 +1,9 @@
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import planModeExtension, {
 	createPlanModeExtension,
 	PLAN_REVIEW_ACTIONS,
+	shouldExcludePlanWorkspacePath,
 } from "./index.ts";
 import type { ModeModelProfile } from "./model-profile.ts";
 import {
@@ -14,6 +16,14 @@ import {
 } from "./test-harness.ts";
 
 describe("Plan Mode tool policy integration", () => {
+	it("excludes the shared .pi link only on Windows", () => {
+		expect(shouldExcludePlanWorkspacePath(".pi", "win32")).toBe(true);
+		expect(shouldExcludePlanWorkspacePath(".pi", "darwin")).toBe(false);
+		expect(shouldExcludePlanWorkspacePath(".pi", "linux")).toBe(false);
+		expect(shouldExcludePlanWorkspacePath(join(".pi", "worktrees"), "win32")).toBe(true);
+		expect(shouldExcludePlanWorkspacePath(join(".pi", "worktrees"), "darwin")).toBe(true);
+	});
+
 	it("preserves the public entrypoint and Pi registration interfaces in order", () => {
 		const harness = createHarness();
 		expect(planModeExtension).toEqual(expect.any(Function));
