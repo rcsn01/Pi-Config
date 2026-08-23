@@ -55,7 +55,7 @@ describe("single subagent runner", () => {
 		expect(args).toEqual(expect.arrayContaining([
 			"--mode", "json", "--no-session", "--session-id",
 			deriveSubagentSessionId("main-session-123", "openai/test-model"),
-			"--no-skills", "--no-extensions", "--tools", "read",
+			"--no-skills", "--no-extensions", "--tools", "read,safe_bash",
 			"--model", "openai/test-model", "--thinking", "minimal", "Task: Inspect code",
 		]));
 		expect(args.some((value) => value.endsWith("tools/safe-bash.ts"))).toBe(true);
@@ -69,6 +69,44 @@ describe("single subagent runner", () => {
 		});
 		expect(progress.map((event) => event.type)).toEqual(["started", "tool_call", "tool_result", "message", "completed"]);
 		expect(updates.length).toBeGreaterThan(0);
+	});
+
+	it("loads repo_query for explorers alongside built-in tools", async () => {
+		const spawn = spawnHarness();
+		const explorer = agent({ name: "explorer", tools: ["read", "grep", "find", "ls", "repo_query"] });
+		const run = createSubagentRunner({
+			registry: memoryRegistry([explorer]),
+			config: memoryConfigStore(),
+			spawnProcess: spawn.spawnProcess,
+		});
+		const promise = run({ agent: "explorer", task: "map the repository", cwd: "/workspace" });
+		await waitForProcess(spawn.processes);
+		const [, args] = spawn.spawnProcess.mock.calls[0];
+		expect(args).toContain("--tools");
+		expect(args[args.indexOf("--tools") + 1]).toBe("read,grep,find,ls,repo_query");
+		expect(args.some((value) => value.endsWith("tools/repo-query.ts"))).toBe(true);
+		spawn.processes[0].emit("close", 0);
+		await promise;
+	});
+
+	it("allows custom-only agents to use their mapped tools", async () => {
+		const spawn = spawnHarness();
+		const researcher = agent({ name: "researcher", tools: ["ddg_search", "ddg_fetch"] });
+		const run = createSubagentRunner({
+			registry: memoryRegistry([researcher]),
+			config: memoryConfigStore(),
+			spawnProcess: spawn.spawnProcess,
+		});
+		const promise = run({ agent: "researcher", task: "research the topic", cwd: "/workspace" });
+		await waitForProcess(spawn.processes);
+		const [, args] = spawn.spawnProcess.mock.calls[0];
+		expect(args).toContain("--tools");
+		expect(args[args.indexOf("--tools") + 1]).toBe("ddg_search,ddg_fetch");
+		expect(args).not.toContain("--no-tools");
+		expect(args.filter((value) => value.endsWith("tools-web-search/index.ts"))).toHaveLength(1);
+		expect(args.filter((value) => value.endsWith("tools-web-fetch/index.ts"))).toHaveLength(1);
+		spawn.processes[0].emit("close", 0);
+		await promise;
 	});
 
 	it("keeps legacy ephemeral behavior when no cache-affinity seed is supplied", async () => {

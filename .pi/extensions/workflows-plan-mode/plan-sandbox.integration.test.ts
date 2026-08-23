@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -98,4 +98,55 @@ describe("Plan Bash OS sandbox", () => {
 			rmSync(externalFile, { force: true });
 		}
 	});
+
+	sandboxIt("links node_modules as a read-only host view with cwd mapping through the link", async () => {
+		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-sandbox-host-"));
+		mkdirSync(join(hostRoot, "node_modules", "dep"), { recursive: true });
+		writeFileSync(join(hostRoot, "node_modules", "dep", "index.txt"), "host-dep\n");
+		const workspace = await createPlanWorkspace(hostRoot);
+		const controller = createPlanSandboxController(workspace);
+		const output: Buffer[] = [];
+		const collect = (chunk: Buffer) => output.push(chunk);
+		try {
+			await controller.initialize();
+
+			// Reads through the link resolve to host content.
+			const readResult = await controller.operations.exec(
+				"cat node_modules/dep/index.txt",
+				hostRoot,
+				{ onData: collect },
+			);
+			expect(readResult.exitCode).toBe(0);
+			expect(Buffer.concat(output).toString("utf8")).toContain("host-dep\n");
+
+			// Writes through the link are denied by the OS sandbox; the host stays untouched.
+			const writeResult = await controller.operations.exec(
+				"printf 'evil\\n' > node_modules/dep/evil.txt",
+				hostRoot,
+				{ onData: collect },
+			);
+			expect(writeResult.exitCode).not.toBe(0);
+			expect(existsSync(join(hostRoot, "node_modules", "dep", "evil.txt"))).toBe(false);
+
+			// A cwd inside a linked directory maps through realpath into the copy.
+			const linkedCwd = join(hostRoot, "node_modules", "dep");
+			const cwdReadResult = await controller.operations.exec("cat index.txt", linkedCwd, { onData: collect });
+			expect(cwdReadResult.exitCode).toBe(0);
+
+			// Writes from a linked cwd are denied the same way.
+			const cwdWriteResult = await controller.operations.exec(
+				"printf 'evil\\n' > cwd-evil.txt",
+				linkedCwd,
+				{ onData: collect },
+			);
+			expect(cwdWriteResult.exitCode).not.toBe(0);
+			expect(existsSync(join(hostRoot, "node_modules", "dep", "cwd-evil.txt"))).toBe(false);
+		} finally {
+			await controller.dispose();
+			await workspace.dispose();
+			// Disposal unlinked the link without traversing into the host target.
+			expect(readFileSync(join(hostRoot, "node_modules", "dep", "index.txt"), "utf8")).toBe("host-dep\n");
+			rmSync(hostRoot, { recursive: true, force: true });
+		}
+	}, 30_000);
 });

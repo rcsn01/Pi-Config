@@ -11,6 +11,7 @@ export function formatDuration(ms: number): string {
 }
 
 export function formatToolArgsPreview(args: Record<string, unknown>): string {
+	if (Array.isArray(args.operations)) return `repo_query: ${args.operations.length} operations`;
 	if (args.command) return String(args.command).slice(0, 100);
 	if (args.path) return String(args.path);
 	if (args.query) return `"${String(args.query).slice(0, 80)}"`;

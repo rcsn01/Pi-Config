@@ -30,6 +30,7 @@ export const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 	ddg_search: path.join(EXT_BASE, "tools-web-search", "index.ts"),
 	ddg_fetch: path.join(EXT_BASE, "tools-web-fetch", "index.ts"),
 	safe_bash: path.join(TOOLS_DIR, "safe-bash.ts"),
+	repo_query: path.join(TOOLS_DIR, "repo-query.ts"),
 };
 
 export type SpawnSubagentProcess = (
@@ -78,14 +79,16 @@ async function buildPiArgs(
 	let args = [...piBin.baseArgs, "--mode", "json", "-p", "--no-session", "--no-skills"];
 	if (sessionId) args.push("--session-id", sessionId);
 
-	// Separate builtin tools from custom tools
-	const builtinTools: string[] = [];
+	// Separate the requested tool names from the extensions that provide custom tools.
+	// Pi's --tools allowlist applies to built-in and custom tools alike.
+	const enabledTools: string[] = [];
 	const extensionPaths = new Set<string>();
 
 	for (const tool of agent.tools) {
 		if (BUILTIN_TOOLS.has(tool)) {
-			builtinTools.push(tool);
+			enabledTools.push(tool);
 		} else if (CUSTOM_TOOL_EXTENSIONS[tool]) {
+			enabledTools.push(tool);
 			extensionPaths.add(CUSTOM_TOOL_EXTENSIONS[tool]);
 		}
 	}
@@ -93,10 +96,9 @@ async function buildPiArgs(
 	// Use --no-extensions then add only what we need
 	args.push("--no-extensions");
 
-	if (builtinTools.length > 0) {
-		args.push("--tools", builtinTools.join(","));
+	if (enabledTools.length > 0) {
+		args.push("--tools", enabledTools.join(","));
 	} else {
-		// No builtin tools needed — disable defaults so only extension tools are available
 		args.push("--no-tools");
 	}
 

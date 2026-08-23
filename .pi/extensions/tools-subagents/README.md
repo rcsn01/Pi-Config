@@ -5,7 +5,7 @@ A Pi extension that registers one `subagent` tool and runs specialized agents in
 | Agent | Tools | Purpose |
 |---|---|---|
 | **default** | read, bash | Small general delegated tasks |
-| **explorer** | read, grep, find, ls | Read-only codebase investigation |
+| **explorer** | read, grep, find, ls, repo_query | Read-only codebase investigation |
 | **worker** | read, write, edit, safe_bash | Bounded implementation and verification |
 | **researcher** | ddg_search, ddg_fetch | Web research and synthesis |
 | **judge** | read | Structured rubric-based evaluation |
@@ -32,6 +32,28 @@ The researcher uses the local `ddg_search` and `ddg_fetch` extensions. The worke
 ```
 
 Each subagent receives only its task and agent system prompt; it does not inherit the main conversation. Parallel execution defaults to four child processes.
+
+## Batched repository queries
+
+The explorer can use `repo_query` to run independent read-only repository operations in one call:
+
+```json
+{
+  "operations": [
+    { "id": "symbols", "kind": "grep", "pattern": "resolveLaunchConfiguration", "path": ".pi/extensions", "glob": "*.ts", "context": 2 },
+    { "id": "config", "kind": "read", "path": ".pi/extensions/tools-subagents/config.ts", "offset": 180, "limit": 100 },
+    { "id": "agent-files", "kind": "files", "query": "agent" }
+  ]
+}
+```
+
+Supported kinds are `read`, `grep`, `find`, `ls`, `files`, `git_status`, and `git_diff`. A batch has 1-24 operations and runs at most six at a time. Results stay in input order, failed operations are reported beside successful ones, and identical operations within a batch share the first result.
+
+`read` defaults to 200 lines and allows 1,000. `grep` defaults to 50 matches and allows 200, with at most 10 context lines. `find` defaults to 100 results and allows 500. `ls` defaults to 200 entries and allows 500. `files` defaults to 50 results and allows 200. Git operations use fixed status and diff modes and never include untracked file contents.
+
+Paths are resolved against the child working directory. Leading `@` is accepted, but lexical escapes and symlinks that resolve outside the directory are rejected. The tool is read-only, does not run shell commands or arbitrary Git arguments, and has no repository cache. Its complete result is capped at 50KB or 2,000 lines, with every operation header retained when output is truncated.
+
+For investigations, batch two or more independent requests first. Use a later batch only to fill an evidence gap. Keep the direct tools for one-off follow-ups, and do not repeat unchanged searches or excerpts.
 
 ## Model and Thinking Configuration
 
@@ -258,6 +280,8 @@ tools-subagents/
 ├── formatting.ts            # Token, duration, preview, and width formatting
 ├── test-harness.ts          # Shared focused-test adapters
 ├── agents/                  # Bundled agent definitions
+├── repo-query.ts            # Validation, concurrency, safety, and formatting
 └── tools/
+    ├── repo-query.ts        # Pi tool adapter
     └── safe-bash.ts         # Restricted child bash extension
 ```
