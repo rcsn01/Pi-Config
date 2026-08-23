@@ -20,6 +20,13 @@ export { PLAN_REVIEW_ACTIONS, reviewActionLabels } from "./plan-review.ts";
 export type { PlanReviewAction } from "./plan-review.ts";
 export type { PlanModeDependencies } from "./plan-lifecycle.ts";
 
+export function shouldExcludePlanWorkspacePath(
+	relPath: string,
+	platform: NodeJS.Platform = process.platform,
+): boolean {
+	return relPath === join(".pi", "worktrees") || (platform === "win32" && relPath === ".pi");
+}
+
 export function createPlanModeExtension(dependencies: PlanModeDependencies = {}) {
 	return (pi: ExtensionAPI) => registerPlanModeExtension(pi, dependencies);
 }
@@ -36,7 +43,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 				...options,
 				// Pi-managed worktrees are live mutable state the disposable
 				// workspace does not need; omit them from the copy.
-				shouldExclude: (relPath) => relPath === join(".pi", "worktrees"),
+				shouldExclude: shouldExcludePlanWorkspacePath,
 			})),
 	});
 	const planBash = createBashTool(process.cwd(), {
