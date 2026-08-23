@@ -84,6 +84,9 @@ describe("subagent extension interfaces", () => {
 	it("discovers bundled agents from the extension directory", () => {
 		const agents = loadAgents();
 		expect(agents.map((candidate) => candidate.name)).toEqual(expect.arrayContaining(BUNDLED_AGENTS));
+		expect(agents.find((candidate) => candidate.name === "explorer")?.tools).toEqual([
+			"read", "grep", "find", "ls", "repo_query",
+		]);
 		for (const name of BUNDLED_AGENTS) {
 			const bundled = agents.find((candidate) => candidate.name === name);
 			expect(bundled?.filePath, `missing file path for ${name}`).toBeTruthy();

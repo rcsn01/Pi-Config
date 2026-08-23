@@ -13,6 +13,10 @@ describe("subagent formatting", () => {
 		expect([999, 1000, 59999, 61000].map(formatDuration)).toEqual(["999ms", "1.0s", "60.0s", "1m1s"]);
 	});
 
+	it("formats repo_query progress by operation count", () => {
+		expect(formatToolArgsPreview({ operations: [{ kind: "read" }, { kind: "grep" }] })).toBe("repo_query: 2 operations");
+	});
+
 	it("formats tool argument previews with existing precedence and limits", () => {
 		expect(formatToolArgsPreview({ command: "echo ok", path: "/ignored" })).toBe("echo ok");
 		expect(formatToolArgsPreview({ query: "term" })).toBe('"term"');
