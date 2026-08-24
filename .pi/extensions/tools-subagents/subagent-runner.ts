@@ -21,6 +21,7 @@ import {
 } from "./config.ts";
 import { deriveSubagentSessionId } from "./cache-affinity.ts";
 import { formatToolArgsPreview } from "./formatting.ts";
+import { createSubagentTimingRecorder } from "./subagent-timing.ts";
 
 const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const TOOLS_DIR = path.join(EXT_DIR, "tools");
@@ -200,6 +201,7 @@ async function executeSubagent(
 	};
 
 	const startTime = Date.now();
+	const timing = createSubagentTimingRecorder();
 	const progress = result.progress;
 	let lastTool: string | undefined;
 	let lastToolArgs: string | undefined;
@@ -250,6 +252,7 @@ async function executeSubagent(
 			if (!line.trim()) return;
 			try {
 				const evt = JSON.parse(line) as any;
+				timing.recordEvent(evt);
 				progress.durationMs = Date.now() - startTime;
 
 				if (evt.type === "tool_execution_start") {
@@ -369,6 +372,7 @@ async function executeSubagent(
 	} catch {}
 
 	result.exitCode = exitCode;
+	result.timing = timing.finish();
 	progress.status = exitCode === 0 && !progress.error ? "completed" : "failed";
 	progress.durationMs = Date.now() - startTime;
 	if (progress.error) result.output = result.output || `Error: ${progress.error}`;

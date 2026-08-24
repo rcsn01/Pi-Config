@@ -179,7 +179,9 @@ Child processes use `--no-extensions` and then load only the extensions required
 2. Search and select `main`, an authenticated/scoped `provider/model`, or (for one subagent) `inherit`.
 3. Select a thinking level supported by that model, inherit the global setting, or use Pi's default behavior.
 
-The default tool view shows agent status, resolved model, task preview, recent tools, duration, and tokens. Expand the tool result to see the complete task, output, errors, and usage. The resolved model is recorded before the child's first response event, so progress starts with the intended assignment visible.
+The default tool view shows agent status, resolved model, task preview, recent tools, duration, and tokens. Expand the tool result to see the complete task, output, errors, usage, and timing diagnostics. Completed runs split wall time into child startup, model/provider phases, tool execution, and unclassified time. `repo_query` time and query/operation counts appear as a labeled subset of tool time. Concurrent tool intervals count once, so the categories do not exceed total wall time.
+
+Model/provider time includes provider queueing, network latency, and generation. It does not claim to measure hidden reasoning alone. A `~` marker means the child event stream was incomplete, usually after an abort, timeout, or process failure. Timing stays in structured tool details and the visual renderer; it is not appended to the subagent output sent to the main model. The resolved model is recorded before the child's first response event, so progress starts with the intended assignment visible.
 
 ## Registering Agents from Other Extensions
 
