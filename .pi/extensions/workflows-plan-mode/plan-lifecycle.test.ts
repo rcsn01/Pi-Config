@@ -96,50 +96,117 @@ describe("Plan Mode tool policy integration", () => {
 			.map((entry) => entry.data.revision)).toEqual([1, 2, 3]);
 	});
 
-	it("aborts in-flight work and discards all content from an older mode revision", async () => {
+	it("defers a busy Plan Mode exit until the agent settles without aborting or discarding output", async () => {
+		const pendingExecution = deferred<{ exitCode: number }>();
 		const pendingDispose = deferred<void>();
+		const exec = vi.fn(() => pendingExecution.promise);
+		const dispose = vi.fn(() => pendingDispose.promise);
 		const createSandbox = vi.fn(() => ({
-			operations: { exec: vi.fn(async () => ({ exitCode: 0 })) },
+			operations: { exec },
 			initialize: vi.fn(async () => {}),
-			dispose: vi.fn(() => pendingDispose.promise),
+			dispose,
 		}));
 		const harness = createHarness({ idle: false, dependencies: { createSandbox } });
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		await harness.tools.get("plan_bash").execute(
-			"tool-prepare", { command: "pwd" }, undefined, undefined, harness.ctx,
-		);
-		expect(createSandbox).toHaveBeenCalledOnce();
 		await harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		const execution = harness.tools.get("plan_bash").execute(
+			"tool-active", { command: "sleep 20" }, undefined, undefined, harness.ctx,
+		);
+		await vi.waitFor(() => expect(exec).toHaveBeenCalledOnce());
 
-		const exiting = harness.shortcuts.get("shift+tab").handler(harness.ctx);
-		await vi.waitFor(() => expect(harness.abort).toHaveBeenCalledOnce());
-		const [result] = await harness.emit("message_end", {
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+
+		expect(harness.abort).not.toHaveBeenCalled();
+		expect(dispose).not.toHaveBeenCalled();
+		expect(harness.getActiveToolNames()).toContain("plan_bash");
+		pendingExecution.resolve({ exitCode: 0 });
+		await expect(execution).resolves.toMatchObject({ content: expect.any(Array) });
+		const [messageResult] = await harness.emit("message_end", {
 			type: "message_end",
-			message: {
-				role: "assistant",
-				content: [
-					{ type: "text", text: "stale plan output" },
-					{ type: "toolCall", id: "stale-tool", name: "write", arguments: { path: "stale" } },
-				],
-			},
+			message: { role: "assistant", content: [{ type: "text", text: "completed plan output" }] },
 		});
-		expect(result.message.content).toEqual([{
-			type: "text",
-			text: expect.stringContaining("discarded because the runtime mode changed"),
-		}]);
+		expect(messageResult).toBeUndefined();
 
-		let nextPromptSettled = false;
-		const nextPrompt = harness.emit("before_agent_start", { systemPrompt: "BASE" }).then((results) => {
-			nextPromptSettled = true;
-			return results;
-		});
-		await Promise.resolve();
-		expect(nextPromptSettled).toBe(false);
+		harness.setIdle(true);
+		const settling = harness.emit("agent_settled", { type: "agent_settled" });
+		await vi.waitFor(() => expect(dispose).toHaveBeenCalledOnce());
+		expect(harness.getActiveToolNames()).toContain("plan_bash");
 
 		pendingDispose.resolve();
-		await exiting;
-		const [promptResult] = await nextPrompt;
+		await settling;
+		expect(harness.getActiveToolNames()).toContain("bash");
+		expect(harness.getActiveToolNames()).not.toContain("plan_bash");
+		const [promptResult] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
 		expect(promptResult.systemPrompt).toContain('<runtime mode="default" revision="2"/>');
+	});
+
+	it("coalesces busy toggles and enters Plan Mode only after the agent settles", async () => {
+		const stores = createProfileDependencies();
+		const createWorkspace = vi.fn();
+		const harness = createHarness({
+			branch: [], idle: false, model: normalModel, availableModels: [normalModel],
+			dependencies: { ...stores.dependencies, createWorkspace },
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		harness.setIdle(true);
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		expect(harness.appendedEntries).toHaveLength(0);
+		expect(harness.getActiveToolNames()).toContain("bash");
+
+		harness.setIdle(false);
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		expect(harness.appendedEntries).toHaveLength(0);
+		expect(harness.getActiveToolNames()).toContain("bash");
+		expect(createWorkspace).not.toHaveBeenCalled();
+
+		harness.setIdle(true);
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({ mode: "plan", revision: 1 });
+		expect(harness.getActiveToolNames()).toContain("plan_bash");
+		expect(createWorkspace).not.toHaveBeenCalled();
+	});
+
+	it("drops a queued switch when the session branch changes", async () => {
+		const stores = createProfileDependencies();
+		const harness = createHarness({
+			branch: [], idle: false, model: normalModel, availableModels: [normalModel],
+			dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+
+		await harness.emit("session_tree", { type: "session_tree" });
+		harness.setIdle(true);
+		await harness.emit("agent_settled", { type: "agent_settled" });
+
+		expect(harness.appendedEntries).toHaveLength(0);
+		expect(harness.getActiveToolNames()).toContain("bash");
+		expect(harness.getActiveToolNames()).not.toContain("plan_bash");
+	});
+
+	it("queues a busy /plan task and starts it in Plan Mode after the current run", async () => {
+		const stores = createProfileDependencies();
+		const harness = createHarness({
+			branch: [], idle: false, model: normalModel, availableModels: [normalModel],
+			dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		await harness.commands.get("plan").handler("inspect auth handling", harness.ctx);
+		expect(harness.appendedEntries).toHaveLength(0);
+		expect(harness.sendUserMessage).not.toHaveBeenCalled();
+		expect(harness.getActiveToolNames()).toContain("bash");
+
+		harness.setIdle(true);
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({
+			mode: "plan", prompt: "inspect auth handling", phase: "planning",
+		});
+		expect(harness.sendUserMessage).toHaveBeenCalledWith("inspect auth handling", undefined);
+		expect(harness.getActiveToolNames()).toContain("plan_bash");
 	});
 
 	it("blocks host Bash only while Plan Mode is active", async () => {

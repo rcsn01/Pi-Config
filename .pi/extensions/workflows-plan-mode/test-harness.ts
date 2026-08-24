@@ -80,6 +80,7 @@ export function createHarness(options: HarnessOptions = {}) {
 	let activeTools = [...(options.activeTools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"] )];
 	let currentModel = options.model;
 	let thinkingLevel = options.thinkingLevel ?? "medium";
+	let idle = options.idle ?? true;
 	const appendedEntries: Array<{ customType: string; data: any }> = [];
 	const registrations: string[] = [];
 	const abort = vi.fn();
@@ -156,7 +157,7 @@ export function createHarness(options: HarnessOptions = {}) {
 			getSessionFile: () => undefined,
 			getSessionId: () => "test-session",
 		},
-		isIdle: () => options.idle ?? true,
+		isIdle: () => idle,
 		hasPendingMessages: () => false,
 		abort,
 	} as unknown as ExtensionContext;
@@ -288,6 +289,9 @@ export function createHarness(options: HarnessOptions = {}) {
 		setModel,
 		setThinkingLevel,
 		abort,
+		setIdle: (nextIdle: boolean) => {
+			idle = nextIdle;
+		},
 		setCurrentModel: (model: any) => {
 			currentModel = model;
 		},
