@@ -6,7 +6,6 @@
  * Session profile binding at the Pi seam.
  */
 
-import { join } from "node:path";
 import { createBashTool } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
@@ -20,13 +19,6 @@ export { PLAN_REVIEW_ACTIONS, reviewActionLabels } from "./plan-review.ts";
 export type { PlanReviewAction } from "./plan-review.ts";
 export type { PlanModeDependencies } from "./plan-lifecycle.ts";
 
-export function shouldExcludePlanWorkspacePath(
-	relPath: string,
-	platform: NodeJS.Platform = process.platform,
-): boolean {
-	return relPath === join(".pi", "worktrees") || (platform === "win32" && relPath === ".pi");
-}
-
 export function createPlanModeExtension(dependencies: PlanModeDependencies = {}) {
 	return (pi: ExtensionAPI) => registerPlanModeExtension(pi, dependencies);
 }
@@ -38,13 +30,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	});
 	const lifecycle = createPlanLifecycle(pi, {
 		...dependencies,
-		createWorkspace: dependencies.createWorkspace ??
-			((hostRoot, options) => createPlanWorkspace(hostRoot, {
-				...options,
-				// Pi-managed worktrees are live mutable state the disposable
-				// workspace does not need; omit them from the copy.
-				shouldExclude: shouldExcludePlanWorkspacePath,
-			})),
+		createWorkspace: dependencies.createWorkspace ?? createPlanWorkspace,
 	});
 	const planBash = createBashTool(process.cwd(), {
 		operations: {

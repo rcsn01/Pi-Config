@@ -37,7 +37,22 @@ describe("createPlanWorkspace", () => {
 		}
 	});
 
-	it("cancels copying and removes its partial disposable root", async () => {
+	it("keeps the disposable temp directory separate for a workspace named tmp", async () => {
+		const parent = mkdtempSync(join(tmpdir(), "pi-plan-host-parent-"));
+		const hostRoot = join(parent, "tmp");
+		mkdirSync(hostRoot);
+		writeFileSync(join(hostRoot, "tracked.txt"), "host\n");
+		const workspace = await createPlanWorkspace(hostRoot);
+		try {
+			expect(workspace.tempRoot).not.toBe(workspace.sandboxRoot);
+			expect(readFileSync(join(workspace.sandboxRoot, "tracked.txt"), "utf8")).toBe("host\n");
+		} finally {
+			await workspace.dispose();
+			rmSync(parent, { recursive: true, force: true });
+		}
+	});
+
+	it("cancels before copying and leaves no disposable root", async () => {
 		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
 		writeFileSync(join(hostRoot, "tracked.txt"), "host\n");
 		const before = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("pi-plan-workspace-")));
@@ -57,10 +72,8 @@ describe("createPlanWorkspace", () => {
 		writeFileSync(join(hostRoot, "tracked.txt"), "host\n");
 		const workspace = await createPlanWorkspace(hostRoot);
 		try {
-			expect(readFileSync(join(workspace.sandboxRoot, "tracked.txt"), "utf8")).toBe("host\n");
 			writeFileSync(join(workspace.sandboxRoot, "tracked.txt"), "sandbox\n");
 			writeFileSync(join(workspace.sandboxRoot, "artifact.txt"), "generated\n");
-
 			expect(readFileSync(join(hostRoot, "tracked.txt"), "utf8")).toBe("host\n");
 			expect(existsSync(join(hostRoot, "artifact.txt"))).toBe(false);
 		} finally {
@@ -79,6 +92,7 @@ describe("createPlanWorkspace", () => {
 		const workspace = await createPlanWorkspace(hostRoot);
 		try {
 			expect(lstatSync(join(workspace.sandboxRoot, "outside-link")).isSymbolicLink()).toBe(true);
+			expect(readlinkSync(join(workspace.sandboxRoot, "outside-link"))).toBe(join(externalRoot, "outside.txt"));
 		} finally {
 			await workspace.dispose();
 			rmSync(hostRoot, { recursive: true, force: true });
@@ -86,101 +100,55 @@ describe("createPlanWorkspace", () => {
 		}
 	});
 
-	it("links node_modules directories at any depth instead of copying them", async () => {
+	it("copies dependency, environment, cache, and build directories as writable isolated trees", async () => {
 		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
-		mkdirSync(join(hostRoot, "node_modules", "dep"), { recursive: true });
-		writeFileSync(join(hostRoot, "node_modules", "dep", "index.js"), "module.exports = 1;\n");
-		mkdirSync(join(hostRoot, "packages", "demo", "node_modules"), { recursive: true });
-		writeFileSync(join(hostRoot, "packages", "demo", "node_modules", "nested.txt"), "nested\n");
-		writeFileSync(join(hostRoot, "packages", "demo", "index.ts"), "export {};\n");
+		const directories = ["node_modules", ".venv", ".pytest_cache", "target"];
+		for (const directory of directories) {
+			mkdirSync(join(hostRoot, directory), { recursive: true });
+			writeFileSync(join(hostRoot, directory, "state.txt"), "host\n");
+		}
 		const workspace = await createPlanWorkspace(hostRoot);
 		try {
-			const linked = join(workspace.sandboxRoot, "node_modules");
-			const nestedLinked = join(workspace.sandboxRoot, "packages", "demo", "node_modules");
-			expect(lstatSync(linked).isSymbolicLink()).toBe(true);
-			expect(lstatSync(nestedLinked).isSymbolicLink()).toBe(true);
-			expect(readlinkSync(linked)).toBe(realpathSync(join(hostRoot, "node_modules")));
-			expect(readlinkSync(nestedLinked)).toBe(realpathSync(join(hostRoot, "packages", "demo", "node_modules")));
-			// Reads through the link see host content.
-			expect(readFileSync(join(linked, "dep", "index.js"), "utf8")).toBe("module.exports = 1;\n");
-			expect(readFileSync(join(nestedLinked, "nested.txt"), "utf8")).toBe("nested\n");
-			// Non-linked content is still an isolated copy.
-			expect(lstatSync(join(workspace.sandboxRoot, "packages", "demo", "index.ts")).isFile()).toBe(true);
+			for (const directory of directories) {
+				const copied = join(workspace.sandboxRoot, directory);
+				expect(lstatSync(copied).isDirectory()).toBe(true);
+				expect(lstatSync(copied).isSymbolicLink()).toBe(false);
+				writeFileSync(join(copied, "state.txt"), "sandbox\n");
+				expect(readFileSync(join(hostRoot, directory, "state.txt"), "utf8")).toBe("host\n");
+			}
 		} finally {
 			await workspace.dispose();
 			rmSync(hostRoot, { recursive: true, force: true });
 		}
 	});
 
-	it("copies directories when shouldLink is overridden", async () => {
+	it("copies the complete tree including Pi-managed and repository metadata", async () => {
 		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
-		mkdirSync(join(hostRoot, "node_modules"));
-		writeFileSync(join(hostRoot, "node_modules", "dep.txt"), "dep\n");
-		const workspace = await createPlanWorkspace(hostRoot, { shouldLink: () => false });
+		for (const relPath of [join(".pi", "worktrees", "feature"), join(".pi", "repos", "snapshot"), ".git"]) {
+			mkdirSync(join(hostRoot, relPath), { recursive: true });
+			writeFileSync(join(hostRoot, relPath, "state"), relPath);
+		}
+		const workspace = await createPlanWorkspace(hostRoot);
 		try {
-			const copied = join(workspace.sandboxRoot, "node_modules");
-			expect(lstatSync(copied).isSymbolicLink()).toBe(false);
-			expect(lstatSync(copied).isDirectory()).toBe(true);
+			for (const relPath of [join(".pi", "worktrees", "feature"), join(".pi", "repos", "snapshot"), ".git"]) {
+				expect(readFileSync(join(workspace.sandboxRoot, relPath, "state"), "utf8")).toBe(relPath);
+			}
 		} finally {
 			await workspace.dispose();
 			rmSync(hostRoot, { recursive: true, force: true });
 		}
 	});
 
-	it("never links the workspace root, even when it is named node_modules", async () => {
-		const parent = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
-		const hostRoot = join(parent, "node_modules");
-		mkdirSync(hostRoot);
-		writeFileSync(join(hostRoot, "root.txt"), "root\n");
-		const workspace = await createPlanWorkspace(hostRoot);
-		try {
-			expect(lstatSync(workspace.sandboxRoot).isSymbolicLink()).toBe(false);
-			expect(readFileSync(join(workspace.sandboxRoot, "root.txt"), "utf8")).toBe("root\n");
-		} finally {
-			await workspace.dispose();
-			rmSync(parent, { recursive: true, force: true });
-		}
-	});
-
-	it("omits directories matched by shouldExclude", async () => {
+	it("uses the fs.cp fallback on win32", async () => {
 		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
-		mkdirSync(join(hostRoot, ".pi", "worktrees", "feature-x"), { recursive: true });
-		writeFileSync(join(hostRoot, ".pi", "worktrees", "feature-x", "index.ts"), "export {};\n");
 		writeFileSync(join(hostRoot, "tracked.txt"), "host\n");
 		const workspace = await createPlanWorkspace(hostRoot, {
-			shouldExclude: (relPath) => relPath === join(".pi", "worktrees"),
+			platform: "win32",
+			supportsCloning: async () => true,
+			runCloneCommand: async () => { throw new Error("must not clone"); },
 		});
 		try {
-			expect(existsSync(join(workspace.sandboxRoot, ".pi", "worktrees"))).toBe(false);
 			expect(readFileSync(join(workspace.sandboxRoot, "tracked.txt"), "utf8")).toBe("host\n");
-		} finally {
-			await workspace.dispose();
-			rmSync(hostRoot, { recursive: true, force: true });
-		}
-	});
-
-	it("dispose removes links without touching their host targets", async () => {
-		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
-		mkdirSync(join(hostRoot, "node_modules"));
-		writeFileSync(join(hostRoot, "node_modules", "keep.txt"), "keep\n");
-		const workspace = await createPlanWorkspace(hostRoot);
-		const planRoot = workspace.root;
-		await workspace.dispose();
-		try {
-			expect(existsSync(planRoot)).toBe(false);
-			expect(readFileSync(join(hostRoot, "node_modules", "keep.txt"), "utf8")).toBe("keep\n");
-		} finally {
-			rmSync(hostRoot, { recursive: true, force: true });
-		}
-	});
-
-	it("selects junction links on win32", async () => {
-		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
-		mkdirSync(join(hostRoot, "node_modules"));
-		const workspace = await createPlanWorkspace(hostRoot, { platform: "win32" });
-		try {
-			// On POSIX the symlink type argument is ignored; this exercises the branch.
-			expect(lstatSync(join(workspace.sandboxRoot, "node_modules")).isSymbolicLink()).toBe(true);
 		} finally {
 			await workspace.dispose();
 			rmSync(hostRoot, { recursive: true, force: true });
@@ -203,24 +171,21 @@ describe("createPlanWorkspace", () => {
 		}
 	}, 20_000);
 
-	it("produces equivalent trees with clone and fs.cp strategies", async () => {
+	it("produces equivalent complete trees with clone and fs.cp strategies", async () => {
 		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
 		const externalRoot = mkdtempSync(join(tmpdir(), "pi-plan-external-"));
 		mkdirSync(join(hostRoot, "nested", "node_modules"), { recursive: true });
 		mkdirSync(join(hostRoot, "nested", "kept"), { recursive: true });
-		mkdirSync(join(hostRoot, "excluded"));
 		writeFileSync(join(hostRoot, "root.txt"), "root\n");
 		writeFileSync(join(hostRoot, "-odd-name"), "odd\n");
 		writeFileSync(join(hostRoot, "nested", "kept", "script.sh"), "#!/bin/sh\n");
 		writeFileSync(join(hostRoot, "nested", "node_modules", "dep.js"), "dep\n");
-		writeFileSync(join(hostRoot, "excluded", "ignored.txt"), "ignored\n");
 		writeFileSync(join(externalRoot, "outside.txt"), "outside\n");
 		chmodSync(join(hostRoot, "nested"), 0o750);
 		chmodSync(join(hostRoot, "nested", "kept", "script.sh"), 0o751);
 		symlinkSync(join(externalRoot, "outside.txt"), join(hostRoot, "nested", "outside-link"));
-		const options = { shouldExclude: (relPath: string) => relPath === "excluded" };
-		const fallback = await createPlanWorkspace(hostRoot, { ...options, supportsCloning: async () => false });
-		const cloned = await createPlanWorkspace(hostRoot, { ...options, supportsCloning: async () => true });
+		const fallback = await createPlanWorkspace(hostRoot, { supportsCloning: async () => false });
+		const cloned = await createPlanWorkspace(hostRoot, { supportsCloning: async () => true });
 		try {
 			expect(describeTree(cloned.sandboxRoot)).toEqual(describeTree(fallback.sandboxRoot));
 		} finally {

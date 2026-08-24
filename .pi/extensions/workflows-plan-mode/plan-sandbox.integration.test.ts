@@ -99,7 +99,7 @@ describe("Plan Bash OS sandbox", () => {
 		}
 	});
 
-	sandboxIt("links node_modules as a read-only host view with cwd mapping through the link", async () => {
+	sandboxIt("keeps node_modules writable in the clone without touching the host", async () => {
 		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-sandbox-host-"));
 		mkdirSync(join(hostRoot, "node_modules", "dep"), { recursive: true });
 		writeFileSync(join(hostRoot, "node_modules", "dep", "index.txt"), "host-dep\n");
@@ -110,7 +110,7 @@ describe("Plan Bash OS sandbox", () => {
 		try {
 			await controller.initialize();
 
-			// Reads through the link resolve to host content.
+			// Dependencies are present in the complete workspace clone.
 			const readResult = await controller.operations.exec(
 				"cat node_modules/dep/index.txt",
 				hostRoot,
@@ -119,32 +119,33 @@ describe("Plan Bash OS sandbox", () => {
 			expect(readResult.exitCode).toBe(0);
 			expect(Buffer.concat(output).toString("utf8")).toContain("host-dep\n");
 
-			// Writes through the link are denied by the OS sandbox; the host stays untouched.
+			// Dependency writes stay inside the disposable clone.
 			const writeResult = await controller.operations.exec(
 				"printf 'evil\\n' > node_modules/dep/evil.txt",
 				hostRoot,
 				{ onData: collect },
 			);
-			expect(writeResult.exitCode).not.toBe(0);
+			expect(writeResult.exitCode).toBe(0);
+			expect(readFileSync(join(workspace.sandboxRoot, "node_modules", "dep", "evil.txt"), "utf8")).toBe("evil\n");
 			expect(existsSync(join(hostRoot, "node_modules", "dep", "evil.txt"))).toBe(false);
 
-			// A cwd inside a linked directory maps through realpath into the copy.
+			// A cwd inside a dependency directory maps into the clone.
 			const linkedCwd = join(hostRoot, "node_modules", "dep");
 			const cwdReadResult = await controller.operations.exec("cat index.txt", linkedCwd, { onData: collect });
 			expect(cwdReadResult.exitCode).toBe(0);
 
-			// Writes from a linked cwd are denied the same way.
+			// Writes from that cwd also stay in the clone.
 			const cwdWriteResult = await controller.operations.exec(
 				"printf 'evil\\n' > cwd-evil.txt",
 				linkedCwd,
 				{ onData: collect },
 			);
-			expect(cwdWriteResult.exitCode).not.toBe(0);
+			expect(cwdWriteResult.exitCode).toBe(0);
+			expect(readFileSync(join(workspace.sandboxRoot, "node_modules", "dep", "cwd-evil.txt"), "utf8")).toBe("evil\n");
 			expect(existsSync(join(hostRoot, "node_modules", "dep", "cwd-evil.txt"))).toBe(false);
 		} finally {
 			await controller.dispose();
 			await workspace.dispose();
-			// Disposal unlinked the link without traversing into the host target.
 			expect(readFileSync(join(hostRoot, "node_modules", "dep", "index.txt"), "utf8")).toBe("host-dep\n");
 			rmSync(hostRoot, { recursive: true, force: true });
 		}

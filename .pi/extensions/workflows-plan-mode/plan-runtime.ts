@@ -201,9 +201,12 @@ export function createPlanRuntimeCoordinator(
 
 	return {
 		warm(root) {
-			void start(root).catch(() => {});
+			if (phase === "disposing" || disposePromise) return;
+			if ((attempt || readyBundle?.sandbox) && hostRoot !== root) return;
+			hostRoot = root;
 		},
 		async require(signal) {
+			if (signal?.aborted) throw abortError();
 			if (phase === "disposing" || disposePromise) {
 				throw new Error("Plan Runtime is being disposed.");
 			}
