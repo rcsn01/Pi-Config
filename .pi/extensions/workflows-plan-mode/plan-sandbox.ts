@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
+import { killProcessGroup } from "../_shared/process.ts";
 import type { PlanWorkspace } from "./plan-workspace.ts";
 
 interface SandboxRuntime {
@@ -42,16 +43,6 @@ export interface PlanSandboxController {
 	operations: BashOperations;
 	initialize(): Promise<void>;
 	dispose(): Promise<void>;
-}
-
-function killProcessGroup(child: ReturnType<typeof spawn>): void {
-	if (!child.pid) return;
-	try {
-		if (process.platform === "win32") child.kill("SIGKILL");
-		else process.kill(-child.pid, "SIGKILL");
-	} catch {
-		try { child.kill("SIGKILL"); } catch { /* already exited */ }
-	}
 }
 
 const runSandboxed: RunSandboxed = (argv, options) => new Promise((resolvePromise, rejectPromise) => {
