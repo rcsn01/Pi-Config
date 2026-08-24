@@ -31,6 +31,16 @@ export interface GitFacts {
 	clean: boolean;
 }
 
+export interface WorkingTreeDiffOptions extends GitRunOptions {
+	includeUntrackedContent?: boolean;
+	paths?: readonly string[];
+}
+
+interface GitPathScope {
+	pathArgs: string[];
+	repositoryRoot?: string;
+}
+
 export type GitDiffMode = "all" | "staged" | "unstaged" | "summary" | "uncommitted" | "custom";
 
 export async function runGit(
@@ -151,15 +161,27 @@ export function truncateText(text: string, maxChars: number): { text: string; tr
 
 export async function readSmallUntrackedFiles(
 	cwd: string,
-	options: GitRunOptions & { maxFiles?: number; maxBytesPerFile?: number } = {},
+	options: GitRunOptions & { maxFiles?: number; maxBytesPerFile?: number; paths?: readonly string[] } = {},
+): Promise<string> {
+	const scope = await resolveGitPathScope(cwd, options.paths, options);
+	return readSmallUntrackedFilesInScope(cwd, options, scope);
+}
+
+async function readSmallUntrackedFilesInScope(
+	cwd: string,
+	options: GitRunOptions & { maxFiles?: number; maxBytesPerFile?: number },
+	scope: GitPathScope,
 ): Promise<string> {
 	const maxFiles = options.maxFiles ?? 20;
 	const maxBytesPerFile = options.maxBytesPerFile ?? 20_000;
-	const { stdout } = await runGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z"], options);
+	const args = ["ls-files", "--others", "--exclude-standard", "-z"];
+	if (scope.pathArgs.length > 0) args.push("--full-name");
+	args.push(...scope.pathArgs);
+	const { stdout } = await runGit(cwd, args, options);
 	const allFiles = stdout.split("\0").filter(Boolean);
 	const parts: string[] = [];
 	for (const file of allFiles.slice(0, maxFiles)) {
-		const absolutePath = path.resolve(cwd, file);
+		const absolutePath = path.resolve(scope.repositoryRoot ?? cwd, file);
 		if (!isWithinRoot(absolutePath, path.resolve(cwd))) {
 			parts.push(`--- ${file} ---\n[skipped: path outside repository]`);
 			continue;
@@ -184,9 +206,10 @@ export async function readSmallUntrackedFiles(
 export async function collectWorkingTreeDiff(
 	cwd: string,
 	mode: GitDiffMode = "all",
-	options: GitRunOptions & { includeUntrackedContent?: boolean } = {},
+	options: WorkingTreeDiffOptions = {},
 ): Promise<string> {
-	const git = (args: string[]) => runGit(cwd, args, options);
+	const scope = await resolveGitPathScope(cwd, options.paths, options);
+	const git = (args: string[]) => runGit(cwd, [...args, ...scope.pathArgs], options);
 	switch (mode) {
 		case "staged": {
 			const stat = await git(["diff", "--cached", "--stat"]);
@@ -222,8 +245,13 @@ export async function collectWorkingTreeDiff(
 			const staged = await git(["diff", "--cached"]);
 			const unstaged = await git(["diff"]);
 			const untracked = options.includeUntrackedContent
-				? await readSmallUntrackedFiles(cwd, options)
-				: (await git(["ls-files", "--others", "--exclude-standard"])).stdout;
+				? await readSmallUntrackedFilesInScope(cwd, options, scope)
+				: (await git([
+					"ls-files",
+					"--others",
+					"--exclude-standard",
+					...(scope.pathArgs.length > 0 ? ["--full-name"] : []),
+				])).stdout;
 			const parts: string[] = [];
 			if (status.stdout.trim()) parts.push("### Status\n" + status.stdout);
 			if (staged.stdout.trim()) parts.push("### Staged Changes\n" + staged.stdout);
@@ -232,6 +260,47 @@ export async function collectWorkingTreeDiff(
 			return parts.join("\n\n") || "(no changes)";
 		}
 	}
+}
+
+async function resolveGitPathScope(
+	cwd: string,
+	paths: readonly string[] | undefined,
+	options: GitRunOptions,
+): Promise<GitPathScope> {
+	if (paths === undefined) return { pathArgs: [] };
+	const [{ stdout: topLevel }, { stdout: prefixOutput }] = await Promise.all([
+		runGit(cwd, ["rev-parse", "--show-toplevel"], options),
+		runGit(cwd, ["rev-parse", "--show-prefix"], options),
+	]);
+	const reportedRoot = path.resolve(topLevel.trim());
+	const prefix = prefixOutput.replace(/[\r\n]+$/, "");
+	const depth = prefix.split("/").filter(Boolean).length;
+	const repositoryRoot = path.resolve(cwd, ...Array.from({ length: depth }, () => ".."));
+	if (await fs.realpath(repositoryRoot) !== await fs.realpath(reportedRoot)) {
+		throw new Error("Git repository root does not match the working directory.");
+	}
+	const relativePaths = new Set<string>();
+
+	for (const suppliedPath of paths) {
+		if (typeof suppliedPath !== "string" || suppliedPath.trim() === "") {
+			throw new Error("Git diff paths must be non-empty strings.");
+		}
+		const absolutePath = path.resolve(cwd, suppliedPath);
+		if (!isWithinRoot(absolutePath, repositoryRoot)) {
+			throw new Error(`Git diff path is outside the repository: ${suppliedPath}`);
+		}
+		const relativePath = path.relative(repositoryRoot, absolutePath);
+		if (relativePath === "") return { pathArgs: [] };
+		relativePaths.add(relativePath.split(path.sep).join("/"));
+	}
+
+	const pathspecs = [...relativePaths]
+		.sort()
+		.map((relativePath) => `:(top,literal)${relativePath}`);
+	return {
+		pathArgs: pathspecs.length > 0 ? ["--", ...pathspecs] : [],
+		repositoryRoot,
+	};
 }
 
 function isWithinRoot(target: string, root: string): boolean {

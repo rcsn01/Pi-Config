@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -138,6 +138,77 @@ describe("repo_query module", () => {
 			deduplicatedFrom: "first",
 			success: true,
 		});
+	});
+
+	it("normalizes, sorts, and deduplicates git diff paths", async () => {
+		const root = fixture();
+		mkdirSync(join(root, "src"));
+		writeFileSync(join(root, "src", "one.ts"), "one");
+		writeFileSync(join(root, "src", "two.ts"), "two");
+		const seen: any[] = [];
+
+		await run(root, [
+			{ id: "one", kind: "git_diff", mode: "summary", paths: ["@src/two.ts", "src/one.ts", "src/two.ts"] },
+			{ id: "several", kind: "git_diff", mode: "unstaged", paths: ["src", "src/one.ts"] },
+		], async (operation) => {
+			seen.push(operation);
+			return "ok";
+		});
+
+		expect(seen[0].paths).toEqual([
+			resolve(root, "src", "one.ts"),
+			resolve(root, "src", "two.ts"),
+		]);
+		expect(seen[1].paths).toEqual([resolve(root, "src"), resolve(root, "src", "one.ts")]);
+	});
+
+	it("deduplicates equivalent git diff path sets regardless of input order", async () => {
+		const root = fixture();
+		writeFixtureFiles(root, 2);
+		let calls = 0;
+		const result = await run(root, [
+			{ id: "first", kind: "git_diff", mode: "uncommitted", paths: ["file-1.txt", "file-0.txt"] },
+			{ id: "second", kind: "git_diff", mode: "uncommitted", paths: ["@file-0.txt", "file-1.txt"] },
+		], async () => {
+			calls++;
+			return "diff";
+		});
+
+		expect(calls).toBe(1);
+		expect(result.details.operations[1].deduplicatedFrom).toBe("first");
+	});
+
+	it("validates git diff paths and accepts deleted leaves with an existing parent", async () => {
+		const root = fixture();
+		const outside = fixture();
+		mkdirSync(join(root, "deleted"));
+		writeFileSync(join(root, "deleted", "gone.txt"), "gone");
+		unlinkSync(join(root, "deleted", "gone.txt"));
+		symlinkSync(outside, join(root, "outside-link"), "dir");
+		const executor = async () => "ok";
+		const deleted = await run(root, [
+			{ kind: "git_diff", mode: "uncommitted", paths: ["deleted/gone.txt"] },
+		], async (operation) => operation.paths!.join("\n"));
+		expect(deleted.text).toContain(resolve(root, "deleted", "gone.txt"));
+
+		for (const paths of [[], "file.txt", [1], [""], [" "]]) {
+			await expect(run(root, [
+				{ kind: "git_diff", mode: "summary", paths } as any,
+			], executor)).rejects.toThrow(/git_diff\.paths/);
+		}
+		await expect(run(root, [{
+			kind: "git_diff",
+			mode: "summary",
+			paths: Array.from({ length: 101 }, () => "."),
+		}], executor)).rejects.toThrow("1-100");
+		await expect(run(root, [{ kind: "read", path: ".", paths: ["."] } as any], executor))
+			.rejects.toThrow("paths is not valid");
+		await expect(run(root, [{ kind: "git_diff", mode: "summary", paths: ["../outside"] }], executor))
+			.rejects.toThrow("escapes");
+		await expect(run(root, [{ kind: "git_diff", mode: "summary", paths: [outside] }], executor))
+			.rejects.toThrow("escapes");
+		await expect(run(root, [{ kind: "git_diff", mode: "summary", paths: ["outside-link/file.txt"] }], executor))
+			.rejects.toThrow("resolves outside");
 	});
 
 	it("generates IDs and rejects invalid fields and operation limits", async () => {

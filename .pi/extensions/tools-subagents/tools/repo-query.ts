@@ -41,6 +41,11 @@ const RepoQueryOperationSchema = Type.Object({
 	literal: Type.Optional(Type.Boolean()),
 	includeHidden: Type.Optional(Type.Boolean()),
 	mode: Type.Optional(StringEnum(["summary", "staged", "unstaged", "uncommitted"] as const)),
+	paths: Type.Optional(Type.Array(Type.String(), {
+		description: "One to 100 literal file or directory paths relative to the child working directory",
+		minItems: 1,
+		maxItems: 100,
+	})),
 });
 
 export const RepoQueryParameters = Type.Object({
@@ -124,6 +129,7 @@ export function createRepoQueryExecutor(cwd: string) {
 				return collectWorkingTreeDiff(cwd, operation.mode!, {
 					signal,
 					includeUntrackedContent: false,
+					paths: operation.paths,
 				});
 		}
 	};
