@@ -1,8 +1,24 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createPlanWorkspace } from "./plan-workspace.ts";
+import { createPlanWorkspace, isSameDevice } from "./plan-workspace.ts";
+
+function describeTree(root: string, relPath = ""): string[] {
+	const entries: string[] = [];
+	for (const name of readdirSync(join(root, relPath)).sort()) {
+		const childRel = relPath === "" ? name : join(relPath, name);
+		const child = join(root, childRel);
+		const info = lstatSync(child);
+		const mode = (info.mode & 0o7777).toString(8);
+		if (info.isSymbolicLink()) entries.push(`${childRel}|link|${mode}|${readlinkSync(child)}`);
+		else if (info.isDirectory()) {
+			entries.push(`${childRel}|dir|${mode}`);
+			entries.push(...describeTree(root, childRel));
+		} else entries.push(`${childRel}|file|${mode}|${readFileSync(child).toString("hex")}`);
+	}
+	return entries;
+}
 
 describe("createPlanWorkspace", () => {
 	it("provides canonical disposable paths", async () => {
@@ -169,5 +185,104 @@ describe("createPlanWorkspace", () => {
 			await workspace.dispose();
 			rmSync(hostRoot, { recursive: true, force: true });
 		}
+	});
+
+	it("keeps large host files independent with either copy strategy", async () => {
+		for (const cloning of [false, true]) {
+			const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
+			const original = Buffer.alloc(4 * 1024 * 1024, 0x61);
+			writeFileSync(join(hostRoot, "large.bin"), original);
+			const workspace = await createPlanWorkspace(hostRoot, { supportsCloning: async () => cloning });
+			try {
+				writeFileSync(join(workspace.sandboxRoot, "large.bin"), Buffer.alloc(original.length, 0x62));
+				expect(readFileSync(join(hostRoot, "large.bin")).equals(original)).toBe(true);
+			} finally {
+				await workspace.dispose();
+				rmSync(hostRoot, { recursive: true, force: true });
+			}
+		}
+	}, 20_000);
+
+	it("produces equivalent trees with clone and fs.cp strategies", async () => {
+		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
+		const externalRoot = mkdtempSync(join(tmpdir(), "pi-plan-external-"));
+		mkdirSync(join(hostRoot, "nested", "node_modules"), { recursive: true });
+		mkdirSync(join(hostRoot, "nested", "kept"), { recursive: true });
+		mkdirSync(join(hostRoot, "excluded"));
+		writeFileSync(join(hostRoot, "root.txt"), "root\n");
+		writeFileSync(join(hostRoot, "-odd-name"), "odd\n");
+		writeFileSync(join(hostRoot, "nested", "kept", "script.sh"), "#!/bin/sh\n");
+		writeFileSync(join(hostRoot, "nested", "node_modules", "dep.js"), "dep\n");
+		writeFileSync(join(hostRoot, "excluded", "ignored.txt"), "ignored\n");
+		writeFileSync(join(externalRoot, "outside.txt"), "outside\n");
+		chmodSync(join(hostRoot, "nested"), 0o750);
+		chmodSync(join(hostRoot, "nested", "kept", "script.sh"), 0o751);
+		symlinkSync(join(externalRoot, "outside.txt"), join(hostRoot, "nested", "outside-link"));
+		const options = { shouldExclude: (relPath: string) => relPath === "excluded" };
+		const fallback = await createPlanWorkspace(hostRoot, { ...options, supportsCloning: async () => false });
+		const cloned = await createPlanWorkspace(hostRoot, { ...options, supportsCloning: async () => true });
+		try {
+			expect(describeTree(cloned.sandboxRoot)).toEqual(describeTree(fallback.sandboxRoot));
+		} finally {
+			await cloned.dispose();
+			await fallback.dispose();
+			rmSync(hostRoot, { recursive: true, force: true });
+			rmSync(externalRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("falls back after clone command failure and removes partial output", async () => {
+		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
+		writeFileSync(join(hostRoot, "tracked.txt"), "host\n");
+		const workspace = await createPlanWorkspace(hostRoot, {
+			supportsCloning: async () => true,
+			runCloneCommand: async (args) => {
+				const destination = args.at(-1)!;
+				mkdirSync(destination, { recursive: true });
+				writeFileSync(join(destination, "partial.txt"), "partial\n");
+				throw new Error("clone unavailable");
+			},
+		});
+		try {
+			expect(readFileSync(join(workspace.sandboxRoot, "tracked.txt"), "utf8")).toBe("host\n");
+			expect(existsSync(join(workspace.sandboxRoot, "partial.txt"))).toBe(false);
+		} finally {
+			await workspace.dispose();
+			rmSync(hostRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("compares device ids for clone capability checks", () => {
+		expect(isSameDevice({ dev: 7 }, { dev: 7 })).toBe(true);
+		expect(isSameDevice({ dev: 7 }, { dev: 8 })).toBe(false);
+	});
+
+	it("aborts a clone and removes its partial disposable root", async () => {
+		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
+		writeFileSync(join(hostRoot, "tracked.txt"), "host\n");
+		const before = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("pi-plan-workspace-")));
+		const controller = new AbortController();
+		let cloneStarted!: () => void;
+		const started = new Promise<void>((resolvePromise) => { cloneStarted = resolvePromise; });
+		const creating = createPlanWorkspace(hostRoot, {
+			signal: controller.signal,
+			supportsCloning: async () => true,
+			runCloneCommand: async (args, signal) => {
+				const destination = args.at(-1)!;
+				mkdirSync(destination, { recursive: true });
+				writeFileSync(join(destination, "partial.txt"), "partial\n");
+				cloneStarted();
+				await new Promise<void>((_resolvePromise, rejectPromise) => {
+					signal?.addEventListener("abort", () => rejectPromise(new Error("killed")), { once: true });
+				});
+			},
+		});
+		await started;
+		controller.abort();
+
+		await expect(creating).rejects.toMatchObject({ name: "AbortError" });
+		const after = readdirSync(tmpdir()).filter((name) => name.startsWith("pi-plan-workspace-"));
+		expect(after.filter((name) => !before.has(name))).toEqual([]);
+		rmSync(hostRoot, { recursive: true, force: true });
 	});
 });
