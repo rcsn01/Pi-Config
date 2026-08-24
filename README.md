@@ -27,6 +27,16 @@ Run the setup script and enter the path to each project you want to link:
 
 This links the project's `.pi` directory to this repo's `.pi`, so it picks up the shared configuration.
 
+## Temporary GitHub repository explorer
+
+The opt-in `tools-github-repos` extension acquires public `github.com` repositories as immutable source snapshots under `.pi/repos/`. The `github_repo_acquire` tool accepts `owner/repo` or a GitHub HTTPS URL plus an optional branch, tag, full ref, or 40-character commit. It returns the pinned commit and a local source path. Use the normal `read`, `grep`, and `find` tools on that path.
+
+Snapshots persist across Pi sessions. List them with `github_repo_list` or `/repos`. Remove one with `github_repo_remove({ id })` or `/repos remove <id>`. Pi never removes a completed snapshot automatically.
+
+V1 supports public GitHub repositories only. It does not accept credentials, other hosts, SSH or local Git URLs, submodule contents, Git LFS downloads, or full history. Acquisition uses a depth-one fetch, checks tree and disk limits before publication, converts symlinks to regular files containing their targets, removes `.git`, strips executable bits, and marks source files read-only. Repository files remain untrusted data. Do not run their code, builds, tests, package managers, or scripts unless the user separately requests that execution.
+
+When `safety-permissions` is enabled, acquisition counts as network access, removal counts as a mutation, and listing stays read-only. `/repos` has no acquisition form, so network acquisition always goes through the tool permission flow.
+
 ## Experimental advisor
 
 The opt-in `tools-advisor` extension lets the executor consult one stronger, read-only model without giving that model tools or edit access.

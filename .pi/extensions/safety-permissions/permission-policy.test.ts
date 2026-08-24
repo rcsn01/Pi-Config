@@ -59,14 +59,28 @@ describe("evaluateToolCall", () => {
 			expect(d).toEqual({ action: "block", reason: expect.stringContaining("read-only") });
 		});
 
-		it("blocks network tools", async () => {
+		it.each(["ddg_search", "github_repo_acquire"])("blocks network tool %s", async (toolName) => {
 			const s = makeDeps();
 			const d = await evaluateToolCall(
-				{ toolName: "ddg_search", input: { query: "x" } },
+				{ toolName, input: { query: "x" } },
 				context({ mode: "read-only" }),
 				s.deps,
 			);
 			expect(d).toEqual({ action: "block", reason: expect.stringContaining("Network tool") });
+		});
+
+		it("blocks repository snapshot removal but permits listing", async () => {
+			const s = makeDeps();
+			await expect(evaluateToolCall(
+				{ toolName: "github_repo_remove", input: { id: "ghr_x" } },
+				context({ mode: "read-only" }),
+				s.deps,
+			)).resolves.toEqual({ action: "block", reason: expect.stringContaining("read-only") });
+			await expect(evaluateToolCall(
+				{ toolName: "github_repo_list", input: {} },
+				context({ mode: "read-only" }),
+				s.deps,
+			)).resolves.toEqual({ action: "allow" });
 		});
 
 		it("blocks reads outside the workspace", async () => {
@@ -145,10 +159,10 @@ describe("evaluateToolCall", () => {
 			expect(d).toEqual({ action: "block", reason: "User declined." });
 		});
 
-		it("prompts for network tools", async () => {
+		it.each(["ddg_search", "github_repo_acquire"])("prompts for network tool %s", async (toolName) => {
 			const s = makeDeps({ approve: false });
 			const d = await evaluateToolCall(
-				{ toolName: "ddg_search", input: {} },
+				{ toolName, input: {} },
 				context({ mode: "default" }),
 				s.deps,
 			);

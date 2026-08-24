@@ -53,6 +53,11 @@ extension.
   State, transitions, Profile rollback, tool projection, proposed-plan state,
   and ordering across Plan Runtime and Plan Review.
 
+## Repository snapshots
+
+- **Repository snapshot** — an immutable, commit-pinned source tree under `.pi/repos`.
+- **Repository store** — the module that owns acquisition, manifests, limits, listing, locking, and explicit removal.
+
 ## Safety
 
 - **Guardian** — the in-process model review of risky tool calls

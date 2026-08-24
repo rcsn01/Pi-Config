@@ -15,7 +15,7 @@ import {
 // Tools that read paths
 export const PATH_READ_TOOLS = new Set(["read", "grep", "find"]);
 // Tools that write/edit paths — blocked entirely in read-only
-export const WRITE_TOOLS = new Set(["bash", "write", "edit"]);
+export const WRITE_TOOLS = new Set(["bash", "write", "edit", "github_repo_remove"]);
 // All tools that accept paths
 export const ALL_PATH_TOOLS = new Set([...PATH_READ_TOOLS, "write", "edit", "ls"]);
 // Field names that might contain paths

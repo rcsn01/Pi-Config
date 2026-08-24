@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { extractPathsFromInput } from "./path-policy.ts";
+import { WRITE_TOOLS, extractPathsFromInput } from "./path-policy.ts";
+
+describe("tool classifications", () => {
+	it("classifies repository removal as a mutation without treating listing as one", () => {
+		expect(WRITE_TOOLS.has("github_repo_remove")).toBe(true);
+		expect(WRITE_TOOLS.has("github_repo_list")).toBe(false);
+	});
+});
 
 describe("extractPathsFromInput", () => {
 	it("returns an empty array for null/non-object input", () => {
