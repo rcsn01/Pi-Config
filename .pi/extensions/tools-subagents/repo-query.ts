@@ -44,6 +44,7 @@ export interface RepoQueryOperation {
 	literal?: boolean;
 	includeHidden?: boolean;
 	mode?: RepoQueryDiffMode;
+	paths?: string[];
 }
 
 export interface RepoQueryRequest {
@@ -379,8 +380,17 @@ async function normalizeOperation(
 			};
 		case "git_status":
 			return { id, kind };
-		case "git_diff":
-			return { id, kind, mode: requireDiffMode(raw.mode) };
+		case "git_diff": {
+			const operation: ResolvedRepoQueryOperation = {
+				id,
+				kind,
+				mode: requireDiffMode(raw.mode),
+			};
+			if (raw.paths !== undefined) {
+				operation.paths = await resolveDiffPaths(raw.paths, root, signal);
+			}
+			return operation;
+		}
 	}
 }
 
@@ -390,6 +400,24 @@ async function resolveOptionalPath(
 	signal?: AbortSignal,
 ): Promise<string> {
 	return resolveSafeRepoPath(value === undefined ? "." : requireString(value, "path"), cwd, signal);
+}
+
+async function resolveDiffPaths(
+	value: unknown,
+	cwd: string,
+	signal?: AbortSignal,
+): Promise<string[]> {
+	if (!Array.isArray(value)) throw new Error("git_diff.paths must be an array.");
+	if (value.length < 1 || value.length > 100) {
+		throw new Error("git_diff.paths must contain 1-100 paths.");
+	}
+	const resolved = await Promise.all(value.map(async (entry) => {
+		if (typeof entry !== "string" || entry.trim() === "") {
+			throw new Error("git_diff.paths entries must be non-empty strings.");
+		}
+		return resolveSafeRepoPath(entry, cwd, signal);
+	}));
+	return [...new Set(resolved)].sort();
 }
 
 async function runOperations(
@@ -643,7 +671,7 @@ function assertAllowedFields(raw: Record<string, unknown>, kind: RepoQueryKind):
 		case "git_status":
 			break;
 		case "git_diff":
-			allowed.add("mode");
+			allowed.add("mode").add("paths");
 			break;
 	}
 	for (const field of Object.keys(raw)) {

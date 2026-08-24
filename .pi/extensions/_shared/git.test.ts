@@ -37,6 +37,127 @@ describe("shared git", () => {
 		expect(diff).toContain("new content");
 	});
 
+	it("applies path scopes to tracked, staged, and untracked output", async () => {
+		const root = await repository();
+		const files = [
+			"selected-staged.txt",
+			"other-staged.txt",
+			"selected-unstaged.txt",
+			"other-unstaged.txt",
+		];
+		for (const file of files) await fs.writeFile(path.join(root, file), "initial\n");
+		await runGit(root, ["add", ...files]);
+		await runGit(root, ["commit", "-m", "add scope fixtures"]);
+
+		await fs.writeFile(path.join(root, "selected-staged.txt"), "SELECTED_STAGED\n");
+		await fs.writeFile(path.join(root, "other-staged.txt"), "OTHER_STAGED\n");
+		await runGit(root, ["add", "selected-staged.txt", "other-staged.txt"]);
+		await fs.writeFile(path.join(root, "selected-unstaged.txt"), "SELECTED_UNSTAGED\n");
+		await fs.writeFile(path.join(root, "other-unstaged.txt"), "OTHER_UNSTAGED\n");
+		await fs.writeFile(path.join(root, "selected-untracked.txt"), "SELECTED_UNTRACKED_CONTENT\n");
+		await fs.writeFile(path.join(root, "other-untracked.txt"), "OTHER_UNTRACKED_CONTENT\n");
+		const paths = [
+			path.join(root, "selected-staged.txt"),
+			path.join(root, "selected-unstaged.txt"),
+			path.join(root, "selected-untracked.txt"),
+		];
+
+		const staged = await collectWorkingTreeDiff(root, "staged", { paths });
+		expect(staged).toContain("SELECTED_STAGED");
+		expect(staged).not.toContain("OTHER_STAGED");
+		const unstaged = await collectWorkingTreeDiff(root, "unstaged", { paths });
+		expect(unstaged).toContain("SELECTED_UNSTAGED");
+		expect(unstaged).not.toContain("OTHER_UNSTAGED");
+
+		for (const mode of ["summary", "uncommitted"] as const) {
+			const diff = await collectWorkingTreeDiff(root, mode, { paths });
+			expect(diff).toContain("selected-staged.txt");
+			expect(diff).toContain("selected-unstaged.txt");
+			expect(diff).toContain("selected-untracked.txt");
+			expect(diff).not.toContain("other-staged.txt");
+			expect(diff).not.toContain("other-unstaged.txt");
+			expect(diff).not.toContain("other-untracked.txt");
+			expect(diff).not.toContain("SELECTED_UNTRACKED_CONTENT");
+		}
+
+		const withContents = await collectWorkingTreeDiff(root, "uncommitted", {
+			paths: [path.join(root, "selected-untracked.txt")],
+			includeUntrackedContent: true,
+		});
+		expect(withContents).toContain("SELECTED_UNTRACKED_CONTENT");
+		expect(withContents).not.toContain("OTHER_UNTRACKED_CONTENT");
+	});
+
+	it("supports directory scopes, deleted files, and child working directories", async () => {
+		const root = await repository();
+		await fs.mkdir(path.join(root, "child", "selected"), { recursive: true });
+		await fs.mkdir(path.join(root, "child", "other"), { recursive: true });
+		await fs.writeFile(path.join(root, "child", "selected", "changed.txt"), "initial\n");
+		await fs.writeFile(path.join(root, "child", "selected", "deleted.txt"), "delete me\n");
+		await fs.writeFile(path.join(root, "child", "other", "changed.txt"), "initial\n");
+		await runGit(root, ["add", "child"]);
+		await runGit(root, ["commit", "-m", "add child fixtures"]);
+		await fs.writeFile(path.join(root, "child", "selected", "changed.txt"), "DIRECTORY_SELECTED\n");
+		await fs.writeFile(path.join(root, "child", "other", "changed.txt"), "DIRECTORY_OTHER\n");
+		await fs.rm(path.join(root, "child", "selected", "deleted.txt"));
+
+		const child = path.join(root, "child");
+		const diff = await collectWorkingTreeDiff(child, "uncommitted", {
+			paths: [path.join(child, "selected")],
+		});
+		expect(diff).toContain("DIRECTORY_SELECTED");
+		expect(diff).toContain("deleted.txt");
+		expect(diff).not.toContain("DIRECTORY_OTHER");
+	});
+
+	it("treats scoped paths literally and a repository-root path as unscoped", async () => {
+		const root = await repository();
+		const selectedFiles = [
+			"space name.txt",
+			"-leading.txt",
+			"star*.txt",
+			"question?.txt",
+			"left[.txt",
+			"right].txt",
+			"colon:name.txt",
+		];
+		const decoyFiles = ["starX.txt", "questionX.txt", "leftx.txt", "unrelated.txt"];
+		const allFiles = [...selectedFiles, ...decoyFiles];
+		for (const [index, file] of allFiles.entries()) {
+			await fs.writeFile(path.join(root, file), `initial ${index}\n`);
+		}
+		await runGit(root, ["add", "--", ...allFiles]);
+		await runGit(root, ["commit", "-m", "add literal fixtures"]);
+		for (const [index, file] of allFiles.entries()) {
+			await fs.writeFile(path.join(root, file), `MARKER_${index}\n`);
+		}
+
+		for (const [index, file] of selectedFiles.entries()) {
+			const diff = await collectWorkingTreeDiff(root, "unstaged", {
+				paths: [path.join(root, file)],
+			});
+			expect(diff).toContain(`MARKER_${index}`);
+			for (let other = 0; other < allFiles.length; other++) {
+				if (other !== index) expect(diff).not.toContain(`MARKER_${other}`);
+			}
+		}
+
+		const unscoped = await collectWorkingTreeDiff(root, "unstaged");
+		const rootScoped = await collectWorkingTreeDiff(root, "unstaged", { paths: [root] });
+		expect(rootScoped).toBe(unscoped);
+		for (let index = 0; index < allFiles.length; index++) {
+			expect(unscoped).toContain(`MARKER_${index}`);
+		}
+	});
+
+	it("rejects scoped paths outside the Git repository", async () => {
+		const root = await repository();
+		const outside = await fs.mkdtemp(path.join(os.tmpdir(), "pi-git-outside-"));
+		roots.push(outside);
+		await expect(collectWorkingTreeDiff(root, "summary", { paths: [outside] }))
+			.rejects.toThrow("outside the repository");
+	});
+
 	it("reports non-repositories and honors pre-aborted signals", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-git-facts-"));
 		roots.push(root);

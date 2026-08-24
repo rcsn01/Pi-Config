@@ -51,6 +51,23 @@ Supported kinds are `read`, `grep`, `find`, `ls`, `files`, `git_status`, and `gi
 
 `read` defaults to 200 lines and allows 1,000. `grep` defaults to 50 matches and allows 200, with at most 10 context lines. `find` defaults to 100 results and allows 500. `ls` defaults to 200 entries and allows 500. `files` defaults to 50 results and allows 200. Git operations use fixed status and diff modes and never include untracked file contents.
 
+A `git_diff` operation can limit its output with `paths`:
+
+```json
+{
+  "operations": [
+    {
+      "id": "scoped-diff",
+      "kind": "git_diff",
+      "mode": "uncommitted",
+      "paths": ["src/auth", "tests/auth.test.ts"]
+    }
+  ]
+}
+```
+
+`git_diff.paths` accepts 1-100 literal file or directory paths relative to the child working directory. It does not support globs or arbitrary Git pathspec syntax. Use path filtering as the follow-up when a complete diff exceeds the output limit.
+
 Paths are resolved against the child working directory. Leading `@` is accepted, but lexical escapes and symlinks that resolve outside the directory are rejected. The tool is read-only, does not run shell commands or arbitrary Git arguments, and has no repository cache. Its complete result is capped at 50KB or 2,000 lines, with every operation header retained when output is truncated.
 
 For investigations, batch two or more independent requests first. Use a later batch only to fill an evidence gap. Keep the direct tools for one-off follow-ups, and do not repeat unchanged searches or excerpts.
