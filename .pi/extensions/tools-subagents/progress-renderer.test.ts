@@ -42,6 +42,52 @@ describe("subagent progress rendering", () => {
 		expect(expanded).toContain("1 turn · in:10 · out:5 · $0.0100");
 	});
 
+	it("renders timing diagnostics", () => {
+		const result = agentResult({
+			timing: {
+				totalMs: 402_100,
+				startupMs: 800,
+				modelPhaseMs: 318_300,
+				toolWallMs: 72_000,
+				repoQueryWallMs: 58_100,
+				unclassifiedMs: 11_000,
+				repositoryQueries: 2,
+				repositoryOperations: 11,
+				partial: false,
+				anomalyCount: 0,
+			},
+		});
+		const rendered = output(renderSubagentResult({
+			content: [{ type: "text", text: "review findings only" }],
+			details: { mode: "single", results: [result] },
+		}, { expanded: true }, theme(), () => 160), 160);
+		expect(rendered).toContain("timing model/provider 5m18s · tools 1m12s");
+		expect(rendered).toContain("repo_query 58.1s (2 calls/11 ops)");
+		expect(rendered).toContain("startup 800ms · unclassified 11.0s");
+	});
+
+	it("marks partial timing and unavailable startup data", () => {
+		const result = agentResult({
+			timing: {
+				totalMs: 100,
+				modelPhaseMs: 10,
+				toolWallMs: 80,
+				repoQueryWallMs: 0,
+				unclassifiedMs: 10,
+				repositoryQueries: 0,
+				repositoryOperations: 0,
+				partial: true,
+				anomalyCount: 1,
+			},
+		});
+		const rendered = output(renderSubagentResult({
+			content: [{ type: "text", text: "done" }],
+			details: { mode: "single", results: [result] },
+		}, { expanded: true }, theme(), () => 160), 160);
+		expect(rendered).toContain("timing ~ model/provider 10ms");
+		expect(rendered).toContain("startup unavailable");
+	});
+
 	it("renders mixed parallel summaries and errors", () => {
 		const failed = agentResult({
 			agent: "explorer",

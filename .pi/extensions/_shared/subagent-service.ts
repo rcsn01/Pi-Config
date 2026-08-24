@@ -23,6 +23,21 @@ export interface AgentProgress {
 	error?: string;
 }
 
+export interface SubagentTiming {
+	totalMs: number;
+	startupMs?: number;
+	/** Provider request and model generation time. This is not a measure of hidden reasoning alone. */
+	modelPhaseMs: number;
+	toolWallMs: number;
+	/** repo_query wall time is a labeled subset of toolWallMs. */
+	repoQueryWallMs: number;
+	unclassifiedMs: number;
+	repositoryQueries: number;
+	repositoryOperations: number;
+	partial: boolean;
+	anomalyCount: number;
+}
+
 export interface AgentResult {
 	agent: string;
 	task: string;
@@ -41,6 +56,8 @@ export interface AgentResult {
 	};
 	truncated?: boolean;
 	originalOutputBytes?: number;
+	/** Visual and programmatic diagnostics. Not appended to model-visible output. */
+	timing?: SubagentTiming;
 }
 
 export type SubagentProgressEvent =

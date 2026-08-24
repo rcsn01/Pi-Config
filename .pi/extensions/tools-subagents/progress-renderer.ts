@@ -15,6 +15,23 @@ function getTermWidth(): number {
 	return process.stdout.columns || 120;
 }
 
+function formatTiming(result: AgentResult): string | undefined {
+	const timing = result.timing;
+	if (!timing) return undefined;
+	const parts = [
+		`model/provider ${formatDuration(timing.modelPhaseMs)}`,
+		`tools ${formatDuration(timing.toolWallMs)}`,
+	];
+	if (timing.repositoryQueries > 0) {
+		parts.push(
+			`repo_query ${formatDuration(timing.repoQueryWallMs)} (${timing.repositoryQueries} calls/${timing.repositoryOperations} ops)`,
+		);
+	}
+	parts.push(timing.startupMs === undefined ? "startup unavailable" : `startup ${formatDuration(timing.startupMs)}`);
+	parts.push(`unclassified ${formatDuration(timing.unclassifiedMs)}`);
+	return `${timing.partial ? "timing ~ " : "timing "}${parts.join(" · ")}`;
+}
+
 export function renderAgentProgress(
 	r: AgentResult,
 	theme: Theme,
@@ -108,7 +125,11 @@ export function renderAgentProgress(
 	if (usageParts.length) {
 		c.addChild(new Text(theme.fg("dim", usageParts.join(" · ")), 0, 0));
 	}
-	
+	const timing = formatTiming(r);
+	if (timing) {
+		const line = theme.fg("dim", timing);
+		c.addChild(new Text(expanded ? line : truncateToolLine(line, w), 0, 0));
+	}
 
 	// Error
 	if (prog.error) {

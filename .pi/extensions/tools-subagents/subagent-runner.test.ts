@@ -42,10 +42,11 @@ describe("single subagent runner", () => {
 		});
 		emitProcessResult(spawn.processes[0], {
 			stdout: [
-				'{"type":"tool_execution_start","toolName":"read","args":{"path":"src/a.ts"}}\nnot-json\n',
-				'{"type":"tool_execution_end"}\n',
+				'{"type":"agent_start"}\n{"type":"turn_start"}\n',
+				'{"type":"tool_execution_start","toolCallId":"read-1","toolName":"read","args":{"path":"src/a.ts"}}\nnot-json\n',
+				'{"type":"tool_execution_end","toolCallId":"read-1"}\n',
 				message.slice(0, 20),
-				message.slice(20),
+				message.slice(20) + '\n{"type":"agent_end"}\n',
 			],
 		});
 		const result = await promise;
@@ -66,6 +67,7 @@ describe("single subagent runner", () => {
 			model: "openai/actual",
 			usage: { input: 10, output: 4, cacheRead: 2, cacheWrite: 1, cost: 0.25, turns: 1 },
 			progress: { status: "completed", toolCount: 1, tokens: 14, lastMessage: "Working Finished" },
+			timing: { partial: false, anomalyCount: 0 },
 		});
 		expect(progress.map((event) => event.type)).toEqual(["started", "tool_call", "tool_result", "message", "completed"]);
 		expect(updates.length).toBeGreaterThan(0);
