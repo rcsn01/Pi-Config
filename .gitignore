@@ -23,6 +23,7 @@ Deployment/
 .pi/plane.json
 .pi/settings.json
 .pi/worktrees/
+.pi/repos/
 .pi/workflow-runs/
 .pi/workflow-approvals/
 .pi/update-skill/

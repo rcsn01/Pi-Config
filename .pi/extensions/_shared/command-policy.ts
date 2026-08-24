@@ -42,6 +42,7 @@ const NETWORK_TOOL_NAMES = new Set([
 	"ddg_fetch",
 	"web_search",
 	"web_fetch",
+	"github_repo_acquire",
 ]);
 
 const NETWORK_COMMAND_PATTERNS = [
