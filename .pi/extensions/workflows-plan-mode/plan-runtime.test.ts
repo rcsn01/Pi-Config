@@ -32,7 +32,7 @@ function sandbox(): PlanSandboxController {
 }
 
 describe("Plan Runtime coordinator", () => {
-	it("warms in the background and shares one attempt with callers waiting for readiness", async () => {
+	it("defers preparation until first use and shares one attempt between callers", async () => {
 		const pendingWorkspace = deferred<PlanWorkspace>();
 		const createdSandbox = sandbox();
 		const createWorkspace = vi.fn(() => pendingWorkspace.promise);
@@ -45,13 +45,14 @@ describe("Plan Runtime coordinator", () => {
 		});
 
 		expect(runtime.warm("/host/project")).toBeUndefined();
-		expect(createWorkspace).toHaveBeenCalledTimes(1);
-		expect(statuses).toEqual(["warming"]);
+		expect(createWorkspace).not.toHaveBeenCalled();
+		expect(statuses).toEqual([]);
 
 		const first = runtime.require();
 		const second = runtime.require();
 		await Promise.resolve();
 		expect(createWorkspace).toHaveBeenCalledTimes(1);
+		expect(statuses).toEqual(["warming"]);
 
 		pendingWorkspace.resolve(workspace());
 		await expect(first).resolves.toBe(createdSandbox);
@@ -60,7 +61,21 @@ describe("Plan Runtime coordinator", () => {
 		expect(statuses).toEqual(["warming", "ready"]);
 	});
 
-	it("aborts workspace creation and cleans up when disposed during warm-up", async () => {
+	it("does not start preparation for a pre-aborted first-use request", async () => {
+		const createWorkspace = vi.fn(async () => workspace());
+		const runtime = createPlanRuntimeCoordinator({
+			createWorkspace,
+			createSandbox: vi.fn(() => sandbox()),
+		});
+		runtime.warm("/host/project");
+		const controller = new AbortController();
+		controller.abort();
+
+		await expect(runtime.require(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+		expect(createWorkspace).not.toHaveBeenCalled();
+	});
+
+	it("aborts first-use workspace creation when disposed", async () => {
 		let copySignal: AbortSignal | undefined;
 		const createWorkspace = vi.fn((_root: string, options?: { signal?: AbortSignal }) => {
 			copySignal = options?.signal;
@@ -80,8 +95,11 @@ describe("Plan Runtime coordinator", () => {
 		});
 
 		runtime.warm("/host/project");
+		const requiring = runtime.require();
+		const rejected = expect(requiring).rejects.toMatchObject({ name: "AbortError" });
 		await runtime.dispose();
 
+		await rejected;
 		expect(copySignal?.aborted).toBe(true);
 		expect(statuses).toEqual(["warming", "disposing", "idle"]);
 	});
@@ -99,10 +117,13 @@ describe("Plan Runtime coordinator", () => {
 		});
 
 		runtime.warm("/host/project");
+		const requiring = runtime.require();
+		const rejected = expect(requiring).rejects.toMatchObject({ name: "AbortError" });
 		await vi.waitFor(() => expect(createdSandbox.initialize).toHaveBeenCalledOnce());
 		const disposing = runtime.dispose();
 		pendingInitialization.resolve();
 		await disposing;
+		await rejected;
 
 		expect(statuses).toEqual(["warming", "disposing", "idle"]);
 		expect(createdSandbox.dispose).toHaveBeenCalledOnce();

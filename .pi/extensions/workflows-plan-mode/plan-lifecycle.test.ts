@@ -1,9 +1,7 @@
-import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import planModeExtension, {
 	createPlanModeExtension,
 	PLAN_REVIEW_ACTIONS,
-	shouldExcludePlanWorkspacePath,
 } from "./index.ts";
 import type { ModeModelProfile } from "./model-profile.ts";
 import {
@@ -16,14 +14,6 @@ import {
 } from "./test-harness.ts";
 
 describe("Plan Mode tool policy integration", () => {
-	it("excludes the shared .pi link only on Windows", () => {
-		expect(shouldExcludePlanWorkspacePath(".pi", "win32")).toBe(true);
-		expect(shouldExcludePlanWorkspacePath(".pi", "darwin")).toBe(false);
-		expect(shouldExcludePlanWorkspacePath(".pi", "linux")).toBe(false);
-		expect(shouldExcludePlanWorkspacePath(join(".pi", "worktrees"), "win32")).toBe(true);
-		expect(shouldExcludePlanWorkspacePath(join(".pi", "worktrees"), "darwin")).toBe(true);
-	});
-
 	it("preserves the public entrypoint and Pi registration interfaces in order", () => {
 		const harness = createHarness();
 		expect(planModeExtension).toEqual(expect.any(Function));
@@ -109,13 +99,16 @@ describe("Plan Mode tool policy integration", () => {
 	it("aborts in-flight work and discards all content from an older mode revision", async () => {
 		const pendingDispose = deferred<void>();
 		const createSandbox = vi.fn(() => ({
-			operations: { exec: vi.fn() },
+			operations: { exec: vi.fn(async () => ({ exitCode: 0 })) },
 			initialize: vi.fn(async () => {}),
 			dispose: vi.fn(() => pendingDispose.promise),
 		}));
 		const harness = createHarness({ idle: false, dependencies: { createSandbox } });
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		await vi.waitFor(() => expect(createSandbox).toHaveBeenCalledOnce());
+		await harness.tools.get("plan_bash").execute(
+			"tool-prepare", { command: "pwd" }, undefined, undefined, harness.ctx,
+		);
+		expect(createSandbox).toHaveBeenCalledOnce();
 		await harness.emit("before_agent_start", { systemPrompt: "BASE" });
 
 		const exiting = harness.shortcuts.get("shift+tab").handler(harness.ctx);
@@ -206,37 +199,22 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 		await reconstruction;
 	});
 
-	it("reconstructs active Plan Mode without waiting for background workspace preparation", async () => {
-		const pendingWorkspace = deferred<any>();
-		const createWorkspace = vi.fn(() => pendingWorkspace.promise);
+	it("reconstructs active Plan Mode without creating a workspace", async () => {
+		const createWorkspace = vi.fn();
 		const harness = createHarness({
 			model: normalModel,
 			availableModels: [normalModel],
 			dependencies: { createWorkspace },
 		});
 
-		let reconstructionSettled = false;
-		const reconstruction = harness.emit("session_start", {
-			type: "session_start", reason: "resume",
-		}).then(() => {
-			reconstructionSettled = true;
-		});
-		await vi.waitFor(() => expect(createWorkspace).toHaveBeenCalledOnce());
-		await Promise.resolve();
-		expect(reconstructionSettled).toBe(true);
+		await harness.emit("session_start", { type: "session_start", reason: "resume" });
 
-		pendingWorkspace.resolve({
-			root: "/tmp/plan",
-			hostRoot: "/test/project",
-			sandboxRoot: "/tmp/plan/project",
-			tempRoot: "/tmp/plan/tmp",
-			dispose: vi.fn(async () => {}),
-		});
-		await reconstruction;
-		await vi.waitFor(() => expect(harness.setStatus).toHaveBeenCalledWith("plan-runtime", undefined));
+		expect(createWorkspace).not.toHaveBeenCalled();
+		expect(harness.getActiveToolNames()).toContain("plan_bash");
+		expect(harness.setStatus).not.toHaveBeenCalledWith("plan-runtime", "⟳ sandbox");
 	});
 
-	it("activates before background workspace preparation finishes and makes plan_bash await it", async () => {
+	it("activates without a workspace and makes the first plan_bash await preparation", async () => {
 		const stores = createProfileDependencies();
 		const pendingWorkspace = deferred<any>();
 		const createWorkspace = vi.fn(() => pendingWorkspace.promise);
@@ -246,23 +224,17 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 			dependencies: { ...stores.dependencies, createWorkspace },
 		});
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
 
-		let activationSettled = false;
-		const activation = harness.shortcuts.get("shift+tab").handler(harness.ctx).then(() => {
-			activationSettled = true;
-		});
-		await vi.waitFor(() => expect(createWorkspace).toHaveBeenCalledOnce());
-		await Promise.resolve();
-
-		expect(activationSettled).toBe(true);
+		expect(createWorkspace).not.toHaveBeenCalled();
 		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({ mode: "plan", revision: 1 });
 		expect(harness.getActiveToolNames()).toContain("plan_bash");
-		expect(harness.setStatus).toHaveBeenCalledWith("plan-runtime", "⟳ sandbox");
 
 		const execution = harness.tools.get("plan_bash").execute(
 			"tool-1", { command: "pwd" }, undefined, undefined, harness.ctx,
 		);
-		await Promise.resolve();
+		await vi.waitFor(() => expect(createWorkspace).toHaveBeenCalledOnce());
+		expect(harness.setStatus).toHaveBeenCalledWith("plan-runtime", "⟳ sandbox");
 		expect(harness.sandboxExec).not.toHaveBeenCalled();
 
 		pendingWorkspace.resolve({
@@ -272,7 +244,6 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 			tempRoot: "/tmp/plan/tmp",
 			dispose: vi.fn(async () => {}),
 		});
-		await activation;
 		await execution;
 		expect(harness.sandboxExec).toHaveBeenCalledOnce();
 		expect(harness.setStatus).toHaveBeenCalledWith("plan-runtime", undefined);
@@ -291,7 +262,7 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 			const dispose = vi.fn(async () => {});
 			sandboxDisposals.push(dispose);
 			return {
-				operations: { exec: vi.fn() },
+				operations: { exec: vi.fn(async () => ({ exitCode: 0 })) },
 				initialize: vi.fn(async () => {}),
 				dispose,
 			};
@@ -302,21 +273,24 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 			dependencies: { createWorkspace, createSandbox },
 		});
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		await vi.waitFor(() => expect(createWorkspace).toHaveBeenCalledTimes(1));
+		await harness.tools.get("plan_bash").execute(
+			"tool-prepare", { command: "pwd" }, undefined, undefined, harness.ctx,
+		);
+		expect(createWorkspace).toHaveBeenCalledTimes(1);
 
 		const reconstruction = harness.emit("session_tree", { type: "session_tree" });
 		const exiting = harness.shortcuts.get("shift+tab").handler(harness.ctx);
 		await Promise.all([reconstruction, exiting]);
 
-		expect(createWorkspace).toHaveBeenCalledTimes(2);
-		expect(sandboxDisposals).toHaveLength(2);
-		expect(sandboxDisposals.every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
+		expect(createWorkspace).toHaveBeenCalledTimes(1);
+		expect(sandboxDisposals).toHaveLength(1);
+		expect(sandboxDisposals[0]).toHaveBeenCalledOnce();
 		expect(harness.getActiveToolNames()).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 		await harness.commands.get("plan").handler("status", harness.ctx);
 		expect(harness.notify).toHaveBeenLastCalledWith("Plan mode inactive.", "info");
 	});
 
-	it("cancels background workspace preparation on session shutdown", async () => {
+	it("shuts down without materializing an unused workspace", async () => {
 		const stores = createProfileDependencies();
 		let copySignal: AbortSignal | undefined;
 		const createWorkspace = vi.fn((_root: string, options?: { signal?: AbortSignal }) => {
@@ -339,7 +313,8 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 
 		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
 
-		expect(copySignal?.aborted).toBe(true);
+		expect(createWorkspace).not.toHaveBeenCalled();
+		expect(copySignal).toBeUndefined();
 		expect(harness.getActiveToolNames()).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 	});
 
@@ -415,12 +390,10 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 
 		expect(harness.getActiveToolNames()).not.toEqual(expect.arrayContaining(["bash", "edit", "write"]));
 		expect(harness.getActiveToolNames()).toContain("plan_bash");
-		await vi.waitFor(() => {
-			expect(harness.notify).toHaveBeenCalledWith(expect.stringContaining("sandbox unavailable"), "error");
-		});
 		await expect(harness.tools.get("plan_bash").execute(
 			"tool-1", { command: "pytest" }, undefined, undefined, harness.ctx,
 		)).rejects.toThrow("sandbox unavailable");
+		expect(harness.notify).toHaveBeenCalledWith(expect.stringContaining("sandbox unavailable"), "error");
 		const [blocked] = await harness.emit("tool_call", {
 			type: "tool_call", toolName: "bash", input: { command: "pytest" },
 		});
