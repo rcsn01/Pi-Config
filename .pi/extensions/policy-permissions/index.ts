@@ -7,8 +7,9 @@
  *   /permissions auto-review  — Full auto; only prompts you for edits outside the workspace
  *   /permissions full-access  — No restrictions (dangerous; confirm to enable)
  *
- * Preserves:
- *   /execpolicy  — regex allow/prompt/block rules
+ * Commands:
+ *   /guardian   — select the profile-scoped Guardian model
+ *   /execpolicy — regex allow/prompt/block rules
  *
  * This module wires together the focused policy modules:
  *   - permission-policy.ts  — pure evaluateToolCall decision seam
@@ -19,14 +20,25 @@
  *   - commands.ts           — /permissions, /approve, /execpolicy
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { dirname, join } from "node:path";
+import { createSessionProfileResolver } from "../_shared/active-profile.ts";
+import { formatTokenCount, modelKey, pickModelConfiguration } from "../_shared/model-picker.ts";
+import { resolveModelContext } from "../_shared/model-selection.ts";
+import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { renderTranscriptCard } from "../_shared/transcript-card.ts";
 import { loadExecPolicy } from "../_shared/command-policy.ts";
 import { createApprovalService } from "./approvals.ts";
 import { registerPermissionCommands, type CommandService, type DeniedAction } from "./commands.ts";
 import {
+	disposeAutoReviewer,
 	parseGuardianDefinition,
 	resolveGuardianPath,
 } from "./guardian-runner.ts";
+import {
+	loadGuardianSettings,
+	saveGuardianSettings,
+	type GuardianSettings,
+} from "./guardian-settings.ts";
 import {
 	DEFAULT_MODE_STATE,
 	loadModeFromFile,
@@ -44,7 +56,28 @@ export { actionKey, evaluateToolCall };
 
 // ── Extension ──────────────────────────────────────────────────────────
 
-export default function (pi: ExtensionAPI) {
+export interface SafetyPermissionsDependencies {
+	settingsPath?: string;
+}
+
+export function createSafetyPermissionsExtension(
+	dependencies: SafetyPermissionsDependencies = {},
+) {
+	return (pi: ExtensionAPI) => installSafetyPermissions(pi, dependencies);
+}
+
+function installSafetyPermissions(
+	pi: ExtensionAPI,
+	dependencies: SafetyPermissionsDependencies,
+): void {
+	const settingsFilePath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
+	const profileResolver = createSessionProfileResolver({
+		settingsPath: settingsFilePath,
+		profilesDirectory: join(dirname(settingsFilePath), "profiles"),
+	});
+	let guardianSettingsPath = settingsFilePath;
+	let guardianSettings: GuardianSettings | undefined;
+	let profileBindingGeneration = 0;
 	let mode: ModeState = { mode: "default", setAt: Date.now() };
 	let lastDeniedAction: DeniedAction | undefined;
 	let lastUserPrompt = "";
@@ -81,6 +114,7 @@ export default function (pi: ExtensionAPI) {
 	const approvals = createApprovalService({
 		getMode: () => mode,
 		getContext: () => ({ lastUserPrompt, precedingAssistantMessage }),
+		getGuardianSettings: () => guardianSettings,
 		appendEntry: (customType, data) => pi.appendEntry(customType, data),
 	});
 
@@ -105,12 +139,27 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Events ──────────────────────────────────────────────────────────
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		reconstruct(ctx);
+		profileBindingGeneration++;
+		guardianSettingsPath = profileResolver.resolve(ctx.sessionManager.getBranch(), event.reason);
+		try {
+			guardianSettings = loadGuardianSettings(guardianSettingsPath);
+		} catch (error) {
+			guardianSettings = undefined;
+			ctx.ui.notify(
+				`Guardian settings are invalid; using guardian.md defaults: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+		}
 		updateStatus(ctx);
 	});
 	pi.on("session_tree", async (_event, ctx) => { reconstruct(ctx); updateStatus(ctx); });
 	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx));
+	pi.on("session_shutdown", async () => {
+		profileBindingGeneration++;
+		await disposeAutoReviewer();
+	});
 
 	// Track the most recent assistant message text so the guardian can see the agent's
 	// preceding turn (e.g. a proposal/options the user is replying to).
@@ -184,7 +233,52 @@ export default function (pi: ExtensionAPI) {
 	// ── Commands ────────────────────────────────────────────────────────
 
 	registerPermissionCommands(pi, commandService);
+
+	pi.registerCommand("guardian", {
+		description: "Select the Guardian review model",
+		handler: async (args, ctx) => {
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("The /guardian model picker requires TUI mode.", "error");
+				return;
+			}
+
+			const commandSettingsPath = guardianSettingsPath;
+			const commandSettings = guardianSettings;
+			const commandGeneration = profileBindingGeneration;
+			const configuredModel = commandSettings
+				? ctx.modelRegistry.find(commandSettings.provider, commandSettings.modelId)
+				: undefined;
+			try {
+				const selection = await pickModelConfiguration(ctx, {
+					initialQuery: args.trim(),
+					previous: commandSettings,
+					currentModel: configuredModel ? resolveModelContext(configuredModel) : undefined,
+					modelTitle: "Select Guardian model",
+					thinkingTitle: (model) => `Guardian thinking · ${modelKey(model)}`,
+					contextTitle: (model) => `Guardian context · ${modelKey(model)}`,
+				});
+				if (!selection) return;
+				if (profileBindingGeneration !== commandGeneration || guardianSettingsPath !== commandSettingsPath) {
+					ctx.ui.notify("The session profile changed while the Guardian picker was open. Reopen /guardian.", "warning");
+					return;
+				}
+
+				guardianSettings = await saveGuardianSettings(commandSettingsPath, selection);
+				// Recreate lazily on the next review even when the selected key stayed
+				// the same, so changed dynamic-provider transport settings take effect.
+				await disposeAutoReviewer();
+				ctx.ui.notify(
+					`Guardian set to ${guardianSettings.provider}/${guardianSettings.modelId} · thinking ${guardianSettings.thinkingLevel} · context ${formatTokenCount(guardianSettings.contextWindow)}.`,
+					"info",
+				);
+			} catch (error) {
+				ctx.ui.notify(`Could not configure Guardian: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
 }
+
+export default createSafetyPermissionsExtension();
 
 // Extract readable text from an assistant message (content may be a string or an array of content blocks).
 function extractAssistantText(message: any): string {

@@ -28,6 +28,7 @@ import {
 	type AgentSession,
 	type CreateAgentSessionOptions,
 	DefaultResourceLoader,
+	type ModelRegistry,
 	getAgentDir,
 	ModelRuntime,
 	parseFrontmatter,
@@ -40,6 +41,8 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getObservabilityService, type ObservabilitySource } from "../_shared/observability.ts";
 import { guardianObserverExtension, runWithGuardianObservation } from "./guardian-observer.ts";
+import { GuardianSessionCache } from "./guardian-session-cache.ts";
+import type { GuardianSettings } from "./guardian-settings.ts";
 import type { ApprovalResult } from "./policy-types.ts";
 
 type AnyModel = NonNullable<CreateAgentSessionOptions["model"]>;
@@ -56,6 +59,16 @@ export interface GuardianDefinition {
 export interface GuardianReviewResult extends ApprovalResult {
 	model?: string;
 	usage?: Usage;
+}
+
+export interface RunAutoReviewerOptions {
+	/** Profile-scoped override. When absent, guardian.md and Pi defaults apply. */
+	settings?: GuardianSettings;
+	/** Dynamic provider registrations copied from the owning Pi runtime. */
+	providerRegistration?: {
+		native?: ReturnType<ModelRegistry["getRegisteredNativeProvider"]>;
+		config?: ReturnType<ModelRegistry["getRegisteredProviderConfig"]>;
+	};
 }
 
 type GuardianMessage = AgentSession["messages"][number];
@@ -179,7 +192,7 @@ export function parseGuardianVerdict(content: string): ApprovalResult | "unclear
 
 // ── In-process guardian session ───────────────────────────────────────
 
-let sessionPromise: Promise<AgentSession> | undefined;
+const sessionCache = new GuardianSessionCache<AgentSession>();
 let runtimePromise: Promise<ModelRuntime> | undefined;
 let guardianReviewTail: Promise<void> = Promise.resolve();
 
@@ -193,6 +206,11 @@ async function withGuardianReviewLock<T>(operation: () => Promise<T>): Promise<T
 	} finally {
 		release();
 	}
+}
+
+/** Dispose the isolated session at the owning Pi session boundary. */
+export function disposeAutoReviewer(): Promise<void> {
+	return withGuardianReviewLock(async () => sessionCache.dispose());
 }
 
 function getRuntime(): Promise<ModelRuntime> {
@@ -223,15 +241,30 @@ async function resolveGuardianModel(spec: string): Promise<AnyModel> {
 	return model;
 }
 
-async function getGuardianSession(definition: GuardianDefinition): Promise<AgentSession> {
-	sessionPromise ??= createGuardianSession(definition).catch((err) => {
-		sessionPromise = undefined;
-		throw err;
+function guardianSessionKey(definition: GuardianDefinition, settings?: GuardianSettings): string {
+	return JSON.stringify({
+		systemPrompt: definition.systemPrompt,
+		model: settings ? `${settings.provider}/${settings.modelId}` : definition.model,
+		thinkingLevel: settings?.thinkingLevel,
+		contextWindow: settings?.contextWindow,
 	});
-	return sessionPromise;
 }
 
-async function createGuardianSession(definition: GuardianDefinition): Promise<AgentSession> {
+async function getGuardianSession(
+	definition: GuardianDefinition,
+	options: RunAutoReviewerOptions,
+): Promise<AgentSession> {
+	const key = guardianSessionKey(definition, options.settings);
+	// This runs under the review lock. The cache keeps the previous working
+	// session until its replacement is ready, then swaps and disposes it.
+	return sessionCache.get(key, () => createGuardianSession(definition, options));
+}
+
+async function createGuardianSession(
+	definition: GuardianDefinition,
+	options: RunAutoReviewerOptions,
+): Promise<AgentSession> {
+	const { settings, providerRegistration } = options;
 	const loader = new DefaultResourceLoader({
 		cwd: process.cwd(),
 		agentDir: getAgentDir(),
@@ -242,13 +275,34 @@ async function createGuardianSession(definition: GuardianDefinition): Promise<Ag
 	});
 	await loader.reload();
 
+	const runtime = await getRuntime();
+	if (settings && providerRegistration?.native) {
+		runtime.registerNativeProvider(providerRegistration.native);
+	}
+	if (settings && providerRegistration?.config) {
+		runtime.registerProvider(settings.provider, providerRegistration.config);
+	}
+	const configuredModel = settings
+		? await resolveGuardianModel(`${settings.provider}/${settings.modelId}`)
+		: definition.model
+			? await resolveGuardianModel(definition.model)
+			: undefined;
+	if (configuredModel && settings && settings.contextWindow > configuredModel.contextWindow) {
+		throw new Error(
+			`guardian context window ${settings.contextWindow} exceeds the catalogue maximum of ${configuredModel.contextWindow}`,
+		);
+	}
+	const model = configuredModel && settings && configuredModel.contextWindow !== settings.contextWindow
+		? { ...configuredModel, contextWindow: settings.contextWindow }
+		: configuredModel;
 	const { session } = await createAgentSession({
 		cwd: process.cwd(),
 		resourceLoader: loader,
 		sessionManager: SessionManager.inMemory(),
 		noTools: "all",
-		modelRuntime: await getRuntime(),
-		...(definition.model ? { model: await resolveGuardianModel(definition.model) } : {}),
+		modelRuntime: runtime,
+		...(model ? { model } : {}),
+		...(settings ? { thinkingLevel: settings.thinkingLevel } : {}),
 	});
 	return session;
 }
@@ -295,6 +349,7 @@ function lastAssistantTextSince(session: AgentSession, startCount: number): stri
 export async function runAutoReviewer(
 	title: string,
 	message: string,
+	options: RunAutoReviewerOptions = {},
 	guardianPath = resolveGuardianPath(import.meta.url),
 ): Promise<GuardianReviewResult> {
 	const task = `Evaluate this action for safety.
@@ -333,7 +388,7 @@ ${message}`;
 	};
 
 	try {
-		session = await getGuardianSession(definition);
+		session = await getGuardianSession(definition, options);
 		const model = session.model;
 		if (model) sessionModel = `${model.provider}/${model.id}`;
 		startCount = session.messages.length;

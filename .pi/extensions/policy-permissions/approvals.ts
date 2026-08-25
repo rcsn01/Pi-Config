@@ -5,12 +5,14 @@
  */
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runAutoReviewer } from "./guardian-runner.ts";
+import type { GuardianSettings } from "./guardian-settings.ts";
 import type { ModeState } from "./mode-store.ts";
 import type { ApprovalResult } from "./policy-types.ts";
 
 export interface ApprovalServiceOptions {
 	getMode: () => ModeState;
 	getContext: () => { lastUserPrompt: string; precedingAssistantMessage: string };
+	getGuardianSettings?: () => GuardianSettings | undefined;
 	appendEntry: (customType: string, data: Record<string, unknown>) => void;
 }
 
@@ -32,7 +34,7 @@ export interface ApprovalService {
  * Create the approval service bound to the extension's live state.
  */
 export function createApprovalService(options: ApprovalServiceOptions): ApprovalService {
-	const { getMode, getContext, appendEntry } = options;
+	const { getMode, getContext, getGuardianSettings, appendEntry } = options;
 
 	/**
 	 * Get the approval decision for the current mode.
@@ -94,7 +96,20 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 			`User request: ${userRequest}\n\nAgent's preceding turn:\n${precedingTurn}\n\nAction: ${title}\n${actionDescription}`;
 
 		try {
-			const result = await runAutoReviewer(title, evaluationMessage);
+			const settings = getGuardianSettings?.();
+			const nativeProvider = settings && typeof ctx.modelRegistry?.getRegisteredNativeProvider === "function"
+				? ctx.modelRegistry.getRegisteredNativeProvider(settings.provider)
+				: undefined;
+			const providerConfig = settings && typeof ctx.modelRegistry?.getRegisteredProviderConfig === "function"
+				? ctx.modelRegistry.getRegisteredProviderConfig(settings.provider)
+				: undefined;
+			const providerRegistration = nativeProvider || providerConfig
+				? { native: nativeProvider, config: providerConfig }
+				: undefined;
+			const result = await runAutoReviewer(title, evaluationMessage, {
+				settings,
+				...(providerRegistration ? { providerRegistration } : {}),
+			});
 
 			// Persist the verdict as a custom entry: rendered in the transcript by
 			// registerEntryRenderer, but NOT sent to the LLM and not queued through
