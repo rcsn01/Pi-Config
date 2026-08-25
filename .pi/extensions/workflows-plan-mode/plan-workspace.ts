@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { constants, statSync } from "node:fs";
-import { cp, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative } from "node:path";
 import { killProcessGroup } from "../_shared/process.ts";
@@ -96,6 +96,45 @@ async function copyWithFs(hostRoot: string, sandboxRoot: string, signal?: AbortS
 	});
 }
 
+function isFileSystemError(error: unknown, code: string): error is NodeJS.ErrnoException {
+	return error instanceof Error && (error as NodeJS.ErrnoException).code === code;
+}
+
+async function makeTreeRemovable(root: string): Promise<void> {
+	let info;
+	try {
+		info = await lstat(root);
+	} catch (error) {
+		if (isFileSystemError(error, "ENOENT")) return;
+		throw error;
+	}
+	if (!info.isDirectory() || info.isSymbolicLink()) return;
+
+	await chmod(root, (info.mode & 0o7777) | 0o700);
+	let entries;
+	try {
+		entries = await readdir(root, { withFileTypes: true });
+	} catch (error) {
+		if (isFileSystemError(error, "ENOENT")) return;
+		throw error;
+	}
+	for (const entry of entries) {
+		if (entry.isDirectory() && !entry.isSymbolicLink()) {
+			await makeTreeRemovable(join(root, entry.name));
+		}
+	}
+}
+
+async function removeDisposableTree(root: string): Promise<void> {
+	try {
+		await rm(root, { recursive: true, force: true });
+	} catch (error) {
+		if (!isFileSystemError(error, "EACCES") && !isFileSystemError(error, "EPERM")) throw error;
+		await makeTreeRemovable(root);
+		await rm(root, { recursive: true, force: true });
+	}
+}
+
 /**
  * Create a writable, isolated clone of the complete host workspace. On macOS,
  * BSD cp uses APFS clonefile. On Linux, GNU cp requests reflinks and falls back
@@ -146,7 +185,7 @@ export async function createPlanWorkspace(
 				);
 			} catch (error) {
 				if (options.signal?.aborted) throw abortError();
-				await rm(sandboxRoot, { recursive: true, force: true });
+				await removeDisposableTree(sandboxRoot);
 				await copyWithFs(canonicalHostRoot, sandboxRoot, options.signal);
 			}
 		} else {
@@ -156,7 +195,7 @@ export async function createPlanWorkspace(
 		throwIfAborted(options.signal);
 		await mkdir(tempRoot, { recursive: true });
 	} catch (error) {
-		await rm(root, { recursive: true, force: true });
+		await removeDisposableTree(root);
 		throw error;
 	}
 
@@ -168,7 +207,7 @@ export async function createPlanWorkspace(
 		tempRoot,
 		dispose() {
 			if (disposePromise) return disposePromise;
-			disposePromise = rm(root, { recursive: true, force: true }).catch((error) => {
+			disposePromise = removeDisposableTree(root).catch((error) => {
 				disposePromise = undefined;
 				throw error;
 			});
