@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import type { ObservabilityEvent, ObservabilitySource } from "../_shared/observability.ts";
 import type { AnalysisServer } from "./server.ts";
 import { createAnalysisServer } from "./server.ts";
 import {
@@ -11,15 +12,13 @@ import {
 	type UsageView,
 } from "./payload.ts";
 
-export type AnalysisEvent =
-	| { type: "agent_start"; at?: number }
-	| { type: "turn_start"; turnIndex: number; at?: number }
-	| { type: "request"; provider: string; api: string; model: string; payload: unknown; at?: number }
-	| { type: "response"; status?: number; at?: number }
-	| { type: "assistant"; message: unknown; at?: number };
+type OptionalSource<T> = T extends unknown ? Omit<T, "source"> & { source?: ObservabilitySource } : never;
+export type AnalysisEvent = OptionalSource<ObservabilityEvent>;
+const DEFAULT_SOURCE: ObservabilitySource = { channel: "main", invocationId: "main", displayLabel: "Main agent" };
 
 export interface AnalysisRecordSummary {
 	sequence: number;
+	source: ObservabilitySource;
 	run: number;
 	turn: number;
 	requestedAt: number;
@@ -42,6 +41,7 @@ export interface AnalysisRecord extends AnalysisRecordSummary {
 	sections: PayloadSection[];
 	usage?: UsageView;
 	cachePlacement?: "estimated";
+	fidelity: "exact-provider" | "pi-preparation";
 }
 
 export interface AnalysisSummary {
@@ -99,9 +99,19 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 	let diagnostic: string | undefined;
 	let retainedBytes = 0;
 	let sequence = 0;
-	let run = 0;
-	let turn = -1;
+	const sourceStates = new Map<string, { run: number; turn: number }>();
 	const records: AnalysisRecord[] = [];
+
+	const sourceKey = (source: ObservabilitySource) => `${source.channel}\u0000${source.invocationId}`;
+	const stateFor = (source: ObservabilitySource) => {
+		const key = sourceKey(source);
+		let sourceState = sourceStates.get(key);
+		if (!sourceState) {
+			sourceState = { run: 0, turn: -1 };
+			sourceStates.set(key, sourceState);
+		}
+		return sourceState;
+	};
 
 	const summary = (): AnalysisSummary => ({
 		activatedAt,
@@ -117,6 +127,7 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 		retainedBytes = 0;
 		paused = false;
 		diagnostic = undefined;
+		sourceStates.clear();
 	};
 	const source = { getSummary: summary, getRecord, clear };
 
@@ -159,13 +170,15 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 	function observe(event: AnalysisEvent): void {
 		if (activatedAt === undefined || paused) return;
 		const at = event.at ?? now();
+		const eventSource = event.source ?? DEFAULT_SOURCE;
+		const sourceState = stateFor(eventSource);
 		if (event.type === "agent_start") {
-			run++;
-			turn = -1;
+			sourceState.run++;
+			sourceState.turn = -1;
 			return;
 		}
 		if (event.type === "turn_start") {
-			turn = event.turnIndex;
+			sourceState.turn = event.turnIndex;
 			return;
 		}
 		if (event.type === "request") {
@@ -176,10 +189,11 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 			}
 			const analysis = analyzePayload(event.api, event.payload);
 			const record: AnalysisRecord = {
-				sequence: ++sequence, run, turn, requestedAt: at,
+				sequence: ++sequence, source: { ...eventSource }, run: sourceState.run, turn: sourceState.turn, requestedAt: at,
 				provider: event.provider, api: event.api, model: event.model, apiLabel: analysis.apiLabel,
 				state: "pending", correlation: "exact", bytes: 0,
 				requestJson: serialized.json, sections: analysis.sections,
+				fidelity: event.fidelity ?? "exact-provider",
 			};
 			const bytes = byteSize(record);
 			if (bytes > maxRecordBytes || retainedBytes + bytes > maxTotalBytes) {
@@ -191,7 +205,12 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 			retainedBytes += bytes;
 			return;
 		}
-		const candidates = records.filter((record) => record.run === run && record.turn === turn && record.state === "pending");
+		const candidates = records.filter((record) =>
+			sourceKey(record.source) === sourceKey(eventSource)
+			&& record.run === sourceState.run
+			&& record.turn === sourceState.turn
+			&& record.state === "pending",
+		);
 		if (event.type === "response") {
 			const statusCandidates = candidates.filter((record) => record.status === undefined);
 			if (statusCandidates.length === 0) return;

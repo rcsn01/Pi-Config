@@ -142,6 +142,16 @@ function anthropicSections(root: Record<string, unknown>): PayloadSection[] {
 	return sections;
 }
 
+function compactionSections(root: Record<string, unknown>): PayloadSection[] {
+	const sections: PayloadSection[] = [];
+	if (root.instructions !== undefined) add(sections, "instruction", "compaction instructions", "/instructions", root.instructions);
+	if (root.previousSummary !== undefined) add(sections, "conversation", "previous summary", "/previousSummary", root.previousSummary);
+	if (root.messagesToSummarize !== undefined) add(sections, "conversation", "summarized messages", "/messagesToSummarize", root.messagesToSummarize);
+	if (root.turnPrefixMessages !== undefined) add(sections, "conversation", "retained turn prefix", "/turnPrefixMessages", root.turnPrefixMessages);
+	if (root.options !== undefined) add(sections, "option", "compaction options", "/options", root.options);
+	return sections;
+}
+
 /** Build API-specific pointer labels. The raw payload remains the sole copy of captured content. */
 export function analyzePayload(api: string, payload: unknown): PayloadAnalysis {
 	const root = object(payload);
@@ -154,7 +164,10 @@ export function analyzePayload(api: string, payload: unknown): PayloadAnalysis {
 	}
 	let apiLabel: string;
 	let sections: PayloadSection[];
-	if (api === "openai-completions") {
+	if (api === "pi-compaction") {
+		apiLabel = "Pi Compaction Preparation";
+		sections = compactionSections(root);
+	} else if (api === "openai-completions") {
 		apiLabel = "OpenAI Completions";
 		sections = completionsSections(root);
 	} else if (RESPONSE_APIS.has(api)) {
@@ -171,7 +184,7 @@ export function analyzePayload(api: string, payload: unknown): PayloadAnalysis {
 		};
 	}
 	if (sections.length === 0) add(sections, "conversation", "complete request payload", "", payload);
-	return { apiLabel, sections, prefixCache: true };
+	return { apiLabel, sections, prefixCache: api !== "pi-compaction" };
 }
 
 export function labelPayload(api: string, payload: unknown): PayloadSection[] {

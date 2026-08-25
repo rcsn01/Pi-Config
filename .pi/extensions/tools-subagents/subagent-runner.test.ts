@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveSubagentSessionId } from "./cache-affinity.ts";
-import { createSubagentRunner } from "./subagent-runner.ts";
+import { getObservabilityService, resetObservabilityServiceForTests } from "../_shared/observability.ts";
+import { createRelayParser, createSubagentRunner, MAX_RELAY_MESSAGE_BYTES } from "./subagent-runner.ts";
 import {
 	agent,
 	emitProcessResult,
@@ -14,6 +15,8 @@ import {
 async function waitForProcess(processes: unknown[]): Promise<void> {
 	await vi.waitFor(() => expect(processes).toHaveLength(1));
 }
+
+beforeEach(() => resetObservabilityServiceForTests());
 
 describe("single subagent runner", () => {
 	it("builds child arguments and parses chunked, malformed, and unterminated stream lines", async () => {
@@ -71,6 +74,59 @@ describe("single subagent runner", () => {
 		});
 		expect(progress.map((event) => event.type)).toEqual(["started", "tool_call", "tool_result", "message", "completed"]);
 		expect(updates.length).toBeGreaterThan(0);
+	});
+
+	it("loads the observer only for active capture and relays bounded events over fd 3", async () => {
+		const observed: any[] = [];
+		const unsubscribe = getObservabilityService().activate((event) => observed.push(event));
+		const spawn = spawnHarness();
+		const run = createSubagentRunner({ registry: memoryRegistry(), config: memoryConfigStore(), spawnProcess: spawn.spawnProcess });
+		const promise = run({ agent: "worker", task: "observe", cwd: "/workspace" });
+		await waitForProcess(spawn.processes);
+		const [, args, options] = spawn.spawnProcess.mock.calls[0];
+		expect(args.some((value) => value.endsWith("observability-analysis/child-observer.ts"))).toBe(true);
+		expect(options).toMatchObject({ stdio: ["ignore", "pipe", "pipe", "pipe"], env: { PI_ANALYSIS_RELAY_FD: "3" } });
+
+		const request = JSON.stringify({ type: "request", provider: "openai", api: "openai-responses", model: "gpt", payload: { exact: true } });
+		spawn.processes[0].stdout.write(`${request}\n`);
+		spawn.processes[0].stdio[3].write("not-json\n" + JSON.stringify({ type: "agent_start" }) + "\n" + JSON.stringify({ type: "turn_start", turnIndex: 0 }) + "\n" + request.slice(0, 17));
+		spawn.processes[0].stdio[3].write(request.slice(17) + "\n" + JSON.stringify({ type: "response", status: 200 }) + "\n" + JSON.stringify({ type: "assistant", message: { role: "assistant", content: "done" } }) + "\n");
+		spawn.processes[0].emit("close", 0);
+		await promise;
+		expect(observed.map((event) => event.type)).toEqual(["agent_start", "turn_start", "request", "response", "assistant"]);
+		expect(observed[2]).toMatchObject({ source: { channel: "subagent", displayLabel: "worker" }, payload: { exact: true } });
+		expect(new Set(observed.map((event) => event.source.invocationId)).size).toBe(1);
+		unsubscribe();
+	});
+
+	it("drops malformed and oversized relay frames without losing later messages", () => {
+		const events: any[] = [];
+		const parser = createRelayParser((event) => events.push(event));
+		parser.push("{bad}\n");
+		parser.push("x".repeat(MAX_RELAY_MESSAGE_BYTES + 1));
+		parser.push("\n" + JSON.stringify({ type: "agent_start" }) + "\n");
+		parser.push(JSON.stringify({ type: "turn_start", turnIndex: 4 }));
+		const unicode = Buffer.from("\n" + JSON.stringify({ type: "assistant", message: { role: "assistant", content: "café" } }) + "\n");
+		const split = unicode.indexOf(Buffer.from("é")) + 1;
+		parser.push(unicode.subarray(0, split));
+		parser.push(unicode.subarray(split));
+		parser.end();
+		expect(events).toEqual([
+			{ type: "agent_start" }, { type: "turn_start", turnIndex: 4 },
+			{ type: "assistant", message: { role: "assistant", content: "café" } },
+		]);
+	});
+
+	it("keeps child launch unchanged while capture is inactive", async () => {
+		const spawn = spawnHarness();
+		const run = createSubagentRunner({ registry: memoryRegistry(), config: memoryConfigStore(), spawnProcess: spawn.spawnProcess });
+		const promise = run({ agent: "worker", task: "plain", cwd: "/workspace" });
+		await waitForProcess(spawn.processes);
+		const [, args, options] = spawn.spawnProcess.mock.calls[0];
+		expect(args.some((value) => value.endsWith("observability-analysis/child-observer.ts"))).toBe(false);
+		expect(options).toEqual({ cwd: "/workspace", stdio: ["ignore", "pipe", "pipe"] });
+		spawn.processes[0].emit("close", 0);
+		await promise;
 	});
 
 	it("loads repo_query for explorers alongside built-in tools", async () => {

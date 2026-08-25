@@ -105,6 +105,7 @@ export function memoryRegistry(agents: AgentConfig[] = [agent()]): AgentRegistry
 export interface FakeProcess extends EventEmitter {
 	stdout: PassThrough;
 	stderr: PassThrough;
+	stdio: [null, PassThrough, PassThrough, PassThrough, null];
 	killed: boolean;
 	kill: ReturnType<typeof vi.fn>;
 }
@@ -113,6 +114,7 @@ export function fakeProcess(closeOnKill = false): FakeProcess {
 	const process = new EventEmitter() as FakeProcess;
 	process.stdout = new PassThrough();
 	process.stderr = new PassThrough();
+	process.stdio = [null, process.stdout, process.stderr, new PassThrough(), null];
 	process.killed = false;
 	process.kill = vi.fn((_signal?: string) => {
 		process.killed = true;

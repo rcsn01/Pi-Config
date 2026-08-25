@@ -7,10 +7,20 @@ history.replaceState(null, '', location.pathname);
 const auth = { Authorization: 'Bearer ' + token };
 const requestList = document.getElementById('requestList');
 const detailPane = document.getElementById('detailPane');
+const sourceTabs = document.getElementById('sourceTabs');
+const sourcePanel = document.getElementById('sourcePanel');
 const error = document.getElementById('error');
 
+const tabs = [
+	{ channel: 'main', label: 'Main' },
+	{ channel: 'subagent', label: 'Subagents' },
+	{ channel: 'guardian', label: 'Guardian' },
+	{ channel: 'compaction', label: 'Compaction' },
+];
 let summaries = [];
+let activeChannel = 'main';
 let selectedSequence = null;
+const selections = new Map();
 let renderedFingerprint = null;
 let detailGeneration = 0;
 
@@ -200,21 +210,83 @@ function itemFingerprint(item) {
 	return [item.sequence, item.state, item.bytes, item.status, item.diagnostic].join(':');
 }
 
+function channelOf(item) {
+	return item.source?.channel || 'main';
+}
+
+function visibleSummaries() {
+	return summaries.filter((item) => channelOf(item) === activeChannel);
+}
+
+function renderTabs() {
+	sourceTabs.replaceChildren();
+	tabs.forEach((tab, index) => {
+		const button = document.createElement('button');
+		button.type = 'button';
+		button.className = 'source-tab';
+		button.setAttribute('role', 'tab');
+		button.id = 'tab-' + tab.channel;
+		button.setAttribute('aria-controls', 'sourcePanel');
+		button.setAttribute('aria-selected', tab.channel === activeChannel ? 'true' : 'false');
+		button.setAttribute('tabindex', tab.channel === activeChannel ? '0' : '-1');
+		button.dataset.channel = tab.channel;
+		text(button, tab.label + ' (' + summaries.filter((item) => channelOf(item) === tab.channel).length + ')');
+		button.addEventListener('click', () => {
+			if (activeChannel === tab.channel) return;
+			if (selectedSequence != null) selections.set(activeChannel, selectedSequence);
+			activeChannel = tab.channel;
+			sourcePanel.setAttribute('aria-labelledby', button.id);
+			const visible = visibleSummaries();
+			const saved = selections.get(activeChannel);
+			selectedSequence = visible.some((item) => item.sequence === saved) ? saved : (visible[0]?.sequence ?? null);
+			renderedFingerprint = null;
+			renderTabs();
+			renderRequestList();
+			const selected = visible.find((item) => item.sequence === selectedSequence);
+			if (selected) renderDetail(selected);
+			else {
+				detailGeneration++;
+				detailPane.removeAttribute('data-sequence');
+				detailPane.replaceChildren(div('empty-state', 'No captured requests for ' + tab.label + '.'));
+			}
+		});
+		button.addEventListener('keydown', (event) => {
+			let targetIndex;
+			if (event.key === 'ArrowRight') targetIndex = (index + 1) % tabs.length;
+			else if (event.key === 'ArrowLeft') targetIndex = (index - 1 + tabs.length) % tabs.length;
+			else if (event.key === 'Home') targetIndex = 0;
+			else if (event.key === 'End') targetIndex = tabs.length - 1;
+			else return;
+			event.preventDefault();
+			const channel = tabs[targetIndex].channel;
+			sourceTabs.querySelector('[data-channel="' + channel + '"]').click();
+			sourceTabs.querySelector('[data-channel="' + channel + '"]').focus();
+		});
+		sourceTabs.append(button);
+	});
+}
+
 function renderRequestList() {
 	requestList.replaceChildren();
-	summaries.forEach((item) => {
+	const visible = visibleSummaries();
+	if (!visible.length) {
+		requestList.append(div('empty-state', 'No requests captured in this tab.'));
+		return;
+	}
+	visible.forEach((item) => {
 		const button = document.createElement('button');
 		button.type = 'button';
 		button.className = 'request-row' + (item.sequence === selectedSequence ? ' selected' : '');
 		button.setAttribute('aria-pressed', item.sequence === selectedSequence ? 'true' : 'false');
 
 		const title = document.createElement('strong');
-		text(title, '#' + item.sequence + ' ' + item.provider + '/' + item.model);
+		text(title, '#' + item.sequence + ' ' + (item.source?.displayLabel || item.provider) + ' · ' + item.provider + '/' + item.model);
 		const meta = document.createElement('span');
 		text(meta, item.apiLabel + ' · ' + item.state + ' · ' + new Date(item.requestedAt).toLocaleTimeString());
 		button.append(title, meta);
 		button.addEventListener('click', () => {
 			selectedSequence = item.sequence;
+			selections.set(activeChannel, selectedSequence);
 			renderedFingerprint = null;
 			renderRequestList();
 			renderDetail(item);
@@ -238,12 +310,14 @@ async function renderDetail(item) {
 		if (generation !== detailGeneration || selectedSequence !== item.sequence) return;
 
 		const heading = document.createElement('h2');
-		text(heading, 'Request #' + item.sequence + ' · ' + detail.provider + '/' + detail.model);
+		text(heading, (detail.source?.channel === 'compaction' ? 'Compaction #' : 'Request #') + item.sequence + ' · ' + detail.provider + '/' + detail.model);
 		const grid = div('grid');
 		grid.append(
+			metric('Source', (detail.source?.displayLabel || 'Main agent') + ' · ' + (detail.source?.invocationId || 'legacy')),
 			metric('Run / turn', detail.run + ' / ' + detail.turn),
 			metric('API', detail.api),
 			metric('Payload type', detail.apiLabel),
+			metric('Payload fidelity', detail.fidelity === 'pi-preparation' ? 'Pi-level preparation, not exact provider payload' : 'Exact provider payload'),
 			metric(
 				'HTTP status',
 				detail.status == null ? (detail.statusEvidence?.join(', ') || 'unavailable') : detail.status,
@@ -288,16 +362,22 @@ async function refresh() {
 		text(document.getElementById('pausedText'), data.diagnostic || 'Capture paused.');
 
 		summaries = data.records.slice().reverse();
-		if (!summaries.some((item) => item.sequence === selectedSequence)) {
-			selectedSequence = summaries[0]?.sequence ?? null;
+		const visible = visibleSummaries();
+		if (!visible.some((item) => item.sequence === selectedSequence)) {
+			const saved = selections.get(activeChannel);
+			selectedSequence = visible.some((item) => item.sequence === saved) ? saved : (visible[0]?.sequence ?? null);
 		}
+		if (selectedSequence != null) selections.set(activeChannel, selectedSequence);
+		renderTabs();
 		renderRequestList();
 
-		const selected = summaries.find((item) => item.sequence === selectedSequence);
+		const selected = visible.find((item) => item.sequence === selectedSequence);
 		if (!selected) {
 			detailGeneration++;
 			renderedFingerprint = null;
-			detailPane.replaceChildren();
+			const label = tabs.find((tab) => tab.channel === activeChannel)?.label || activeChannel;
+			detailPane.removeAttribute('data-sequence');
+			detailPane.replaceChildren(div('empty-state', 'No captured requests for ' + label + '.'));
 		} else if (renderedFingerprint !== itemFingerprint(selected)) {
 			renderDetail(selected);
 		}
