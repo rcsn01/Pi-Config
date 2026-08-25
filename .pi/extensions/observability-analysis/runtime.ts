@@ -2,10 +2,11 @@ import { Buffer } from "node:buffer";
 import type { AnalysisServer } from "./server.ts";
 import { createAnalysisServer } from "./server.ts";
 import {
-	labelPayload,
+	analyzePayload,
 	normalizeUsage,
 	reconcileCacheSections,
 	serializeJson,
+	supportsPrefixCacheEstimate,
 	type PayloadSection,
 	type UsageView,
 } from "./payload.ts";
@@ -26,6 +27,7 @@ export interface AnalysisRecordSummary {
 	provider: string;
 	api: string;
 	model: string;
+	apiLabel: string;
 	status?: number;
 	statusEvidence?: number[];
 	state: "pending" | "complete";
@@ -39,6 +41,7 @@ export interface AnalysisRecord extends AnalysisRecordSummary {
 	assistantJson?: string;
 	sections: PayloadSection[];
 	usage?: UsageView;
+	cachePlacement?: "estimated";
 }
 
 export interface AnalysisSummary {
@@ -166,17 +169,17 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 			return;
 		}
 		if (event.type === "request") {
-			if (event.provider !== "openai" && event.provider !== "openai-codex") return;
 			const serialized = serializeJson(event.payload);
 			if (!serialized.json) {
 				pause(`Analysis capture paused. ${serialized.diagnostic ?? "Request serialization failed."}`);
 				return;
 			}
+			const analysis = analyzePayload(event.api, event.payload);
 			const record: AnalysisRecord = {
 				sequence: ++sequence, run, turn, requestedAt: at,
-				provider: event.provider, api: event.api, model: event.model,
+				provider: event.provider, api: event.api, model: event.model, apiLabel: analysis.apiLabel,
 				state: "pending", correlation: "exact", bytes: 0,
-				requestJson: serialized.json, sections: labelPayload(event.payload),
+				requestJson: serialized.json, sections: analysis.sections,
 			};
 			const bytes = byteSize(record);
 			if (bytes > maxRecordBytes || retainedBytes + bytes > maxTotalBytes) {
@@ -218,9 +221,10 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 				record.completedAt = at;
 				record.state = "complete";
 				record.usage = usage;
-				if (usage) {
+				if (usage && supportsPrefixCacheEstimate(record.api)) {
 					const promptTotal = usage.input + usage.cacheRead + usage.cacheWrite;
 					record.sections = reconcileCacheSections(record.sections, promptTotal, usage.cacheRead);
+					record.cachePlacement = "estimated";
 				}
 			});
 			if (!updated) {

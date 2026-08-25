@@ -27,13 +27,15 @@ Run the setup script and enter the path to each project you want to link:
 
 This links the project's `.pi` directory to this repo's `.pi`, so it picks up the shared configuration.
 
-## Local OpenAI request analysis
+## Local provider request analysis
 
-Run `/analysis` with no arguments to start capture for the current session. The command prints a secret localhost URL. Open it to inspect logical `openai` and `openai-codex` requests completed after activation, along with Pi's finalized assistant messages and exact provider-reported token and cost fields. The extension starts no server and retains no payloads until you run the command. Reloading, switching or forking the session, and exiting revoke the URL and erase the in-memory capture.
+Run `/analysis` with no arguments to start capture for the current session. The command prints a secret localhost URL. Open it to inspect requests completed after activation, Pi's finalized assistant messages, and normalized provider-reported token and cost fields. Capture works with providers that use Pi's standard request hooks, including Ollama, Ollama Cloud, GitHub Copilot, and OpenRouter. A custom `streamSimple` implementation that skips those hooks cannot be observed. The extension starts no server and retains no payloads until you run the command. Reloading, switching or forking the session, and exiting revoke the URL and erase the in-memory capture.
 
-The page contains complete prompts, tool schemas, tool inputs, results, reasoning state, and raw JSON. Treat its URL as a credential and do not share dashboard contents without checking them for secrets. Pi's provider hook exposes the complete logical payload, not request headers or later Codex WebSocket delta frames.
+The dashboard organizes known payloads as OpenAI Completions, OpenAI Responses, or Anthropic Messages according to the model's API. It shows an unknown API as one generic section containing the complete payload. The page contains complete prompts, tool schemas, tool inputs, results, reasoning state, and raw JSON. Treat its URL as a credential and do not share dashboard contents without checking them for secrets. Pi's provider hook exposes the complete pre-transport logical payload, not headers or later transport transformations.
 
-Cache totals come directly from finalized Pi usage. Coloring over visible request sections is an estimated cache-prefix placement because OpenAI reports only an aggregate prefix count. Hidden wrappers, tokenizer differences, and cache-boundary rounding prevent exact attribution to individual sections.
+Usage totals come from Pi's finalized normalized provider usage. For known prefix-cache payload families, section-level cache placement is an estimate based on the aggregate cache count and payload order. Hidden wrappers, tokenizer differences, and cache-boundary rounding prevent exact attribution to individual sections. Unknown API payloads still show usage totals but do not get section-level cache placement.
+
+Capture remains observation-only and keeps complete records in memory under fixed per-record and total limits. Reaching either limit pauses capture rather than truncating a record. The dashboard listens only on localhost and requires the capability token in the generated URL.
 
 ## Reasoning-effort prompt-cache diagnostic
 

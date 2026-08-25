@@ -11,6 +11,12 @@ export interface PayloadSection {
 	cachedTokens?: number;
 }
 
+export interface PayloadAnalysis {
+	apiLabel: string;
+	sections: PayloadSection[];
+	prefixCache: boolean;
+}
+
 export interface UsageView {
 	input: number;
 	cacheRead: number;
@@ -72,46 +78,108 @@ function itemKind(value: unknown): SectionKind {
 
 const OPTION_KEYS = new Set([
 	"model", "reasoning", "reasoning_effort", "text", "verbosity", "temperature", "top_p",
-	"max_output_tokens", "max_tokens", "store", "stream", "parallel_tool_calls", "tool_choice",
-	"prompt_cache_key", "prompt_cache_retention", "service_tier", "metadata", "include",
+	"top_k", "max_output_tokens", "max_tokens", "max_completion_tokens", "stop", "stop_sequences",
+	"store", "stream", "parallel_tool_calls", "tool_choice", "prompt_cache_key",
+	"prompt_cache_retention", "service_tier", "metadata", "include",
 ]);
 
-/** Build pointer-only labels. The raw payload remains the sole copy of captured content. */
-export function labelPayload(payload: unknown): PayloadSection[] {
-	const root = object(payload);
-	if (!root) return [{ kind: "conversation", label: "request payload", pointer: "", estimatedTokens: tokenEstimate(payload) }];
-	const sections: PayloadSection[] = [];
+const RESPONSE_APIS = new Set(["openai-responses", "openai-codex-responses", "azure-openai-responses"]);
 
-	if (root.instructions !== undefined) add(sections, "instruction", "instructions", "/instructions", root.instructions);
-	if (root.system !== undefined) add(sections, "instruction", "system instructions", "/system", root.system);
+function addTools(sections: PayloadSection[], root: Record<string, unknown>): void {
+	if (!Array.isArray(root.tools)) return;
+	root.tools.forEach((tool, index) => {
+		const toolObject = object(tool);
+		const name = toolObject && typeof toolObject.name === "string"
+			? toolObject.name
+			: object(toolObject?.function)?.name;
+		add(sections, "tool", `tool: ${typeof name === "string" ? name : index + 1}`, `/tools/${index}`, tool);
+	});
+}
 
-	if (Array.isArray(root.tools)) {
-		root.tools.forEach((tool, index) => {
-			const toolObject = object(tool);
-			const name = toolObject && typeof toolObject.name === "string"
-				? toolObject.name
-				: object(toolObject?.function)?.name;
-			add(sections, "tool", `tool: ${typeof name === "string" ? name : index + 1}`, `/tools/${index}`, tool);
-		});
-	}
+function addMessages(sections: PayloadSection[], root: Record<string, unknown>): void {
+	if (!Array.isArray(root.messages)) return;
+	root.messages.forEach((message, index) => {
+		const role = object(message)?.role;
+		add(sections, role === "system" || role === "developer" ? "instruction" : "conversation",
+			`${typeof role === "string" ? role : "message"} ${index + 1}`, `/messages/${index}`, message);
+	});
+}
 
-	const input = Array.isArray(root.input) ? root.input : undefined;
-	if (input) input.forEach((item, index) => add(sections, itemKind(item), itemLabel(item, index), `/input/${index}`, item));
-
-	if (Array.isArray(root.messages)) {
-		root.messages.forEach((message, index) => {
-			const role = object(message)?.role;
-			add(sections, role === "system" || role === "developer" ? "instruction" : "conversation",
-				`${typeof role === "string" ? role : "message"} ${index + 1}`, `/messages/${index}`, message);
-		});
-	}
-	if (root.prompt !== undefined) add(sections, "conversation", "prompt", "/prompt", root.prompt);
-
+function addOptions(sections: PayloadSection[], root: Record<string, unknown>): void {
 	for (const [key, value] of Object.entries(root)) {
 		if (OPTION_KEYS.has(key)) add(sections, "option", key.replaceAll("_", " "), `/${pointerPart(key)}`, value);
 	}
-	if (sections.length === 0) add(sections, "conversation", "request payload", "", payload);
+}
+
+function completionsSections(root: Record<string, unknown>): PayloadSection[] {
+	const sections: PayloadSection[] = [];
+	addTools(sections, root);
+	addMessages(sections, root);
+	if (root.prompt !== undefined) add(sections, "conversation", "prompt", "/prompt", root.prompt);
+	addOptions(sections, root);
 	return sections;
+}
+
+function responsesSections(root: Record<string, unknown>): PayloadSection[] {
+	const sections: PayloadSection[] = [];
+	if (root.instructions !== undefined) add(sections, "instruction", "instructions", "/instructions", root.instructions);
+	addTools(sections, root);
+	if (Array.isArray(root.input)) {
+		root.input.forEach((item, index) => add(sections, itemKind(item), itemLabel(item, index), `/input/${index}`, item));
+	} else if (root.input !== undefined) {
+		add(sections, "conversation", "input", "/input", root.input);
+	}
+	addOptions(sections, root);
+	return sections;
+}
+
+function anthropicSections(root: Record<string, unknown>): PayloadSection[] {
+	const sections: PayloadSection[] = [];
+	addTools(sections, root);
+	if (root.system !== undefined) add(sections, "instruction", "system instructions", "/system", root.system);
+	addMessages(sections, root);
+	addOptions(sections, root);
+	return sections;
+}
+
+/** Build API-specific pointer labels. The raw payload remains the sole copy of captured content. */
+export function analyzePayload(api: string, payload: unknown): PayloadAnalysis {
+	const root = object(payload);
+	if (!root) {
+		return {
+			apiLabel: "Generic payload",
+			prefixCache: false,
+			sections: [{ kind: "conversation", label: "complete request payload", pointer: "", estimatedTokens: tokenEstimate(payload) }],
+		};
+	}
+	let apiLabel: string;
+	let sections: PayloadSection[];
+	if (api === "openai-completions") {
+		apiLabel = "OpenAI Completions";
+		sections = completionsSections(root);
+	} else if (RESPONSE_APIS.has(api)) {
+		apiLabel = "OpenAI Responses";
+		sections = responsesSections(root);
+	} else if (api === "anthropic-messages") {
+		apiLabel = "Anthropic Messages";
+		sections = anthropicSections(root);
+	} else {
+		return {
+			apiLabel: "Generic payload",
+			prefixCache: false,
+			sections: [{ kind: "conversation", label: "complete request payload", pointer: "", estimatedTokens: tokenEstimate(payload) }],
+		};
+	}
+	if (sections.length === 0) add(sections, "conversation", "complete request payload", "", payload);
+	return { apiLabel, sections, prefixCache: true };
+}
+
+export function labelPayload(api: string, payload: unknown): PayloadSection[] {
+	return analyzePayload(api, payload).sections;
+}
+
+export function supportsPrefixCacheEstimate(api: string): boolean {
+	return api === "openai-completions" || RESPONSE_APIS.has(api) || api === "anthropic-messages";
 }
 
 export function reconcileCacheSections(

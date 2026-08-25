@@ -11,7 +11,7 @@ export const ANALYSIS_PAGE = String.raw`<!doctype html>
 </head>
 <body>
 	<header>
-		<h1>Pi OpenAI request analysis</h1>
+		<h1>Pi provider request analysis</h1>
 		<div id="activation" class="muted">Connecting...</div>
 	</header>
 	<main>

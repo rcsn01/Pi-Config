@@ -9,7 +9,7 @@ function harness() {
 		on: vi.fn((name: string, handler: any) => handlers.set(name, handler)),
 	};
 	const ctx: any = {
-		model: { provider: "openai", api: "openai-responses", id: "gpt-test" },
+		model: { provider: "openrouter", api: "openai-completions", id: "test-model" },
 		ui: { notify: vi.fn() },
 	};
 	return { pi, commands, handlers, ctx };
@@ -22,6 +22,7 @@ describe("analysis extension adapter", () => {
 		createAnalysisExtension({ createRuntime: () => runtime })(h.pi);
 		expect(runtime.start).not.toHaveBeenCalled();
 		expect(runtime.observe).not.toHaveBeenCalled();
+		expect(h.commands.get("analysis").description).not.toContain("OpenAI");
 		await h.commands.get("analysis").handler("bad", h.ctx);
 		expect(runtime.start).not.toHaveBeenCalled();
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith("Usage: /analysis", "warning");
@@ -29,6 +30,7 @@ describe("analysis extension adapter", () => {
 		await h.commands.get("analysis").handler("", h.ctx);
 		expect(runtime.start).toHaveBeenCalledTimes(2);
 		expect(h.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("#token=secret"), "info");
+		expect(h.ctx.ui.notify.mock.calls.flat().join(" ")).not.toContain("OpenAI request analysis");
 	});
 
 	it("observes lifecycle events without replacing payloads or messages", async () => {
