@@ -1,0 +1,50 @@
+{
+  "name": "pi-ollama-cloud",
+  "version": "0.9.0",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "index.ts",
+    "config.ts",
+    "models.ts",
+    "models.generated.ts",
+    "pricing.generated.ts",
+    "thinking-levels.ts",
+    "usage.ts",
+    "utils.ts",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fgrehm/pi-ollama-cloud.git"
+  },
+  "scripts": {
+    "check": "biome check --write . && tsgo --noEmit",
+    "lint": "biome check .",
+    "typecheck": "tsgo --noEmit",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "generate-models": "tsx scripts/generate-pricing.ts && tsx scripts/generate-models.ts && biome format --write models.generated.ts pricing.generated.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2",
+    "@types/node": "^26.1.2",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
+    "tsx": "^4.19.0",
+    "vitest": "^4.1.6"
+  }
+}
