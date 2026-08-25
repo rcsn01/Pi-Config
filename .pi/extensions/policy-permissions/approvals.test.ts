@@ -18,15 +18,27 @@ describe("guardian approval persistence", () => {
 	it("persists guardian usage on the verdict entry without transcript data", async () => {
 		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe", model: "openai/guardian", usage });
 		const appendEntry = vi.fn();
+		const guardianSettings = {
+			provider: "openai",
+			modelId: "guardian",
+			thinkingLevel: "high" as const,
+			contextWindow: 256_000,
+		};
 		const service = createApprovalService({
 			getMode: () => ({ mode: "auto-review", setAt: 0 }),
 			getContext: () => ({ lastUserPrompt: "Review this", precedingAssistantMessage: "I will inspect it" }),
+			getGuardianSettings: () => guardianSettings,
 			appendEntry,
 		});
 
 		const result = await service.guardianReview({ hasUI: true } as any, "Read file", "Read /tmp/example.txt", ["external-write"]);
 
 		expect(result).toEqual({ allowed: true, reason: "safe" });
+		expect(mocked.runAutoReviewer).toHaveBeenCalledWith(
+			"Read file",
+			expect.stringContaining("Read /tmp/example.txt"),
+			{ settings: guardianSettings },
+		);
 		expect(appendEntry).toHaveBeenCalledWith("auto-review-verdict", {
 			title: "Read file",
 			allowed: true,

@@ -1,24 +1,31 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import safetyPermissions from "./index.ts";
+import safetyPermissions, { createSafetyPermissionsExtension } from "./index.ts";
 import { saveModeToFile } from "./mode-store.ts";
 
 const mocked = vi.hoisted(() => ({
 	runAutoReviewer: vi.fn(),
+	disposeAutoReviewer: vi.fn(async () => {}),
 	parseGuardianDefinition: vi.fn(),
 	resolveGuardianPath: vi.fn(),
+	pickModelConfiguration: vi.fn(),
 }));
 vi.mock("./guardian-runner.ts", () => mocked);
+vi.mock("../_shared/model-picker.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../_shared/model-picker.ts")>()),
+	pickModelConfiguration: mocked.pickModelConfiguration,
+}));
 
 const tempDirectories: string[] = [];
 
 afterEach(() => {
+	vi.clearAllMocks();
 	while (tempDirectories.length > 0) rmSync(tempDirectories.pop()!, { recursive: true, force: true });
 });
 
-function createHarness() {
+function createHarness(options: { settingsPath?: string; branch?: any[] } = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-safety-status-"));
 	tempDirectories.push(cwd);
 	// Redirect the project state root (mode file, etc.) into a temp dir so the
@@ -27,26 +34,31 @@ function createHarness() {
 	tempDirectories.push(stateDir);
 	process.env.PI_CONFIG_STATE_DIR = stateDir;
 	const handlers = new Map<string, (event: any, ctx: any) => unknown>();
+	const commands = new Map<string, any>();
 	const renderers = new Map<string, (entry: any, options: any, theme: any) => any>();
 	const setStatus = vi.fn();
 	const appendEntry = vi.fn();
 	const pi = {
 		on: (event: string, handler: (event: any, ctx: any) => unknown) => handlers.set(event, handler),
-		registerCommand: vi.fn(),
+		registerCommand: (name: string, command: any) => commands.set(name, command),
 		registerEntryRenderer: (type: string, renderer: any) => renderers.set(type, renderer),
 		appendEntry,
 	};
 	const ctx = {
 		cwd,
 		hasUI: true,
+		mode: "tui",
+		scopedModels: [],
 		ui: { setStatus, notify: vi.fn() },
+		modelRegistry: { find: vi.fn() },
 		sessionManager: {
-			getBranch: () => [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
+			getBranch: () => options.branch ?? [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
 		},
 	};
 
-	safetyPermissions(pi as any);
-	return { ctx, handlers, setStatus, renderers, appendEntry };
+	if (options.settingsPath) createSafetyPermissionsExtension({ settingsPath: options.settingsPath })(pi as any);
+	else safetyPermissions(pi as any);
+	return { ctx, handlers, commands, setStatus, renderers, appendEntry };
 }
 
 describe("safety permission status", () => {
@@ -57,6 +69,92 @@ describe("safety permission status", () => {
 		expect(harness.setStatus).toHaveBeenCalledWith("approval-mode", "default");
 		expect(harness.setStatus).not.toHaveBeenCalledWith("approval-mode", expect.stringContaining(" · "));
 		expect(harness.setStatus).not.toHaveBeenCalledWith("profile", expect.anything());
+	});
+});
+
+describe("guardian model command", () => {
+	it("writes the shared picker selection to the session-bound profile", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-guardian-profile-"));
+		tempDirectories.push(root);
+		const settingsPath = join(root, "settings.json");
+		const profilesDirectory = join(root, "profiles");
+		mkdirSync(profilesDirectory);
+		writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "other" }, rootOnly: true }));
+		writeFileSync(join(profilesDirectory, "focused.json"), JSON.stringify({
+			configProfiles: { active: "focused" },
+			keep: true,
+			guardian: { provider: "old", modelId: "guardian", thinkingLevel: "low", contextWindow: 128_000 },
+		}));
+		mocked.pickModelConfiguration.mockResolvedValue({
+			model: { provider: "anthropic", id: "strong", name: "Strong", contextWindow: 256_000 },
+			thinkingLevel: "high",
+			contextWindow: 256_000,
+		});
+		const harness = createHarness({ settingsPath });
+		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+
+		await harness.commands.get("guardian").handler("", harness.ctx);
+
+		expect(JSON.parse(readFileSync(join(profilesDirectory, "focused.json"), "utf8"))).toMatchObject({
+			keep: true,
+			guardian: { provider: "anthropic", modelId: "strong", thinkingLevel: "high", contextWindow: 256_000 },
+		});
+		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({ configProfiles: { active: "other" }, rootOnly: true });
+		expect(mocked.pickModelConfiguration).toHaveBeenCalledWith(harness.ctx, expect.objectContaining({
+			modelTitle: "Select Guardian model",
+			previous: expect.objectContaining({ provider: "old", modelId: "guardian" }),
+		}));
+	});
+
+	it("does not write if the session binding changes while the picker is open", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-guardian-race-"));
+		tempDirectories.push(root);
+		const settingsPath = join(root, "settings.json");
+		const profilesDirectory = join(root, "profiles");
+		mkdirSync(profilesDirectory);
+		writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+		writeFileSync(join(profilesDirectory, "focused.json"), JSON.stringify({ keep: true }));
+		let finishPicker!: (selection: any) => void;
+		mocked.pickModelConfiguration.mockImplementation(() => new Promise((resolve) => { finishPicker = resolve; }));
+		const harness = createHarness({ settingsPath, branch: [] });
+		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+		const command = harness.commands.get("guardian").handler("", harness.ctx);
+		await harness.handlers.get("session_shutdown")?.({ reason: "reload" }, harness.ctx);
+		finishPicker({
+			model: { provider: "openai", id: "guardian", contextWindow: 128_000 },
+			thinkingLevel: "medium",
+			contextWindow: 128_000,
+		});
+		await command;
+
+		expect(JSON.parse(readFileSync(join(profilesDirectory, "focused.json"), "utf8"))).toEqual({ keep: true });
+		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("profile changed"), "warning");
+	});
+
+	it("keeps the remembered profile binding on reload", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-guardian-reload-"));
+		tempDirectories.push(root);
+		const settingsPath = join(root, "settings.json");
+		const profilesDirectory = join(root, "profiles");
+		mkdirSync(profilesDirectory);
+		writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+		writeFileSync(join(profilesDirectory, "default.json"), JSON.stringify({ keep: "default" }));
+		writeFileSync(join(profilesDirectory, "focused.json"), JSON.stringify({ keep: "focused" }));
+		mocked.pickModelConfiguration.mockResolvedValue({
+			model: { provider: "openai", id: "guardian", name: "Guardian", contextWindow: 128_000 },
+			thinkingLevel: "medium",
+			contextWindow: 128_000,
+		});
+		const harness = createHarness({
+			settingsPath,
+			branch: [{ type: "custom", customType: "configProfiles", data: { active: "default" } }],
+		});
+		await harness.handlers.get("session_start")?.({ reason: "reload" }, harness.ctx);
+
+		await harness.commands.get("guardian").handler("", harness.ctx);
+
+		expect(JSON.parse(readFileSync(join(profilesDirectory, "default.json"), "utf8"))).toHaveProperty("guardian.modelId", "guardian");
+		expect(JSON.parse(readFileSync(join(profilesDirectory, "focused.json"), "utf8"))).toEqual({ keep: "focused" });
 	});
 });
 
