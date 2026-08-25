@@ -1,7 +1,6 @@
 // Text progress bar for usage rows: `[████████████░░░░░░░░]` — 20 segments,
 // each worth 5 percentage points. Both the filled and empty tracks are boxes
-// in different shades: the solid full block (█) and the light shade (░). The
-// Theme styling is applied only by the interactive tool renderer, not here.
+// in different shades: the solid full block (█) and the light shade (░).
 // The notification boundary remains plain text. Rounds to the nearest segment
 // and clamps to the bar width (usage can exceed 100% when over the limit).
 export const BAR_WIDTH = 20;

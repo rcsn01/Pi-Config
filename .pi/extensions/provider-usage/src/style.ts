@@ -1,7 +1,4 @@
-/**
- * Keep the notification boundary plain text. Theme-aware styling belongs to
- * the TUI tool renderer, where the active Pi theme is available.
- */
+/** Keep the notification boundary plain text across Pi run modes. */
 export function styleUsageText(text: string): string {
 	return text;
 }

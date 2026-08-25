@@ -75,17 +75,7 @@ function harness(options: {
 // instead of depending on the wall clock.
 const FIXTURE_NOW = () => new Date("2026-08-17T12:00:00.000Z");
 
-function rendererTheme() {
-	return {
-		fg: (_color: string, text: string) => text,
-		bold: (text: string) => text,
-		italic: (text: string) => text,
-		strikethrough: (text: string) => text,
-		underline: (text: string) => text,
-	};
-}
-
-describe("/usage (unified) and the usage tools", () => {
+describe("/usage (unified)", () => {
 	it("shows both providers on a plain /usage", async () => {
 		// Monday 21:20 local: 40 minutes to the full hour, 6 days to Monday —
 		// the exact values observed in the web UI.
@@ -222,62 +212,8 @@ describe("/usage (unified) and the usage tools", () => {
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Usage: /usage"), "error");
 	});
 
-	it("renders themed collapsed, expanded, partial, and error tool states", () => {
+	it("does not expose subscription usage as an LLM tool", () => {
 		const { tools } = harness();
-		const tool = tools.get("subscription_usage");
-		const result = { content: [{ type: "text", text: "usage" }], details: okResult.snapshot };
-		const collapsed = tool.renderResult(result, { expanded: false, isPartial: false }, rendererTheme(), { isError: false });
-		expect(collapsed.render(80).join("\n")).toContain("✓ Plan Pro · 58% of weekly limit used · expand to view");
-		const expanded = tool.renderResult(result, { expanded: true, isPartial: false }, rendererTheme(), { isError: false });
-		expect(expanded.render(80).join("\n")).toContain("ChatGPT Codex");
-		const partial = tool.renderResult(result, { expanded: false, isPartial: true }, rendererTheme(), { isError: false });
-		expect(partial.render(80).join("\n")).toContain("⟳ Loading Codex usage…");
-		const error = tool.renderResult({ content: [{ type: "text", text: "quota unavailable" }] }, { expanded: false, isPartial: false }, rendererTheme(), { isError: true });
-		expect(error.render(80).join("\n")).toContain("✗ quota unavailable");
-	});
-
-	it("returns quota through subscription_usage and reuses the fresh cache", async () => {
-		const { command, tools, probe, ctx } = harness();
-		const tool = tools.get("subscription_usage");
-		await command.handler("", ctx);
-		const before = probe.mock.calls.length;
-		const result = await tool.execute("call", { action: "status" }, ctx.signal);
-		expect(probe).toHaveBeenCalledTimes(before);
-		expect(result.content[0].text).toContain("ChatGPT Codex · Plan: Pro");
-		expect(result.content[0].text).toContain("Rate-limit reset credits: 1 available");
-		expect(result.details).toMatchObject({ plan: "Pro", weekly: { usedPercent: 58 } });
-	});
-
-	it("returns usage through ollama_usage and reuses the fresh cache", async () => {
-		const { command, tools, probeOllama, ctx } = harness();
-		const tool = tools.get("ollama_usage");
-		await command.handler("", ctx);
-		const before = probeOllama.mock.calls.length;
-		const result = await tool.execute("call", { action: "status" }, ctx.signal);
-		expect(probeOllama).toHaveBeenCalledTimes(before);
-		expect(result.content[0].text).toContain("Ollama Cloud");
-		expect(result.content[0].text).toContain("Weekly usage: [█░░░░░░░░░░░░░░░░░░░] 3% used");
-		expect(result.details).toMatchObject({ session: { usedPercent: 16.2 } });
-	});
-
-	it("fetches for tool refresh even when the cache is fresh", async () => {
-		const { command, tools, probe, probeOllama, ctx } = harness();
-		await command.handler("", ctx);
-		await tools.get("subscription_usage").execute("call", { action: "refresh" }, ctx.signal);
-		expect(probe).toHaveBeenCalledTimes(2);
-		await tools.get("ollama_usage").execute("call", { action: "refresh" }, ctx.signal);
-		expect(probeOllama).toHaveBeenCalledTimes(2);
-	});
-
-	it("surfaces probe failures clearly in the tools", async () => {
-		const rejected = harness({
-			probeResult: {
-				state: "auth-required",
-				message: "ChatGPT rejected the Codex credential (HTTP 401). Run `codex login` and try again.",
-			},
-		});
-		await expect(
-			rejected.tools.get("subscription_usage").execute("call", { action: "refresh" }, rejected.ctx.signal),
-		).rejects.toThrow("codex login");
+		expect(tools.size).toBe(0);
 	});
 });

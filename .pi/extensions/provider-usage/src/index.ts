@@ -1,7 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { isStale } from "./probe.ts";
 import type { ProbeResult } from "./probe.ts";
 import { inspectCodexAuth } from "./codex-auth.ts";
@@ -12,31 +9,9 @@ import type { OllamaAuthInspection, UsageProbeResult, UsageSnapshot } from "./ol
 import { probeQuota } from "./quota-client.ts";
 import { formatQuotaText } from "./render.ts";
 import { styleUsageText } from "./style.ts";
-import { renderToolSummary } from "../../_shared/tool-result-ui.ts";
 import type { CodexAuthInspection, QuotaProbeResult, QuotaSnapshot } from "./types.ts";
 
-const UsageToolParams = Type.Object({
-	action: StringEnum(["status", "refresh"] as const, {
-		description: "Read the latest in-memory snapshot or query the provider first",
-	}),
-});
-
 type Provider = "codex" | "ollama" | "both";
-
-const USAGE_BAR = /\[[█░]+\]/g;
-const USAGE_PERCENT = /(\d+(?:\.\d+)?% used)/g;
-
-function renderUsageText(text: string, theme: Theme): Text {
-	const lines = text.split("\n").map((line) => {
-		if (/^(ChatGPT Codex|Ollama Cloud)/.test(line)) {
-			return theme.fg("accent", theme.bold(line));
-		}
-		let styled = line.replace(USAGE_BAR, (bar: string) => theme.fg("accent", theme.bold(bar)));
-		styled = styled.replace(USAGE_PERCENT, (share: string) => theme.bold(share));
-		return theme.fg("toolOutput", styled);
-	});
-	return new Text(lines.join("\n"), 0, 0);
-}
 
 function parseUsageArgs(raw: string): { provider: Provider; action: string } {
 	const tokens = raw.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -211,82 +186,6 @@ export function createSubscriptionUsageExtension(options: {
 					return;
 				}
 				await runFetch(provider, normalized === "refresh", ctx);
-			},
-		});
-
-		pi.registerTool({
-			name: "subscription_usage",
-			label: "ChatGPT Codex Usage",
-			description: "Read the ChatGPT Codex quota (plan, weekly limit, rate-limit reset credits). Status uses the latest in-memory snapshot when available; refresh queries ChatGPT.",
-			parameters: UsageToolParams,
-			async execute(_toolCallId, params, signal) {
-				const snapshot = await fetchCodex(params.action === "refresh", signal);
-				return {
-					content: [{ type: "text", text: formatQuotaText(snapshot, now()) }],
-					details: snapshot,
-				};
-			},
-			renderCall(args, theme) {
-				return new Text(
-					theme.fg("toolTitle", theme.bold("subscription_usage ")) +
-						theme.fg("muted", args.action),
-					0, 0,
-				);
-			},
-			renderResult(result, { expanded, isPartial }, theme, context) {
-				if (isPartial) return renderToolSummary(theme, "running", "Loading Codex usage…");
-				if (context.isError) {
-					const message = result.content.find((content) => content.type === "text")?.text ?? "Usage request failed.";
-					return renderToolSummary(theme, "error", message);
-				}
-				const snapshot = result.details as QuotaSnapshot | undefined;
-				if (!snapshot) {
-					const content = result.content[0];
-					return new Text(content?.type === "text" ? content.text : "", 0, 0);
-				}
-				const summary = snapshot.weekly
-					? `${Math.round(snapshot.weekly.usedPercent)}% of weekly limit used`
-					: "weekly limit unavailable";
-				if (!expanded) return renderToolSummary(theme, "success", `Plan ${snapshot.plan ?? "unknown"} · ${summary}`, true);
-				return renderUsageText(formatQuotaText(snapshot, new Date()), theme);
-			},
-		});
-
-		pi.registerTool({
-			name: "ollama_usage",
-			label: "Ollama Cloud Usage",
-			description: "Read the Ollama Cloud session and weekly usage from the authenticated Ollama key. Status uses the latest in-memory snapshot when available; refresh queries ollama.com.",
-			parameters: UsageToolParams,
-			async execute(_toolCallId, params, signal) {
-				const snapshot = await fetchOllama(params.action === "refresh", signal);
-				return {
-					content: [{ type: "text", text: formatUsageText(snapshot, now()) }],
-					details: snapshot,
-				};
-			},
-			renderCall(args, theme) {
-				return new Text(
-					theme.fg("toolTitle", theme.bold("ollama_usage ")) +
-						theme.fg("muted", args.action),
-					0, 0,
-				);
-			},
-			renderResult(result, { expanded, isPartial }, theme, context) {
-				if (isPartial) return renderToolSummary(theme, "running", "Loading Ollama usage…");
-				if (context.isError) {
-					const message = result.content.find((content) => content.type === "text")?.text ?? "Usage request failed.";
-					return renderToolSummary(theme, "error", message);
-				}
-				const snapshot = result.details as UsageSnapshot | undefined;
-				if (!snapshot) {
-					const content = result.content[0];
-					return new Text(content?.type === "text" ? content.text : "", 0, 0);
-				}
-				const summary = snapshot.weekly
-					? `${Math.round(snapshot.weekly.usedPercent)}% of weekly usage used`
-					: "weekly usage unavailable";
-				if (!expanded) return renderToolSummary(theme, "success", summary, true);
-				return renderUsageText(formatUsageText(snapshot, new Date()), theme);
 			},
 		});
 	};
