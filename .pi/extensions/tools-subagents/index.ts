@@ -111,9 +111,13 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		description: "Delegate a task to an isolated subagent; include all needed context.",
 		promptSnippet: "Delegate tasks",
 		promptGuidelines: [
-			"Parallel tool calls are your primary parallelism mechanism — put multiple independent read/fetch/search calls in one function_calls block. Don't use subagents to parallelize simple I/O.",
-			"Use subagents to isolate context-heavy, bounded work: explorer for read-only codebase investigation, worker for bounded implementation or verification, default for small general tasks, and researcher for web research. Keep low-context operations local.",
-			"For multiple independent subagent tasks, use parallel mode with tasks[] array",
+			"Use subagents only when their final handoff will be substantially smaller than the raw material they inspect.",
+			"Keep simple lookups, known-symbol traces, and reads of one or two files local. Use parallel tool calls for independent I/O.",
+			"Use explorer to gather repository evidence across several files. Do not delegate planning, architecture, task decomposition, or implementation decisions. The main agent owns synthesis and planning.",
+			"After a subagent returns, rely on its cited findings. Do not repeat its searches or reread cited files unless the handoff identifies a gap or conflicting evidence.",
+			"Give subagents a narrow question, explicit scope, and requested evidence. Ask for compact findings rather than a work log.",
+			"Use researcher only when several external sources must be read and summarized. Keep direct documentation lookups local.",
+			"For multiple independent subagent tasks, use parallel mode with tasks[] array.",
 		],
 		parameters: Type.Object({
 			agent: Type.Optional(

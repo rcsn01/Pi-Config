@@ -39,6 +39,16 @@ describe("Plan Mode prompt", () => {
 			`BASE${MODE_POLICY_PROMPT}${PLAN_MODE_PROMPT}\n\n<runtime mode="plan" revision="8"/>`,
 		);
 		expect(result.match(/<runtime mode=/g)).toHaveLength(1);
+		expect(result).toContain("implementation dossier");
+		expect(result).toContain("## Data flow and state transitions");
+		expect(result).toContain("## Interfaces and schemas");
+		expect(result).toContain("## Decisions and alternatives");
+		expect(result).toContain("## Unknowns");
+		expect(result).toContain("- Current behavior:");
+		expect(result).toContain("- Required change:");
+		expect(result).toContain("Prefer symbol names over line numbers");
+		expect(result).toContain("Treat the dossier structure as a guide, not a schema");
+		expect(result).toContain("For a new project, name the paths and symbols the implementation should create");
 	});
 
 	it("adds review guidance only while awaiting review", () => {
