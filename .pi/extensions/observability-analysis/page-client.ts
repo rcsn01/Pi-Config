@@ -108,8 +108,8 @@ function sectionDetails(section, root) {
 	details.dataset.pointer = section.pointer;
 
 	const summary = document.createElement('summary');
-	if (section.kind !== 'option') {
-		const allocated = section.allocatedTokens || 0;
+	if (section.kind !== 'option' && section.allocatedTokens != null) {
+		const allocated = section.allocatedTokens;
 		const cached = section.cachedTokens || 0;
 		const bar = div('section-bar');
 		const hit = div('hit');
@@ -124,7 +124,9 @@ function sectionDetails(section, root) {
 	label.className = 'section-label';
 	const tokenText = section.kind === 'option'
 		? section.kind
-		: (section.allocatedTokens || 0) + ' estimated tokens';
+		: section.allocatedTokens == null
+			? section.estimatedTokens + ' locally estimated tokens'
+			: section.allocatedTokens + ' estimated tokens';
 	text(label, section.label + ' · ' + tokenText + ' · ' + (section.pointer || '/'));
 	summary.append(label);
 
@@ -138,16 +140,13 @@ function sectionDetails(section, root) {
 function sectionView(detail, openPointers) {
 	const box = div('sections');
 	const title = document.createElement('h2');
-	text(title, 'Captured request parts');
-	box.append(
-		title,
-		div(
-			'muted',
-			'Expand a row to inspect the exact value sent in the provider payload. '
-				+ 'Tool rows include each transmitted tool description and parameter schema. '
-				+ 'Cache coloring is estimated because OpenAI reports only an aggregate prefix count.',
-		),
-	);
+	text(title, detail.apiLabel + ' request parts');
+	let explanation = 'Expand a row to inspect the exact value sent in the provider payload. '
+		+ 'Tool rows include each transmitted tool description and parameter schema.';
+	if (detail.cachePlacement === 'estimated') {
+		explanation += ' Section-level cache placement is estimated from aggregate provider usage and payload order.';
+	}
+	box.append(title, div('muted', explanation));
 
 	const controls = div('section-controls');
 	const expand = document.createElement('button');
@@ -212,7 +211,7 @@ function renderRequestList() {
 		const title = document.createElement('strong');
 		text(title, '#' + item.sequence + ' ' + item.provider + '/' + item.model);
 		const meta = document.createElement('span');
-		text(meta, item.state + ' · ' + new Date(item.requestedAt).toLocaleTimeString());
+		text(meta, item.apiLabel + ' · ' + item.state + ' · ' + new Date(item.requestedAt).toLocaleTimeString());
 		button.append(title, meta);
 		button.addEventListener('click', () => {
 			selectedSequence = item.sequence;
@@ -244,6 +243,7 @@ async function renderDetail(item) {
 		grid.append(
 			metric('Run / turn', detail.run + ' / ' + detail.turn),
 			metric('API', detail.api),
+			metric('Payload type', detail.apiLabel),
 			metric(
 				'HTTP status',
 				detail.status == null ? (detail.statusEvidence?.join(', ') || 'unavailable') : detail.status,

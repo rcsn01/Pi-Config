@@ -12,7 +12,7 @@ export function createAnalysisExtension(dependencies: AnalysisExtensionDependenc
 			?? createAnalysisRuntime({ notify: (message) => notify(message) });
 
 		pi.registerCommand("analysis", {
-			description: "Start the local OpenAI request analysis dashboard",
+			description: "Start the local provider request analysis dashboard",
 			handler: async (args, ctx) => {
 				notify = (message) => ctx.ui.notify(message, "warning");
 				if (args.trim()) {
@@ -21,7 +21,7 @@ export function createAnalysisExtension(dependencies: AnalysisExtensionDependenc
 				}
 				try {
 					const { url } = await runtime.start();
-					ctx.ui.notify(`OpenAI request analysis is active. Treat this URL as a secret:\n${url}`, "info");
+					ctx.ui.notify(`Provider request analysis is active. Treat this URL as a secret:\n${url}`, "info");
 				} catch (error) {
 					ctx.ui.notify(`Could not start request analysis: ${error instanceof Error ? error.message : String(error)}`, "error");
 				}

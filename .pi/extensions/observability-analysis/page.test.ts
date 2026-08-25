@@ -10,8 +10,9 @@ describe("analysis page", () => {
 		expect(ANALYSIS_PAGE).not.toMatch(/https?:\/\//i);
 		expect(ANALYSIS_PAGE).toContain("textContent");
 		expect(ANALYSIS_PAGE).not.toContain("innerHTML");
-		expect(ANALYSIS_PAGE).toContain("Cache coloring is estimated");
-		expect(ANALYSIS_PAGE).toContain("Captured request parts");
+		expect(ANALYSIS_PAGE).not.toContain("OpenAI request analysis");
+		expect(ANALYSIS_PAGE).toContain("Section-level cache placement is estimated");
+		expect(ANALYSIS_PAGE).toContain("request parts");
 		expect(ANALYSIS_PAGE).toContain("Tool rows include each transmitted tool description and parameter schema");
 		expect(ANALYSIS_PAGE).toContain("Expand all");
 		expect(ANALYSIS_PAGE).toContain("Collapse all");
@@ -28,8 +29,8 @@ describe("analysis page", () => {
 			activatedAt: 1,
 			paused: false,
 			records: [{
-				sequence: 1, run: 1, turn: 0, requestedAt: 1, provider: "openai", api: "responses",
-				model: "gpt-test", state: "pending", correlation: "exact", bytes,
+				sequence: 1, run: 1, turn: 0, requestedAt: 1, provider: "github-copilot", api: "openai-responses",
+				apiLabel: "OpenAI Responses", model: "gpt-test", state: "pending", correlation: "exact", bytes,
 			}],
 		});
 		const detail = () => ({
@@ -40,6 +41,7 @@ describe("analysis page", () => {
 				metadata: { "a/b~c": "decoded pointer value" },
 				model: "gpt-test",
 			}),
+			cachePlacement: "estimated",
 			sections: [
 				{ kind: "instruction", label: "instructions", pointer: "/instructions", allocatedTokens: 4, cachedTokens: 4 },
 				{ kind: "tool", label: "tool: read", pointer: "/tools/0", allocatedTokens: 8, cachedTokens: 2 },

@@ -22,21 +22,47 @@ describe("analysis runtime", () => {
 		expect(server.start).toHaveBeenCalledOnce();
 	});
 
-	it("captures OpenAI records, ignores other providers, and correlates status and output", async () => {
+	it("captures requests from standard providers", async () => {
+		const runtime = createAnalysisRuntime({ serverFactory: () => fakeServer(), now: () => 100 });
+		await runtime.start();
+		for (const [provider, api] of [
+			["ollama", "openai-completions"],
+			["ollama-cloud", "openai-completions"],
+			["github-copilot", "anthropic-messages"],
+			["openrouter", "openai-completions"],
+		] as const) {
+			runtime.observe({ type: "request", provider, api, model: "test", payload: { messages: [] } });
+		}
+		expect(runtime.getSummary().records.map((record) => record.provider)).toEqual([
+			"ollama", "ollama-cloud", "github-copilot", "openrouter",
+		]);
+	});
+
+	it("correlates status and output and estimates known prefix-cache placement", async () => {
 		const runtime = createAnalysisRuntime({ serverFactory: () => fakeServer(), now: () => 100 });
 		await runtime.start();
 		runtime.observe({ type: "agent_start" });
 		runtime.observe({ type: "turn_start", turnIndex: 2 });
-		runtime.observe({ type: "request", provider: "anthropic", api: "x", model: "x", payload: {} });
-		runtime.observe({ type: "request", provider: "openai-codex", api: "openai-codex-responses", model: "gpt", payload: { instructions: "secret", input: [{ role: "user", content: "hi" }] } });
+		runtime.observe({ type: "request", provider: "github-copilot", api: "openai-responses", model: "gpt", payload: { instructions: "secret", input: [{ role: "user", content: "hi" }] } });
 		runtime.observe({ type: "response", status: 200 });
 		runtime.observe({ type: "assistant", message: assistant({ raw: { untouched: true } }) });
 		const record = runtime.getRecord(1)!;
-		expect(runtime.getSummary().records).toHaveLength(1);
-		expect(record).toMatchObject({ run: 1, turn: 2, status: 200, state: "complete", correlation: "exact" });
+		expect(record).toMatchObject({ run: 1, turn: 2, status: 200, state: "complete", correlation: "exact", apiLabel: "OpenAI Responses", cachePlacement: "estimated" });
 		expect(record.requestJson).toContain("secret");
 		expect(record.assistantJson).toContain('"untouched": true');
 		expect(record.sections.reduce((sum, row) => sum + (row.cachedTokens ?? 0), 0)).toBe(4);
+	});
+
+	it("keeps normalized usage without estimating cache placement for unknown APIs", async () => {
+		const runtime = createAnalysisRuntime({ serverFactory: () => fakeServer() });
+		await runtime.start();
+		runtime.observe({ type: "request", provider: "custom", api: "custom-api", model: "test", payload: { contents: ["hi"] } });
+		runtime.observe({ type: "assistant", message: assistant() });
+		const record = runtime.getRecord(1)!;
+		expect(record.usage).toMatchObject({ input: 5, cacheRead: 4 });
+		expect(record.cachePlacement).toBeUndefined();
+		expect(record.sections).toHaveLength(1);
+		expect(record.sections[0]!.allocatedTokens).toBeUndefined();
 	});
 
 	it("marks multi-request correlations ambiguous instead of silently claiming certainty", async () => {
