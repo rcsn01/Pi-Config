@@ -8,3 +8,7 @@ check out what/session is about
 
 
 adding deleting profile
+
+clear context and implement new -> show current context usage
+
+make /comapct a chach hit
