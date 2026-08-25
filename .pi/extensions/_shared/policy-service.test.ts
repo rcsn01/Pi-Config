@@ -24,7 +24,7 @@ describe("policy service", () => {
 	it("allows one provider and applies scoped overrides only to narrow decisions", async () => {
 		const service = createPolicyService();
 		const unregister = service.registerProvider({
-			id: "safety-permissions",
+			id: "policy-permissions",
 			evaluate: () => ({ outcome: "allow", reason: "Base mode allows this action." }),
 			snapshot: () => ({ mode: "default" }),
 		});
@@ -57,7 +57,7 @@ describe("policy service", () => {
 	it("round-trips detached child snapshots and rejects non-JSON provider state", () => {
 		const service = createPolicyService();
 		service.registerProvider({
-			id: "safety-permissions",
+			id: "policy-permissions",
 			evaluate: () => ({ outcome: "allow", reason: "Allowed." }),
 			snapshot: () => ({ mode: "default" }),
 		});

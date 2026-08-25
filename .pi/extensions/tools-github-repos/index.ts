@@ -3,7 +3,7 @@ import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@eare
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { renderToolSummary, truncateToolLine } from "../_shared/tool-result-ui.ts";
-import { loadModeFromFile } from "../safety-permissions/mode-store.ts";
+import { loadModeFromFile } from "../policy-permissions/mode-store.ts";
 import { RepositoryError, type RepositoryStore, type Snapshot, type SnapshotSummary } from "./contract.ts";
 import { GitSnapshotAdapter } from "./git-snapshot.ts";
 import { GitHubRepositoryStore } from "./repository-store.ts";

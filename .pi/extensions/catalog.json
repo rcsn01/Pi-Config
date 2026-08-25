@@ -33,7 +33,7 @@
 			"displayName": "Fleet Integration",
 			"pack": "excluded",
 			"defaultEnabled": false,
-			"requires": ["safety-permissions", "tools-subagents", "tools-worktree"],
+			"requires": ["policy-permissions", "tools-subagents", "tools-worktree"],
 			"conflicts": ["workflows-goal"]
 		},
 		"integration-plane": {
@@ -71,8 +71,8 @@
 			"requires": [],
 			"conflicts": []
 		},
-		"safety-permissions": {
-			"displayName": "Safety Permissions",
+		"policy-permissions": {
+			"displayName": "Policy Permissions",
 			"pack": "safety",
 			"defaultEnabled": false,
 			"requires": [],
@@ -124,7 +124,7 @@
 			"displayName": "GitHub Repository Snapshots",
 			"pack": "research",
 			"defaultEnabled": false,
-			"requires": ["safety-permissions"],
+			"requires": ["policy-permissions"],
 			"conflicts": []
 		},
 		"tools-file-context": {
@@ -159,7 +159,7 @@
 			"displayName": "Subagents",
 			"pack": "autonomy",
 			"defaultEnabled": false,
-			"requires": ["safety-permissions"],
+			"requires": ["policy-permissions"],
 			"conflicts": []
 		},
 		"tools-todo": {
@@ -187,7 +187,7 @@
 			"displayName": "Git Worktrees",
 			"pack": "git",
 			"defaultEnabled": false,
-			"requires": ["safety-permissions"],
+			"requires": ["policy-permissions"],
 			"conflicts": []
 		},
 		"ui-clear": {
@@ -264,21 +264,21 @@
 			"displayName": "Goal Mode",
 			"pack": "autonomy",
 			"defaultEnabled": false,
-			"requires": ["safety-permissions"],
+			"requires": ["policy-permissions"],
 			"conflicts": ["integration-fleet"]
 		},
 		"workflows-plan-mode": {
 			"displayName": "Plan Mode",
 			"pack": "planning",
 			"defaultEnabled": false,
-			"requires": ["safety-permissions", "tools-ask-user"],
+			"requires": ["policy-permissions", "tools-ask-user"],
 			"conflicts": []
 		},
 		"workflows-runtime": {
 			"displayName": "Workflow Runtime",
 			"pack": "autonomy",
 			"defaultEnabled": false,
-			"requires": ["safety-permissions", "tools-subagents"],
+			"requires": ["policy-permissions", "tools-subagents"],
 			"conflicts": []
 		},
 		"workflows-side-conversation": {

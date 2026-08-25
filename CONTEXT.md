@@ -61,4 +61,4 @@ extension.
 ## Safety
 
 - **Guardian** — the in-process model review of risky tool calls
-  (`safety-permissions/`); verdicts land as `auto-review-verdict` entries.
+  (`policy-permissions/`); verdicts land as `auto-review-verdict` entries.

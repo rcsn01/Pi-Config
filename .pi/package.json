@@ -26,7 +26,7 @@
 		"test:core": "vitest run extensions/_shared extensions/auto-compact",
 		"test:analysis": "vitest run extensions/observability-analysis",
 		"test:cache-effort": "vitest run extensions/diagnostics-cache-effort",
-		"test:safety": "vitest run extensions/safety-permissions",
+		"test:safety": "vitest run extensions/policy-permissions",
 		"test:ask-user": "vitest run extensions/tools-ask-user",
 		"test:advisor": "vitest run extensions/tools-advisor",
 		"test:subagents": "vitest run extensions/tools-subagents",
