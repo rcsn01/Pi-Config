@@ -139,6 +139,37 @@ describe("createPlanWorkspace", () => {
 		}
 	});
 
+	it.runIf(process.platform !== "win32")("disposes copies containing immutable repository snapshots", async () => {
+		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
+		const externalRoot = mkdtempSync(join(tmpdir(), "pi-plan-external-"));
+		const source = join(hostRoot, ".pi", "repos", "snapshot", "source");
+		const readOnlyDirectories = [source, join(source, ".github"), join(source, ".github", "workflows")];
+		const workflow = join(readOnlyDirectories.at(-1)!, "ci.yml");
+		mkdirSync(readOnlyDirectories.at(-1)!, { recursive: true });
+		writeFileSync(workflow, "name: CI\n");
+		symlinkSync(externalRoot, join(source, "outside-link"));
+		chmodSync(workflow, 0o444);
+		chmodSync(externalRoot, 0o500);
+		for (const directory of [...readOnlyDirectories].reverse()) chmodSync(directory, 0o555);
+
+		try {
+			const workspace = await createPlanWorkspace(hostRoot);
+			const copiedSource = join(workspace.sandboxRoot, ".pi", "repos", "snapshot", "source");
+			expect(lstatSync(copiedSource).mode & 0o777).toBe(0o555);
+
+			await expect(workspace.dispose()).resolves.toBeUndefined();
+			expect(existsSync(workspace.root)).toBe(false);
+			expect(lstatSync(source).mode & 0o777).toBe(0o555);
+			expect(lstatSync(workflow).mode & 0o777).toBe(0o444);
+			expect(lstatSync(externalRoot).mode & 0o777).toBe(0o500);
+		} finally {
+			for (const directory of readOnlyDirectories) chmodSync(directory, 0o755);
+			chmodSync(externalRoot, 0o700);
+			rmSync(hostRoot, { recursive: true, force: true });
+			rmSync(externalRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("uses the fs.cp fallback on win32", async () => {
 		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
 		writeFileSync(join(hostRoot, "tracked.txt"), "host\n");
