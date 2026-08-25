@@ -35,6 +35,14 @@ The page contains complete prompts, tool schemas, tool inputs, results, reasonin
 
 Cache totals come directly from finalized Pi usage. Coloring over visible request sections is an estimated cache-prefix placement because OpenAI reports only an aggregate prefix count. Hidden wrappers, tokenizer differences, and cache-boundary rounding prevent exact attribution to individual sections.
 
+## Reasoning-effort prompt-cache diagnostic
+
+Run `/cache-effort-test` to test whether changing reasoning effort preserves OpenAI prompt-cache reuse. The interactive command selects an authenticated OpenAI provider, model, two distinct effort levels, and a run size before showing the exact number of provider calls and asking for confirmation.
+
+The extension makes no provider calls on startup and does not register a tool or modify the active system prompt, tool list, model, or conversation context. Confirmed runs use isolated child Pi RPC sessions with synthetic prompts. OpenAI server caching is measured over SSE; `openai-codex` runs also distinguish Pi's WebSocket continuation cache under `auto`. Results are stored as plain custom session entries, which Pi displays in the transcript but excludes from LLM context.
+
+The balanced run is recommended. It counterbalances `A → A → B → B` and `B → B → A → A`; Codex uses 16 calls because it tests both SSE and `auto`, while direct OpenAI uses 8. Calls may consume subscription quota or incur API charges.
+
 ## Temporary GitHub repository explorer
 
 The opt-in `tools-github-repos` extension acquires public `github.com` repositories as immutable source snapshots under `.pi/repos/`. The `github_repo_acquire` tool accepts `owner/repo` or a GitHub HTTPS URL plus an optional branch, tag, full ref, or 40-character commit. It returns the pinned commit and a local source path. Use the normal `read`, `grep`, and `find` tools on that path.
