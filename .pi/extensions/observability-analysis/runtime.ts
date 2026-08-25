@@ -33,13 +33,13 @@ export interface AnalysisRecordSummary {
 	correlation: "exact" | "ambiguous";
 	diagnostic?: string;
 	bytes: number;
+	usage?: UsageView;
 }
 
 export interface AnalysisRecord extends AnalysisRecordSummary {
 	requestJson: string;
 	assistantJson?: string;
 	sections: PayloadSection[];
-	usage?: UsageView;
 	cachePlacement?: "estimated";
 	fidelity: "exact-provider" | "pi-preparation";
 }
@@ -119,7 +119,7 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 		diagnostic,
 		retainedBytes,
 		limits: { recordBytes: maxRecordBytes, totalBytes: maxTotalBytes },
-		records: records.map(({ requestJson: _request, assistantJson: _assistant, sections: _sections, usage: _usage, ...record }) => record),
+		records: records.map(({ requestJson: _request, assistantJson: _assistant, sections: _sections, ...record }) => record),
 	});
 	const getRecord = (id: number) => records.find((record) => record.sequence === id);
 	const clear = () => {
