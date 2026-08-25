@@ -64,6 +64,41 @@ button {
 	cursor: pointer;
 }
 
+.source-tabs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: 14px 0;
+	border-bottom: 1px solid var(--line);
+}
+
+.source-tab {
+	background: transparent;
+	color: var(--muted);
+	border: 1px solid transparent;
+	border-bottom: 0;
+	border-radius: 5px 5px 0 0;
+}
+
+.source-tab[aria-selected="true"] {
+	background: var(--panel);
+	color: var(--text);
+	border-color: var(--line);
+}
+
+.source-tab:focus-visible,
+.request-row:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+.empty-state {
+	color: var(--muted);
+	padding: 18px;
+	border: 1px dashed var(--line);
+	border-radius: 6px;
+}
+
 .workspace {
 	display: grid;
 	grid-template-columns: minmax(240px, 340px) minmax(0, 1fr);

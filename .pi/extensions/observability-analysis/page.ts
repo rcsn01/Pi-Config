@@ -24,7 +24,8 @@ export const ANALYSIS_PAGE = String.raw`<!doctype html>
 			Requests shown here are logical payloads exposed by Pi before transport-specific transformations.
 			Captured prompts and tool data may contain secrets.
 		</p>
-		<div class="workspace">
+		<div id="sourceTabs" class="source-tabs" role="tablist" aria-label="Request sources"></div>
+		<div id="sourcePanel" class="workspace" role="tabpanel" aria-labelledby="tab-main">
 			<nav id="requestList" class="request-list" aria-label="Captured requests"></nav>
 			<section id="detailPane" class="detail-pane" aria-live="polite"></section>
 		</div>

@@ -81,6 +81,44 @@ describe("analysis runtime", () => {
 		expect(runtime.getRecord(1)!.state).toBe("pending");
 	});
 
+	it("tracks run, turn, and pending correlation independently for concurrent sources", async () => {
+		const runtime = createAnalysisRuntime({ serverFactory: () => fakeServer() });
+		await runtime.start();
+		const worker = { channel: "subagent", invocationId: "worker-1", displayLabel: "worker" } as const;
+		const explorer = { channel: "subagent", invocationId: "explorer-1", displayLabel: "explorer" } as const;
+		for (const source of [worker, explorer]) {
+			runtime.observe({ type: "agent_start", source });
+			runtime.observe({ type: "turn_start", source, turnIndex: 0 });
+			runtime.observe({ type: "request", source, provider: "openai", api: "openai-responses", model: "gpt", payload: { source: source.displayLabel } });
+		}
+		runtime.observe({ type: "response", source: explorer, status: 202 });
+		runtime.observe({ type: "assistant", source: explorer, message: assistant({ content: "explorer output" }) });
+		runtime.observe({ type: "response", source: worker, status: 201 });
+		runtime.observe({ type: "assistant", source: worker, message: assistant({ content: "worker output" }) });
+		expect(runtime.getRecord(1)).toMatchObject({ source: worker, run: 1, turn: 0, status: 201, correlation: "exact" });
+		expect(runtime.getRecord(2)).toMatchObject({ source: explorer, run: 1, turn: 0, status: 202, correlation: "exact" });
+		expect(runtime.getRecord(1)!.assistantJson).toContain("worker output");
+		expect(runtime.getRecord(2)!.assistantJson).toContain("explorer output");
+	});
+
+	it("stores compaction preparation and completion as Pi-level records", async () => {
+		const runtime = createAnalysisRuntime({ serverFactory: () => fakeServer() });
+		await runtime.start();
+		const source = { channel: "compaction", invocationId: "compact-1", displayLabel: "Compaction" } as const;
+		runtime.observe({ type: "request", source, provider: "pi", api: "pi-compaction", model: "openai/gpt", fidelity: "pi-preparation", payload: {
+			instructions: "focus on tests", previousSummary: "old", messagesToSummarize: [{ role: "user", content: "one" }],
+			turnPrefixMessages: [{ role: "assistant", content: "two" }], options: { reason: "manual", settings: { keepRecentTokens: 20_000 } },
+		} });
+		runtime.observe({ type: "assistant", source, message: { role: "assistant", summary: "saved", usage: assistant().usage } });
+		const record = runtime.getRecord(1)!;
+		expect(record).toMatchObject({ fidelity: "pi-preparation", apiLabel: "Pi Compaction Preparation", state: "complete", source });
+		expect(record.sections.map((section) => section.label)).toEqual([
+			"compaction instructions", "previous summary", "summarized messages", "retained turn prefix", "compaction options",
+		]);
+		expect(record.assistantJson).toContain('"summary": "saved"');
+		expect(record.usage).toMatchObject({ input: 5, output: 3 });
+	});
+
 	it("pauses at memory limits, preserves complete records, and clears to resume", async () => {
 		const notifications: string[] = [];
 		const runtime = createAnalysisRuntime({ serverFactory: () => fakeServer(), maxRecordBytes: 1800, maxTotalBytes: 2500, notify: (message) => notifications.push(message) });

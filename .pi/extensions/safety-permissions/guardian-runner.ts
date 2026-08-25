@@ -34,9 +34,12 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getObservabilityService, type ObservabilitySource } from "../_shared/observability.ts";
+import { guardianObserverExtension, runWithGuardianObservation } from "./guardian-observer.ts";
 import type { ApprovalResult } from "./policy-types.ts";
 
 type AnyModel = NonNullable<CreateAgentSessionOptions["model"]>;
@@ -178,6 +181,19 @@ export function parseGuardianVerdict(content: string): ApprovalResult | "unclear
 
 let sessionPromise: Promise<AgentSession> | undefined;
 let runtimePromise: Promise<ModelRuntime> | undefined;
+let guardianReviewTail: Promise<void> = Promise.resolve();
+
+async function withGuardianReviewLock<T>(operation: () => Promise<T>): Promise<T> {
+	const previous = guardianReviewTail;
+	let release = () => {};
+	guardianReviewTail = new Promise<void>((resolve) => { release = resolve; });
+	await previous;
+	try {
+		return await operation();
+	} finally {
+		release();
+	}
+}
 
 function getRuntime(): Promise<ModelRuntime> {
 	runtimePromise ??= ModelRuntime.create();
@@ -221,6 +237,7 @@ async function createGuardianSession(definition: GuardianDefinition): Promise<Ag
 		agentDir: getAgentDir(),
 		noExtensions: true,
 		noSkills: true,
+		extensionFactories: [{ name: "guardian-analysis-observer", factory: guardianObserverExtension, hidden: true }],
 		appendSystemPrompt: [definition.systemPrompt],
 	});
 	await loader.reload();
@@ -301,6 +318,7 @@ ${message}`;
 		return { allowed: false, reason: "Guardian agent not found; blocked for safety." };
 	}
 
+	return withGuardianReviewLock(async () => {
 	let session: AgentSession | undefined;
 	let startCount = 0;
 	let sessionModel: string | undefined;
@@ -319,7 +337,11 @@ ${message}`;
 		const model = session.model;
 		if (model) sessionModel = `${model.provider}/${model.id}`;
 		startCount = session.messages.length;
-		await withTimeout(session.prompt(task), GUARDIAN_TIMEOUT_MS);
+		const observability = getObservabilityService();
+		const observationSource: ObservabilitySource | undefined = observability.isActive()
+			? { channel: "guardian", invocationId: randomUUID(), displayLabel: "Guardian" }
+			: undefined;
+		await runWithGuardianObservation(observationSource, () => withTimeout(session!.prompt(task), GUARDIAN_TIMEOUT_MS));
 		const content = lastAssistantTextSince(session, startCount);
 
 		if (!content.trim()) {
@@ -344,4 +366,5 @@ ${message}`;
 		}
 		return withRequestUsage({ allowed: false, reason: `Guardian error: ${err.message || String(err)}` });
 	}
+	});
 }

@@ -1,9 +1,13 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { truncateHead, withFileMutationQueue, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
+import type { Readable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
+import { getObservabilityService, type ObservabilityEvent, type ObservabilitySource } from "../_shared/observability.ts";
 import type {
 	AgentConfig,
 	AgentProgress,
@@ -25,6 +29,8 @@ import { createSubagentTimingRecorder } from "./subagent-timing.ts";
 
 const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const TOOLS_DIR = path.join(EXT_DIR, "tools");
+const CHILD_OBSERVER_PATH = path.join(path.dirname(EXT_DIR), "observability-analysis", "child-observer.ts");
+export const MAX_RELAY_MESSAGE_BYTES = 8 * 1024 * 1024;
 export const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
 export const EXT_BASE = path.dirname(EXT_DIR);
 export const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
@@ -37,8 +43,8 @@ export const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 export type SpawnSubagentProcess = (
 	command: string,
 	args: string[],
-	options: { cwd: string; stdio: ["ignore", "pipe", "pipe"] },
-) => ChildProcessWithoutNullStreams;
+	options: { cwd: string; env?: NodeJS.ProcessEnv; stdio: ["ignore", "pipe", "pipe"] | ["ignore", "pipe", "pipe", "pipe"] },
+) => ChildProcess;
 
 export interface SubagentRunnerDependencies {
 	registry?: AgentRegistry;
@@ -126,6 +132,78 @@ async function buildPiArgs(
 	return { args: [piBin.command, ...args], tempDir };
 }
 
+type WithoutSource<T> = T extends unknown ? Omit<T, "source"> : never;
+type RelayedEvent = WithoutSource<ObservabilityEvent>;
+
+function validString(value: unknown): value is string {
+	return typeof value === "string" && value.length <= 1024;
+}
+
+export function parseRelayMessage(line: string): RelayedEvent | undefined {
+	if (!line || Buffer.byteLength(line, "utf8") > MAX_RELAY_MESSAGE_BYTES) return undefined;
+	try {
+		const event = JSON.parse(line) as Record<string, unknown>;
+		if (!event || typeof event !== "object") return undefined;
+		const at = event.at;
+		if (at !== undefined && (typeof at !== "number" || !Number.isFinite(at))) return undefined;
+		if (event.type === "agent_start") return { type: "agent_start", ...(at === undefined ? {} : { at }) };
+		if (event.type === "turn_start" && typeof event.turnIndex === "number" && Number.isInteger(event.turnIndex)) {
+			return { type: "turn_start", turnIndex: event.turnIndex, ...(at === undefined ? {} : { at }) };
+		}
+		if (event.type === "request" && validString(event.provider) && validString(event.api) && validString(event.model) && "payload" in event) {
+			return { type: "request", provider: event.provider, api: event.api, model: event.model, payload: event.payload, ...(at === undefined ? {} : { at }) };
+		}
+		if (event.type === "response" && (event.status === undefined || (typeof event.status === "number" && Number.isInteger(event.status)))) {
+			return { type: "response", ...(event.status === undefined ? {} : { status: event.status }), ...(at === undefined ? {} : { at }) };
+		}
+		if (event.type === "assistant" && "message" in event) return { type: "assistant", message: event.message, ...(at === undefined ? {} : { at }) };
+	} catch {}
+	return undefined;
+}
+
+export function createRelayParser(forward: (event: RelayedEvent) => void): { push(chunk: Buffer | string): void; end(): void } {
+	let buffer = "";
+	let discarding = false;
+	const decoder = new StringDecoder("utf8");
+	const processLine = (line: string) => {
+		const event = parseRelayMessage(line.trimEnd());
+		if (event) forward(event);
+	};
+	const feed = (input: string) => {
+		let text = input;
+		while (text) {
+			const newline = text.indexOf("\n");
+			const part = newline < 0 ? text : text.slice(0, newline);
+			text = newline < 0 ? "" : text.slice(newline + 1);
+			if (!discarding) {
+				const nextBytes = Buffer.byteLength(buffer, "utf8") + Buffer.byteLength(part, "utf8");
+				if (nextBytes > MAX_RELAY_MESSAGE_BYTES) {
+					buffer = "";
+					discarding = true;
+				} else {
+					buffer += part;
+				}
+			}
+			if (newline >= 0) {
+				if (!discarding) processLine(buffer);
+				buffer = "";
+				discarding = false;
+			}
+		}
+	};
+	return {
+		push(chunk) {
+			feed(typeof chunk === "string" ? chunk : decoder.write(chunk));
+		},
+		end() {
+			feed(decoder.end());
+			if (!discarding && buffer.trim()) processLine(buffer);
+			buffer = "";
+			discarding = false;
+		},
+	};
+}
+
 function extractTextFromContent(content: unknown): string {
 	if (!content) return "";
 	if (typeof content === "string") return content;
@@ -179,6 +257,11 @@ async function executeSubagent(
 	const { args, tempDir } = await buildPiArgs(agent, task, options.cwd, launch, cacheSessionId);
 	const command = args[0];
 	const spawnArgs = args.slice(1);
+	const observability = getObservabilityService();
+	const relaySource: ObservabilitySource | undefined = observability.isActive()
+		? { channel: "subagent", invocationId: randomUUID(), displayLabel: agent.name }
+		: undefined;
+	if (relaySource) spawnArgs.splice(Math.max(0, spawnArgs.length - 1), 0, "--extension", CHILD_OBSERVER_PATH);
 
 	const result: AgentResult = {
 		agent: agent.name,
@@ -242,8 +325,15 @@ async function executeSubagent(
 		const spawnProcess = dependencies.spawnProcess ?? spawn;
 		const proc = spawnProcess(command, spawnArgs, {
 			cwd: options.cwd,
-			stdio: ["ignore", "pipe", "pipe"],
+			...(relaySource ? { env: { ...process.env, PI_ANALYSIS_RELAY_FD: "3" } } : {}),
+			stdio: relaySource ? ["ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
 		});
+
+		const relayParser = relaySource
+			? createRelayParser((event) => observability.publish({ ...event, source: relaySource } as ObservabilityEvent))
+			: undefined;
+		const relayStream = relaySource ? proc.stdio[3] as Readable | null | undefined : undefined;
+		relayStream?.on("data", (chunk: Buffer) => relayParser?.push(chunk));
 
 		let buf = "";
 		let stderrBuf = "";
@@ -331,18 +421,19 @@ async function executeSubagent(
 			}
 		};
 
-		proc.stdout.on("data", (d: Buffer) => {
+		proc.stdout!.on("data", (d: Buffer) => {
 			buf += d.toString();
 			const lines = buf.split("\n");
 			buf = lines.pop() || "";
 			lines.forEach(processLine);
 		});
 
-		proc.stderr.on("data", (d: Buffer) => {
+		proc.stderr!.on("data", (d: Buffer) => {
 			stderrBuf += d.toString();
 		});
 
 		proc.on("close", (code) => {
+			relayParser?.end();
 			if (buf.trim()) processLine(buf);
 			if (code !== 0 && stderrBuf.trim() && !progress.error) {
 				progress.error = stderrBuf.trim();

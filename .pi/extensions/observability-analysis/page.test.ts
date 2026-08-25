@@ -21,6 +21,57 @@ describe("analysis page", () => {
 		expect(() => new Function(script!)).not.toThrow();
 	});
 
+	it("filters source tabs, reports counts and empty states, and restores per-tab selection", async () => {
+		const { window, document } = parseHTML(ANALYSIS_PAGE);
+		const records = [
+			{ sequence: 1, source: { channel: "main", invocationId: "main", displayLabel: "Main agent" }, provider: "openai", model: "main", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 0, requestedAt: 1, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
+			{ sequence: 2, source: { channel: "main", invocationId: "main", displayLabel: "Main agent" }, provider: "openai", model: "main", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 1, requestedAt: 2, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
+			{ sequence: 3, source: { channel: "subagent", invocationId: "worker-1", displayLabel: "worker" }, provider: "openai", model: "worker", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 0, requestedAt: 3, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
+			{ sequence: 4, source: { channel: "subagent", invocationId: "explorer-1", displayLabel: "explorer" }, provider: "openai", model: "explorer", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 0, requestedAt: 4, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
+			{ sequence: 5, source: { channel: "compaction", invocationId: "compact-1", displayLabel: "Compaction" }, provider: "pi", model: "openai/main", api: "pi-compaction", apiLabel: "Pi Compaction Preparation", run: 1, turn: 0, requestedAt: 5, state: "complete", correlation: "exact", bytes: 10, fidelity: "pi-preparation" },
+		];
+		Object.assign(window, {
+			location: { hash: "#token=test", pathname: "/" }, history: { replaceState: () => {} }, setInterval: () => 1,
+			fetch: async (url: string) => ({ ok: true, status: 200, json: async () => {
+				if (url === "/api/summary") return { activatedAt: 1, paused: false, records };
+				const sequence = Number(url.split("/").at(-1));
+				return { ...records.find((record) => record.sequence === sequence), requestJson: "{}", assistantJson: "{}", sections: [] };
+			} }),
+		});
+		const script = ANALYSIS_PAGE.match(/<script>([\s\S]*)<\/script>/)?.[1];
+		vm.runInContext(script!, vm.createContext(window));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+		expect(tabs.map((tab) => tab.textContent)).toEqual(["Main (2)", "Subagents (2)", "Guardian (0)", "Compaction (1)"]);
+		expect(tabs.map((tab) => [tab.id, tab.getAttribute("aria-controls"), tab.getAttribute("tabindex")])).toEqual([
+			["tab-main", "sourcePanel", "0"], ["tab-subagent", "sourcePanel", "-1"],
+			["tab-guardian", "sourcePanel", "-1"], ["tab-compaction", "sourcePanel", "-1"],
+		]);
+		expect(document.getElementById("sourcePanel")?.getAttribute("aria-labelledby")).toBe("tab-main");
+		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #2");
+
+		tabs[1]!.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(Array.from(document.querySelectorAll(".request-row strong"), (row) => row.textContent)).toEqual([
+			"#4 explorer · openai/explorer", "#3 worker · openai/worker",
+		]);
+		document.querySelectorAll<HTMLButtonElement>(".request-row")[1]!.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		tabs[0]!.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		tabs[1]!.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(document.querySelector(".request-row.selected strong")?.textContent).toContain("#3 worker");
+
+		tabs[2]!.click();
+		expect(document.querySelector(".request-list .empty-state")?.textContent).toContain("No requests");
+		expect(document.querySelector(".detail-pane .empty-state")?.textContent).toContain("Guardian");
+		tabs[3]!.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Compaction #5");
+		expect(document.querySelector(".detail-pane")?.textContent).toContain("Pi-level preparation, not exact provider payload");
+	});
+
 	it("expands captured sections and keeps them open when a request updates", async () => {
 		const { window, document } = parseHTML(ANALYSIS_PAGE);
 		let bytes = 100;
