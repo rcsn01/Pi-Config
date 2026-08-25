@@ -25,7 +25,7 @@ describe("analysis page", () => {
 		const { window, document } = parseHTML(ANALYSIS_PAGE);
 		const records = [
 			{ sequence: 1, source: { channel: "main", invocationId: "main", displayLabel: "Main agent" }, provider: "openai", model: "main", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 0, requestedAt: 1, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
-			{ sequence: 2, source: { channel: "main", invocationId: "main", displayLabel: "Main agent" }, provider: "openai", model: "main", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 1, requestedAt: 2, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
+			{ sequence: 2, source: { channel: "main", invocationId: "main", displayLabel: "Main agent" }, provider: "openai", model: "main", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 1, requestedAt: 2, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider", usage: { input: 10, cacheRead: 20, cacheWrite: 5, output: 15, reasoning: 5, totalTokens: 50, cost: { total: 0 } } },
 			{ sequence: 3, source: { channel: "subagent", invocationId: "worker-1", displayLabel: "worker" }, provider: "openai", model: "worker", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 0, requestedAt: 3, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
 			{ sequence: 4, source: { channel: "subagent", invocationId: "explorer-1", displayLabel: "explorer" }, provider: "openai", model: "explorer", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 0, requestedAt: 4, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
 			{ sequence: 5, source: { channel: "compaction", invocationId: "compact-1", displayLabel: "Compaction" }, provider: "pi", model: "openai/main", api: "pi-compaction", apiLabel: "Pi Compaction Preparation", run: 1, turn: 0, requestedAt: 5, state: "complete", correlation: "exact", bytes: 10, fidelity: "pi-preparation" },
@@ -48,6 +48,14 @@ describe("analysis page", () => {
 			["tab-guardian", "sourcePanel", "-1"], ["tab-compaction", "sourcePanel", "-1"],
 		]);
 		expect(document.getElementById("sourcePanel")?.getAttribute("aria-labelledby")).toBe("tab-main");
+		const requestBars = Array.from(document.querySelectorAll<HTMLElement>(".request-usage-bar"));
+		expect(requestBars).toHaveLength(2);
+		expect(Array.from(requestBars[0]!.children, (segment) => [segment.className, segment.getAttribute("style")])).toEqual([
+			["uncached", "width:20%"], ["cache", "width:40%"], ["write", "width:10%"],
+			["output", "width:20%"], ["reasoning", "width:10%"],
+		]);
+		expect(requestBars[0]!.getAttribute("aria-label")).toContain("Cache hit: 20 tokens (40.0%)");
+		expect(requestBars[1]!.classList.contains("usage-unavailable")).toBe(true);
 		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #2");
 
 		tabs[1]!.click();

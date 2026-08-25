@@ -176,6 +176,18 @@ button {
 
 .bar span {
 	min-width: 1px;
+	margin: 0;
+}
+
+.request-usage-bar {
+	height: 6px;
+	margin: 8px -10px -10px;
+	border-radius: 0 0 5px 5px;
+	overflow: hidden;
+}
+
+.usage-unavailable {
+	background: #252b31;
 }
 
 .uncached {

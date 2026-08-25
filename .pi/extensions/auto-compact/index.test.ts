@@ -90,15 +90,30 @@ function makeExtensionHarness(options: {
 } = {}) {
 	const handlers = new Map<string, (event: any, ctx: any) => unknown>();
 	const compactions: any[] = [];
+	const providerCalls: any[] = [];
 	const sendMessage = vi.fn();
 	let usage = options.usage ?? { tokens: 799, contextWindow: 1_000, percent: 79.9 };
 	let idle = options.idle ?? true;
 	const ctx: any = {
 		cwd: "/workspace",
 		model: options.model ?? activeModel(),
+		thinkingLevel: "high",
 		getContextUsage: vi.fn(() => usage),
+		getSystemPrompt: vi.fn(() => "system prompt"),
 		isIdle: vi.fn(() => idle),
 		compact: vi.fn((compactOptions: any) => compactions.push(compactOptions)),
+		sessionManager: { getSessionId: vi.fn(() => "session-1") },
+		modelRegistry: {
+			getProvider: vi.fn(() => ({
+				streamSimple: (model: any, context: any, streamOptions: any) => ({
+					result: async () => {
+						providerCalls.push({ model, context, options: streamOptions });
+						return assistantMessage({ content: [{ type: "text", text: "custom summary" }] });
+					},
+				}),
+			})),
+			getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "key" })),
+		},
 		ui: { notify: vi.fn() },
 	};
 	const pi: any = {
@@ -106,11 +121,17 @@ function makeExtensionHarness(options: {
 			handlers.set(event, handler);
 		}),
 		sendMessage,
+		getActiveTools: vi.fn(() => ["read"]),
+		getAllTools: vi.fn(() => [
+			{ name: "read", description: "Read", parameters: { type: "object" }, sourceInfo: {} },
+		]),
+		getThinkingLevel: vi.fn(() => "high"),
 	};
 	autoCompactExtension(pi);
 	return {
 		handlers,
 		compactions,
+		providerCalls,
 		sendMessage,
 		ctx,
 		setUsage(nextUsage: typeof usage) {
@@ -123,6 +144,42 @@ function makeExtensionHarness(options: {
 }
 
 type ExtensionHarness = ReturnType<typeof makeExtensionHarness>;
+
+function manualCompactionEvent(reason: "manual" | "threshold" | "overflow" = "manual"): any {
+	const oldUser = { role: "user", content: "old request", timestamp: 1 };
+	const oldAssistant = assistantMessage({ timestamp: 2 });
+	const keptUser = { role: "user", content: "kept request", timestamp: 3 };
+	return {
+		type: "session_before_compact",
+		reason,
+		willRetry: false,
+		customInstructions: SEMANTIC_COMPACTION_FOCUS,
+		signal: new AbortController().signal,
+		branchEntries: [
+			{ type: "message", id: "u1", parentId: null, timestamp: new Date(1).toISOString(), message: oldUser },
+			{ type: "message", id: "a1", parentId: "u1", timestamp: new Date(2).toISOString(), message: oldAssistant },
+			{ type: "message", id: "u2", parentId: "a1", timestamp: new Date(3).toISOString(), message: keptUser },
+		],
+		preparation: {
+			firstKeptEntryId: "u2",
+			messagesToSummarize: [oldUser, oldAssistant],
+			turnPrefixMessages: [],
+			isSplitTurn: false,
+			tokensBefore: 500,
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: false, reserveTokens: 1_000, keepRecentTokens: 200 },
+		},
+	};
+}
+
+function seedProviderSnapshot(harness: ExtensionHarness, event = manualCompactionEvent()): void {
+	const messages = event.branchEntries.map((entry: any) => entry.message);
+	harness.handlers.get("context")?.({ type: "context", messages }, harness.ctx);
+	harness.handlers.get("before_provider_request")?.(
+		{ type: "before_provider_request", payload: {} },
+		harness.ctx,
+	);
+}
 
 function emitTurn(
 	harness: ExtensionHarness,
@@ -400,6 +457,46 @@ describe("auto-compact extension events", () => {
 		emitTurn(harness, assistantMessage({ stopReason: "toolUse" }), [{}]);
 
 		expect(harness.compactions).toHaveLength(2);
+	});
+
+	it("routes genuine /compact through cache-aware compaction", async () => {
+		const harness = makeExtensionHarness({
+			model: activeModel({ contextWindow: 5_000, maxTokens: 1_000, reasoning: true }),
+		});
+		const event = manualCompactionEvent();
+		seedProviderSnapshot(harness, event);
+
+		const result = await harness.handlers.get("session_before_compact")?.(event, harness.ctx);
+
+		expect(result).toMatchObject({
+			compaction: { summary: "custom summary", firstKeptEntryId: "u2", tokensBefore: 500 },
+		});
+		expect(harness.providerCalls).toHaveLength(1);
+	});
+
+	it("routes extension-triggered ctx.compact through the same custom path", async () => {
+		const harness = makeExtensionHarness({
+			usage: { tokens: 4_000, contextWindow: 5_000, percent: 80 },
+			model: activeModel({ contextWindow: 5_000, maxTokens: 1_000, reasoning: true }),
+		});
+		const event = manualCompactionEvent();
+		seedProviderSnapshot(harness, event);
+		emitTurn(harness, assistantMessage({ stopReason: "toolUse" }), [{}]);
+		expect(harness.compactions).toHaveLength(1);
+
+		const result = await harness.handlers.get("session_before_compact")?.(event, harness.ctx);
+		expect(result).toHaveProperty("compaction.summary", "custom summary");
+		expect(harness.providerCalls).toHaveLength(1);
+	});
+
+	it.each(["threshold", "overflow"] as const)("cancels native %s requests without a summary call", async (reason) => {
+		const harness = makeExtensionHarness();
+		const result = await harness.handlers.get("session_before_compact")?.(
+			manualCompactionEvent(reason),
+			harness.ctx,
+		);
+		expect(result).toEqual({ cancel: true });
+		expect(harness.providerCalls).toHaveLength(0);
 	});
 
 	it("resets all guards on session shutdown", () => {

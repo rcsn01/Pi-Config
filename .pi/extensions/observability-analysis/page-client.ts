@@ -54,6 +54,38 @@ function metric(label, value) {
 	return element;
 }
 
+function usageBar(usage, className = '') {
+	const bar = div('bar' + (className ? ' ' + className : ''));
+	bar.setAttribute('role', 'img');
+	if (!usage) {
+		bar.classList.add('usage-unavailable');
+		bar.title = 'Token usage not reported';
+		bar.setAttribute('aria-label', bar.title);
+		return bar;
+	}
+	const total = usage.input + usage.cacheRead + usage.cacheWrite + usage.output;
+	const segments = [
+		['uncached', 'Uncached input', usage.input],
+		['cache', 'Cache hit', usage.cacheRead],
+		['write', 'Cache write', usage.cacheWrite],
+		['output', 'Output', Math.max(0, usage.output - (usage.reasoning || 0))],
+		['reasoning', 'Reasoning output', usage.reasoning || 0],
+	];
+	const labels = [];
+	segments.forEach(([segmentClass, label, count]) => {
+		if (!count || !total) return;
+		const percent = 100 * count / total;
+		const segment = document.createElement('span');
+		segment.className = segmentClass;
+		segment.style.width = percent + '%';
+		segment.title = label + ': ' + fmt(count) + ' tokens (' + percent.toFixed(1) + '%)';
+		labels.push(segment.title);
+		bar.append(segment);
+	});
+	bar.setAttribute('aria-label', labels.length ? labels.join(', ') : 'No token usage');
+	return bar;
+}
+
 function usageView(usage) {
 	const box = div('');
 	const grid = div('grid');
@@ -68,23 +100,7 @@ function usageView(usage) {
 	);
 	box.append(grid);
 
-	const total = usage.input + usage.cacheRead + usage.cacheWrite + usage.output || 1;
-	const bar = div('bar');
-	const segments = [
-		['uncached', usage.input],
-		['cache', usage.cacheRead],
-		['write', usage.cacheWrite],
-		['output', Math.max(0, usage.output - (usage.reasoning || 0))],
-		['reasoning', usage.reasoning || 0],
-	];
-	segments.forEach(([className, count]) => {
-		const segment = document.createElement('span');
-		segment.className = className;
-		segment.style.width = (100 * count / total) + '%';
-		segment.title = className + ' ' + count;
-		bar.append(segment);
-	});
-	box.append(bar);
+	box.append(usageBar(usage));
 	return box;
 }
 
@@ -283,7 +299,7 @@ function renderRequestList() {
 		text(title, '#' + item.sequence + ' ' + (item.source?.displayLabel || item.provider) + ' · ' + item.provider + '/' + item.model);
 		const meta = document.createElement('span');
 		text(meta, item.apiLabel + ' · ' + item.state + ' · ' + new Date(item.requestedAt).toLocaleTimeString());
-		button.append(title, meta);
+		button.append(title, meta, usageBar(item.usage, 'request-usage-bar'));
 		button.addEventListener('click', () => {
 			selectedSequence = item.sequence;
 			selections.set(activeChannel, selectedSequence);

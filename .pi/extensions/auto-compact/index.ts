@@ -11,6 +11,7 @@ import {
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { COMPACT_THRESHOLD, SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
+import { createCacheAwareCompaction } from "../_shared/cache-aware-compaction.ts";
 import { isRecord, readSettingsDocument, writeSettingsDocument } from "../_shared/settings-document.ts";
 
 /**
@@ -121,6 +122,7 @@ export function disableNativeCompactionInFiles(settingsPaths: readonly string[])
 export default function autoCompactExtension(pi: ExtensionAPI): void {
 	let compactionInProgress = false;
 	let overflowRecoveryAttempted = false;
+	const cacheAwareCompaction = createCacheAwareCompaction(pi);
 
 	const sendContinuation = (ctx: { isIdle(): boolean }): void => {
 		if (!ctx.isIdle()) return;
@@ -134,9 +136,14 @@ export default function autoCompactExtension(pi: ExtensionAPI): void {
 		);
 	};
 
-	// Runtime enforcement of the native auto-compact veto. Works immediately,
-	// before the settings-file change is applied by a reload.
-	pi.on("session_before_compact", (event) => vetoNativeCompaction(event.reason));
+	// Runtime enforcement of the native auto-compact veto. Manual requests include
+	// both /compact and this extension's ctx.compact() calls, so they share the
+	// cache-aware summarization path.
+	pi.on("session_before_compact", async (event, ctx) => {
+		const veto = vetoNativeCompaction(event.reason);
+		if (veto) return veto;
+		return cacheAwareCompaction.compact(event, ctx);
+	});
 
 	// A real user message starts a new recovery budget. The hidden continuation
 	// is a custom message, so it does not accidentally reset this guard.

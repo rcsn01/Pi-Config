@@ -51,6 +51,7 @@ describe("analysis runtime", () => {
 		expect(record.requestJson).toContain("secret");
 		expect(record.assistantJson).toContain('"untouched": true');
 		expect(record.sections.reduce((sum, row) => sum + (row.cachedTokens ?? 0), 0)).toBe(4);
+		expect(runtime.getSummary().records[0]!.usage).toMatchObject({ input: 5, cacheRead: 4, cacheWrite: 1, output: 3 });
 	});
 
 	it("keeps normalized usage without estimating cache placement for unknown APIs", async () => {
