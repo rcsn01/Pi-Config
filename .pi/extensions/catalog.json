@@ -36,6 +36,13 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"observability-analysis": {
+			"displayName": "OpenAI Request Analysis",
+			"pack": "observability",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"observability-usage": {
 			"displayName": "Provider Usage",
 			"pack": "observability",

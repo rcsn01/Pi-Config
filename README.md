@@ -27,6 +27,14 @@ Run the setup script and enter the path to each project you want to link:
 
 This links the project's `.pi` directory to this repo's `.pi`, so it picks up the shared configuration.
 
+## Local OpenAI request analysis
+
+Run `/analysis` with no arguments to start capture for the current session. The command prints a secret localhost URL. Open it to inspect logical `openai` and `openai-codex` requests completed after activation, along with Pi's finalized assistant messages and exact provider-reported token and cost fields. The extension starts no server and retains no payloads until you run the command. Reloading, switching or forking the session, and exiting revoke the URL and erase the in-memory capture.
+
+The page contains complete prompts, tool schemas, tool inputs, results, reasoning state, and raw JSON. Treat its URL as a credential and do not share dashboard contents without checking them for secrets. Pi's provider hook exposes the complete logical payload, not request headers or later Codex WebSocket delta frames.
+
+Cache totals come directly from finalized Pi usage. Coloring over visible request sections is an estimated cache-prefix placement because OpenAI reports only an aggregate prefix count. Hidden wrappers, tokenizer differences, and cache-boundary rounding prevent exact attribution to individual sections.
+
 ## Temporary GitHub repository explorer
 
 The opt-in `tools-github-repos` extension acquires public `github.com` repositories as immutable source snapshots under `.pi/repos/`. The `github_repo_acquire` tool accepts `owner/repo` or a GitHub HTTPS URL plus an optional branch, tag, full ref, or 40-character commit. It returns the pinned commit and a local source path. Use the normal `read`, `grep`, and `find` tools on that path.
