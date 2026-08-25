@@ -110,8 +110,12 @@ describe("subagent extension interfaces", () => {
 			description: "Delegate a task to an isolated subagent; include all needed context.",
 			promptSnippet: "Delegate tasks",
 			promptGuidelines: [
-				expect.stringContaining("primary parallelism mechanism"),
-				expect.stringContaining("context-heavy, bounded work"),
+				expect.stringContaining("substantially smaller than the raw material"),
+				expect.stringContaining("one or two files local"),
+				expect.stringContaining("Do not delegate planning"),
+				expect.stringContaining("Do not repeat its searches"),
+				expect.stringContaining("narrow question"),
+				expect.stringContaining("several external sources"),
 				expect.stringContaining("parallel mode"),
 			],
 		});
