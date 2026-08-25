@@ -31,7 +31,7 @@ Research notes on what users consistently praise about the three major terminal 
 ### What users love
 
 - **OS-level sandboxing** — Seatbelt/bubblewrap, not just app-layer guardrails. "The sandboxing story is best-in-class." Users report feeling safer running each command.
-  > **Pi status:** partial — `safety-permissions` gates risky commands, and isolated execution is documented (Gondolin micro-VM example extension, Docker, OpenShell), but no OS-level sandbox ships in this config.
+  > **Pi status:** partial — `policy-permissions` gates risky commands, and isolated execution is documented (Gondolin micro-VM example extension, Docker, OpenShell), but no OS-level sandbox ships in this config.
 - **Token efficiency** — consistently reported at 2–4x fewer tokens than Claude Code for comparable work. "Burns roughly a quarter of the tokens Claude Code does on the same prompts."
 - **Cloud handoff** — `codex cloud` with best-of-N attempts; the same model and AGENTS.md drive the GitHub app (auto PR review, `@codex` on issues). "The CLI-to-GitHub consistency is the piece reviewers most often single out as Codex's edge."
 - **Auto-PR creation** — clone, branch, change, test, open PR with summary. "I have not opened the GitHub web UI manually in two weeks."

@@ -53,7 +53,7 @@ Snapshots persist across Pi sessions. List them with `github_repo_list` or `/rep
 
 V1 supports public GitHub repositories only. It does not accept credentials, other hosts, SSH or local Git URLs, submodule contents, Git LFS downloads, or full history. Acquisition uses a depth-one fetch, checks tree and disk limits before publication, converts symlinks to regular files containing their targets, removes `.git`, strips executable bits, and marks source files read-only. Repository files remain untrusted data. Do not run their code, builds, tests, package managers, or scripts unless the user separately requests that execution.
 
-When `safety-permissions` is enabled, acquisition counts as network access, removal counts as a mutation, and listing stays read-only. `/repos` has no acquisition form, so network acquisition always goes through the tool permission flow.
+When `policy-permissions` is enabled, acquisition counts as network access, removal counts as a mutation, and listing stays read-only. `/repos` has no acquisition form, so network acquisition always goes through the tool permission flow.
 
 ## Experimental advisor
 
