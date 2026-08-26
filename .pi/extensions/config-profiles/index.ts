@@ -4,8 +4,6 @@ import { applySelectionFromDocument } from "../_shared/model-selection.ts";
 import {
 	CONFIG_PROFILES_ENTRY_TYPE,
 	createSessionProfileResolver,
-	NON_RELOAD_REASON,
-	readSessionProfileHandoff,
 	sessionProfileName,
 } from "../_shared/active-profile.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
@@ -154,24 +152,30 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 		};
 
 		pi.on("session_start", async (event, ctx) => {
-			const rememberedProfile = sessionProfileName(ctx.sessionManager.getBranch());
-			const handedOffProfile = event.reason === "new"
-				? readSessionProfileHandoff(event.previousSessionFile)
-				: undefined;
-			const inheritedProfile = rememberedProfile ?? handedOffProfile;
+			const binding = resolver.resolve({
+				entries: ctx.sessionManager.getBranch(),
+				reason: event.reason,
+				previousSessionFile: event.previousSessionFile,
+			});
 			// The session's own remembered profile wins on every boundary: on
 			// reload it persists, and on startup/resume/fork it survives another
 			// session's marker switch. A /clear handoff supplies the outgoing
 			// session's profile before the new session can read settings.json.
 			// An existing entry is never re-appended.
-			if (event.reason === "reload" || inheritedProfile !== undefined) {
-				sessionProfile = inheritedProfile;
+			if (event.reason === "reload" || binding.origin === "entry" || binding.origin === "handoff") {
+				sessionProfile = binding.profileName;
 				sessionBindingResolved = true;
-				updateStatus(ctx, inheritedProfile);
+				updateStatus(ctx, binding.profileName);
 				return;
 			}
 			// No remembered choice: the settings.json marker is the default for
 			// fresh sessions, committed as this session's entry so reloads keep it.
+			if (binding.origin !== "marker" || binding.profileName === undefined) {
+				sessionProfile = undefined;
+				sessionBindingResolved = true;
+				updateStatus(ctx, undefined);
+				return;
+			}
 			try {
 				const active = store.loadActiveProfile();
 				sessionProfile = active?.name;
@@ -217,7 +221,10 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 				// session lifecycle has established a binding.
 				const sessionCurrent = sessionBindingResolved
 					? sessionProfile
-					: resolver.resolveName(ctx.sessionManager.getBranch(), NON_RELOAD_REASON);
+					: resolver.resolve({
+						entries: ctx.sessionManager.getBranch(),
+						reason: "startup",
+					}).profileName;
 				try {
 					if (!name) {
 						if (!ctx.hasUI) {
