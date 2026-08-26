@@ -1,7 +1,13 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import { applySelectionFromDocument } from "../_shared/model-selection.ts";
-import { CONFIG_PROFILES_ENTRY_TYPE, createSessionProfileResolver, NON_RELOAD_REASON, sessionProfileName } from "../_shared/active-profile.ts";
+import {
+	CONFIG_PROFILES_ENTRY_TYPE,
+	createSessionProfileResolver,
+	NON_RELOAD_REASON,
+	readSessionProfileHandoff,
+	sessionProfileName,
+} from "../_shared/active-profile.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 
@@ -149,13 +155,19 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 
 		pi.on("session_start", async (event, ctx) => {
 			const rememberedProfile = sessionProfileName(ctx.sessionManager.getBranch());
+			const handedOffProfile = event.reason === "new"
+				? readSessionProfileHandoff(event.previousSessionFile)
+				: undefined;
+			const inheritedProfile = rememberedProfile ?? handedOffProfile;
 			// The session's own remembered profile wins on every boundary: on
 			// reload it persists, and on startup/resume/fork it survives another
-			// session's marker switch. An existing entry is never re-appended.
-			if (event.reason === "reload" || rememberedProfile !== undefined) {
-				sessionProfile = rememberedProfile;
+			// session's marker switch. A /clear handoff supplies the outgoing
+			// session's profile before the new session can read settings.json.
+			// An existing entry is never re-appended.
+			if (event.reason === "reload" || inheritedProfile !== undefined) {
+				sessionProfile = inheritedProfile;
 				sessionBindingResolved = true;
-				updateStatus(ctx, rememberedProfile);
+				updateStatus(ctx, inheritedProfile);
 				return;
 			}
 			// No remembered choice: the settings.json marker is the default for

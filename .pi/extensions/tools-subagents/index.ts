@@ -96,7 +96,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 			configStore.rememberMainModel(ctx.model);
 			// Point the config store at the session's profile file; no profile
 			// means settings.json.
-			configStore.setSettingsPath(resolver.resolve(ctx.sessionManager.getBranch(), event.reason));
+			configStore.setSettingsPath(resolver.resolve(ctx.sessionManager.getBranch(), event.reason, event.previousSessionFile));
 			// One-time migration: carry a legacy config.json into the session's
 			// settings document (the profile when one is active), then delete it.
 			await migrateSubagentConfigLegacy(configStore.configPath, LEGACY_CONFIG_PATH);
