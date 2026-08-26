@@ -10,6 +10,8 @@ import {
 	profilePath,
 	readActiveProfileName,
 	sessionProfileName,
+	stageSessionProfileHandoff,
+	clearSessionProfileHandoff,
 	validateProfileName,
 } from "./active-profile.ts";
 
@@ -140,6 +142,19 @@ describe("active profile helpers", () => {
 			expect(unmarkedResolver.resolve([], "fork")).toBe(unmarked.settingsPath);
 		});
 		describe("resolveName", () => {
+			it("uses a matching clear handoff before the marker on new sessions", () => {
+				const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "default" } });
+				const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+				stageSessionProfileHandoff("/sessions/current.json", "focused");
+				try {
+					expect(resolver.resolveName([], "new", "/sessions/current.json")).toBe("focused");
+					expect(resolver.resolveName([], "new", "/sessions/other.json")).toBe("default");
+					expect(resolver.resolveName([], "startup", "/sessions/current.json")).toBe("default");
+				} finally {
+					clearSessionProfileHandoff("/sessions/current.json");
+				}
+			});
+
 			it("prefers the entry over the marker on non-reload boundaries", () => {
 				const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
 				const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });

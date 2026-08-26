@@ -54,7 +54,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 
 	pi.on("session_start", async (event, ctx) => lifecycle.dispatch({
 		type: "sessionStarted",
-		profilePath: resolver.resolve(ctx.sessionManager.getBranch(), event.reason),
+		profilePath: resolver.resolve(ctx.sessionManager.getBranch(), event.reason, event.previousSessionFile),
 		ctx,
 	}));
 	pi.on("session_tree", async (_event, ctx) => lifecycle.dispatch({ type: "branchChanged", ctx }));

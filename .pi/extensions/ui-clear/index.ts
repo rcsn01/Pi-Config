@@ -12,6 +12,12 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	CONFIG_PROFILES_ENTRY_TYPE,
+	clearSessionProfileHandoff,
+	sessionProfileName,
+	stageSessionProfileHandoff,
+} from "../_shared/active-profile.ts";
 
 export default function (pi: ExtensionAPI) {
 	// ── Command registration ────────────────────────────────────────────
@@ -23,21 +29,26 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("clear", {
 		description: "clear all terminal output and start a fresh session",
-		handler: async (args, ctx) => {
-			// Step 1: Clear terminal output (ANSI escape to clear screen + scrollback)
+		handler: async (_args, ctx) => {
+			// Step 1: Clear terminal output (ANSI escape to clear screen + scrollback buffer)
 			// \x1b[2J = clear entire screen
 			// \x1b[3J = clear scrollback buffer
 			// \x1b[H  = move cursor to home
 			process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
 
 			// Step 2: Start a fresh pi session (no context carryover)
+			const parentSession = ctx.sessionManager.getSessionFile();
+			const currentProfile = sessionProfileName(ctx.sessionManager.getBranch());
+			stageSessionProfileHandoff(parentSession, currentProfile);
 			try {
-				const parentSession = ctx.sessionManager.getSessionFile();
-
 				const result = await ctx.newSession({
 					parentSession: parentSession || undefined,
-					setup: async (_sm) => {
-						// Fresh session - no context carryover from previous session
+					setup: async (sessionManager) => {
+						// Pi emits session_start before setup. Seed the current profile
+						// afterward so future reloads keep the same binding.
+						if (currentProfile) {
+							sessionManager.appendCustomEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: currentProfile });
+						}
 					},
 					withSession: async (newCtx) => {
 						newCtx.ui.notify(
@@ -55,6 +66,8 @@ export default function (pi: ExtensionAPI) {
 					`Cleared terminal but couldn't start new session: ${e.message}`,
 					"error",
 				);
+			} finally {
+				clearSessionProfileHandoff(parentSession);
 			}
 		},
 	});

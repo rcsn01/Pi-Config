@@ -641,7 +641,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 		pi.on("session_start", async (event, ctx) => {
 			// Point the advisor at the session's profile file; no profile means
 			// settings.json.
-			settingsPath = resolver.resolve(ctx.sessionManager.getBranch(), event.reason);
+			settingsPath = resolver.resolve(ctx.sessionManager.getBranch(), event.reason, event.previousSessionFile);
 			await loadForSession(ctx);
 		});
 		pi.on("session_shutdown", async (_event, ctx) => {

@@ -7,10 +7,11 @@
  * resolves its profile once at start. The session's remembered entry wins on
  * every boundary — another session's marker switch cannot change this
  * session's profile — and the marker is only the default for sessions without
- * a remembered choice. On reload only the remembered entry is consulted, so
- * reloading never picks up another session's switch. Sibling extensions
- * therefore read and write the session's profile file instead of fighting
- * over settings.json.
+ * a remembered choice. A fresh session created by `/clear` receives a scoped
+ * handoff from the outgoing session before sibling `session_start` handlers
+ * run. On reload only the remembered entry is consulted, so reloading never
+ * picks up another session's switch. Sibling extensions therefore read and
+ * write the session's profile file instead of fighting over settings.json.
  *
  * Lifecycle policy: the binding is resolved once per `session_start` and each
  * consuming extension repoints its settings store at the resolved document
@@ -31,6 +32,45 @@ export const CONFIG_PROFILES_ENTRY_TYPE = "configProfiles";
 export const PI_DIRECTORY = dirname(PROJECT_SETTINGS_PATH);
 export { PROJECT_SETTINGS_PATH } from "./settings-document.ts";
 export const PROFILES_DIRECTORY = join(PI_DIRECTORY, "profiles");
+
+const SESSION_PROFILE_HANDOFF_KEY = Symbol.for("pi.extensions.config-profiles.session-handoff.v1");
+
+interface SessionProfileHandoff {
+	previousSessionFile?: string;
+	profile: string;
+}
+
+function sessionProfileHandoff(): SessionProfileHandoff | undefined {
+	const globals = globalThis as typeof globalThis & { [SESSION_PROFILE_HANDOFF_KEY]?: SessionProfileHandoff };
+	return globals[SESSION_PROFILE_HANDOFF_KEY];
+}
+
+/** Stage a profile for a fresh session before its session_start handlers run. */
+export function stageSessionProfileHandoff(previousSessionFile: string | undefined, profile: string | undefined): void {
+	const globals = globalThis as typeof globalThis & { [SESSION_PROFILE_HANDOFF_KEY]?: SessionProfileHandoff };
+	if (profile === undefined) {
+		clearSessionProfileHandoff(previousSessionFile);
+		return;
+	}
+	globals[SESSION_PROFILE_HANDOFF_KEY] = {
+		previousSessionFile,
+		profile: validateProfileName(profile),
+	};
+}
+
+/** Read a handoff only when it belongs to the session being replaced. */
+export function readSessionProfileHandoff(previousSessionFile: string | undefined): string | undefined {
+	const handoff = sessionProfileHandoff();
+	if (!handoff || handoff.previousSessionFile !== previousSessionFile) return undefined;
+	return handoff.profile;
+}
+
+/** Clear a completed or cancelled profile handoff. */
+export function clearSessionProfileHandoff(previousSessionFile: string | undefined): void {
+	const globals = globalThis as typeof globalThis & { [SESSION_PROFILE_HANDOFF_KEY]?: SessionProfileHandoff };
+	const handoff = globals[SESSION_PROFILE_HANDOFF_KEY];
+	if (handoff && handoff.previousSessionFile === previousSessionFile) delete globals[SESSION_PROFILE_HANDOFF_KEY];
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -113,13 +153,14 @@ export const NON_RELOAD_REASON: SessionBoundaryReason = "startup";
 export interface SessionProfileResolver {
 	/**
 	 * Resolve the session's effective profile name. The remembered entry is
-	 * authoritative on every boundary; the settings.json marker is the fallback
+	 * authoritative on every boundary; a scoped new-session handoff is the
+	 * fallback for `/clear`; the settings.json marker is the fallback otherwise,
 	 * except on `reload`, where only the entry is consulted. `undefined` when
 	 * nothing binds — never throws.
 	 */
-	resolveName(entries: readonly unknown[], reason: SessionBoundaryReason): string | undefined;
+	resolveName(entries: readonly unknown[], reason: SessionBoundaryReason, previousSessionFile?: string): string | undefined;
 	/** Resolve the session's effective settings document path. */
-	resolve(entries: readonly unknown[], reason: SessionBoundaryReason): string;
+	resolve(entries: readonly unknown[], reason: SessionBoundaryReason, previousSessionFile?: string): string;
 }
 
 /**
@@ -137,15 +178,16 @@ export function createSessionProfileResolver(options: {
 	settingsPath: string;
 	profilesDirectory: string;
 }): SessionProfileResolver {
-	const resolveName = (entries: readonly unknown[], reason: SessionBoundaryReason): string | undefined => {
+	const resolveName = (entries: readonly unknown[], reason: SessionBoundaryReason, previousSessionFile?: string): string | undefined => {
 		const fromEntry = sessionProfileName(entries);
 		if (reason === "reload") return fromEntry;
-		return fromEntry ?? readActiveProfileName(options.settingsPath);
+		const fromHandoff = reason === "new" ? readSessionProfileHandoff(previousSessionFile) : undefined;
+		return fromEntry ?? fromHandoff ?? readActiveProfileName(options.settingsPath);
 	};
 	return {
 		resolveName,
-		resolve(entries, reason) {
-			const name = resolveName(entries, reason);
+		resolve(entries, reason, previousSessionFile) {
+			const name = resolveName(entries, reason, previousSessionFile);
 			return name === undefined ? options.settingsPath : profilePath(options.profilesDirectory, name);
 		},
 	};
