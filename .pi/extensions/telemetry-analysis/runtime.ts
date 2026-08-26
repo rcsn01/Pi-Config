@@ -59,6 +59,14 @@ export interface AnalysisRuntime {
 	close(): Promise<void>;
 }
 
+export interface AnalysisRuntimeStore extends AnalysisRuntime {
+	isActive(): boolean;
+	setNotify(notify?: (message: string) => void): void;
+	getSummary(): AnalysisSummary;
+	getRecord(sequence: number): AnalysisRecord | undefined;
+	clear(): void;
+}
+
 export interface RuntimeOptions {
 	maxRecordBytes?: number;
 	maxTotalBytes?: number;
@@ -73,6 +81,25 @@ export interface RuntimeOptions {
 
 const DEFAULT_RECORD_LIMIT = 64 * 1024 * 1024;
 const DEFAULT_TOTAL_LIMIT = 256 * 1024 * 1024;
+const ORPHAN_RUNTIME_GRACE_MS = 30_000;
+const ANALYSIS_RUNTIME_KEY = Symbol.for("pi.extensions.telemetry-analysis.runtime.v1");
+
+interface AnalysisRuntimeGlobalState {
+	runtime?: AnalysisRuntimeStore;
+	claimed: boolean;
+	orphanTimer?: ReturnType<typeof setTimeout>;
+}
+
+function globalRuntimeState(): AnalysisRuntimeGlobalState {
+	const globals = globalThis as typeof globalThis & { [ANALYSIS_RUNTIME_KEY]?: AnalysisRuntimeGlobalState };
+	return globals[ANALYSIS_RUNTIME_KEY] ??= { claimed: false };
+}
+
+function clearOrphanTimer(state: AnalysisRuntimeGlobalState): void {
+	if (!state.orphanTimer) return;
+	clearTimeout(state.orphanTimer);
+	state.orphanTimer = undefined;
+}
 
 function byteSize(record: AnalysisRecord): number {
 	let assumed = 0;
@@ -84,17 +111,15 @@ function byteSize(record: AnalysisRecord): number {
 	return assumed;
 }
 
-export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRuntime & {
-	getSummary(): AnalysisSummary;
-	getRecord(sequence: number): AnalysisRecord | undefined;
-	clear(): void;
-} {
+export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRuntimeStore {
 	const maxRecordBytes = options.maxRecordBytes ?? DEFAULT_RECORD_LIMIT;
 	const maxTotalBytes = options.maxTotalBytes ?? DEFAULT_TOTAL_LIMIT;
 	const now = options.now ?? Date.now;
 	let server: AnalysisServer | undefined;
 	let startPromise: Promise<{ url: string }> | undefined;
+	let lifecycle = 0;
 	let activatedAt: number | undefined;
+	let notify = options.notify;
 	let paused = false;
 	let diagnostic: string | undefined;
 	let retainedBytes = 0;
@@ -134,7 +159,7 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 	function pause(message: string): void {
 		paused = true;
 		diagnostic = message;
-		options.notify?.(message);
+		notify?.(message);
 	}
 
 	function tryReplaceRecord(sequenceNumber: number, mutate: (next: AnalysisRecord) => void): boolean {
@@ -259,15 +284,24 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 	}
 
 	return {
+		isActive: () => activatedAt !== undefined,
+		setNotify(next) {
+			notify = next;
+		},
 		async start() {
 			if (startPromise) return startPromise;
+			const generation = ++lifecycle;
 			server = (options.serverFactory ?? createAnalysisServer)(source);
-			startPromise = server.start().then((result) => {
+			const current = server;
+			startPromise = current.start().then((result) => {
+				if (generation !== lifecycle) throw new Error("Analysis server was closed while starting.");
 				activatedAt = now();
 				return result;
 			}).catch((error) => {
-				startPromise = undefined;
-				server = undefined;
+				if (generation === lifecycle) {
+					startPromise = undefined;
+					if (server === current) server = undefined;
+				}
 				throw error;
 			});
 			return startPromise;
@@ -275,14 +309,73 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 		observe,
 		async close() {
 			const active = server;
+			const pending = startPromise;
+			lifecycle++;
 			server = undefined;
 			startPromise = undefined;
 			activatedAt = undefined;
+			notify = undefined;
 			clear();
+			if (pending) {
+				try {
+					await pending;
+				} catch {
+					// The close invalidated a pending start. Its error is not a close failure.
+				}
+			}
 			if (active) await active.close();
 		},
 		getSummary: summary,
 		getRecord,
 		clear,
 	};
+}
+
+/**
+ * Keep the capture runtime outside individual extension instances. Pi rebuilds
+ * those instances for reloads and session replacements, while the dashboard
+ * server and its records should keep the same URL and data.
+ */
+export function getPersistentAnalysisRuntime(notify?: (message: string) => void): AnalysisRuntimeStore {
+	const state = globalRuntimeState();
+	clearOrphanTimer(state);
+	state.claimed = true;
+	if (!state.runtime) state.runtime = createAnalysisRuntime({ notify });
+	else state.runtime.setNotify(notify);
+	return state.runtime;
+}
+
+/** Release the extension's claim while allowing a replacement instance to reattach. */
+export function releasePersistentAnalysisRuntime(runtime: AnalysisRuntimeStore): void {
+	const state = globalRuntimeState();
+	if (state.runtime !== runtime) return;
+	state.claimed = false;
+	clearOrphanTimer(state);
+	if (!runtime.isActive()) return;
+	state.orphanTimer = setTimeout(() => {
+		state.orphanTimer = undefined;
+		if (state.runtime !== runtime || state.claimed) return;
+		void runtime.close().catch(() => {});
+	}, ORPHAN_RUNTIME_GRACE_MS);
+	state.orphanTimer.unref?.();
+}
+
+export async function closePersistentAnalysisRuntime(runtime: AnalysisRuntimeStore): Promise<void> {
+	const globals = globalThis as typeof globalThis & { [ANALYSIS_RUNTIME_KEY]?: AnalysisRuntimeGlobalState };
+	const state = globals[ANALYSIS_RUNTIME_KEY];
+	if (state?.runtime === runtime) {
+		clearOrphanTimer(state);
+		delete globals[ANALYSIS_RUNTIME_KEY];
+	}
+	await runtime.close();
+}
+
+/** Test-only cleanup for the process-global runtime. */
+export async function resetPersistentAnalysisRuntimeForTests(): Promise<void> {
+	const globals = globalThis as typeof globalThis & { [ANALYSIS_RUNTIME_KEY]?: AnalysisRuntimeGlobalState };
+	const state = globals[ANALYSIS_RUNTIME_KEY];
+	clearOrphanTimer(state ?? { claimed: false });
+	const runtime = state?.runtime;
+	delete globals[ANALYSIS_RUNTIME_KEY];
+	await runtime?.close();
 }

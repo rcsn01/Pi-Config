@@ -1,7 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { getObservabilityService, type ObservabilitySource } from "../_shared/observability.ts";
-import { createAnalysisRuntime, type AnalysisRuntime } from "./runtime.ts";
+import {
+	closePersistentAnalysisRuntime,
+	getPersistentAnalysisRuntime,
+	releasePersistentAnalysisRuntime,
+	type AnalysisRuntime,
+	type AnalysisRuntimeStore,
+} from "./runtime.ts";
 
 export interface AnalysisExtensionDependencies {
 	createRuntime?: (notify: (message: string) => void) => AnalysisRuntime;
@@ -10,12 +16,25 @@ export interface AnalysisExtensionDependencies {
 export function createAnalysisExtension(dependencies: AnalysisExtensionDependencies = {}) {
 	return (pi: ExtensionAPI) => {
 		let notify = (_message: string) => {};
+		const usesPersistentRuntime = !dependencies.createRuntime;
 		const runtime = dependencies.createRuntime?.((message) => notify(message))
-			?? createAnalysisRuntime({ notify: (message) => notify(message) });
+			?? getPersistentAnalysisRuntime((message) => notify(message));
+		const lifecycle = runtime as Partial<Pick<AnalysisRuntimeStore, "isActive" | "setNotify">>;
 		const observability = getObservabilityService();
 		const mainSource: ObservabilitySource = { channel: "main", invocationId: randomUUID(), displayLabel: "Main agent" };
 		let unsubscribe: (() => void) | undefined;
 		let pendingCompaction: ObservabilitySource | undefined;
+		let locallyActive = false;
+		const attach = () => {
+			lifecycle.setNotify?.((message) => notify(message));
+			if (!(lifecycle.isActive?.() ?? locallyActive) || unsubscribe) return;
+			unsubscribe = observability.activate((event) => runtime.observe(event));
+		};
+		const detach = () => {
+			unsubscribe?.();
+			unsubscribe = undefined;
+			lifecycle.setNotify?.(undefined);
+		};
 		const publish = (event: Parameters<typeof observability.publish>[0]) => observability.publish(event);
 
 		pi.registerCommand("analysis", {
@@ -28,7 +47,8 @@ export function createAnalysisExtension(dependencies: AnalysisExtensionDependenc
 				}
 				try {
 					const { url } = await runtime.start();
-					unsubscribe ??= observability.activate((event) => runtime.observe(event));
+					locallyActive = true;
+					attach();
 					ctx.ui.notify(`Provider request analysis is active. Treat this URL as a secret:\n${url}`, "info");
 				} catch (error) {
 					ctx.ui.notify(`Could not start request analysis: ${error instanceof Error ? error.message : String(error)}`, "error");
@@ -36,6 +56,10 @@ export function createAnalysisExtension(dependencies: AnalysisExtensionDependenc
 			},
 		});
 
+		pi.on("session_start", (_event, ctx) => {
+			notify = (message) => ctx.ui.notify(message, "warning");
+			attach();
+		});
 		pi.on("agent_start", () => publish({ type: "agent_start", source: mainSource }));
 		pi.on("turn_start", (event) => publish({ type: "turn_start", source: mainSource, turnIndex: event.turnIndex, at: event.timestamp }));
 		pi.on("before_provider_request", (event, ctx) => {
@@ -107,11 +131,17 @@ export function createAnalysisExtension(dependencies: AnalysisExtensionDependenc
 				},
 			});
 		});
-		pi.on("session_shutdown", async () => {
-			unsubscribe?.();
-			unsubscribe = undefined;
+		pi.on("session_shutdown", async (event) => {
+			detach();
+			locallyActive = false;
 			pendingCompaction = undefined;
-			await runtime.close();
+			if (usesPersistentRuntime) {
+				const persistent = runtime as AnalysisRuntimeStore;
+				if (event.reason === "quit") await closePersistentAnalysisRuntime(persistent);
+				else releasePersistentAnalysisRuntime(persistent);
+				return;
+			}
+			if (event.reason === "quit") await runtime.close();
 		});
 	};
 }

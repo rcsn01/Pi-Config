@@ -1,8 +1,27 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { resetObservabilityServiceForTests } from "../_shared/observability.ts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getObservabilityService, resetObservabilityServiceForTests } from "../_shared/observability.ts";
 import { createAnalysisExtension } from "./index.ts";
+import { getPersistentAnalysisRuntime, resetPersistentAnalysisRuntimeForTests } from "./runtime.ts";
 
 beforeEach(() => resetObservabilityServiceForTests());
+
+afterEach(async () => resetPersistentAnalysisRuntimeForTests());
+
+function fakeRuntime(url = "http://localhost:1/#token=secret") {
+	let active = false;
+	return {
+		start: vi.fn(async () => {
+			active = true;
+			return { url };
+		}),
+		observe: vi.fn(),
+		close: vi.fn(async () => {
+			active = false;
+		}),
+		isActive: vi.fn(() => active),
+		setNotify: vi.fn(),
+	};
+}
 
 function harness() {
 	const commands = new Map<string, any>();
@@ -20,7 +39,7 @@ function harness() {
 
 describe("analysis extension adapter", () => {
 	it("loads without starting capture, starts idempotently, and rejects arguments", async () => {
-		const runtime: any = { start: vi.fn(async () => ({ url: "http://localhost:1/#token=secret" })), observe: vi.fn(), close: vi.fn() };
+		const runtime = fakeRuntime();
 		const h = harness();
 		createAnalysisExtension({ createRuntime: () => runtime })(h.pi);
 		expect(runtime.start).not.toHaveBeenCalled();
@@ -37,7 +56,7 @@ describe("analysis extension adapter", () => {
 	});
 
 	it("captures compaction preparation and attaches the saved summary and usage", async () => {
-		const runtime: any = { start: vi.fn(async () => ({ url: "http://localhost/#token=test" })), observe: vi.fn(), close: vi.fn(async () => {}) };
+		const runtime = fakeRuntime("http://localhost/#token=test");
 		const h = harness();
 		createAnalysisExtension({ createRuntime: () => runtime })(h.pi);
 		await h.commands.get("analysis").handler("", h.ctx);
@@ -58,7 +77,7 @@ describe("analysis extension adapter", () => {
 	});
 
 	it("observes lifecycle events without replacing payloads or messages", async () => {
-		const runtime: any = { start: vi.fn(async () => ({ url: "http://localhost/#token=test" })), observe: vi.fn(), close: vi.fn(async () => {}) };
+		const runtime = fakeRuntime("http://localhost/#token=test");
 		const h = harness();
 		createAnalysisExtension({ createRuntime: () => runtime })(h.pi);
 		await h.commands.get("analysis").handler("", h.ctx);
@@ -69,7 +88,63 @@ describe("analysis extension adapter", () => {
 		h.handlers.get("after_provider_response")({ status: 201 }, h.ctx);
 		expect(runtime.observe).toHaveBeenCalledWith(expect.objectContaining({ type: "request", payload: { secret: true } }));
 		expect(runtime.observe).toHaveBeenCalledWith(expect.objectContaining({ type: "assistant", message: { role: "assistant", content: [] }, source: expect.objectContaining({ channel: "main" }) }));
-		await h.handlers.get("session_shutdown")({}, h.ctx);
+		await h.handlers.get("session_shutdown")({ reason: "quit" }, h.ctx);
 		expect(runtime.close).toHaveBeenCalledOnce();
+	});
+
+	it("rebinds the persistent runtime across reload and session replacement", async () => {
+		const runtime = getPersistentAnalysisRuntime();
+		const first = harness();
+		createAnalysisExtension()(first.pi);
+		await first.commands.get("analysis").handler("", first.ctx);
+		expect(runtime.isActive()).toBe(true);
+
+		await first.handlers.get("session_shutdown")({ reason: "reload" }, first.ctx);
+		const reloaded = harness();
+		createAnalysisExtension()(reloaded.pi);
+		await reloaded.handlers.get("session_start")({ reason: "reload" }, reloaded.ctx);
+		expect(getPersistentAnalysisRuntime()).toBe(runtime);
+		expect(getObservabilityService().isActive()).toBe(true);
+
+		await reloaded.handlers.get("session_shutdown")({ reason: "new" }, reloaded.ctx);
+		const cleared = harness();
+		createAnalysisExtension()(cleared.pi);
+		await cleared.handlers.get("session_start")({ reason: "new" }, cleared.ctx);
+		expect(runtime.isActive()).toBe(true);
+		expect(getObservabilityService().isActive()).toBe(true);
+
+		await cleared.handlers.get("session_shutdown")({ reason: "quit" }, cleared.ctx);
+		expect(runtime.isActive()).toBe(false);
+	});
+
+	it("keeps the active runtime across reload and session replacement, then closes on quit", async () => {
+		const runtime = fakeRuntime();
+		const observability = getObservabilityService();
+		const first = harness();
+		createAnalysisExtension({ createRuntime: () => runtime })(first.pi);
+		await first.commands.get("analysis").handler("", first.ctx);
+		expect(observability.isActive()).toBe(true);
+
+		await first.handlers.get("session_shutdown")({ reason: "reload" }, first.ctx);
+		expect(runtime.close).not.toHaveBeenCalled();
+		expect(observability.isActive()).toBe(false);
+
+		const reloaded = harness();
+		createAnalysisExtension({ createRuntime: () => runtime })(reloaded.pi);
+		await reloaded.handlers.get("session_start")({ reason: "reload" }, reloaded.ctx);
+		expect(observability.isActive()).toBe(true);
+
+		await reloaded.handlers.get("session_shutdown")({ reason: "new" }, reloaded.ctx);
+		expect(runtime.close).not.toHaveBeenCalled();
+		expect(observability.isActive()).toBe(false);
+
+		const cleared = harness();
+		createAnalysisExtension({ createRuntime: () => runtime })(cleared.pi);
+		await cleared.handlers.get("session_start")({ reason: "new" }, cleared.ctx);
+		expect(observability.isActive()).toBe(true);
+
+		await cleared.handlers.get("session_shutdown")({ reason: "quit" }, cleared.ctx);
+		expect(runtime.close).toHaveBeenCalledOnce();
+		expect(observability.isActive()).toBe(false);
 	});
 });
