@@ -1,15 +1,22 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { CodexCredentialSlotError } from "../../provider-codex/credential-slots.ts";
+import {
+	CodexSlotUsageClient,
+	formatCodexAuthStatus,
+	formatCodexProbeResults,
+	type CodexSlotQuotaBatch,
+	type CodexSlotUsageClientLike,
+} from "./codex-slots.ts";
 import { isStale } from "./probe.ts";
 import type { ProbeResult } from "./probe.ts";
-import { inspectCodexAuth } from "./codex-auth.ts";
 import { inspectOllamaAuth } from "./ollama-auth.ts";
 import { formatUsageText } from "./ollama-render.ts";
 import { probeUsage } from "./ollama-client.ts";
 import type { OllamaAuthInspection, UsageProbeResult, UsageSnapshot } from "./ollama-types.ts";
-import { probeQuota } from "./quota-client.ts";
-import { formatQuotaText } from "./render.ts";
 import { styleUsageText } from "./style.ts";
-import type { CodexAuthInspection, QuotaProbeResult, QuotaSnapshot } from "./types.ts";
+import type { QuotaProbeResult } from "./types.ts";
+
+export { formatCodexAuthStatus, formatCodexProbeResults } from "./codex-slots.ts";
 
 type Provider = "codex" | "ollama" | "both";
 
@@ -21,19 +28,16 @@ function parseUsageArgs(raw: string): { provider: Provider; action: string } {
 	return { provider: "both", action: tokens.join(" ") };
 }
 
-export function formatAuthStatus(status: CodexAuthInspection): string {
-	const lines = [
-		"ChatGPT Codex authentication",
-		`Auth file: ${status.fileFound ? `found (${status.path})` : `not found (${status.path})`}`,
-		`Access token: ${status.accessTokenPresent ? "present" : "missing"}`,
-		`Account ID: ${status.accountIdPresent ? "present" : "missing"}`,
-	];
-	if (status.state === "ready") {
-		lines.push("Credential looks usable; /usage validates it live.");
-	} else {
-		lines.push(`Next step: ${status.message}`);
+function safeCodexError(error: unknown): string {
+	if (!(error instanceof CodexCredentialSlotError)) return "Could not read Codex credential slots.";
+	switch (error.code) {
+		case "INVALID_STATE":
+			return "Codex credential slot state is invalid.";
+		case "INVALID_AUTH":
+			return "Codex credential data is invalid.";
+		default:
+			return "Could not read Codex credential slots.";
 	}
-	return lines.join("\n");
 }
 
 export function formatOllamaAuthStatus(status: OllamaAuthInspection): string {
@@ -65,28 +69,20 @@ export function formatOllamaProbeResult(result: UsageProbeResult): string {
 }
 
 export function createSubscriptionUsageExtension(options: {
-	probe?: typeof probeQuota;
-	probeOllama?: typeof probeUsage;
-	inspect?: typeof inspectCodexAuth;
-	inspectOllama?: typeof inspectOllamaAuth;
-	now?: () => Date;
+		codex?: CodexSlotUsageClientLike;
+		probeOllama?: typeof probeUsage;
+		inspectOllama?: typeof inspectOllamaAuth;
+		now?: () => Date;
 } = {}) {
 	return function subscriptionUsageExtension(pi: ExtensionAPI): void {
-		const probe = options.probe ?? probeQuota;
-		const probeOllama = options.probeOllama ?? probeUsage;
-		const inspect = options.inspect ?? inspectCodexAuth;
-		const inspectOllama = options.inspectOllama ?? inspectOllamaAuth;
 		const now = options.now ?? (() => new Date());
-		let latestCodex: QuotaSnapshot | undefined;
+		const codex = options.codex ?? new CodexSlotUsageClient({ now });
+		const probeOllama = options.probeOllama ?? probeUsage;
+		const inspectOllama = options.inspectOllama ?? inspectOllamaAuth;
 		let latestOllama: UsageSnapshot | undefined;
 
-		const fetchCodex = async (force: boolean, signal?: AbortSignal): Promise<QuotaSnapshot> => {
-			if (!force && latestCodex && !isStale(latestCodex.fetchedAt, now())) return latestCodex;
-			const result = await probe({ signal });
-			if (result.state !== "ok") throw new Error(result.message);
-			latestCodex = result.snapshot;
-			return latestCodex;
-		};
+		const fetchCodex = async (force: boolean, signal?: AbortSignal): Promise<CodexSlotQuotaBatch> =>
+			codex.query({ cache: force ? "refresh" : "prefer", signal });
 
 		const fetchOllama = async (force: boolean, signal?: AbortSignal): Promise<UsageSnapshot> => {
 			if (!force && latestOllama && !isStale(latestOllama.fetchedAt, now())) return latestOllama;
@@ -98,8 +94,13 @@ export function createSubscriptionUsageExtension(options: {
 
 		const runAuthStatus = async (provider: Provider, ctx: ExtensionCommandContext): Promise<void> => {
 			if (provider === "codex") {
-				const status = await inspect();
-				ctx.ui.notify(formatAuthStatus(status), status.state === "ready" ? "info" : "warning");
+				try {
+					const inspection = codex.inspect();
+					const hasCredential = inspection.slots.some((slot) => slot.hasCredential);
+					ctx.ui.notify(formatCodexAuthStatus(inspection), hasCredential ? "info" : "warning");
+				} catch (error) {
+					ctx.ui.notify(safeCodexError(error), "warning");
+				}
 				return;
 			}
 			if (provider === "ollama") {
@@ -107,18 +108,30 @@ export function createSubscriptionUsageExtension(options: {
 				ctx.ui.notify(formatOllamaAuthStatus(status), status.state === "ready" ? "info" : "warning");
 				return;
 			}
-			const [codexStatus, ollamaStatus] = await Promise.all([inspect(), inspectOllama()]);
-			const ready = codexStatus.state === "ready" || ollamaStatus.state === "ready";
+
+			let codexText: string;
+			let codexReady = false;
+			try {
+				const inspection = codex.inspect();
+				codexText = formatCodexAuthStatus(inspection);
+				codexReady = inspection.slots.some((slot) => slot.hasCredential);
+			} catch (error) {
+				codexText = safeCodexError(error);
+			}
+			const ollamaStatus = await inspectOllama();
 			ctx.ui.notify(
-				`${formatAuthStatus(codexStatus)}\n\n${formatOllamaAuthStatus(ollamaStatus)}`,
-				ready ? "info" : "warning",
+				`${codexText}\n\n${formatOllamaAuthStatus(ollamaStatus)}`,
+				codexReady || ollamaStatus.state === "ready" ? "info" : "warning",
 			);
 		};
 
 		const runProbe = async (provider: Provider, ctx: ExtensionCommandContext): Promise<void> => {
 			if (provider === "codex") {
-				const result = await probe({ signal: ctx.signal });
-				ctx.ui.notify(formatProbeResult(result), result.state === "ok" ? "info" : "warning");
+				const batch = await codex.query({ cache: "bypass", signal: ctx.signal });
+				ctx.ui.notify(
+					formatCodexProbeResults(batch, now()),
+					batch.anySuccess ? "info" : "warning",
+				);
 				return;
 			}
 			if (provider === "ollama") {
@@ -127,27 +140,34 @@ export function createSubscriptionUsageExtension(options: {
 				return;
 			}
 			const [codexResult, ollamaResult] = await Promise.all([
-				probe({ signal: ctx.signal }),
+				codex.query({ cache: "bypass", signal: ctx.signal }),
 				probeOllama({ signal: ctx.signal }),
 			]);
-			const ready = codexResult.state === "ok" || ollamaResult.state === "ok";
+			const ready = codexResult.anySuccess || ollamaResult.state === "ok";
 			ctx.ui.notify(
-				`${formatProbeResult(codexResult)}\n${formatOllamaProbeResult(ollamaResult)}`,
+				`${formatCodexProbeResults(codexResult, now())}\n${formatOllamaProbeResult(ollamaResult)}`,
 				ready ? "info" : "warning",
 			);
 		};
 
 		const runFetch = async (provider: Provider, force: boolean, ctx: ExtensionCommandContext): Promise<void> => {
 			const captured = now();
-			if (provider === "codex" || provider === "ollama") {
+			if (provider === "codex") {
 				try {
-					const snapshot = provider === "codex"
-						? await fetchCodex(force, ctx.signal)
-						: await fetchOllama(force, ctx.signal);
-					const text = provider === "codex"
-						? formatQuotaText(snapshot, captured)
-						: formatUsageText(snapshot, captured);
-					ctx.ui.notify(styleUsageText(text), "info");
+					const batch = await fetchCodex(force, ctx.signal);
+					ctx.ui.notify(
+						styleUsageText(formatCodexProbeResults(batch, captured)),
+						batch.anySuccess ? "info" : "error",
+					);
+				} catch (error) {
+					ctx.ui.notify(safeCodexError(error), "error");
+				}
+				return;
+			}
+			if (provider === "ollama") {
+				try {
+					const snapshot = await fetchOllama(force, ctx.signal);
+					ctx.ui.notify(styleUsageText(formatUsageText(snapshot, captured)), "info");
 				} catch (error) {
 					ctx.ui.notify((error as Error).message, "error");
 				}
@@ -155,8 +175,8 @@ export function createSubscriptionUsageExtension(options: {
 			}
 			const results = await Promise.all([
 				fetchCodex(force, ctx.signal)
-					.then((snapshot) => ({ ok: true as const, text: formatQuotaText(snapshot, captured) }))
-					.catch((error) => ({ ok: false as const, text: `ChatGPT Codex: ${(error as Error).message}` })),
+					.then((batch) => ({ ok: batch.anySuccess, text: formatCodexProbeResults(batch, captured) }))
+					.catch((error) => ({ ok: false as const, text: `ChatGPT Codex: ${safeCodexError(error)}` })),
 				fetchOllama(force, ctx.signal)
 					.then((snapshot) => ({ ok: true as const, text: formatUsageText(snapshot, captured) }))
 					.catch((error) => ({ ok: false as const, text: `Ollama Cloud: ${(error as Error).message}` })),

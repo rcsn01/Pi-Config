@@ -3,6 +3,7 @@ import {
 	getLimitsDuration,
 	normalizeQuota,
 	planTypeDisplayName,
+	selectSessionWindow,
 	selectWeeklyWindow,
 	windowMinutesFromSeconds,
 } from "./quota.ts";
@@ -36,6 +37,25 @@ describe("quota window labeling (codex get_limits_duration port)", () => {
 		expect(windowMinutesFromSeconds(0)).toBeUndefined();
 		expect(windowMinutesFromSeconds(-5)).toBeUndefined();
 		expect(windowMinutesFromSeconds("604800")).toBe(10_080);
+	});
+});
+
+describe("5-hour session window selection", () => {
+	const session: QuotaWindow = { usedPercent: 12, windowMinutes: 300 };
+	const daily: QuotaWindow = { usedPercent: 20, windowMinutes: 1_440 };
+	const weekly: QuotaWindow = { usedPercent: 58, windowMinutes: 10_080 };
+
+	it("prefers a 5-hour primary window", () => {
+		expect(selectSessionWindow(session, weekly)).toBe(session);
+	});
+
+	it("uses a 5-hour secondary window when primary is not 5-hour", () => {
+		expect(selectSessionWindow(daily, session)).toBe(session);
+	});
+
+	it("does not label another known duration as a 5-hour session", () => {
+		expect(selectSessionWindow(daily, weekly)).toBeUndefined();
+		expect(selectSessionWindow(undefined, undefined)).toBeUndefined();
 	});
 });
 
@@ -106,6 +126,7 @@ describe("quota payload normalization", () => {
 
 		expect(snapshot).toEqual({
 			plan: "Business",
+			session: { usedPercent: 20, windowMinutes: 300 },
 			weekly: { usedPercent: 58, windowMinutes: 10_080, resetsAt: "2026-08-24T14:30:00.000Z" },
 			resetCredits: { available: 1, applicable: 2 },
 			fetchedAt: "2026-08-17T12:00:00.000Z",
@@ -128,11 +149,12 @@ describe("quota payload normalization", () => {
 		expect(noApplicable.resetCredits).toEqual({ available: 3 });
 	});
 
-	it("marks the weekly limit unavailable without a weekly-labeled or secondary window", () => {
+	it("keeps the weekly limit unavailable when only the 5-hour window exists", () => {
 		const snapshot = normalizeQuota({
 			plan_type: "plus",
-			rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 300 } },
+			rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 18_000 } },
 		}, "2026-08-17T12:00:00.000Z")!;
+		expect(snapshot.session).toEqual({ usedPercent: 10, windowMinutes: 300 });
 		expect(snapshot.weekly).toBeUndefined();
 	});
 

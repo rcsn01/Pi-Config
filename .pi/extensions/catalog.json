@@ -15,10 +15,31 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"provider-codex": {
+			"displayName": "Codex Credential Slots",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"config-personality": {
 			"displayName": "Personality",
 			"pack": "extras",
 			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		},
+		"config-feature-flag": {
+			"displayName": "Feature Flags",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"config-skill": {
+			"displayName": "Skill Updates",
+			"pack": "core",
+			"defaultEnabled": true,
 			"requires": [],
 			"conflicts": []
 		},
@@ -64,6 +85,20 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"provider-ollama": {
+			"displayName": "Ollama Cloud Provider",
+			"pack": "providers",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"provider-usage": {
+			"displayName": "Provider Usage",
+			"pack": "observability",
+			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		},
 		"subscription-usage": {
 			"displayName": "Subscription Usage",
 			"pack": "observability",
@@ -85,6 +120,20 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"session-compaction": {
+			"displayName": "Session Compaction",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"session-naming": {
+			"displayName": "Session Naming",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"sessions-memory": {
 			"displayName": "Session Memory",
 			"pack": "excluded",
@@ -95,6 +144,20 @@
 		"system-feature-flags": {
 			"displayName": "Feature Flags",
 			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"telemetry-analysis": {
+			"displayName": "Provider Request Analysis",
+			"pack": "observability",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"telemetry-cache-effort": {
+			"displayName": "Prompt Cache Effort Test",
+			"pack": "observability",
 			"defaultEnabled": true,
 			"requires": [],
 			"conflicts": []
@@ -218,6 +281,20 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"ui-footer": {
+			"displayName": "Status Footer",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
+		"ui-message-history": {
+			"displayName": "Message History",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"ui-notification": {
 			"displayName": "Notifications",
 			"pack": "core",
@@ -260,12 +337,26 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"workflows-engine": {
+			"displayName": "Workflow Runtime",
+			"pack": "autonomy",
+			"defaultEnabled": false,
+			"requires": [],
+			"conflicts": []
+		},
 		"workflows-goal": {
 			"displayName": "Goal Mode",
 			"pack": "autonomy",
 			"defaultEnabled": false,
 			"requires": ["policy-permissions"],
 			"conflicts": ["integration-fleet"]
+		},
+		"workflows-plan": {
+			"displayName": "Plan Mode",
+			"pack": "planning",
+			"defaultEnabled": false,
+			"requires": ["policy-permissions", "tools-ask-user"],
+			"conflicts": []
 		},
 		"workflows-plan-mode": {
 			"displayName": "Plan Mode",

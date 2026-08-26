@@ -169,4 +169,18 @@ describe("runProbe status mapping", () => {
 		await expect(runProbe(adapter(), { signal: controller.signal, fetchImpl })).rejects.toThrow();
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
+
+	it("propagates caller cancellation during an in-flight request", async () => {
+		const controller = new AbortController();
+		const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+			await new Promise<never>((_, reject) => {
+				init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+			});
+			throw new Error("request should have been cancelled");
+		});
+		const pending = runProbe(adapter(), { signal: controller.signal, fetchImpl });
+		await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+		controller.abort();
+		await expect(pending).rejects.toThrow();
+	});
 });

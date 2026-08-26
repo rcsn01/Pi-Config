@@ -114,7 +114,9 @@ export async function runProbe<T>(
 	adapter: ProviderProbeAdapter<T>,
 	options: ProbeOptions = {},
 ): Promise<ProbeResult<T>> {
+	options.signal?.throwIfAborted();
 	const auth = await adapter.authenticate();
+	options.signal?.throwIfAborted();
 	if (!("request" in auth)) return { state: "auth-required", message: auth.message };
 	const { request } = auth;
 
@@ -137,11 +139,13 @@ export async function runProbe<T>(
 					signal: controller.signal,
 				});
 			} catch {
+				options.signal?.throwIfAborted();
 				return { state: "unavailable", message: adapter.messages.unreachable };
 			}
 			if (response.status !== 401 && response.status !== 403) break;
 		}
 		if (!response) return { state: "unavailable", message: adapter.messages.unreachable };
+		options.signal?.throwIfAborted();
 		if (response.status === 401 || response.status === 403) {
 			return { state: "auth-required", message: adapter.messages.authRejected(response.status) };
 		}
@@ -156,11 +160,13 @@ export async function runProbe<T>(
 		try {
 			payload = await readLimitedJson(response, options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES);
 		} catch (error) {
+			options.signal?.throwIfAborted();
 			const reason = (error as Error).message === "response-too-large"
 				? "exceeded the response limit"
 				: "returned invalid JSON";
 			return { state: "contract-unknown", message: `${adapter.messages.endpointLabel} usage ${reason}.` };
 		}
+		options.signal?.throwIfAborted();
 		if (!adapter.contractMatches(payload)) {
 			return {
 				state: "contract-unknown",

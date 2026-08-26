@@ -41,6 +41,17 @@ function matchesWindowLabel(window: QuotaWindow, label: string): boolean {
 	return window.windowMinutes !== undefined && getLimitsDuration(window.windowMinutes) === label;
 }
 
+// Select the Codex 5-hour window by its duration rather than by its position.
+// The API normally exposes it as primary, but secondary is also valid.
+export function selectSessionWindow(
+	primary: QuotaWindow | undefined,
+	secondary: QuotaWindow | undefined,
+): QuotaWindow | undefined {
+	if (primary && matchesWindowLabel(primary, "5h")) return primary;
+	if (secondary && matchesWindowLabel(secondary, "5h")) return secondary;
+	return undefined;
+}
+
 // Port of codex `weekly_status_window` (codex-rs/tui/src/chatwidget/status_surfaces.rs):
 // prefer a window labeled "weekly" (primary, then secondary), else fall back to the
 // secondary window, else no weekly limit is available.
@@ -93,12 +104,16 @@ export function normalizeQuota(payload: unknown, fetchedAt: string): QuotaSnapsh
 	const rateLimit = record(root?.rate_limit);
 	if (!root || typeof root.plan_type !== "string" || !rateLimit) return undefined;
 	const plan = root.plan_type.trim() ? planTypeDisplayName(root.plan_type) : undefined;
+	const primary = windowOf(rateLimit.primary_window);
+	const secondary = windowOf(rateLimit.secondary_window);
+	const session = selectSessionWindow(primary, secondary);
 	const resetCredits = record(root.rate_limit_reset_credits);
 	const available = resetCredits ? finite(resetCredits.available_count) : undefined;
 	const applicable = resetCredits ? finite(resetCredits.applicable_available_count) : undefined;
 	return {
 		...(plan !== undefined ? { plan } : {}),
-		weekly: selectWeeklyWindow(windowOf(rateLimit.primary_window), windowOf(rateLimit.secondary_window)),
+		...(session !== undefined ? { session } : {}),
+		weekly: selectWeeklyWindow(primary, secondary),
 		...(resetCredits && available !== undefined
 			? { resetCredits: { available, ...(applicable !== undefined ? { applicable } : {}) } }
 			: {}),

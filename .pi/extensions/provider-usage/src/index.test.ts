@@ -2,18 +2,22 @@ import { describe, expect, it, vi } from "vitest";
 import { stripAnsi } from "./style.ts";
 import {
 	createSubscriptionUsageExtension,
-	formatAuthStatus,
+	formatCodexAuthStatus,
 	formatOllamaAuthStatus,
 	formatOllamaProbeResult,
 	formatProbeResult,
 } from "./index.ts";
-import type { OllamaAuthInspection, UsageProbeResult, UsageSnapshot } from "./ollama-types.ts";
-import type { CodexAuthInspection, QuotaProbeResult, QuotaSnapshot } from "./types.ts";
+import type { CodexCredentialSlotInspection } from "../../provider-codex/credential-slots.ts";
+import type { CodexSlotQuotaBatch, CodexSlotUsageClientLike } from "./codex-slots.ts";
+import { isStale } from "./probe.ts";
+import type { OllamaAuthInspection, UsageProbeResult } from "./ollama-types.ts";
+import type { QuotaProbeResult } from "./types.ts";
 
-const readyInspection: CodexAuthInspection = {
-	state: "ready", path: "/home/user/.codex/auth.json", fileFound: true,
-	accessTokenPresent: true, accountIdPresent: true,
-	credential: { accessToken: "TOP_SECRET_TOKEN", accountId: "account-123" },
+const readyCodexInspection: CodexCredentialSlotInspection = {
+	revision: "revision-without-secrets",
+	activeSlotId: "default",
+	activeSlotName: "default",
+	slots: [{ id: "default", name: "default", active: true, hasCredential: true, status: "active" }],
 };
 
 const readyOllamaInspection: OllamaAuthInspection = {
@@ -28,6 +32,7 @@ const okResult: Extract<QuotaProbeResult, { state: "ok" }> = {
 	fetchedAt: "2026-08-17T12:00:00.000Z",
 	snapshot: {
 		plan: "Pro",
+		session: { usedPercent: 16, windowMinutes: 300 },
 		weekly: { usedPercent: 58, windowMinutes: 10_080, resetsAt: new Date(2026, 7, 24, 14, 30).toISOString() },
 		resetCredits: { available: 1 },
 		fetchedAt: "2026-08-17T12:00:00.000Z",
@@ -45,48 +50,75 @@ const okOllamaResult: Extract<UsageProbeResult, { state: "ok" }> = {
 	},
 };
 
+function codexBatch(result: QuotaProbeResult = okResult): CodexSlotQuotaBatch {
+	return {
+		slots: [{ slot: readyCodexInspection.slots[0]!, result }],
+		anySuccess: result.state === "ok",
+	};
+}
+
 function harness(options: {
-	probeResult?: QuotaProbeResult;
+	codexBatch?: CodexSlotQuotaBatch;
 	probeOllamaResult?: UsageProbeResult;
-	inspection?: CodexAuthInspection;
+	inspection?: CodexCredentialSlotInspection;
 	inspectionOllama?: OllamaAuthInspection;
 	now?: () => Date;
 } = {}) {
 	const commands = new Map<string, any>();
 	const tools = new Map<string, any>();
-	const probe = vi.fn(async (_options?: { signal?: AbortSignal }) => options.probeResult ?? okResult);
+	const clock = options.now ?? FIXTURE_NOW;
+	const codexNetwork = vi.fn(async (_options?: { cache?: string; signal?: AbortSignal }) => options.codexBatch ?? codexBatch());
+	let cachedCodex: CodexSlotQuotaBatch | undefined;
+	const codexQuery = vi.fn(async (queryOptions: { cache?: string; signal?: AbortSignal } = {}) => {
+		queryOptions.signal?.throwIfAborted();
+		const cachedSnapshot = cachedCodex?.slots.find((entry) => entry.result.state === "ok");
+		if (queryOptions.cache === "prefer" && cachedCodex && cachedSnapshot?.result.state === "ok" && !isStale(cachedSnapshot.result.fetchedAt, clock())) {
+			return cachedCodex;
+		}
+		const result = await codexNetwork(queryOptions);
+		if (queryOptions.cache !== "bypass") cachedCodex = result;
+		return result;
+	});
+	const codex: CodexSlotUsageClientLike = {
+		inspect: vi.fn(() => options.inspection ?? readyCodexInspection),
+		query: codexQuery,
+	};
 	const probeOllama = vi.fn(async (_options?: { signal?: AbortSignal }) => options.probeOllamaResult ?? okOllamaResult);
-	const inspect = vi.fn(async () => options.inspection ?? readyInspection);
 	const inspectOllama = vi.fn(async () => options.inspectionOllama ?? readyOllamaInspection);
-	createSubscriptionUsageExtension({ probe, probeOllama, inspect, inspectOllama, now: options.now ?? FIXTURE_NOW })({
+	createSubscriptionUsageExtension({ codex, probeOllama, inspectOllama, now: options.now ?? FIXTURE_NOW })({
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		registerTool: (definition: any) => { tools.set(definition.name, definition); },
 	} as any);
 	const notify = vi.fn();
 	const controller = new AbortController();
 	return {
-		command: commands.get("usage"), tools, probe, probeOllama, inspect, inspectOllama, notify,
+		command: commands.get("usage"),
+		tools,
+		codex,
+		codexQuery,
+		codexNetwork,
+		probeOllama,
+		inspectOllama,
+		notify,
 		ctx: { signal: controller.signal, mode: "rpc", hasUI: true, ui: { notify } },
 	};
 }
 
 // The probe fixtures carry a fixed fetchedAt (12:00:00Z); pin the default
-// clock to that instant so cache-freshness assertions are deterministic
-// instead of depending on the wall clock.
+// clock to that instant so cache-freshness assertions are deterministic.
 const FIXTURE_NOW = () => new Date("2026-08-17T12:00:00.000Z");
 
 describe("/usage (unified)", () => {
 	it("shows both providers on a plain /usage", async () => {
-		// Monday 21:20 local: 40 minutes to the full hour, 6 days to Monday —
-		// the exact values observed in the web UI.
-		const { command, probe, probeOllama, notify, ctx } = harness({
+		const { command, codexNetwork, probeOllama, notify, ctx } = harness({
 			now: () => new Date(2026, 7, 17, 21, 20),
 		});
 		await command.handler("", ctx);
-		expect(probe).toHaveBeenCalledTimes(1);
+		expect(codexNetwork).toHaveBeenCalledTimes(1);
 		expect(probeOllama).toHaveBeenCalledTimes(1);
 		const [text, level] = notify.mock.calls[0];
-		expect(stripAnsi(text)).toContain("ChatGPT Codex · Plan: Pro");
+		expect(stripAnsi(text)).toContain("ChatGPT Codex · Slot: default (active) · Plan: Pro");
+		expect(stripAnsi(text)).toContain("5-hour session limit: [███░░░░░░░░░░░░░░░░░] 16% used");
 		expect(stripAnsi(text)).toContain("Weekly limit: [████████████░░░░░░░░] 58% used · resets in 6d 17h on 24 Aug");
 		expect(stripAnsi(text)).toContain("Ollama Cloud");
 		expect(stripAnsi(text)).toContain("Session usage: [███░░░░░░░░░░░░░░░░░] 16% used · resets in 40m on 17 Aug");
@@ -95,119 +127,118 @@ describe("/usage (unified)", () => {
 	});
 
 	it("reuses both fresh caches with zero network on the second /usage", async () => {
-		const { command, probe, probeOllama, ctx } = harness();
+		const { command, codexNetwork, probeOllama, ctx } = harness();
 		await command.handler("", ctx);
-		expect(probe).toHaveBeenCalledTimes(1);
+		expect(codexNetwork).toHaveBeenCalledTimes(1);
 		expect(probeOllama).toHaveBeenCalledTimes(1);
 		await command.handler("", ctx);
-		expect(probe).toHaveBeenCalledTimes(1);
+		expect(codexNetwork).toHaveBeenCalledTimes(1);
 		expect(probeOllama).toHaveBeenCalledTimes(1);
 	});
 
 	it("always fetches both for /usage refresh", async () => {
-		const { command, probe, probeOllama, ctx } = harness();
+		const { command, codexNetwork, probeOllama, ctx } = harness();
 		await command.handler("refresh", ctx);
 		await command.handler("refresh", ctx);
-		expect(probe).toHaveBeenCalledTimes(2);
+		expect(codexNetwork).toHaveBeenCalledTimes(2);
 		expect(probeOllama).toHaveBeenCalledTimes(2);
 	});
 
 	it("limits to one provider with /usage codex and /usage ollama", async () => {
-		const { command, probe, probeOllama, notify, ctx } = harness();
+		const { command, codexNetwork, probeOllama, notify, ctx } = harness();
 		await command.handler("codex", ctx);
-		expect(probe).toHaveBeenCalledTimes(1);
+		expect(codexNetwork).toHaveBeenCalledTimes(1);
 		expect(probeOllama).not.toHaveBeenCalled();
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("ChatGPT Codex"), "info");
 		expect(notify.mock.calls[0][0]).not.toContain("Ollama Cloud");
 
 		await command.handler("ollama refresh", ctx);
 		expect(probeOllama).toHaveBeenCalledTimes(1);
-		expect(probe).toHaveBeenCalledTimes(1);
+		expect(codexNetwork).toHaveBeenCalledTimes(1);
 		expect(notify.mock.calls[1][0]).toContain("Ollama Cloud");
 		expect(notify.mock.calls[1][0]).not.toContain("ChatGPT Codex");
 	});
 
 	it("refetches each provider when its cache is older than 15 minutes", async () => {
 		let time = Date.parse("2026-08-17T12:00:00Z");
-		const { command, probe, probeOllama, ctx } = harness({ now: () => new Date(time) });
+		const { command, codexNetwork, probeOllama, ctx } = harness({ now: () => new Date(time) });
 		await command.handler("", ctx);
-		expect(probe).toHaveBeenCalledTimes(1);
+		expect(codexNetwork).toHaveBeenCalledTimes(1);
 		expect(probeOllama).toHaveBeenCalledTimes(1);
 		time = Date.parse("2026-08-17T12:20:00Z");
 		await command.handler("", ctx);
-		expect(probe).toHaveBeenCalledTimes(2);
+		expect(codexNetwork).toHaveBeenCalledTimes(2);
 		expect(probeOllama).toHaveBeenCalledTimes(2);
 	});
 
-	it("reports auth status for both providers from files only, without any network", async () => {
-		const { command, probe, probeOllama, notify, ctx } = harness();
+	it("reports all Pi Codex slots and Ollama auth status without any network", async () => {
+		const { command, codexNetwork, probeOllama, notify, ctx } = harness();
 		await command.handler("auth status", ctx);
-		expect(probe).not.toHaveBeenCalled();
+		expect(codexNetwork).not.toHaveBeenCalled();
 		expect(probeOllama).not.toHaveBeenCalled();
 		const [text, level] = notify.mock.calls[0];
-		expect(text).toContain("ChatGPT Codex authentication");
+		expect(text).toContain("Pi Codex credential slots");
+		expect(text).toContain("default (active)");
 		expect(text).toContain("Ollama Cloud authentication");
-		expect(text).toContain("Credential looks usable; /usage validates it live.");
 		expect(text).toContain("Ed25519 key parses and can sign; /usage validates it live.");
 		expect(level).toBe("info");
-		expect(formatAuthStatus(readyInspection)).toContain("Account ID: present");
+		expect(formatCodexAuthStatus(readyCodexInspection)).toContain("Active slot: default");
 		expect(formatOllamaAuthStatus(readyOllamaInspection)).toContain("Key file: found");
 	});
 
-	it("reports a single provider's auth failures as warnings", async () => {
-		const inspection: CodexAuthInspection = {
-			state: "missing", path: "/missing/auth.json", fileFound: false,
-			accessTokenPresent: false, accountIdPresent: false,
-			message: "Codex auth file was not found. Run `codex login` and try again.",
+	it("marks an all-empty Codex slot list as a warning without probing", async () => {
+		const emptyInspection: CodexCredentialSlotInspection = {
+			...readyCodexInspection,
+			slots: [{ ...readyCodexInspection.slots[0]!, hasCredential: false, status: "active" }],
 		};
-		const { command, probe, notify, ctx } = harness({ inspection });
-		await command.handler("codex auth", ctx);
-		expect(probe).not.toHaveBeenCalled();
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Run `codex login`"), "warning");
+		const { command, notify, ctx } = harness({ inspection: emptyInspection });
+		await command.handler("codex auth status", ctx);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("active, empty"), "warning");
 	});
 
-	it("runs the single-endpoint probes for both providers", async () => {
-		const { command, probe, probeOllama, notify, ctx } = harness();
+	it("runs all-slot Codex probes alongside the Ollama probe", async () => {
+		const { command, codexNetwork, probeOllama, notify, ctx } = harness();
 		await command.handler("probe", ctx);
-		expect(probe).toHaveBeenCalledWith({ signal: ctx.signal });
+		expect(codexNetwork).toHaveBeenCalledWith({ cache: "bypass", signal: ctx.signal });
 		expect(probeOllama).toHaveBeenCalledWith({ signal: ctx.signal });
 		const [text] = notify.mock.calls[0];
-		expect(text).toContain("Codex quota probe: connected · plan Pro");
+		expect(text).toContain("ChatGPT Codex · Slot: default (active) · Plan: Pro");
 		expect(text).toContain("Ollama usage probe: connected");
 		expect(formatProbeResult(okResult)).toContain("connected");
 		expect(formatOllamaProbeResult(okOllamaResult)).toContain("connected");
 	});
 
-	it("shows the healthy provider and an inline error when the other fails", async () => {
-		const { command, probe, probeOllama, notify, ctx } = harness({
-			probeOllamaResult: {
-				state: "auth-required",
-				message: "The Ollama key was not found. Sign in to the Ollama app to create ~/.ollama/id_ed25519.",
-			},
+	it("shows the healthy provider and inline per-slot errors when the other fails", async () => {
+		const { command, codexNetwork, probeOllama, notify, ctx } = harness({
+			codexBatch: codexBatch({ state: "auth-required", message: "This Codex slot is empty." }),
 		});
 		await command.handler("", ctx);
 		const [text, level] = notify.mock.calls[0];
-		expect(text).toContain("ChatGPT Codex · Plan: Pro");
-		expect(text).toContain("Ollama Cloud: The Ollama key was not found.");
+		expect(text).toContain("ChatGPT Codex · Slot: default (active)");
+		expect(text).toContain("This Codex slot is empty.");
+		expect(text).toContain("Ollama Cloud");
 		expect(level).toBe("info");
+		expect(codexNetwork).toHaveBeenCalledOnce();
+		expect(probeOllama).toHaveBeenCalledOnce();
 	});
 
-	it("notifies an error when both providers fail", async () => {
-		const { command, probe, probeOllama, notify, ctx } = harness({
-			probeResult: { state: "unavailable", message: "Could not reach the ChatGPT usage endpoint." },
+	it("notifies an error when every requested provider/account fails", async () => {
+		const { command, notify, ctx } = harness({
+			codexBatch: codexBatch({ state: "unavailable", message: "Could not reach the ChatGPT usage endpoint." }),
 			probeOllamaResult: { state: "unavailable", message: "Could not reach the Ollama usage endpoint." },
 		});
 		await command.handler("", ctx);
 		const [text, level] = notify.mock.calls[0];
-		expect(text).toContain("ChatGPT Codex: Could not reach");
+		expect(text).toContain("ChatGPT Codex · Slot: default (active)");
+		expect(text).toContain("Could not reach the ChatGPT usage endpoint.");
 		expect(text).toContain("Ollama Cloud: Could not reach");
 		expect(level).toBe("error");
 	});
 
 	it("rejects unknown arguments without fetching", async () => {
-		const { command, probe, probeOllama, notify, ctx } = harness();
+		const { command, codexNetwork, probeOllama, notify, ctx } = harness();
 		await command.handler("7", ctx);
-		expect(probe).not.toHaveBeenCalled();
+		expect(codexNetwork).not.toHaveBeenCalled();
 		expect(probeOllama).not.toHaveBeenCalled();
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Usage: /usage"), "error");
 	});

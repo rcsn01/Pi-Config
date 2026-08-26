@@ -1,29 +1,5 @@
 import type { ProbeResult } from "./probe.ts";
 
-export interface CodexCredential {
-	accessToken: string;
-	accountId: string;
-	expiresAt?: string;
-}
-
-export type CodexAuthInspection =
-	| {
-		state: "ready";
-		path: string;
-		fileFound: true;
-		accessTokenPresent: true;
-		accountIdPresent: true;
-		credential: CodexCredential;
-	}
-	| {
-		state: "missing" | "invalid" | "unreadable" | "expired";
-		path: string;
-		fileFound: boolean;
-		accessTokenPresent: boolean;
-		accountIdPresent: boolean;
-		message: string;
-	};
-
 export interface QuotaWindow {
 	usedPercent: number;
 	windowMinutes?: number;
@@ -32,6 +8,7 @@ export interface QuotaWindow {
 
 export interface QuotaSnapshot {
 	plan?: string;
+	session?: QuotaWindow;
 	weekly?: QuotaWindow;
 	resetCredits?: { available: number; applicable?: number };
 	fetchedAt: string;
