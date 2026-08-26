@@ -142,7 +142,11 @@ function installSafetyPermissions(
 	pi.on("session_start", async (event, ctx) => {
 		reconstruct(ctx);
 		profileBindingGeneration++;
-		guardianSettingsPath = profileResolver.resolve(ctx.sessionManager.getBranch(), event.reason);
+		guardianSettingsPath = profileResolver.resolve({
+			entries: ctx.sessionManager.getBranch(),
+			reason: event.reason,
+			previousSessionFile: event.previousSessionFile,
+		}).settingsPath;
 		try {
 			guardianSettings = loadGuardianSettings(guardianSettingsPath);
 		} catch (error) {

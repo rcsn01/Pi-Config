@@ -189,7 +189,11 @@ export function createModelSelectorExtension(
 			// Point the store at the session's profile file; no profile means
 			// settings.json.
 			settingsStore.setPath(
-				resolver.resolve(ctx.sessionManager.getBranch(), event.reason, event.previousSessionFile),
+				resolver.resolve({
+					entries: ctx.sessionManager.getBranch(),
+					reason: event.reason,
+					previousSessionFile: event.previousSessionFile,
+				}).settingsPath,
 			);
 			if (ctx.mode !== "tui") return;
 

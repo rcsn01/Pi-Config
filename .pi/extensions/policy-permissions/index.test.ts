@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import safetyPermissions, { createSafetyPermissionsExtension } from "./index.ts";
 import { saveModeToFile } from "./mode-store.ts";
+import { clearSessionProfileHandoff, stageSessionProfileHandoff } from "../_shared/active-profile.ts";
 
 const mocked = vi.hoisted(() => ({
 	runAutoReviewer: vi.fn(),
@@ -155,6 +156,46 @@ describe("guardian model command", () => {
 
 		expect(JSON.parse(readFileSync(join(profilesDirectory, "default.json"), "utf8"))).toHaveProperty("guardian.modelId", "guardian");
 		expect(JSON.parse(readFileSync(join(profilesDirectory, "focused.json"), "utf8"))).toEqual({ keep: "focused" });
+	});
+
+	it("uses the matching clear handoff for Guardian settings", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-guardian-clear-handoff-"));
+		tempDirectories.push(root);
+		const settingsPath = join(root, "settings.json");
+		const profilesDirectory = join(root, "profiles");
+		const previousSessionFile = join(root, "previous-session.json");
+		mkdirSync(profilesDirectory);
+		writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "other" } }));
+		writeFileSync(join(profilesDirectory, "focused.json"), JSON.stringify({
+			configProfiles: { active: "focused" },
+			keep: true,
+			guardian: { provider: "old", modelId: "guardian", thinkingLevel: "low", contextWindow: 128_000 },
+		}));
+		writeFileSync(join(profilesDirectory, "other.json"), JSON.stringify({ keep: "other" }));
+		mocked.pickModelConfiguration.mockResolvedValue({
+			model: { provider: "anthropic", id: "strong", name: "Strong", contextWindow: 256_000 },
+			thinkingLevel: "high",
+			contextWindow: 256_000,
+		});
+
+		stageSessionProfileHandoff(previousSessionFile, "focused");
+		try {
+			const harness = createHarness({ settingsPath, branch: [] });
+			await harness.handlers.get("session_start")?.({
+				reason: "new",
+				previousSessionFile,
+			}, harness.ctx);
+
+			await harness.commands.get("guardian").handler("", harness.ctx);
+
+			expect(JSON.parse(readFileSync(join(profilesDirectory, "focused.json"), "utf8"))).toMatchObject({
+				keep: true,
+				guardian: { provider: "anthropic", modelId: "strong", thinkingLevel: "high", contextWindow: 256_000 },
+			});
+			expect(JSON.parse(readFileSync(join(profilesDirectory, "other.json"), "utf8"))).toEqual({ keep: "other" });
+		} finally {
+			clearSessionProfileHandoff(previousSessionFile);
+		}
 	});
 });
 
