@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
-import { createAnalysisRuntime } from "./runtime.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createAnalysisRuntime, getPersistentAnalysisRuntime, releasePersistentAnalysisRuntime, resetPersistentAnalysisRuntimeForTests } from "./runtime.ts";
+
+afterEach(async () => resetPersistentAnalysisRuntimeForTests());
 
 function fakeServer() {
 	return { start: vi.fn(async () => ({ url: "http://localhost:1/#token=test" })), close: vi.fn(async () => {}) };
@@ -12,6 +14,48 @@ const assistant = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("analysis runtime", () => {
+	it("shares the active runtime and records across extension instances", async () => {
+		const first = getPersistentAnalysisRuntime();
+		const url = (await first.start()).url;
+		first.observe({ type: "request", provider: "openai", api: "openai-responses", model: "gpt", payload: { input: "kept" } });
+
+		const second = getPersistentAnalysisRuntime();
+		expect(second).toBe(first);
+		expect((await second.start()).url).toBe(url);
+		expect(second.isActive()).toBe(true);
+		expect(second.getSummary().records).toHaveLength(1);
+	});
+
+	it("closes an orphaned persistent server when no replacement claims it", async () => {
+		const runtime = getPersistentAnalysisRuntime();
+		await runtime.start();
+		vi.useFakeTimers();
+		try {
+			releasePersistentAnalysisRuntime(runtime);
+			await vi.advanceTimersByTimeAsync(31_000);
+			expect(runtime.isActive()).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not reactivate after close races with a pending start", async () => {
+		let resolveStart!: (result: { url: string }) => void;
+		const server = {
+			start: vi.fn(() => new Promise<{ url: string }>((resolve) => { resolveStart = resolve; })),
+			close: vi.fn(async () => {}),
+		};
+		const runtime = createAnalysisRuntime({ serverFactory: () => server });
+		const starting = runtime.start();
+		const closing = runtime.close();
+		resolveStart({ url: "http://localhost:1/#token=test" });
+
+		await expect(starting).rejects.toThrow("closed while starting");
+		await closing;
+		expect(runtime.isActive()).toBe(false);
+		expect(server.close).toHaveBeenCalledOnce();
+	});
+
 	it("does not retain events before successful activation and starts idempotently", async () => {
 		const server = fakeServer();
 		const runtime = createAnalysisRuntime({ serverFactory: () => server });
