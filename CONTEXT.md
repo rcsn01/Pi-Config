@@ -31,15 +31,30 @@ extension.
 ## Subscriptions & quotas
 
 - **Subscription probe** — the shared probe machinery in
-  `subscription-usage/src/probe.ts`: bounded fetch (timeout, abort,
+  `provider-usage/src/probe.ts`: bounded fetch (timeout, abort,
   response-size limit), the 15-minute staleness policy, the result states
   (`ok`, `auth-required`, `unavailable`, `contract-unknown`), and the card
   row builders in `card.ts`. One probe, N provider adapters.
 - **Provider probe adapter** — one provider's wire contract behind the
-  probe seam (`codex` and `ollama` in `subscription-usage/`): auth
-  inspection, request header candidates, contract check, normalization,
-  and card text. Adding a provider means adding an adapter, never copying
-  the probe.
+  probe seam (`codex` and `ollama` in `provider-usage/`): request auth,
+  header candidates, contract check, normalization, and card text. Adding a
+  provider means adding an adapter, never copying the probe.
+- **Codex slot usage client** — the all-slot coordinator in
+  `provider-usage/src/codex-slots.ts`: resolves each logical Pi Codex slot
+  through the native OAuth provider, coalesces duplicate account requests,
+  caches normalized results by an opaque account identity, and returns one
+  safe result per slot without switching the active slot.
+
+## Codex authentication
+
+- **Codex credential slot** — one named account in the global
+  `provider-codex` store. The active slot owns Pi's canonical `openai-codex`
+  credential; inactive slots hold valid OAuth credentials in `auth.json`.
+- **Logical slot auth callback** — the callback-scoped seam exposed by
+  `CodexCredentialSlotStore.withRequestAuth()`. It supplies transient Pi
+  request headers and an opaque cache identity while reusing native OAuth
+  refresh and locking; callers cannot persist or render the credential through
+  this API.
 
 ## Settings & profiles
 

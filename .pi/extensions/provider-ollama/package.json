@@ -7,12 +7,10 @@
   ],
   "files": [
     "index.ts",
-    "config.ts",
     "models.ts",
     "models.generated.ts",
     "pricing.generated.ts",
     "thinking-levels.ts",
-    "usage.ts",
     "utils.ts",
     "CHANGELOG.md",
     "README.md",

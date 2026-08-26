@@ -18,6 +18,32 @@ pnpm typecheck
 pnpm test
 ```
 
+## Codex credential slots
+
+The `provider-codex` extension adds named slots for OpenAI Codex OAuth credentials while leaving Pi's canonical `openai-codex` provider unchanged. The active slot is shared by every Pi process that uses the same agent directory.
+
+To sign in to a second account:
+
+```text
+/codex new work
+/login openai-codex
+/codex use default
+```
+
+`/codex new work` saves the current credential in `default`, creates an empty `work` slot, and makes it active. Run Pi's normal `/login openai-codex` while that slot is active. The next switch saves that login in `work`.
+
+Commands:
+
+- `/codex` opens the slot picker.
+- `/codex list` shows active, saved, and empty slots.
+- `/codex use <name>` switches to a saved or empty slot.
+- `/codex new <name>` creates and activates an empty slot.
+- `/codex remove <name>` removes an inactive slot. Removing a saved credential asks for confirmation.
+
+Credentials live in `~/.pi/agent/auth.json`, or in `$PI_CODING_AGENT_DIR/auth.json` when that variable is set. The active OAuth credential remains under `openai-codex`; inactive credentials use extension-owned IDs and the slot state contains only names and IDs. The file is written with mode `0600`. Back it up before using the extension because it contains refresh tokens, and remember that a slot switch changes the credential seen by all Pi processes sharing that agent directory.
+
+The `provider-usage` extension's `/usage codex` command queries every saved Pi Codex slot without switching the active slot. It uses Pi's native OAuth refresh machinery, coalesces duplicate accounts, and renders empty or failed slots separately with safe messages. See `.pi/extensions/provider-usage/README.md` for the usage commands and cache behavior.
+
 ## Setting up other projects
 
 Run the setup script and enter the path to each project you want to link:

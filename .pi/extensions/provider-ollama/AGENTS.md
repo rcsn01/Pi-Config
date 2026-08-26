@@ -44,7 +44,7 @@ When adding a new **runtime** module (a `.ts` file that ships):
 
 - Never silently swallow rejections from `Promise.allSettled`, `Promise.all`, or `concurrentMap`. Count failures, surface them in the final notification, and let the caller decide.
 - `try/finally` is mandatory for every `setTimeout` and `AbortController`. Cleanup must run on the error path, not only the happy path.
-- Validate `JSON.parse` results before use. When the consumer expects an object, guard against `null`, arrays, and primitives. See `config.ts` for the pattern.
+- Validate `JSON.parse` results before use. When the consumer expects an object, guard against `null`, arrays, and primitives.
 - User-facing error messages should name the operation, the failure mode, and the next step. Do not collapse distinct conditions (auth vs. rate limit vs. server error) into a single generic message.
 
 ## HTTP and Auth
@@ -53,11 +53,7 @@ When adding a new **runtime** module (a `.ts` file that ships):
 - Never send `Authorization: Bearer undefined`. Build the headers object first, then set `Authorization: Bearer ${apiKey}` only when an API key is present. Sending `Bearer undefined` to `ollama.com` breaks the anonymous-access endpoints (`/v1/models`, `/api/show`).
 - Normalize user-provided base URLs by stripping trailing slashes before composing paths. `OLLAMA_BASE` does this; replicate the pattern anywhere a base URL is composed.
 - Treat 401/403 and 429 distinctly in user-facing output. Auth errors should mention the API key env var and `auth.json`; rate-limit errors should say "try again shortly".
-- The usage command and status bar resolve the API key via `getCloudApiKey` in `utils.ts`, which uses `ctx.modelRegistry.getApiKeyForProvider("ollama-cloud")` (with `?? process.env.OLLAMA_API_KEY` as a fallback). Do not import `AuthStorage` — it was removed from `@earendil-works/pi-coding-agent`'s public exports in 0.80.8+; importing it crashes the extension at load.
-
-## Command Input Validation
-
-Slash commands with arguments must validate the argument and notify the user on unknown values. Do not silently fall through to a default state. `/ollama-usage-status` does this; follow the same pattern.
+- Do not import `AuthStorage` — it was removed from `@earendil-works/pi-coding-agent`'s public exports in 0.80.8+; importing it crashes the extension at load.
 
 ## File-Specific Patterns
 
@@ -99,7 +95,6 @@ Location: `CHANGELOG.md` at the repo root. All entries go under `## [Unreleased]
 Conventional commits, present tense, under 72 characters.
 
 ```
-feat: add /ollama-usage-status on|off subcommand
 feat(models): add refreshOllamaCatalog callback
 docs: note catalog refresh is automatic via native refreshModels
 ```
