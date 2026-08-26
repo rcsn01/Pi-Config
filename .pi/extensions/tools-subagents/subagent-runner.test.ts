@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveSubagentSessionId } from "./cache-affinity.ts";
 import { getObservabilityService, resetObservabilityServiceForTests } from "../_shared/observability.ts";
@@ -84,7 +84,9 @@ describe("single subagent runner", () => {
 		const promise = run({ agent: "worker", task: "observe", cwd: "/workspace" });
 		await waitForProcess(spawn.processes);
 		const [, args, options] = spawn.spawnProcess.mock.calls[0];
-		expect(args.some((value) => value.endsWith("observability-analysis/child-observer.ts"))).toBe(true);
+		const observerPath = args.find((value) => value.endsWith("telemetry-analysis/child-observer.ts"));
+		expect(observerPath).toBeDefined();
+		expect(existsSync(observerPath!)).toBe(true);
 		expect(options).toMatchObject({ stdio: ["ignore", "pipe", "pipe", "pipe"], env: { PI_ANALYSIS_RELAY_FD: "3" } });
 
 		const request = JSON.stringify({ type: "request", provider: "openai", api: "openai-responses", model: "gpt", payload: { exact: true } });
@@ -123,7 +125,7 @@ describe("single subagent runner", () => {
 		const promise = run({ agent: "worker", task: "plain", cwd: "/workspace" });
 		await waitForProcess(spawn.processes);
 		const [, args, options] = spawn.spawnProcess.mock.calls[0];
-		expect(args.some((value) => value.endsWith("observability-analysis/child-observer.ts"))).toBe(false);
+		expect(args.some((value) => value.endsWith("telemetry-analysis/child-observer.ts"))).toBe(false);
 		expect(options).toEqual({ cwd: "/workspace", stdio: ["ignore", "pipe", "pipe"] });
 		spawn.processes[0].emit("close", 0);
 		await promise;

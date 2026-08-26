@@ -13,7 +13,8 @@ interface HarnessOptions {
 	deleteError?: Error;
 	nativeDefaults?: { provider: string; modelId: string; thinkingLevel?: string };
 	readProfileDocument?: Record<string, unknown>;
-	activeProfile?: { name: string; document: Record<string, unknown> } | undefined;
+	readProfileError?: Error;
+	appendError?: Error;
 	model?: { provider: string; id: string };
 	branchEntries?: unknown[];
 	setModelResult?: boolean;
@@ -49,18 +50,15 @@ function createHarness(options: HarnessOptions = {}) {
 			markerReplaced: deleteOptions?.replaceMarker ?? name === (options.active ?? "default"),
 		};
 	});
-	const readProfile = vi.fn(() => options.readProfileDocument ?? {});
-	const loadActiveProfile = vi.fn(() =>
-		options.activeProfile === undefined
-			? { name: options.active ?? "default", document: {} }
-			: options.activeProfile);
+	const readProfile = vi.fn(() => {
+		if (options.readProfileError) throw options.readProfileError;
+		return options.readProfileDocument ?? {};
+	});
 	const store: ProfileStore = {
 		settingsPath,
 		profilesDirectory,
 		listProfiles: vi.fn(() => options.profiles ?? ["default", "focused"]),
 		readProfile,
-		getActiveProfile: vi.fn(() => options.active ?? "default"),
-		loadActiveProfile,
 		createProfile,
 		deleteProfile,
 		switchProfile,
@@ -75,7 +73,9 @@ function createHarness(options: HarnessOptions = {}) {
 	const confirm = vi.fn();
 	const setModel = vi.fn(async () => options.setModelResult ?? true);
 	const setThinkingLevel = vi.fn();
-	const appendEntry = vi.fn();
+	const appendEntry = vi.fn(() => {
+		if (options.appendError) throw options.appendError;
+	});
 	const modelRegistry = {
 		refresh: vi.fn(async () => ({ aborted: false, errors: new Map() })),
 		find: vi.fn((provider: string, id: string) => ({
@@ -106,10 +106,18 @@ function createHarness(options: HarnessOptions = {}) {
 	createConfigProfilesExtension({ store, output, nativeDefaults: options.nativeDefaults })(pi as any);
 	const emit = async (event: string, reason = "startup") =>
 		handlers.get(event)?.({ type: event, reason }, ctx);
+	const runProfileCommand = async (args: string, context = ctx) => {
+		await emit("session_start", "startup");
+		for (const mock of [appendEntry, notify, setStatus, reload, switchProfile, createProfile, deleteProfile, readProfile, setModel, setThinkingLevel]) {
+			mock.mockClear();
+		}
+		return commands.get("profile").handler(args, context);
+	};
 	return {
 		commands,
 		ctx,
 		emit,
+		runProfileCommand,
 		store,
 		notify,
 		setStatus,
@@ -122,7 +130,6 @@ function createHarness(options: HarnessOptions = {}) {
 		createProfile,
 		deleteProfile,
 		readProfile,
-		loadActiveProfile,
 		setModel,
 		setThinkingLevel,
 		appendEntry,
@@ -143,7 +150,7 @@ describe("config profiles extension", () => {
 	it("records and publishes the active profile on startup", async () => {
 		const harness = createHarness({ active: "default" });
 		await harness.emit("session_start", "startup");
-		expect(harness.loadActiveProfile).toHaveBeenCalledOnce();
+		expect(harness.readProfile).toHaveBeenCalledWith("default");
 		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "default" });
 		expect(harness.setStatus).toHaveBeenCalledWith("profile", "default");
 	});
@@ -165,7 +172,7 @@ describe("config profiles extension", () => {
 			await harness.emit("session_start", reason);
 
 			expect(harness.setStatus).toHaveBeenCalledWith("profile", "focused");
-			expect(harness.loadActiveProfile).not.toHaveBeenCalled();
+			expect(harness.readProfile).not.toHaveBeenCalled();
 			expect(harness.appendEntry).not.toHaveBeenCalled();
 		}
 	});
@@ -178,7 +185,7 @@ describe("config profiles extension", () => {
 		await harness.emit("session_start", "new");
 
 		expect(harness.setStatus).toHaveBeenCalledWith("profile", "focused");
-		expect(harness.loadActiveProfile).not.toHaveBeenCalled();
+		expect(harness.readProfile).not.toHaveBeenCalled();
 		expect(harness.appendEntry).not.toHaveBeenCalled();
 	});
 
@@ -188,16 +195,13 @@ describe("config profiles extension", () => {
 			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
 		});
 		await harness.emit("session_start", "reload");
-		expect(harness.loadActiveProfile).not.toHaveBeenCalled();
+		expect(harness.readProfile).not.toHaveBeenCalled();
 		expect(harness.appendEntry).not.toHaveBeenCalled();
 		expect(harness.setStatus).toHaveBeenCalledWith("profile", "focused");
 	});
 
 	it("clears the profile status when the active profile file is missing", async () => {
-		const harness = createHarness({ activeProfile: undefined });
-		harness.loadActiveProfile.mockImplementation(() => {
-			throw new Error("Cannot read /missing/default.json");
-		});
+		const harness = createHarness({ readProfileError: new Error("Cannot read /missing/default.json") });
 		await harness.emit("session_start", "startup");
 		expect(harness.appendEntry).not.toHaveBeenCalled();
 		expect(harness.setStatus).toHaveBeenCalledWith("profile", undefined);
@@ -211,8 +215,20 @@ describe("config profiles extension", () => {
 		const harness = createHarness({ active: "default" });
 		await harness.emit("session_start", "reload");
 		expect(harness.setStatus).toHaveBeenCalledWith("profile", undefined);
-		expect(harness.loadActiveProfile).not.toHaveBeenCalled();
+		expect(harness.readProfile).not.toHaveBeenCalled();
 		expect(harness.appendEntry).not.toHaveBeenCalled();
+	});
+
+	it("clears the profile status when remembering the marker binding fails", async () => {
+		const harness = createHarness({ active: "default", appendError: new Error("append failed") });
+		await harness.emit("session_start", "startup");
+
+		expect(harness.readProfile).toHaveBeenCalledWith("default");
+		expect(harness.setStatus).toHaveBeenLastCalledWith("profile", undefined);
+		expect(harness.notify).toHaveBeenCalledWith(
+			expect.stringContaining("append failed"),
+			"error",
+		);
 	});
 
 	it("publishes the remembered profile when the session tree changes", async () => {
@@ -242,7 +258,7 @@ describe("config profiles extension", () => {
 
 	it("switches a direct argument, records the entry, notifies, and reloads exactly once", async () => {
 		const harness = createHarness({ active: "default" });
-		await harness.commands.get("profile").handler("focused", harness.ctx);
+		await harness.runProfileCommand("focused");
 		expect(harness.switchProfile).toHaveBeenCalledWith("focused");
 		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "focused" });
 		expect(harness.notify).toHaveBeenCalledWith('Switched to profile "focused". Reloading…', "info");
@@ -261,7 +277,7 @@ describe("config profiles extension", () => {
 				},
 			},
 		});
-		await harness.commands.get("profile").handler("focused", harness.ctx);
+		await harness.runProfileCommand("focused");
 
 		expect(harness.readProfile).toHaveBeenCalledWith("focused");
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
@@ -290,7 +306,7 @@ describe("config profiles extension", () => {
 				},
 			},
 		});
-		await harness.commands.get("profile").handler("focused", harness.ctx);
+		await harness.runProfileCommand("focused");
 
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "plan-model", contextWindow: 131072 }));
 		expect(harness.setThinkingLevel).toHaveBeenCalledWith("low");
@@ -309,7 +325,7 @@ describe("config profiles extension", () => {
 				},
 			},
 		});
-		await harness.commands.get("profile").handler("default", harness.ctx);
+		await harness.runProfileCommand("default");
 
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
 			provider: "openai-codex",
@@ -333,7 +349,7 @@ describe("config profiles extension", () => {
 				},
 			},
 		});
-		await harness.commands.get("profile").handler("focused", harness.ctx);
+		await harness.runProfileCommand("focused");
 
 		expect(harness.setModel).toHaveBeenCalledOnce();
 		// No "Profile model:" notification when the session model already matches.
@@ -346,7 +362,7 @@ describe("config profiles extension", () => {
 			active: "default",
 			readProfileDocument: { compaction: { threshold: 0.1 } },
 		});
-		await harness.commands.get("profile").handler("focused", harness.ctx);
+		await harness.runProfileCommand("focused");
 
 		expect(harness.setModel).not.toHaveBeenCalled();
 		expect(harness.notify).not.toHaveBeenCalledWith(expect.stringContaining("Profile model:"), "info");
@@ -359,7 +375,7 @@ describe("config profiles extension", () => {
 			active: "default",
 			readProfileDocument: { uiModelSelector: { profiles: { normal: "not-an-object" } } },
 		});
-		await harness.commands.get("profile").handler("focused", harness.ctx);
+		await harness.runProfileCommand("focused");
 
 		expect(harness.setModel).not.toHaveBeenCalled();
 		expect(harness.notify).toHaveBeenCalledWith(
@@ -382,7 +398,7 @@ describe("config profiles extension", () => {
 				},
 			},
 		});
-		await harness.commands.get("profile").handler("focused", harness.ctx);
+		await harness.runProfileCommand("focused");
 
 		expect(harness.setModel).toHaveBeenCalledOnce();
 		expect(harness.notify).toHaveBeenCalledWith(
@@ -396,7 +412,7 @@ describe("config profiles extension", () => {
 	it("uses the shared picker and puts profile actions at the bottom", async () => {
 		const harness = createHarness({ active: "default" });
 		harness.select.mockResolvedValue("  focused");
-		await harness.commands.get("profile").handler("", harness.ctx);
+		await harness.runProfileCommand("");
 
 		expect(harness.select).toHaveBeenCalledWith("Select settings profile", [
 			"● default (current)",
@@ -412,7 +428,7 @@ describe("config profiles extension", () => {
 		const harness = createHarness({ active: "default" });
 		harness.select.mockResolvedValue("  Add profile");
 		harness.input.mockResolvedValue(" focused-copy ");
-		await harness.commands.get("profile").handler("", harness.ctx);
+		await harness.runProfileCommand("");
 
 		expect(harness.input).toHaveBeenCalledWith("New settings profile name", "profile-name");
 		expect(harness.createProfile).toHaveBeenCalledWith("focused-copy", "default");
@@ -425,7 +441,7 @@ describe("config profiles extension", () => {
 		const harness = createHarness({ profiles: [], active: "" });
 		harness.select.mockResolvedValue("  Add profile");
 		harness.input.mockResolvedValue("first");
-		await harness.commands.get("profile").handler("", harness.ctx);
+		await harness.runProfileCommand("");
 
 		expect(harness.select).toHaveBeenCalledWith("Select settings profile", ["  Add profile", "  Delete profile"]);
 		expect(harness.createProfile).toHaveBeenCalledWith("first", undefined);
@@ -436,7 +452,7 @@ describe("config profiles extension", () => {
 		const harness = createHarness({ active: "default", createError: new Error('Profile "focused" already exists.') });
 		harness.select.mockResolvedValue("  Add profile");
 		harness.input.mockResolvedValue("focused");
-		await harness.commands.get("profile").handler("", harness.ctx);
+		await harness.runProfileCommand("");
 
 		expect(harness.notify).toHaveBeenCalledWith(
 			'Could not add settings profile: Profile "focused" already exists.',
@@ -450,7 +466,7 @@ describe("config profiles extension", () => {
 		const harness = createHarness({ active: "default" });
 		harness.select.mockResolvedValue("  Add profile");
 		harness.input.mockResolvedValue(undefined);
-		await harness.commands.get("profile").handler("", harness.ctx);
+		await harness.runProfileCommand("");
 
 		expect(harness.createProfile).not.toHaveBeenCalled();
 		expect(harness.reload).not.toHaveBeenCalled();
@@ -462,7 +478,7 @@ describe("config profiles extension", () => {
 			.mockResolvedValueOnce("  Delete profile")
 			.mockResolvedValueOnce("  other");
 		harness.confirm.mockResolvedValue(true);
-		await harness.commands.get("profile").handler("", harness.ctx);
+		await harness.runProfileCommand("");
 
 		expect(harness.select).toHaveBeenNthCalledWith(2, "Delete settings profile", ["  focused", "  other"]);
 		expect(harness.confirm).toHaveBeenCalledWith(
@@ -480,7 +496,7 @@ describe("config profiles extension", () => {
 			.mockResolvedValueOnce("  Delete profile")
 			.mockResolvedValueOnce("  focused");
 		harness.confirm.mockResolvedValue(false);
-		await harness.commands.get("profile").handler("", harness.ctx);
+		await harness.runProfileCommand("");
 
 		expect(harness.deleteProfile).not.toHaveBeenCalled();
 		expect(harness.reload).not.toHaveBeenCalled();
@@ -489,7 +505,7 @@ describe("config profiles extension", () => {
 	it("reports when there are no deletable profiles", async () => {
 		const harness = createHarness({ profiles: ["default"], active: "default" });
 		harness.select.mockResolvedValue("  Delete profile");
-		await harness.commands.get("profile").handler("", harness.ctx);
+		await harness.runProfileCommand("");
 
 		expect(harness.notify).toHaveBeenCalledWith(
 			"No profiles can be deleted. The default profile is kept as a fallback.",
@@ -505,7 +521,7 @@ describe("config profiles extension", () => {
 			.mockResolvedValueOnce("  Delete profile")
 			.mockResolvedValueOnce("  focused");
 		harness.confirm.mockResolvedValue(true);
-		await harness.commands.get("profile").handler("", harness.ctx);
+		await harness.runProfileCommand("");
 
 		expect(harness.notify).toHaveBeenCalledWith(
 			"Could not delete settings profile: missing default",
@@ -520,7 +536,7 @@ describe("config profiles extension", () => {
 			.mockResolvedValueOnce("  Delete profile")
 			.mockResolvedValueOnce("● focused (current)");
 		harness.confirm.mockResolvedValue(true);
-		await harness.commands.get("profile").handler("", harness.ctx);
+		await harness.runProfileCommand("");
 
 		expect(harness.deleteProfile).toHaveBeenCalledWith("focused", { replaceMarker: true });
 		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "default" });
@@ -531,7 +547,7 @@ describe("config profiles extension", () => {
 	it("omits default from the delete picker", async () => {
 		const harness = createHarness({ profiles: ["default", "focused"], active: "default" });
 		harness.select.mockResolvedValueOnce("  Delete profile").mockResolvedValueOnce(undefined);
-		await harness.commands.get("profile").handler("", harness.ctx);
+		await harness.runProfileCommand("");
 
 		expect(harness.select).toHaveBeenNthCalledWith(2, "Delete settings profile", ["  focused"]);
 		expect(harness.deleteProfile).not.toHaveBeenCalled();
@@ -543,7 +559,7 @@ describe("config profiles extension", () => {
 			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
 		});
 		harness.select.mockResolvedValue("● focused (current)");
-		await harness.commands.get("profile").handler("", harness.ctx);
+		await harness.runProfileCommand("");
 
 		expect(harness.select).toHaveBeenCalledWith("Select settings profile", [
 			"  default",
@@ -568,7 +584,7 @@ describe("config profiles extension", () => {
 	it("lists profiles and usage without prompting in non-interactive mode", async () => {
 		const harness = createHarness({ active: "default" });
 		const context = { ...harness.ctx, hasUI: false, mode: "print" };
-		await harness.commands.get("profile").handler("", context);
+		await harness.runProfileCommand("", context);
 		expect(harness.output).toHaveBeenCalledWith(expect.stringContaining("Usage: /profile <name>"));
 		expect(harness.notify).not.toHaveBeenCalled();
 		expect(harness.switchProfile).not.toHaveBeenCalled();
@@ -581,7 +597,7 @@ describe("config profiles extension", () => {
 			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
 		});
 		const context = { ...harness.ctx, hasUI: false, mode: "print" };
-		await harness.commands.get("profile").handler("", context);
+		await harness.runProfileCommand("", context);
 
 		const message = harness.output.mock.calls[0][0] as string;
 		expect(message).toContain("* focused");
@@ -600,7 +616,7 @@ describe("config profiles extension", () => {
 
 	it("reports an already-active profile without applying or reloading", async () => {
 		const harness = createHarness({ active: "default" });
-		await harness.commands.get("profile").handler("default", harness.ctx);
+		await harness.runProfileCommand("default");
 		expect(harness.notify).toHaveBeenCalledWith('Profile "default" is already active.', "info");
 		expect(harness.appendEntry).not.toHaveBeenCalled();
 		expect(harness.readProfile).not.toHaveBeenCalled();
@@ -608,14 +624,16 @@ describe("config profiles extension", () => {
 		expect(harness.reload).not.toHaveBeenCalled();
 	});
 
-	it("follows a marker another session changed when this session never chose", async () => {
+	it("keeps the captured session profile when the marker changes after startup", async () => {
 		const harness = createHarness({ active: "focused" });
-		// Another session switches the marker after this session started; without
-		// a remembered entry the new marker is this session's live default.
+		await harness.emit("session_start", "startup");
+		// Another session switches the marker after this session started. The
+		// captured binding remains focused for this session.
 		writeFileSync(harness.settingsPath, `${JSON.stringify({ configProfiles: { active: "github" } }, null, 2)}\n`);
-		await harness.commands.get("profile").handler("github", harness.ctx);
+		harness.notify.mockClear();
+		await harness.commands.get("profile").handler("focused", harness.ctx);
 
-		expect(harness.notify).toHaveBeenCalledWith('Profile "github" is already active.', "info");
+		expect(harness.notify).toHaveBeenCalledWith('Profile "focused" is already active.', "info");
 		expect(harness.switchProfile).not.toHaveBeenCalled();
 	});
 
@@ -624,7 +642,7 @@ describe("config profiles extension", () => {
 			active: "github",
 			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
 		});
-		await harness.commands.get("profile").handler("focused", harness.ctx);
+		await harness.runProfileCommand("focused");
 
 		expect(harness.notify).toHaveBeenCalledWith('Profile "focused" is already active.', "info");
 		expect(harness.switchProfile).not.toHaveBeenCalled();
@@ -639,7 +657,7 @@ describe("config profiles extension", () => {
 			active: "github",
 			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
 		});
-		await harness.commands.get("profile").handler("github", harness.ctx);
+		await harness.runProfileCommand("github");
 
 		expect(harness.switchProfile).toHaveBeenCalledWith("github");
 		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "github" });
@@ -649,7 +667,7 @@ describe("config profiles extension", () => {
 
 	it("reports failed switches without applying or reloading", async () => {
 		const harness = createHarness({ switchError: new Error("broken destination") });
-		await harness.commands.get("profile").handler("focused", harness.ctx);
+		await harness.runProfileCommand("focused");
 		expect(harness.notify).toHaveBeenCalledWith(
 			"Could not switch settings profile: broken destination",
 			"error",

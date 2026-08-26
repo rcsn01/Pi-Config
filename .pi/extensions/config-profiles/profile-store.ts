@@ -14,7 +14,6 @@ import {
 	PROJECT_SETTINGS_PATH,
 	parseActiveProfileName,
 	profilePath as resolveProfilePath,
-	readActiveProfileName,
 	validateProfileName,
 } from "../_shared/active-profile.ts";
 
@@ -41,19 +40,11 @@ export interface ProfileDeleteResult {
 	markerReplaced: boolean;
 }
 
-export interface ActiveProfile {
-	name: string;
-	document: Record<string, unknown>;
-}
-
 export interface ProfileStore {
 	readonly settingsPath: string;
 	readonly profilesDirectory: string;
 	listProfiles(): string[];
 	readProfile(name: string): Record<string, unknown>;
-	getActiveProfile(settings?: Record<string, unknown>): string | undefined;
-	/** Marker from settings.json plus the profile document; throws when the active profile file is missing. */
-	loadActiveProfile(): ActiveProfile | undefined;
 	createProfile(name: string, source?: string): Promise<ProfileCreateResult>;
 	deleteProfile(name: string, options?: ProfileDeleteOptions): Promise<ProfileDeleteResult>;
 	switchProfile(name: string): Promise<ProfileSwitchResult>;
@@ -98,16 +89,6 @@ export function createProfileStore(options: {
 
 		readProfile(name) {
 			return readSettingsDocument(profilePath(name), { missing: "throw" });
-		},
-
-		getActiveProfile(settings) {
-			return parseActiveProfileName(settings ?? readSettingsDocument(settingsPath, { missing: "throw" }));
-		},
-
-		loadActiveProfile() {
-			const name = readActiveProfileName(settingsPath);
-			if (!name) return undefined;
-			return { name, document: readSettingsDocument(profilePath(name), { missing: "throw" }) };
 		},
 
 		async createProfile(name, source) {

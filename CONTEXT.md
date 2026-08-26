@@ -62,8 +62,10 @@ extension.
   read/mutate machinery in `_shared/settings-document.ts`.
 - **Profile** — a full settings document in `.pi/profiles/<name>.json`;
   switching replaces the active document.
-- **Session profile binding** — the resolver in `_shared/active-profile.ts`
-  that owns the entry-wins/marker-fallback precedence.
+- **Session profile binding** — the context in `_shared/active-profile.ts` that
+  resolves one binding per `session_start`, owns entry/handoff/marker/reload
+  precedence, supplies the concrete Settings document path, and remembers a
+  validated marker-origin binding exactly once.
 - **Plan Mode lifecycle** — the deep orchestration module that owns live Plan
   State, transitions, Profile rollback, tool projection, proposed-plan state,
   and ordering across Plan Runtime and Plan Review.

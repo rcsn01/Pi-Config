@@ -3,7 +3,7 @@ import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import { applySelectionFromDocument } from "../_shared/model-selection.ts";
 import {
 	CONFIG_PROFILES_ENTRY_TYPE,
-	createSessionProfileResolver,
+	createSessionProfileContext,
 	sessionProfileName,
 } from "../_shared/active-profile.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
@@ -38,11 +38,10 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 		const store = dependencies.store ?? createProfileStore();
 		const output = dependencies.output ?? console.log;
 
-		const resolver = createSessionProfileResolver({
+		const profileContext = createSessionProfileContext({
 			settingsPath: store.settingsPath,
 			profilesDirectory: store.profilesDirectory,
 		});
-		let sessionBindingResolved = false;
 		let sessionProfile: string | undefined;
 
 		const updateStatus = (ctx: ExtensionContext, profile: string | undefined): void => {
@@ -82,7 +81,6 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 			// re-read the profile file with this name at the new session boundary.
 			pi.appendEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: name });
 			sessionProfile = name;
-			sessionBindingResolved = true;
 			await applyAndReload(name, ctx, message);
 		};
 
@@ -133,7 +131,6 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 					store.readProfile(DEFAULT_PROFILE_NAME);
 					pi.appendEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: DEFAULT_PROFILE_NAME });
 					sessionProfile = DEFAULT_PROFILE_NAME;
-					sessionBindingResolved = true;
 				}
 
 				await store.deleteProfile(name, { replaceMarker: sessionOwnsProfile });
@@ -152,39 +149,19 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 		};
 
 		pi.on("session_start", async (event, ctx) => {
-			const binding = resolver.resolve({
-				entries: ctx.sessionManager.getBranch(),
-				reason: event.reason,
-				previousSessionFile: event.previousSessionFile,
-			});
-			// The session's own remembered profile wins on every boundary: on
-			// reload it persists, and on startup/resume/fork it survives another
-			// session's marker switch. A /clear handoff supplies the outgoing
-			// session's profile before the new session can read settings.json.
-			// An existing entry is never re-appended.
-			if (event.reason === "reload" || binding.origin === "entry" || binding.origin === "handoff") {
+			const binding = profileContext.enter(event, ctx);
+			if (binding.origin !== "marker" || binding.profileName === undefined) {
 				sessionProfile = binding.profileName;
-				sessionBindingResolved = true;
 				updateStatus(ctx, binding.profileName);
 				return;
 			}
-			// No remembered choice: the settings.json marker is the default for
-			// fresh sessions, committed as this session's entry so reloads keep it.
-			if (binding.origin !== "marker" || binding.profileName === undefined) {
-				sessionProfile = undefined;
-				sessionBindingResolved = true;
-				updateStatus(ctx, undefined);
-				return;
-			}
 			try {
-				const active = store.loadActiveProfile();
-				sessionProfile = active?.name;
-				sessionBindingResolved = true;
-				updateStatus(ctx, active?.name);
-				if (active) pi.appendEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: active.name });
+				store.readProfile(binding.profileName);
+				sessionProfile = binding.profileName;
+				updateStatus(ctx, binding.profileName);
+				profileContext.remember(binding, (customType, data) => pi.appendEntry(customType, data));
 			} catch (error) {
 				sessionProfile = undefined;
-				sessionBindingResolved = true;
 				updateStatus(ctx, undefined);
 				ctx.ui.notify(`Could not load the active settings profile: ${errorMessage(error)}`, "error");
 			}
@@ -192,13 +169,11 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 
 		pi.on("session_tree", async (_event, ctx) => {
 			sessionProfile = sessionProfileName(ctx.sessionManager.getBranch());
-			sessionBindingResolved = true;
 			updateStatus(ctx, sessionProfile);
 		});
 
 		pi.on("session_shutdown", async (_event, ctx) => {
 			sessionProfile = undefined;
-			sessionBindingResolved = false;
 			updateStatus(ctx, undefined);
 		});
 
@@ -217,14 +192,8 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 			handler: async (args, ctx) => {
 				let name = args.trim();
 				// Use the binding captured at session_start rather than a marker another
-				// session may have changed. The resolver is only a fallback before the
-				// session lifecycle has established a binding.
-				const sessionCurrent = sessionBindingResolved
-					? sessionProfile
-					: resolver.resolve({
-						entries: ctx.sessionManager.getBranch(),
-						reason: "startup",
-					}).profileName;
+				// session may have changed.
+				const sessionCurrent = sessionProfile;
 				try {
 					if (!name) {
 						if (!ctx.hasUI) {

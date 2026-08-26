@@ -16,7 +16,7 @@ import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
-import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
+import { createSessionProfileContext, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
 import {
 	installModelCommandHandler,
 	ModelCommandRoutingEditor,
@@ -176,7 +176,7 @@ async function runModelControl(
 export function createModelSelectorExtension(
 	settingsStore: ProjectSettingsStore = createProjectSettingsStore(),
 ) {
-	const resolver = createSessionProfileResolver({
+	const profileContext = createSessionProfileContext({
 		settingsPath: PROJECT_SETTINGS_PATH,
 		profilesDirectory: PROFILES_DIRECTORY,
 	});
@@ -188,13 +188,7 @@ export function createModelSelectorExtension(
 			uninstallModelCommandHandler = undefined;
 			// Point the store at the session's profile file; no profile means
 			// settings.json.
-			settingsStore.setPath(
-				resolver.resolve({
-					entries: ctx.sessionManager.getBranch(),
-					reason: event.reason,
-					previousSessionFile: event.previousSessionFile,
-				}).settingsPath,
-			);
+			settingsStore.setPath(profileContext.enter(event, ctx).settingsPath);
 			if (ctx.mode !== "tui") return;
 
 			const handler = async (args: string): Promise<void> => {
