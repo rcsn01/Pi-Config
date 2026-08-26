@@ -1,17 +1,19 @@
+import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	CONFIG_PROFILES_ENTRY_TYPE,
-	createSessionProfileResolver,
+	clearSessionProfileHandoff,
+	createSessionProfileContext,
 	parseActiveProfileName,
 	profilePath,
 	readActiveProfileName,
 	sessionProfileName,
 	stageSessionProfileHandoff,
-	clearSessionProfileHandoff,
 	validateProfileName,
+	type SessionProfileBinding,
 } from "./active-profile.ts";
 
 const roots: string[] = [];
@@ -23,10 +25,31 @@ function fixture(marker?: unknown) {
 	const profilesDirectory = join(root, "profiles");
 	mkdirSync(profilesDirectory);
 	writeFileSync(settingsPath, `${JSON.stringify(marker === undefined ? {} : marker, null, 2)}\n`);
-	return { settingsPath, profilesDirectory };
+	return { root, settingsPath, profilesDirectory };
 }
 
 const entry = (active: unknown) => ({ type: "custom", customType: CONFIG_PROFILES_ENTRY_TYPE, data: { active } });
+
+function lifecycle(
+	entries: readonly unknown[],
+	reason: SessionStartEvent["reason"],
+	previousSessionFile?: string,
+) {
+	const event = { type: "session_start", reason, previousSessionFile } as SessionStartEvent;
+	const getBranch = vi.fn(() => entries);
+	const ctx = { sessionManager: { getBranch } } as unknown as ExtensionContext;
+	return { event, ctx, getBranch };
+}
+
+function enter(
+	context: ReturnType<typeof createSessionProfileContext>,
+	entries: readonly unknown[],
+	reason: SessionStartEvent["reason"],
+	previousSessionFile?: string,
+): SessionProfileBinding {
+	const { event, ctx } = lifecycle(entries, reason, previousSessionFile);
+	return context.enter(event, ctx);
+}
 
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -70,19 +93,12 @@ describe("active profile helpers", () => {
 		expect(() => profilePath("/p", "a/b")).toThrow(/Invalid profile name/);
 	});
 
-	describe("session profile resolver", () => {
-		const resolve = (
-			resolver: ReturnType<typeof createSessionProfileResolver>,
-			entries: readonly unknown[],
-			reason: "startup" | "reload" | "new" | "resume" | "fork",
-			previousSessionFile?: string,
-		) => resolver.resolve({ entries, reason, previousSessionFile });
-
+	describe("session profile context", () => {
 		it.each(["startup", "resume", "fork"] as const)("prefers the session entry on %s", (reason) => {
 			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
-			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+			const context = createSessionProfileContext({ settingsPath, profilesDirectory });
 
-			expect(resolve(resolver, [entry("default")], reason)).toEqual({
+			expect(enter(context, [entry("default")], reason)).toEqual({
 				profileName: "default",
 				settingsPath: join(profilesDirectory, "default.json"),
 				origin: "entry",
@@ -91,9 +107,9 @@ describe("active profile helpers", () => {
 
 		it("prefers a seeded entry over the marker on new sessions", () => {
 			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "github" } });
-			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+			const context = createSessionProfileContext({ settingsPath, profilesDirectory });
 
-			expect(resolve(resolver, [entry("focused")], "new")).toMatchObject({
+			expect(enter(context, [entry("focused")], "new")).toEqual({
 				profileName: "focused",
 				settingsPath: join(profilesDirectory, "focused.json"),
 				origin: "entry",
@@ -102,9 +118,9 @@ describe("active profile helpers", () => {
 
 		it("falls back to the marker on unseeded new sessions", () => {
 			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "github" } });
-			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+			const context = createSessionProfileContext({ settingsPath, profilesDirectory });
 
-			expect(resolve(resolver, [], "new")).toEqual({
+			expect(enter(context, [], "new")).toEqual({
 				profileName: "github",
 				settingsPath: join(profilesDirectory, "github.json"),
 				origin: "marker",
@@ -113,123 +129,207 @@ describe("active profile helpers", () => {
 
 		it("uses the entry on reload even when the marker names another profile", () => {
 			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
-			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+			const context = createSessionProfileContext({ settingsPath, profilesDirectory });
 
-			expect(resolve(resolver, [entry("default")], "reload")).toEqual({
+			expect(enter(context, [entry("default")], "reload")).toEqual({
 				profileName: "default",
 				settingsPath: join(profilesDirectory, "default.json"),
 				origin: "entry",
 			});
 		});
 
-		it("uses the entry when the marker is absent", () => {
-			const { settingsPath, profilesDirectory } = fixture({});
-			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
-			expect(resolve(resolver, [entry("default")], "startup")).toMatchObject({
-				profileName: "default",
-				settingsPath: join(profilesDirectory, "default.json"),
-				origin: "entry",
-			});
+		it("uses the entry when the marker is absent or invalid", () => {
+			for (const marker of [{}, { configProfiles: { active: "../bad" } }]) {
+				const { settingsPath, profilesDirectory } = fixture(marker);
+				const context = createSessionProfileContext({ settingsPath, profilesDirectory });
+				expect(enter(context, [entry("default")], "startup")).toMatchObject({
+					profileName: "default",
+					settingsPath: join(profilesDirectory, "default.json"),
+					origin: "entry",
+				});
+			}
 		});
 
-		it("uses the entry when the marker is invalid", () => {
-			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "../bad" } });
-			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
-			expect(resolve(resolver, [entry("default")], "startup")).toMatchObject({
-				profileName: "default",
-				settingsPath: join(profilesDirectory, "default.json"),
-				origin: "entry",
-			});
-		});
+		it("never falls back to the marker on reload", () => {
+			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+			const context = createSessionProfileContext({ settingsPath, profilesDirectory });
 
-		it("never falls back to the marker on reload, returning settings.json when no valid entry", () => {
-			const marked = fixture({ configProfiles: { active: "focused" } });
-			const resolver = createSessionProfileResolver({
-				settingsPath: marked.settingsPath,
-				profilesDirectory: marked.profilesDirectory,
-			});
-			expect(resolve(resolver, [], "reload")).toEqual({
+			expect(enter(context, [], "reload")).toEqual({
 				profileName: undefined,
-				settingsPath: marked.settingsPath,
+				settingsPath,
 				origin: "none",
 			});
-			expect(resolve(resolver, [entry("../bad")], "reload")).toEqual({
+
+			const invalidEntryContext = createSessionProfileContext({ settingsPath, profilesDirectory });
+			expect(enter(invalidEntryContext, [entry("../bad")], "reload")).toEqual({
 				profileName: undefined,
-				settingsPath: marked.settingsPath,
+				settingsPath,
 				origin: "none",
 			});
 		});
 
 		it("returns settings.json when neither source yields a valid name", () => {
 			const { settingsPath, profilesDirectory } = fixture({});
-			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
-			expect(resolve(resolver, [], "startup")).toEqual({
+			const context = createSessionProfileContext({ settingsPath, profilesDirectory });
+
+			expect(enter(context, [], "startup")).toEqual({
 				profileName: undefined,
 				settingsPath,
 				origin: "none",
 			});
-			expect(resolve(resolver, [], "reload")).toEqual({
+			expect(enter(context, [], "reload")).toEqual({
 				profileName: undefined,
 				settingsPath,
 				origin: "none",
 			});
 		});
 
-		it("always returns a concrete document path", () => {
-			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
-			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
-			expect(resolve(resolver, [entry("default")], "startup")).toEqual({
-				profileName: "default",
-				settingsPath: join(profilesDirectory, "default.json"),
-				origin: "entry",
+		it("returns an absolute path for every binding", () => {
+			const { root, settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+			const context = createSessionProfileContext({
+				settingsPath: join(root, "nested", "..", "settings.json"),
+				profilesDirectory: join(root, "nested", "..", "profiles"),
 			});
-			// A new session with neither source still yields the plain settings document.
+			const binding = enter(context, [], "startup");
+			expect(binding.settingsPath).toBe(join(profilesDirectory, "focused.json"));
+			expect(binding.settingsPath.startsWith("/")).toBe(true);
+
 			const unmarked = fixture({});
-			const unmarkedResolver = createSessionProfileResolver({
-				settingsPath: unmarked.settingsPath,
-				profilesDirectory: unmarked.profilesDirectory,
+			const unmarkedContext = createSessionProfileContext({
+				settingsPath: join(unmarked.root, "nested", "..", "settings.json"),
+				profilesDirectory: join(unmarked.root, "nested", "..", "profiles"),
 			});
-			expect(resolve(unmarkedResolver, [], "fork")).toEqual({
-				profileName: undefined,
-				settingsPath: unmarked.settingsPath,
-				origin: "none",
-			});
+			expect(enter(unmarkedContext, [], "fork").settingsPath).toBe(unmarked.settingsPath);
 		});
 
 		it("uses a matching clear handoff before the marker on new sessions", () => {
 			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "default" } });
-			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
-			stageSessionProfileHandoff("/sessions/current.json", "focused");
+			const previousSessionFile = "/sessions/current.json";
+			const context = createSessionProfileContext({ settingsPath, profilesDirectory });
+			stageSessionProfileHandoff(previousSessionFile, "focused");
 			try {
-				expect(resolve(resolver, [], "new", "/sessions/current.json")).toEqual({
+				expect(enter(context, [], "new", previousSessionFile)).toEqual({
 					profileName: "focused",
 					settingsPath: join(profilesDirectory, "focused.json"),
 					origin: "handoff",
 				});
-				expect(resolve(resolver, [], "new", "/sessions/other.json")).toEqual({
+				expect(enter(context, [], "new", "/sessions/other.json")).toEqual({
 					profileName: "default",
 					settingsPath: join(profilesDirectory, "default.json"),
 					origin: "marker",
 				});
-				expect(resolve(resolver, [], "startup", "/sessions/current.json")).toEqual({
+				expect(enter(context, [], "startup", previousSessionFile)).toEqual({
 					profileName: "default",
 					settingsPath: join(profilesDirectory, "default.json"),
 					origin: "marker",
 				});
 			} finally {
-				clearSessionProfileHandoff("/sessions/current.json");
+				clearSessionProfileHandoff(previousSessionFile);
 			}
 		});
 
 		it("falls back to the marker when an entry is invalid", () => {
 			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
-			const resolver = createSessionProfileResolver({ settingsPath, profilesDirectory });
+			const context = createSessionProfileContext({ settingsPath, profilesDirectory });
 
-			expect(resolve(resolver, [entry("../bad")], "startup")).toMatchObject({
+			expect(enter(context, [entry("../bad")], "startup")).toEqual({
 				profileName: "focused",
 				settingsPath: join(profilesDirectory, "focused.json"),
 				origin: "marker",
 			});
+		});
+
+		it("shares one binding object across context facades for an event and path pair", () => {
+			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+			const firstContext = createSessionProfileContext({ settingsPath, profilesDirectory });
+			const secondContext = createSessionProfileContext({ settingsPath, profilesDirectory });
+			const { event, ctx, getBranch } = lifecycle([], "startup");
+
+			const first = firstContext.enter(event, ctx);
+			writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "other" } }));
+			const second = secondContext.enter(event, ctx);
+			expect(second).toBe(first);
+			expect(getBranch).toHaveBeenCalledOnce();
+			expect(second.profileName).toBe("focused");
+
+			const fresh = lifecycle([], "startup");
+			expect(firstContext.enter(fresh.event, fresh.ctx).profileName).toBe("other");
+		});
+
+		it("shares slots for canonical-equivalent paths", () => {
+			const { root, settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+			const firstContext = createSessionProfileContext({ settingsPath, profilesDirectory });
+			const secondContext = createSessionProfileContext({
+				settingsPath: `${root}/nested/../settings.json`,
+				profilesDirectory: `${root}/nested/../profiles`,
+			});
+			const { event, ctx } = lifecycle([], "startup");
+
+			expect(secondContext.enter(event, ctx)).toBe(firstContext.enter(event, ctx));
+		});
+
+		it("isolates different path pairs during one event", () => {
+			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+			const firstContext = createSessionProfileContext({ settingsPath, profilesDirectory });
+			const secondContext = createSessionProfileContext({
+				settingsPath,
+				profilesDirectory: `${profilesDirectory}/other`,
+			});
+			const { event, ctx } = lifecycle([], "startup");
+
+			const first = firstContext.enter(event, ctx);
+			const second = secondContext.enter(event, ctx);
+			expect(second).not.toBe(first);
+			expect(second.settingsPath).not.toBe(first.settingsPath);
+		});
+
+		it("remembers a marker binding exactly once across repeated calls", () => {
+			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+			const context = createSessionProfileContext({ settingsPath, profilesDirectory });
+			const { event, ctx } = lifecycle([], "startup");
+			const binding = context.enter(event, ctx);
+			const append = vi.fn();
+
+			context.remember(binding, append);
+			context.remember(binding, append);
+			expect(append).toHaveBeenCalledOnce();
+			expect(append).toHaveBeenCalledWith(CONFIG_PROFILES_ENTRY_TYPE, { active: "focused" });
+		});
+
+		it("leaves a failed remember append retryable", () => {
+			const { settingsPath, profilesDirectory } = fixture({ configProfiles: { active: "focused" } });
+			const context = createSessionProfileContext({ settingsPath, profilesDirectory });
+			const { event, ctx } = lifecycle([], "startup");
+			const binding = context.enter(event, ctx);
+			const failure = new Error("append failed");
+			const append = vi.fn()
+				.mockImplementationOnce(() => { throw failure; })
+				.mockImplementationOnce(() => {});
+
+			expect(() => context.remember(binding, append)).toThrow(failure);
+			context.remember(binding, append);
+			context.remember(binding, append);
+			expect(append).toHaveBeenCalledTimes(2);
+		});
+
+		it("rejects foreign, wrong-path, and non-marker bindings", () => {
+			const first = fixture({ configProfiles: { active: "focused" } });
+			const firstContext = createSessionProfileContext(first);
+			const firstLifecycle = lifecycle([], "startup");
+			const binding = firstContext.enter(firstLifecycle.event, firstLifecycle.ctx);
+			const append = vi.fn();
+
+			expect(() => firstContext.remember({ ...binding }, append)).toThrow(/foreign/);
+
+			const second = fixture({ configProfiles: { active: "focused" } });
+			const secondContext = createSessionProfileContext(second);
+			expect(() => secondContext.remember(binding, append)).toThrow(/another path pair/);
+
+			const noMarker = fixture({});
+			const noMarkerContext = createSessionProfileContext(noMarker);
+			const noMarkerLifecycle = lifecycle([], "startup");
+			const noMarkerBinding = noMarkerContext.enter(noMarkerLifecycle.event, noMarkerLifecycle.ctx);
+			expect(() => noMarkerContext.remember(noMarkerBinding, append)).toThrow(/non-marker/);
 		});
 	});
 });

@@ -8,7 +8,7 @@
 
 import { createBashTool } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createSessionProfileResolver, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
+import { createSessionProfileContext, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { registerPlanRenderers } from "./plan-renderer.ts";
 import { createPlanLifecycle } from "./plan-lifecycle.ts";
@@ -24,7 +24,7 @@ export function createPlanModeExtension(dependencies: PlanModeDependencies = {})
 }
 
 function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDependencies): void {
-	const resolver = createSessionProfileResolver({
+	const profileContext = createSessionProfileContext({
 		settingsPath: PROJECT_SETTINGS_PATH,
 		profilesDirectory: PROFILES_DIRECTORY,
 	});
@@ -54,11 +54,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 
 	pi.on("session_start", async (event, ctx) => lifecycle.dispatch({
 		type: "sessionStarted",
-		profilePath: resolver.resolve({
-			entries: ctx.sessionManager.getBranch(),
-			reason: event.reason,
-			previousSessionFile: event.previousSessionFile,
-		}).settingsPath,
+		profilePath: profileContext.enter(event, ctx).settingsPath,
 		ctx,
 	}));
 	pi.on("session_tree", async (_event, ctx) => lifecycle.dispatch({ type: "branchChanged", ctx }));

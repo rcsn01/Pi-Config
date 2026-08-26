@@ -16,7 +16,7 @@ import {
 	PROJECT_SETTINGS_PATH,
 	readSettingsDocument,
 } from "../_shared/settings-document.ts";
-import { createSessionProfileResolver } from "../_shared/active-profile.ts";
+import { createSessionProfileContext } from "../_shared/active-profile.ts";
 import {
 	formatTokenCount,
 	modelKey,
@@ -351,7 +351,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 	return function advisorExtensionFactory(pi: ExtensionAPI): void {
 		const settingsFilePath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
 		const profilesDirectory = join(dirname(settingsFilePath), "profiles");
-		const resolver = createSessionProfileResolver({
+		const profileContext = createSessionProfileContext({
 			settingsPath: settingsFilePath,
 			profilesDirectory,
 		});
@@ -641,11 +641,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 		pi.on("session_start", async (event, ctx) => {
 			// Point the advisor at the session's profile file; no profile means
 			// settings.json.
-			settingsPath = resolver.resolve({
-				entries: ctx.sessionManager.getBranch(),
-				reason: event.reason,
-				previousSessionFile: event.previousSessionFile,
-			}).settingsPath;
+			settingsPath = profileContext.enter(event, ctx).settingsPath;
 			await loadForSession(ctx);
 		});
 		pi.on("session_shutdown", async (_event, ctx) => {

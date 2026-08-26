@@ -29,7 +29,7 @@ import { createSubagentTimingRecorder } from "./subagent-timing.ts";
 
 const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const TOOLS_DIR = path.join(EXT_DIR, "tools");
-const CHILD_OBSERVER_PATH = path.join(path.dirname(EXT_DIR), "observability-analysis", "child-observer.ts");
+const CHILD_OBSERVER_PATH = path.join(path.dirname(EXT_DIR), "telemetry-analysis", "child-observer.ts");
 export const MAX_RELAY_MESSAGE_BYTES = 8 * 1024 * 1024;
 export const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
 export const EXT_BASE = path.dirname(EXT_DIR);

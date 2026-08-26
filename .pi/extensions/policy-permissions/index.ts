@@ -21,7 +21,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { dirname, join } from "node:path";
-import { createSessionProfileResolver } from "../_shared/active-profile.ts";
+import { createSessionProfileContext } from "../_shared/active-profile.ts";
 import { formatTokenCount, modelKey, pickModelConfiguration } from "../_shared/model-picker.ts";
 import { resolveModelContext } from "../_shared/model-selection.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
@@ -71,7 +71,7 @@ function installSafetyPermissions(
 	dependencies: SafetyPermissionsDependencies,
 ): void {
 	const settingsFilePath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
-	const profileResolver = createSessionProfileResolver({
+	const profileContext = createSessionProfileContext({
 		settingsPath: settingsFilePath,
 		profilesDirectory: join(dirname(settingsFilePath), "profiles"),
 	});
@@ -142,11 +142,7 @@ function installSafetyPermissions(
 	pi.on("session_start", async (event, ctx) => {
 		reconstruct(ctx);
 		profileBindingGeneration++;
-		guardianSettingsPath = profileResolver.resolve({
-			entries: ctx.sessionManager.getBranch(),
-			reason: event.reason,
-			previousSessionFile: event.previousSessionFile,
-		}).settingsPath;
+		guardianSettingsPath = profileContext.enter(event, ctx).settingsPath;
 		try {
 			guardianSettings = loadGuardianSettings(guardianSettingsPath);
 		} catch (error) {

@@ -15,13 +15,14 @@
  *
  * Lifecycle policy: the binding is resolved once per `session_start` and each
  * consuming extension repoints its settings store at the resolved document
- * (a profile file when one is bound, else the plain settings document —
- * `resolve` always returns a concrete path). `session_tree` navigation updates
- * profile status but never rebinds stores.
+ * (a profile file when one is bound, else the plain settings document, and
+ * always a concrete path). `session_tree` navigation updates profile status but
+ * never rebinds stores.
  */
 
+import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { PROJECT_SETTINGS_PATH } from "./settings-document.ts";
 
 /** Top-level settings.json key holding the active profile marker. */
@@ -145,13 +146,6 @@ export type SessionBoundaryReason = "startup" | "reload" | "new" | "resume" | "f
 /** Where a session profile binding came from. */
 export type SessionProfileOrigin = "entry" | "handoff" | "marker" | "none";
 
-/** All lifecycle input needed to resolve one session profile binding. */
-export interface SessionProfileResolutionContext {
-	entries: readonly unknown[];
-	reason: SessionBoundaryReason;
-	previousSessionFile?: string;
-}
-
 /** The complete profile binding consumed by profile-aware extensions. */
 export interface SessionProfileBinding {
 	profileName: string | undefined;
@@ -159,67 +153,156 @@ export interface SessionProfileBinding {
 	origin: SessionProfileOrigin;
 }
 
-export interface SessionProfileResolver {
-	/**
-	 * Resolve the session's effective profile binding. The remembered entry is
-	 * authoritative on every boundary; a scoped new-session handoff is the
-	 * fallback for `/clear`; the settings.json marker is the fallback otherwise,
-	 * except on `reload`, where only the entry is consulted. The returned path is
-	 * always concrete, and profile document loading remains the caller's job.
-	 */
-	resolve(context: SessionProfileResolutionContext): SessionProfileBinding;
+/**
+ * Pull context for the profile binding of one session-start lifecycle.
+ * `enter` returns one immutable binding per event and configured path pair.
+ * `remember` persists a validated marker-origin binding at most once.
+ */
+export interface SessionProfileContext {
+	enter(event: SessionStartEvent, ctx: ExtensionContext): SessionProfileBinding;
+	remember(
+		binding: SessionProfileBinding,
+		append: (customType: string, data: unknown) => void,
+	): void;
+}
+
+interface SessionProfileSlot {
+	readonly pathKey: string;
+	readonly binding: SessionProfileBinding;
+	remembered: boolean;
+}
+
+interface SessionProfileContextRegistry {
+	readonly slotsByEvent: WeakMap<SessionStartEvent, Map<string, SessionProfileSlot>>;
+	readonly slotsByBinding: WeakMap<SessionProfileBinding, SessionProfileSlot>;
+}
+
+const SESSION_PROFILE_CONTEXT_KEY = Symbol.for("pi.extensions.active-profile.session-context.v1");
+
+function sessionProfileContextRegistry(): SessionProfileContextRegistry {
+	const globals = globalThis as typeof globalThis & {
+		[SESSION_PROFILE_CONTEXT_KEY]?: SessionProfileContextRegistry;
+	};
+	return globals[SESSION_PROFILE_CONTEXT_KEY] ??= {
+		slotsByEvent: new WeakMap(),
+		slotsByBinding: new WeakMap(),
+	};
+}
+
+interface SessionProfileResolutionInput {
+	entries: readonly unknown[];
+	reason: SessionBoundaryReason;
+	previousSessionFile?: string;
+	settingsPath: string;
+	profilesDirectory: string;
+}
+
+function resolveSessionProfileBinding({
+	entries,
+	reason,
+	previousSessionFile,
+	settingsPath,
+	profilesDirectory,
+}: SessionProfileResolutionInput): SessionProfileBinding {
+	const fromEntry = sessionProfileName(entries);
+	if (fromEntry !== undefined) {
+		return {
+			profileName: fromEntry,
+			settingsPath: profilePath(profilesDirectory, fromEntry),
+			origin: "entry",
+		};
+	}
+
+	if (reason !== "reload") {
+		const fromHandoff = reason === "new"
+			? readSessionProfileHandoff(previousSessionFile)
+			: undefined;
+		if (fromHandoff !== undefined) {
+			return {
+				profileName: fromHandoff,
+				settingsPath: profilePath(profilesDirectory, fromHandoff),
+				origin: "handoff",
+			};
+		}
+
+		const fromMarker = readActiveProfileName(settingsPath);
+		if (fromMarker !== undefined) {
+			return {
+				profileName: fromMarker,
+				settingsPath: profilePath(profilesDirectory, fromMarker),
+				origin: "marker",
+			};
+		}
+	}
+
+	return {
+		profileName: undefined,
+		settingsPath,
+		origin: "none",
+	};
+}
+
+function immutableBinding(binding: SessionProfileBinding): SessionProfileBinding {
+	return Object.freeze(binding);
 }
 
 /**
- * Build the session-profile binding for one extension. This module owns the
- * marker/entry/handoff precedence, reload semantics, validation, origin, and
- * concrete-path fallback. Another session's `/profile` switch cannot change
- * this session's profile: the entry wins on every boundary, the marker is
- * only the default for sessions without a remembered choice, and on `reload`
- * the marker is not consulted at all.
+ * Build the shared pull context for one configured settings/profile directory
+ * pair. A context resolves one immutable binding per session-start event and
+ * remembers validated marker bindings at most once.
  */
-export function createSessionProfileResolver(options: {
+export function createSessionProfileContext(options: {
 	settingsPath: string;
 	profilesDirectory: string;
-}): SessionProfileResolver {
+}): SessionProfileContext {
+	const settingsPath = resolve(options.settingsPath);
+	const profilesDirectory = resolve(options.profilesDirectory);
+	const pathKey = JSON.stringify([settingsPath, profilesDirectory]);
+	const registry = sessionProfileContextRegistry();
+
 	return {
-		resolve({ entries, reason, previousSessionFile }) {
-			const fromEntry = sessionProfileName(entries);
-			if (fromEntry !== undefined) {
-				return {
-					profileName: fromEntry,
-					settingsPath: profilePath(options.profilesDirectory, fromEntry),
-					origin: "entry",
-				};
+		enter(event, ctx) {
+			let slots = registry.slotsByEvent.get(event);
+			if (!slots) {
+				slots = new Map();
+				registry.slotsByEvent.set(event, slots);
 			}
 
-			if (reason !== "reload") {
-				const fromHandoff = reason === "new"
-					? readSessionProfileHandoff(previousSessionFile)
-					: undefined;
-				if (fromHandoff !== undefined) {
-					return {
-						profileName: fromHandoff,
-						settingsPath: profilePath(options.profilesDirectory, fromHandoff),
-						origin: "handoff",
-					};
-				}
+			const existing = slots.get(pathKey);
+			if (existing) return existing.binding;
 
-				const fromMarker = readActiveProfileName(options.settingsPath);
-				if (fromMarker !== undefined) {
-					return {
-						profileName: fromMarker,
-						settingsPath: profilePath(options.profilesDirectory, fromMarker),
-						origin: "marker",
-					};
-				}
-			}
-
-			return {
-				profileName: undefined,
-				settingsPath: options.settingsPath,
-				origin: "none",
+			const binding = immutableBinding(resolveSessionProfileBinding({
+				entries: ctx.sessionManager.getBranch(),
+				reason: event.reason,
+				previousSessionFile: event.previousSessionFile,
+				settingsPath,
+				profilesDirectory,
+			}));
+			const slot: SessionProfileSlot = {
+				pathKey,
+				binding,
+				remembered: false,
 			};
+			slots.set(pathKey, slot);
+			registry.slotsByBinding.set(binding, slot);
+			return binding;
+		},
+
+		remember(binding, append) {
+			const slot = registry.slotsByBinding.get(binding);
+			if (!slot) {
+				throw new Error("Cannot remember a foreign session profile binding.");
+			}
+			if (slot.pathKey !== pathKey) {
+				throw new Error("Cannot remember a session profile binding from another path pair.");
+			}
+			if (binding.origin !== "marker" || binding.profileName === undefined) {
+				throw new Error("Cannot remember a non-marker session profile binding.");
+			}
+			if (slot.remembered) return;
+
+			append(CONFIG_PROFILES_ENTRY_TYPE, { active: binding.profileName });
+			slot.remembered = true;
 		},
 	};
 }

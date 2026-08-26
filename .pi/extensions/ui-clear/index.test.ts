@@ -10,8 +10,6 @@ function profileStore(): ProfileStore {
 		profilesDirectory: "/project/profiles",
 		listProfiles: vi.fn(() => ["default", "focused"]),
 		readProfile: vi.fn(() => ({})),
-		getActiveProfile: vi.fn(() => "default"),
-		loadActiveProfile: vi.fn(() => ({ name: "default", document: {} })),
 		createProfile: vi.fn(async (name, source) => ({ name, source })),
 		deleteProfile: vi.fn(async (name) => ({ name, replacement: "default" as const, markerReplaced: false })),
 		switchProfile: vi.fn(async (name) => ({ changed: true, active: name })),
