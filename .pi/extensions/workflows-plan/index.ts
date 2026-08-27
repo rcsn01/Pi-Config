@@ -8,7 +8,8 @@
 
 import { createBashTool } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createSessionProfileContext, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
+import { PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
+import { registerSessionProfileInitialization } from "../_shared/session-profile-initialization.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { registerPlanRenderers } from "./plan-renderer.ts";
 import { createPlanLifecycle } from "./plan-lifecycle.ts";
@@ -24,14 +25,19 @@ export function createPlanModeExtension(dependencies: PlanModeDependencies = {})
 }
 
 function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDependencies): void {
-	const profileContext = createSessionProfileContext({
-		settingsPath: PROJECT_SETTINGS_PATH,
-		profilesDirectory: PROFILES_DIRECTORY,
-	});
 	const lifecycle = createPlanLifecycle(pi, {
 		...dependencies,
 		createWorkspace: dependencies.createWorkspace ?? createPlanWorkspace,
 	});
+	const profileInitialization = registerSessionProfileInitialization(
+		{ settingsPath: PROJECT_SETTINGS_PATH, profilesDirectory: PROFILES_DIRECTORY },
+		{
+			name: "workflows-plan",
+			applyPath: (binding) => lifecycle.setProfilePath(binding.settingsPath),
+			initialize: (_binding, _event, ctx) => lifecycle.dispatch({ type: "sessionStarted", ctx }),
+			dispose: (_binding, ctx) => lifecycle.dispatch({ type: "sessionStopping", ctx }),
+		},
+	);
 	const planBash = createBashTool(process.cwd(), {
 		operations: {
 			async exec(command, cwd, options) {
@@ -52,13 +58,17 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	});
 	registerPlanRenderers(pi);
 
-	pi.on("session_start", async (event, ctx) => lifecycle.dispatch({
-		type: "sessionStarted",
-		profilePath: profileContext.enter(event, ctx).settingsPath,
-		ctx,
-	}));
+	pi.on("session_start", async (event, ctx) => {
+		await profileInitialization.start(event, ctx);
+	});
 	pi.on("session_tree", async (_event, ctx) => lifecycle.dispatch({ type: "branchChanged", ctx }));
-	pi.on("session_shutdown", async (_event, ctx) => lifecycle.dispatch({ type: "sessionStopping", ctx }));
+	pi.on("session_shutdown", async (event, ctx) => {
+		try {
+			await profileInitialization.stop(event, ctx);
+		} finally {
+			profileInitialization.unregister();
+		}
+	});
 	pi.on("model_select", async (event, ctx) => lifecycle.dispatch({
 		type: "modelChanged",
 		model: event.model,

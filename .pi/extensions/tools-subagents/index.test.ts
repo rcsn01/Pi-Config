@@ -36,13 +36,16 @@ afterEach(() => {
 
 const BUNDLED_AGENTS = ["default", "explorer", "judge", "researcher", "worker"];
 
-function extensionHarness(runSingle = vi.fn(async (options: any) => agentResult({ agent: options.agent.name, task: options.task }))) {
+function extensionHarness(
+	runSingle = vi.fn(async (options: any) => agentResult({ agent: options.agent.name, task: options.task })),
+	options: { config?: any; runOrdered?: any } = {},
+) {
 	const handlers = new Map<string, any>();
 	const commands = new Map<string, any>();
 	const tools = new Map<string, any>();
 	const registrations: string[] = [];
 	const registry = memoryRegistry([agent(), agent({ name: "explorer", description: "Explorer" })]);
-	const config = memoryConfigStore({ maxConcurrency: 2, defaultThinkingLevel: "minimal" });
+	const config = options.config ?? memoryConfigStore({ maxConcurrency: 2, defaultThinkingLevel: "minimal" });
 	const pi = {
 		on: (event: string, handler: any) => {
 			registrations.push(`event:${event}`);
@@ -57,7 +60,12 @@ function extensionHarness(runSingle = vi.fn(async (options: any) => agentResult(
 			tools.set(tool.name, tool);
 		},
 	};
-	createSubagentsExtension({ registry, config, runSingle: runSingle as any })(pi as any);
+	createSubagentsExtension({
+		registry,
+		config,
+		runSingle: runSingle as any,
+		runOrdered: options.runOrdered,
+	})(pi as any);
 	const ctx = {
 		cwd: "/workspace",
 		model: { provider: "anthropic", id: "main" },
@@ -99,6 +107,7 @@ describe("subagent extension interfaces", () => {
 		expect(harness.registrations).toEqual([
 			"event:tool_result",
 			"event:session_start",
+			"event:session_shutdown",
 			"event:model_select",
 			"command:subagents",
 			"tool:subagent",
@@ -216,6 +225,41 @@ describe("subagent tool adaptation", () => {
 				const harness = extensionHarness();
 				await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
 				expect(harness.config.configPath).toBe(settingsPath);
+			} finally {
+				profileFixture.settingsPath = "";
+			}
+		});
+
+		it("loads profile-specific maxConcurrency after applying the session path", async () => {
+			const root = mkdtempSync(join(tmpdir(), "subagents-concurrency-"));
+			roots.push(root);
+			const settingsPath = join(root, "settings.json");
+			mkdirSync(join(root, "profiles"));
+			writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+			profileFixture.settingsPath = settingsPath;
+
+			const config = memoryConfigStore({ maxConcurrency: 2, defaultThinkingLevel: "minimal" });
+			const originalSetSettingsPath = config.setSettingsPath;
+			config.setSettingsPath = (path) => {
+				originalSetSettingsPath(path);
+				config.document.maxConcurrency = 7;
+			};
+			const runOrdered = vi.fn(async (items: any[], concurrency: number, run: (item: any, index: number) => Promise<any>) => {
+				const results: any[] = [];
+				for (let index = 0; index < items.length; index++) results.push(await run(items[index], index));
+				return results;
+			});
+			try {
+				const harness = extensionHarness(undefined, { config, runOrdered });
+				await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+				await harness.tools.get("subagent").execute("call", {
+					tasks: [
+						{ agent: "worker", task: "first" },
+						{ agent: "explorer", task: "second" },
+					],
+				}, undefined, undefined, harness.ctx);
+
+				expect(runOrdered).toHaveBeenCalledWith(expect.any(Array), 7, expect.any(Function));
 			} finally {
 				profileFixture.settingsPath = "";
 			}

@@ -13,11 +13,11 @@
  * picks up another session's switch. Sibling extensions therefore read and
  * write the session's profile file instead of fighting over settings.json.
  *
- * Lifecycle policy: the binding is resolved once per `session_start` and each
- * consuming extension repoints its settings store at the resolved document
- * (a profile file when one is bound, else the plain settings document, and
- * always a concrete path). `session_tree` navigation updates profile status but
- * never rebinds stores.
+ * Lifecycle policy: the binding is resolved once per `session_start`. The
+ * session-profile initialization coordinator applies the resolved concrete path
+ * to every participating adapter before initializing them in stable order (a
+ * profile file when one is bound, else the plain settings document).
+ * `session_tree` navigation updates profile status but never rebinds stores.
  */
 
 import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent";

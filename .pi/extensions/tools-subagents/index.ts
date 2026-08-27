@@ -15,7 +15,8 @@ import {
 	type SubagentProgressEvent,
 	type SubagentService,
 } from "../_shared/subagent-service.ts";
-import { createSessionProfileContext, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
+import { PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
+import { registerSessionProfileInitialization } from "../_shared/session-profile-initialization.ts";
 import {
 	agentRegistry,
 	loadAgents,
@@ -56,10 +57,6 @@ export interface SubagentsExtensionDependencies {
 }
 
 export function createSubagentsExtension(dependencies: SubagentsExtensionDependencies = {}) {
-	const profileContext = createSessionProfileContext({
-		settingsPath: PROJECT_SETTINGS_PATH,
-		profilesDirectory: PROFILES_DIRECTORY,
-	});
 	return (pi: ExtensionAPI): void => {
 		registerToolErrorHandler(pi, ["subagent"], (event) => {
 			const details = event.details as { results?: AgentResult[] } | undefined;
@@ -88,18 +85,33 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		};
 
 		registerSubagentService(service);
-		const config = configStore.load();
-		const maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+		let maxConcurrency = DEFAULT_MAX_CONCURRENCY;
+		const profileInitialization = registerSessionProfileInitialization(
+			{ settingsPath: PROJECT_SETTINGS_PATH, profilesDirectory: PROFILES_DIRECTORY },
+			{
+				name: "tools-subagents",
+				applyPath: (binding) => configStore.setSettingsPath(binding.settingsPath),
+				async initialize(_binding, _event, ctx) {
+					configStore.rememberMainModel(ctx.model);
+					// One-time migration: carry a legacy config.json into the session's
+					// settings document (the profile when one is active), then delete it.
+					await migrateSubagentConfigLegacy(configStore.configPath, LEGACY_CONFIG_PATH);
+					const config = configStore.load();
+					maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+				},
+			},
+		);
 		registry.initialize();
 
 		pi.on("session_start", async (event, ctx) => {
-			configStore.rememberMainModel(ctx.model);
-			// Point the config store at the session's profile file; no profile
-			// means settings.json.
-			configStore.setSettingsPath(profileContext.enter(event, ctx).settingsPath);
-			// One-time migration: carry a legacy config.json into the session's
-			// settings document (the profile when one is active), then delete it.
-			await migrateSubagentConfigLegacy(configStore.configPath, LEGACY_CONFIG_PATH);
+			await profileInitialization.start(event, ctx);
+		});
+		pi.on("session_shutdown", async (event, ctx) => {
+			try {
+				await profileInitialization.stop(event, ctx);
+			} finally {
+				profileInitialization.unregister();
+			}
 		});
 		pi.on("model_select", (event) => configStore.rememberMainModel(event.model));
 

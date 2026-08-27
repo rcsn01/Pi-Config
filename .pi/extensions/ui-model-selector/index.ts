@@ -16,7 +16,8 @@ import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
-import { createSessionProfileContext, PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
+import { PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
+import { registerSessionProfileInitialization } from "../_shared/session-profile-initialization.ts";
 import {
 	installModelCommandHandler,
 	ModelCommandRoutingEditor,
@@ -176,89 +177,99 @@ async function runModelControl(
 export function createModelSelectorExtension(
 	settingsStore: ProjectSettingsStore = createProjectSettingsStore(),
 ) {
-	const profileContext = createSessionProfileContext({
-		settingsPath: PROJECT_SETTINGS_PATH,
-		profilesDirectory: PROFILES_DIRECTORY,
-	});
 	return function modelSelectorExtension(pi: ExtensionAPI) {
 		let uninstallModelCommandHandler: (() => void) | undefined;
 
-		pi.on("session_start", async (event, ctx) => {
-			uninstallModelCommandHandler?.();
-			uninstallModelCommandHandler = undefined;
-			// Point the store at the session's profile file; no profile means
-			// settings.json.
-			settingsStore.setPath(profileContext.enter(event, ctx).settingsPath);
-			if (ctx.mode !== "tui") return;
+		const profileInitialization = registerSessionProfileInitialization(
+			{ settingsPath: PROJECT_SETTINGS_PATH, profilesDirectory: PROFILES_DIRECTORY },
+			{
+				name: "ui-model-selector",
+				applyPath: (binding) => settingsStore.setPath(binding.settingsPath),
+				initialize: async (_binding, event, ctx) => {
+					uninstallModelCommandHandler?.();
+					uninstallModelCommandHandler = undefined;
+					if (ctx.mode !== "tui") return;
 
-			const handler = async (args: string): Promise<void> => {
-				try {
-					await runModelControl(pi, args, ctx, settingsStore);
-				} catch (error) {
-					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-				}
-			};
-			uninstallModelCommandHandler = installModelCommandHandler(handler);
-			ctx.ui.setEditorComponent((tui, theme, keybindings) =>
-				new ModelCommandRoutingEditor(tui, theme, keybindings, handler));
+					const handler = async (args: string): Promise<void> => {
+						try {
+							await runModelControl(pi, args, ctx, settingsStore);
+						} catch (error) {
+							ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+						}
+					};
+					uninstallModelCommandHandler = installModelCommandHandler(handler);
+					ctx.ui.setEditorComponent((tui, theme, keybindings) =>
+						new ModelCommandRoutingEditor(tui, theme, keybindings, handler));
 
-			const hasConversationHistory = buildSessionContext(
-				ctx.sessionManager.getEntries(),
-				ctx.sessionManager.getLeafId(),
-			).messages.length > 0;
-			const shouldOpen = shouldOpenStartupModelSelector(
-				event.reason,
-				hasConversationHistory,
-				process.argv.slice(2),
-			);
-			if (shouldOpen) {
-				let appliedNormalProfile = false;
-				try {
-					const preferences = await settingsStore.load();
-					if (preferences.profiles.normal) {
-						await applyModelSelection(pi, ctx, preferences.profiles.normal, {
-							label: "Normal profile",
-						});
-						appliedNormalProfile = true;
-					}
-				} catch (error) {
-					ctx.ui.notify(
-						`Could not apply the normal startup profile: ${error instanceof Error ? error.message : String(error)}`,
-						"error",
+					const hasConversationHistory = buildSessionContext(
+						ctx.sessionManager.getEntries(),
+						ctx.sessionManager.getLeafId(),
+					).messages.length > 0;
+					const shouldOpen = shouldOpenStartupModelSelector(
+						event.reason,
+						hasConversationHistory,
+						process.argv.slice(2),
 					);
-				}
-				// A configured normal profile is the startup default. Only prompt on
-				// first run or after an invalid profile fails to apply.
-				if (!appliedNormalProfile) await handler("");
-			} else if (ctx.model && (hasConversationHistory || ["reload", "resume", "fork"].includes(event.reason))) {
-				try {
-					const restoredModel = resolveModelContext(ctx.model);
-					// Keep the session model's context window in sync with the saved
-					// profile for the active mode (settings.json edits take effect on
-					// reload) without switching models.
-					const preferences = await settingsStore.load();
-					const profile = preferences.profiles[currentSelectionMode(ctx)];
-					const profileContext = profile && profile.contextWindow !== DEFAULT_SENTINEL &&
-						profile.contextWindow !== undefined &&
-						ctx.model.provider === profile.provider && ctx.model.id === profile.modelId
-						? resolveContextWindow(profile.contextWindow)
-						: restoredModel.contextWindow;
-					const targetModel = profileContext !== restoredModel.contextWindow
-						? { ...restoredModel, contextWindow: profileContext }
-						: restoredModel;
-					if (targetModel !== ctx.model && !(await pi.setModel(targetModel))) {
-						ctx.ui.notify(`No configured authentication for ${modelKey(targetModel)}`, "error");
+					if (shouldOpen) {
+						let appliedNormalProfile = false;
+						try {
+							const preferences = await settingsStore.load();
+							if (preferences.profiles.normal) {
+								await applyModelSelection(pi, ctx, preferences.profiles.normal, {
+									label: "Normal profile",
+								});
+								appliedNormalProfile = true;
+							}
+						} catch (error) {
+							ctx.ui.notify(
+								`Could not apply the normal startup profile: ${error instanceof Error ? error.message : String(error)}`,
+								"error",
+							);
+						}
+						// A configured normal profile is the startup default. Only prompt on
+						// first run or after an invalid profile fails to apply.
+						if (!appliedNormalProfile) await handler("");
+					} else if (ctx.model && (hasConversationHistory || ["reload", "resume", "fork"].includes(event.reason))) {
+						try {
+							const restoredModel = resolveModelContext(ctx.model);
+							// Keep the session model's context window in sync with the saved
+							// profile for the active mode (settings.json edits take effect on
+							// reload) without switching models.
+							const preferences = await settingsStore.load();
+							const profile = preferences.profiles[currentSelectionMode(ctx)];
+							const profileContext = profile && profile.contextWindow !== DEFAULT_SENTINEL &&
+								profile.contextWindow !== undefined &&
+								ctx.model.provider === profile.provider && ctx.model.id === profile.modelId
+								? resolveContextWindow(profile.contextWindow)
+								: restoredModel.contextWindow;
+							const targetModel = profileContext !== restoredModel.contextWindow
+								? { ...restoredModel, contextWindow: profileContext }
+								: restoredModel;
+							if (targetModel !== ctx.model && !(await pi.setModel(targetModel))) {
+								ctx.ui.notify(`No configured authentication for ${modelKey(targetModel)}`, "error");
+							}
+						} catch (error) {
+							ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+						}
 					}
-				} catch (error) {
-					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-				}
-			}
-		});
+				},
+				dispose: (_binding, ctx) => {
+					uninstallModelCommandHandler?.();
+					uninstallModelCommandHandler = undefined;
+					if (ctx.mode === "tui") ctx.ui.setEditorComponent(undefined);
+				},
+			},
+		);
 
-		pi.on("session_shutdown", (_event, ctx) => {
-			uninstallModelCommandHandler?.();
-			uninstallModelCommandHandler = undefined;
-			if (ctx.mode === "tui") ctx.ui.setEditorComponent(undefined);
+		pi.on("session_start", async (event, ctx) => {
+			await profileInitialization.start(event, ctx);
+		});
+		pi.on("session_shutdown", async (event, ctx) => {
+			try {
+				await profileInitialization.stop(event, ctx);
+			} finally {
+				profileInitialization.unregister();
+			}
 		});
 	};
 }

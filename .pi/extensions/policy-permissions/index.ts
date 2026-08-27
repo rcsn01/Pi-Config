@@ -21,7 +21,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { dirname, join } from "node:path";
-import { createSessionProfileContext } from "../_shared/active-profile.ts";
+import { registerSessionProfileInitialization } from "../_shared/session-profile-initialization.ts";
 import { formatTokenCount, modelKey, pickModelConfiguration } from "../_shared/model-picker.ts";
 import { resolveModelContext } from "../_shared/model-selection.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
@@ -71,10 +71,7 @@ function installSafetyPermissions(
 	dependencies: SafetyPermissionsDependencies,
 ): void {
 	const settingsFilePath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
-	const profileContext = createSessionProfileContext({
-		settingsPath: settingsFilePath,
-		profilesDirectory: join(dirname(settingsFilePath), "profiles"),
-	});
+	const profilesDirectory = join(dirname(settingsFilePath), "profiles");
 	let guardianSettingsPath = settingsFilePath;
 	let guardianSettings: GuardianSettings | undefined;
 	let profileBindingGeneration = 0;
@@ -137,28 +134,47 @@ function installSafetyPermissions(
 		},
 	};
 
+	const profileInitialization = registerSessionProfileInitialization(
+		{ settingsPath: settingsFilePath, profilesDirectory },
+		{
+			name: "policy-permissions",
+			applyPath: (binding) => {
+				guardianSettingsPath = binding.settingsPath;
+			},
+			initialize: async (_binding, _event, ctx) => {
+				reconstruct(ctx);
+				profileBindingGeneration++;
+				try {
+					guardianSettings = loadGuardianSettings(guardianSettingsPath);
+				} catch (error) {
+					guardianSettings = undefined;
+					ctx.ui.notify(
+						`Guardian settings are invalid; using guardian.md defaults: ${error instanceof Error ? error.message : String(error)}`,
+						"error",
+					);
+				}
+				updateStatus(ctx);
+			},
+			dispose: async () => {
+				profileBindingGeneration++;
+				await disposeAutoReviewer();
+			},
+		},
+	);
+
 	// ── Events ──────────────────────────────────────────────────────────
 
 	pi.on("session_start", async (event, ctx) => {
-		reconstruct(ctx);
-		profileBindingGeneration++;
-		guardianSettingsPath = profileContext.enter(event, ctx).settingsPath;
-		try {
-			guardianSettings = loadGuardianSettings(guardianSettingsPath);
-		} catch (error) {
-			guardianSettings = undefined;
-			ctx.ui.notify(
-				`Guardian settings are invalid; using guardian.md defaults: ${error instanceof Error ? error.message : String(error)}`,
-				"error",
-			);
-		}
-		updateStatus(ctx);
+		await profileInitialization.start(event, ctx);
 	});
 	pi.on("session_tree", async (_event, ctx) => { reconstruct(ctx); updateStatus(ctx); });
 	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx));
-	pi.on("session_shutdown", async () => {
-		profileBindingGeneration++;
-		await disposeAutoReviewer();
+	pi.on("session_shutdown", async (event, ctx) => {
+		try {
+			await profileInitialization.stop(event, ctx);
+		} finally {
+			profileInitialization.unregister();
+		}
 	});
 
 	// Track the most recent assistant message text so the guardian can see the agent's
