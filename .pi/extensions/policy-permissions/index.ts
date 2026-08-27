@@ -21,7 +21,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { dirname, join } from "node:path";
-import { registerSessionProfileInitialization } from "../_shared/session-profile-initialization.ts";
+import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { formatTokenCount, modelKey, pickModelConfiguration } from "../_shared/model-picker.ts";
 import { resolveModelContext } from "../_shared/model-selection.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
@@ -134,7 +134,7 @@ function installSafetyPermissions(
 		},
 	};
 
-	const profileInitialization = registerSessionProfileInitialization(
+	const profileInitialization = registerSessionProfileBinding(
 		{ settingsPath: settingsFilePath, profilesDirectory },
 		{
 			name: "policy-permissions",

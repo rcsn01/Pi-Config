@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import safetyPermissions, { createSafetyPermissionsExtension } from "./index.ts";
 import { saveModeToFile } from "./mode-store.ts";
-import { clearSessionProfileHandoff, stageSessionProfileHandoff } from "../_shared/active-profile.ts";
+import { clearSessionProfileHandoff, stageSessionProfileHandoff } from "../_shared/session-profile-binding.ts";
 
 const mocked = vi.hoisted(() => ({
 	runAutoReviewer: vi.fn(),

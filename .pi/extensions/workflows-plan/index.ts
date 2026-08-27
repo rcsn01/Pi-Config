@@ -8,8 +8,8 @@
 
 import { createBashTool } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
-import { registerSessionProfileInitialization } from "../_shared/session-profile-initialization.ts";
+import { PROFILES_DIRECTORY } from "../_shared/profile-document.ts";
+import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { registerPlanRenderers } from "./plan-renderer.ts";
 import { createPlanLifecycle } from "./plan-lifecycle.ts";
@@ -29,7 +29,7 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		...dependencies,
 		createWorkspace: dependencies.createWorkspace ?? createPlanWorkspace,
 	});
-	const profileInitialization = registerSessionProfileInitialization(
+	const profileInitialization = registerSessionProfileBinding(
 		{ settingsPath: PROJECT_SETTINGS_PATH, profilesDirectory: PROFILES_DIRECTORY },
 		{
 			name: "workflows-plan",

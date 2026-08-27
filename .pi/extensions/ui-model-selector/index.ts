@@ -16,8 +16,8 @@ import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
-import { PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
-import { registerSessionProfileInitialization } from "../_shared/session-profile-initialization.ts";
+import { PROFILES_DIRECTORY } from "../_shared/profile-document.ts";
+import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
 	installModelCommandHandler,
 	ModelCommandRoutingEditor,
@@ -180,7 +180,7 @@ export function createModelSelectorExtension(
 	return function modelSelectorExtension(pi: ExtensionAPI) {
 		let uninstallModelCommandHandler: (() => void) | undefined;
 
-		const profileInitialization = registerSessionProfileInitialization(
+		const profileInitialization = registerSessionProfileBinding(
 			{ settingsPath: PROJECT_SETTINGS_PATH, profilesDirectory: PROFILES_DIRECTORY },
 			{
 				name: "ui-model-selector",

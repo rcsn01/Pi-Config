@@ -62,14 +62,12 @@ extension.
   read/mutate machinery in `_shared/settings-document.ts`.
 - **Profile** — a full settings document in `.pi/profiles/<name>.json`;
   switching replaces the active document.
-- **Session profile binding** — the context in `_shared/active-profile.ts` that
-  resolves one binding per `session_start`, owns entry/handoff/marker/reload
-  precedence, supplies the concrete Settings document path, and remembers a
-  validated marker-origin binding exactly once.
-- **Session profile initialization** — the coordinator in
-  `_shared/session-profile-initialization.ts` that groups optional profile-aware
-  adapters by canonical Settings/Profile path pair, applies paths before stable
-  initialization, isolates adapter failures, and performs reverse cleanup.
+- **Session profile binding** — the deep module in
+  `_shared/session-profile-binding.ts` that resolves one immutable binding per
+  `session_start`, owns entry/handoff/marker/reload precedence and validated
+  Profile persistence, supplies the concrete Settings document path, applies
+  Profile-aware adapter paths before stable initialization, isolates adapter
+  failures, and performs reverse cleanup.
 - **Plan Mode lifecycle** — the deep orchestration module that owns live Plan
   State, transitions, Profile rollback, tool projection, proposed-plan state,
   and ordering across Plan Runtime and Plan Review.

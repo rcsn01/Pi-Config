@@ -3,11 +3,10 @@ import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import { applySelectionFromDocument } from "../_shared/model-selection.ts";
 import {
 	CONFIG_PROFILES_ENTRY_TYPE,
-	createSessionProfileContext,
 	sessionProfileName,
-} from "../_shared/active-profile.ts";
+} from "../_shared/profile-document.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
-import { registerSessionProfileInitialization } from "../_shared/session-profile-initialization.ts";
+import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 
 export interface ConfigProfilesDependencies {
@@ -39,10 +38,6 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 		const store = dependencies.store ?? createProfileStore();
 		const output = dependencies.output ?? console.log;
 
-		const profileContext = createSessionProfileContext({
-			settingsPath: store.settingsPath,
-			profilesDirectory: store.profilesDirectory,
-		});
 		let sessionProfile: string | undefined;
 		let profileInitializationStarted = false;
 		let profileInitializationDisposed = false;
@@ -51,31 +46,29 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 			if (ctx.hasUI) ctx.ui.setStatus("profile", profile);
 		};
 
-		const profileInitialization = registerSessionProfileInitialization(
+		const profileInitialization = registerSessionProfileBinding(
 			{
 				settingsPath: store.settingsPath,
 				profilesDirectory: store.profilesDirectory,
 			},
 			{
 				name: "config-profiles",
-				async initialize(binding, _event, ctx) {
+				validateMarkerProfile: (profileName) => {
+					store.readProfile(profileName);
+				},
+				appendProfileEntry: (profileName) => {
+					pi.appendEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: profileName });
+				},
+				onMarkerFailure: (error, ctx) => {
+					sessionProfile = undefined;
+					updateStatus(ctx, undefined);
+					ctx.ui.notify(`Could not load the active settings profile: ${errorMessage(error)}`, "error");
+				},
+				initialize(binding, _event, ctx) {
 					profileInitializationStarted = true;
 					profileInitializationDisposed = false;
-					if (binding.origin !== "marker" || binding.profileName === undefined) {
-						sessionProfile = binding.profileName;
-						updateStatus(ctx, binding.profileName);
-						return;
-					}
-					try {
-						store.readProfile(binding.profileName);
-						sessionProfile = binding.profileName;
-						updateStatus(ctx, binding.profileName);
-						profileContext.remember(binding, (customType, data) => pi.appendEntry(customType, data));
-					} catch (error) {
-						sessionProfile = undefined;
-						updateStatus(ctx, undefined);
-						ctx.ui.notify(`Could not load the active settings profile: ${errorMessage(error)}`, "error");
-					}
+					sessionProfile = binding.profileName;
+					updateStatus(ctx, binding.profileName);
 				},
 				dispose: (_binding, ctx) => {
 					sessionProfile = undefined;
