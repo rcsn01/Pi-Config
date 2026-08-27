@@ -28,6 +28,16 @@ extension.
   that turns usage rows into tables; layout fallbacks live behind its two
   functions.
 
+## Telemetry dashboards
+
+- **Usage dashboard** — the `/global-usage` dashboard: scans session files into
+  a usage snapshot and serves it to the browser.
+- **Analysis dashboard** — the `/analysis` dashboard: captures provider
+  request/response events as inspectable records.
+- **Persistent dashboard runtime** — the shared lifetime store in
+  `_shared/dashboard-runtime.ts` both dashboards sit on: one runtime per symbol
+  key; claim/release, orphan grace, and close-on-quit hide behind it.
+
 ## Subscriptions & quotas
 
 - **Subscription probe** — the shared probe machinery in

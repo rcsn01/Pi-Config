@@ -1,4 +1,5 @@
 import type { GlobalUsageSnapshot } from "../_shared/global-usage.ts";
+import { createPersistentDashboardRuntime, type PersistentDashboardRuntime } from "../_shared/dashboard-runtime.ts";
 import { scanGlobalUsage, type ScanGlobalUsageOptions } from "./global-usage-store.ts";
 import { toTelemetryUsagePayload, type TelemetryUsageState } from "./payload.ts";
 import { createTelemetryUsageServer, type TelemetryUsageServer } from "./server.ts";
@@ -20,28 +21,6 @@ export interface TelemetryUsageRuntimeOptions {
 		getState: () => TelemetryUsageState;
 		refresh: () => Promise<void>;
 	}) => TelemetryUsageServer;
-}
-
-const ORPHAN_RUNTIME_GRACE_MS = 30_000;
-const TELEMETRY_USAGE_RUNTIME_KEY = Symbol.for("pi.extensions.telemetry-usage.runtime.v1");
-
-interface TelemetryUsageRuntimeGlobalState {
-	runtime?: TelemetryUsageRuntimeStore;
-	claimed: boolean;
-	orphanTimer?: ReturnType<typeof setTimeout>;
-}
-
-function globalRuntimeState(): TelemetryUsageRuntimeGlobalState {
-	const globals = globalThis as typeof globalThis & {
-		[TELEMETRY_USAGE_RUNTIME_KEY]?: TelemetryUsageRuntimeGlobalState;
-	};
-	return globals[TELEMETRY_USAGE_RUNTIME_KEY] ??= { claimed: false };
-}
-
-function clearOrphanTimer(state: TelemetryUsageRuntimeGlobalState): void {
-	if (!state.orphanTimer) return;
-	clearTimeout(state.orphanTimer);
-	state.orphanTimer = undefined;
 }
 
 function cloneState(state: TelemetryUsageState): TelemetryUsageState {
@@ -142,49 +121,13 @@ export function createTelemetryUsageRuntime(
 	};
 }
 
-export function getPersistentTelemetryUsageRuntime(
-	options: TelemetryUsageRuntimeOptions = {},
-): TelemetryUsageRuntimeStore {
-	const state = globalRuntimeState();
-	clearOrphanTimer(state);
-	state.claimed = true;
-	if (!state.runtime) state.runtime = createTelemetryUsageRuntime(options);
-	return state.runtime;
-}
-
-export function releasePersistentTelemetryUsageRuntime(runtime: TelemetryUsageRuntimeStore): void {
-	const state = globalRuntimeState();
-	if (state.runtime !== runtime) return;
-	state.claimed = false;
-	clearOrphanTimer(state);
-	if (!runtime.isActive()) return;
-	state.orphanTimer = setTimeout(() => {
-		state.orphanTimer = undefined;
-		if (state.runtime !== runtime || state.claimed) return;
-		void runtime.close().catch(() => {});
-	}, ORPHAN_RUNTIME_GRACE_MS);
-	state.orphanTimer.unref?.();
-}
-
-export async function closePersistentTelemetryUsageRuntime(runtime: TelemetryUsageRuntimeStore): Promise<void> {
-	const globals = globalThis as typeof globalThis & {
-		[TELEMETRY_USAGE_RUNTIME_KEY]?: TelemetryUsageRuntimeGlobalState;
-	};
-	const state = globals[TELEMETRY_USAGE_RUNTIME_KEY];
-	if (state?.runtime === runtime) {
-		clearOrphanTimer(state);
-		delete globals[TELEMETRY_USAGE_RUNTIME_KEY];
-	}
-	await runtime.close();
-}
-
-export async function resetPersistentTelemetryUsageRuntimeForTests(): Promise<void> {
-	const globals = globalThis as typeof globalThis & {
-		[TELEMETRY_USAGE_RUNTIME_KEY]?: TelemetryUsageRuntimeGlobalState;
-	};
-	const state = globals[TELEMETRY_USAGE_RUNTIME_KEY];
-	clearOrphanTimer(state ?? { claimed: false });
-	const runtime = state?.runtime;
-	delete globals[TELEMETRY_USAGE_RUNTIME_KEY];
-	await runtime?.close();
-}
+/**
+ * Persistent usage dashboard runtime: one store per process, sharing the
+ * runtime across extension instances and reloads. Claim/release, orphan
+ * grace, and close-on-quit live in `_shared/dashboard-runtime.ts`.
+ */
+export const persistentUsageRuntime: PersistentDashboardRuntime<TelemetryUsageRuntimeStore, TelemetryUsageRuntimeOptions> =
+	createPersistentDashboardRuntime({
+		key: Symbol.for("pi.extensions.telemetry-usage.runtime.v1"),
+		create: (options) => createTelemetryUsageRuntime(options ?? {}),
+	});
