@@ -1,3 +1,9 @@
+/**
+ * Repo query batch: the read-only evidence tool behind the subagent
+ * `repo_query` tool. `executeRepoQuery` is the whole interface; validation,
+ * safe path resolution, deduplication, concurrency, and fair truncation live
+ * here. The executor parameter is the adapter seam.
+ */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -6,7 +12,7 @@ import {
 	truncateHead,
 } from "@earendil-works/pi-coding-agent";
 
-export const REPO_QUERY_LIMITS = {
+const REPO_QUERY_LIMITS = {
 	maxOperations: 24,
 	maxConcurrency: 6,
 	readLines: { default: 200, maximum: 1_000 },
@@ -17,7 +23,7 @@ export const REPO_QUERY_LIMITS = {
 	fileResults: { default: 50, maximum: 200 },
 } as const;
 
-export const REPO_QUERY_KINDS = [
+const REPO_QUERY_KINDS = [
 	"read",
 	"grep",
 	"find",
@@ -27,10 +33,10 @@ export const REPO_QUERY_KINDS = [
 	"git_diff",
 ] as const;
 
-export type RepoQueryKind = (typeof REPO_QUERY_KINDS)[number];
-export type RepoQueryDiffMode = "summary" | "staged" | "unstaged" | "uncommitted";
+type RepoQueryKind = (typeof REPO_QUERY_KINDS)[number];
+type RepoQueryDiffMode = "summary" | "staged" | "unstaged" | "uncommitted";
 
-export interface RepoQueryOperation {
+interface RepoQueryOperation {
 	id?: string;
 	kind: RepoQueryKind;
 	path?: string;
@@ -47,7 +53,7 @@ export interface RepoQueryOperation {
 	paths?: string[];
 }
 
-export interface RepoQueryRequest {
+interface RepoQueryRequest {
 	operations: RepoQueryOperation[];
 }
 
@@ -71,7 +77,7 @@ export type RepoQueryOperationExecutor = (
 	signal?: AbortSignal,
 ) => Promise<RepoQueryOperationOutput>;
 
-export interface RepoQueryOperationRecord {
+interface RepoQueryOperationRecord {
 	id: string;
 	kind: RepoQueryKind;
 	body: string;
@@ -81,7 +87,7 @@ export interface RepoQueryOperationRecord {
 	deduplicatedFrom?: string;
 }
 
-export interface RepoQueryOperationDetails {
+interface RepoQueryOperationDetails {
 	id: string;
 	kind: RepoQueryKind;
 	durationMs: number;
@@ -91,7 +97,7 @@ export interface RepoQueryOperationDetails {
 	error?: string;
 }
 
-export interface RepoQueryDetails {
+interface RepoQueryDetails {
 	operations: RepoQueryOperationDetails[];
 	truncated: boolean;
 	originalOutputBytes: number;
@@ -105,12 +111,12 @@ export interface RepoQueryExecutionResult {
 	details: RepoQueryDetails;
 }
 
-export interface RepoQueryFormatOptions {
+interface RepoQueryFormatOptions {
 	maxBytes?: number;
 	maxLines?: number;
 }
 
-export interface RepoQueryFormattedResult {
+interface RepoQueryFormattedResult {
 	text: string;
 	truncated: boolean;
 	originalOutputBytes: number;
@@ -161,7 +167,7 @@ export async function executeRepoQuery(
 }
 
 /** Normalize and validate a request without executing any operation. */
-export async function validateAndResolveOperations(
+async function validateAndResolveOperations(
 	input: unknown,
 	cwd: string,
 	signal?: AbortSignal,
@@ -201,7 +207,7 @@ export async function validateAndResolveOperations(
 }
 
 /** Format records with fair per-operation allocation under Pi's output limits. */
-export function formatRepoQueryResults(
+function formatRepoQueryResults(
 	records: RepoQueryOperationRecord[],
 	options: RepoQueryFormatOptions = {},
 ): RepoQueryFormattedResult {
@@ -284,7 +290,7 @@ export function formatRepoQueryResults(
 	};
 }
 
-export async function resolveSafeRepoPath(
+async function resolveSafeRepoPath(
 	rawPath: string,
 	cwd: string,
 	signal?: AbortSignal,
