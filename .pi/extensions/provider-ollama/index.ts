@@ -20,6 +20,11 @@
  *   - On startup, /model open, and `pi update --models`, pi calls the
  *     `refreshModels` callback, which fetches the live catalog and persists it
  *     through pi's own FileModelsStore. Refresh is automatic.
+ *   - The refreshed catalog is also mirrored into ~/.pi/agent/models.json
+ *     (catalog-sync.ts). Subagent children spawn with `--no-extensions`, so
+ *     they cannot see the provider registered here; the synced static entry
+ *     makes `ollama-cloud` resolvable in those processes. The in-memory live
+ *     catalog still wins inside sessions that load this extension.
  *
  * Only models with "tools" capability are registered.
  */

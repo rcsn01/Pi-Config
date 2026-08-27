@@ -1,18 +1,34 @@
 import type { ModelsPublication, RefreshModelsContext } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GENERATED_MODELS } from "../models.generated.ts";
 import { refreshOllamaCatalog } from "../models.ts";
+import { setModelsJsonPathForTesting } from "../catalog-sync.ts";
 
 // --- Helpers ---
 
 const originalFetch = globalThis.fetch;
 
+// Every refresh now touches models.json (catalog sync for extension-less
+// subagent children). Redirect the sync target to a temp file per test so the
+// suite never writes the real ~/.pi/agent/models.json.
+let testModelsPath: string;
+
+beforeEach(async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "pi-ollama-refresh-"));
+  testModelsPath = path.join(dir, "models.json");
+  setModelsJsonPathForTesting(testModelsPath);
+});
+
 // The publish stub needs a concrete call signature (not vi.fn's default
 // `Procedure | Constructable` union) to satisfy RefreshModelsContext.
 type Publish = (publication: ModelsPublication) => Promise<boolean>;
 
-afterEach(() => {
+afterEach(async () => {
   globalThis.fetch = originalFetch;
+  await rm(path.dirname(testModelsPath), { recursive: true, force: true });
 });
 
 /** A minimal pi-ai Model-shaped stored entry (provider/api/baseUrl filled in). */
@@ -77,6 +93,17 @@ describe("refreshOllamaCatalog restore phase", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("bootstraps a models.json entry on the restore path (offline first launch)", async () => {
+    const { context } = makeContext({ allowNetwork: false, stored: undefined });
+    await refreshOllamaCatalog(context);
+
+    const doc = JSON.parse(await readFile(testModelsPath, "utf-8")) as {
+      providers: { "ollama-cloud": { api: string; models: { id: string }[] } };
+    };
+    expect(doc.providers["ollama-cloud"].api).toBe("openai-completions");
+    expect(doc.providers["ollama-cloud"].models.map((m) => m.id)).toEqual(GENERATED_MODELS.map((m) => m.id));
+  });
+
   it("returns the stored models when one exists, without persisting", async () => {
     const storedModels = [makeStoredModel("stored-a"), makeStoredModel("stored-b")];
     const { context, publish } = makeContext({
@@ -131,6 +158,8 @@ describe("refreshOllamaCatalog restore phase", () => {
     });
     expect(result).toEqual(GENERATED_MODELS);
     expect(publish).not.toHaveBeenCalled();
+    // Aborted before any work: models.json must not have been created.
+    await expect(readFile(testModelsPath, "utf-8")).rejects.toThrow("ENOENT");
   });
 
   it("falls back to GENERATED_MODELS when the stored catalog is empty", async () => {
@@ -166,6 +195,22 @@ describe("refreshOllamaCatalog network phase", () => {
       expect(persisted.models[0].provider).toBe("ollama-cloud");
       expect(persisted.checkedAt).toEqual(expect.any(Number));
     }
+
+    // Catalog sync: the fresh list lands in models.json for extension-less
+    // subagent children.
+    const doc = JSON.parse(await readFile(testModelsPath, "utf-8")) as {
+      providers: { "ollama-cloud": { models: { id: string }[] } };
+    };
+    expect(doc.providers["ollama-cloud"].models.map((m) => m.id).sort()).toEqual(["plain-model", "thinking-model"]);
+  });
+
+  it("leaves models.json untouched when the network refresh fails", async () => {
+    globalThis.fetch = async () => {
+      throw new Error("network down");
+    };
+    const { context } = makeContext();
+    await expect(refreshOllamaCatalog(context)).rejects.toThrow("Failed to fetch model list");
+    await expect(readFile(testModelsPath, "utf-8")).rejects.toThrow("ENOENT");
   });
 
   it("propagates a network failure without publishing", async () => {
@@ -310,6 +355,11 @@ describe("refreshOllamaCatalog network phase", () => {
     const result = await refreshOllamaCatalog(context);
     expect(result.map((m) => m.id)).toEqual(["stored-a"]);
     expect(publish).not.toHaveBeenCalled();
+    // Cooldown still bootstraps models.json when the entry is missing.
+    const doc = JSON.parse(await readFile(testModelsPath, "utf-8")) as {
+      providers: { "ollama-cloud": { models: { id: string }[] } };
+    };
+    expect(doc.providers["ollama-cloud"].models.map((m) => m.id)).toEqual(["stored-a"]);
   });
 
   it("fetches when forced even within the cooldown window", async () => {

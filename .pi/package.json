@@ -23,7 +23,7 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
-		"test": "pnpm test:core && pnpm test:features && pnpm test:analysis && pnpm test:telemetry-usage && pnpm test:cache-effort && pnpm test:profiles && pnpm test:provider-codex && pnpm test:subscription-usage && pnpm test:safety && pnpm test:ask-user && pnpm test:advisor && pnpm test:subagents && pnpm test:todos && pnpm test:web-fetch && pnpm test:github-repos && pnpm test:status && pnpm test:steer && pnpm test:goal && pnpm test:plan && pnpm test:workflows && pnpm test:integrations",
+		"test": "pnpm test:core && pnpm test:features && pnpm test:analysis && pnpm test:telemetry-usage && pnpm test:cache-effort && pnpm test:profiles && pnpm test:provider-codex && pnpm test:provider-ollama && pnpm test:subscription-usage && pnpm test:safety && pnpm test:ask-user && pnpm test:advisor && pnpm test:subagents && pnpm test:todos && pnpm test:web-fetch && pnpm test:github-repos && pnpm test:status && pnpm test:steer && pnpm test:goal && pnpm test:plan && pnpm test:workflows && pnpm test:integrations",
 		"test:core": "vitest run extensions/_shared",
 		"test:analysis": "vitest run extensions/telemetry-analysis",
 		"test:telemetry-usage": "vitest run extensions/telemetry-usage",
@@ -36,6 +36,7 @@
 		"test:features": "vitest run extensions/config-feature-flag/catalog.test.ts extensions/ui-model-selector/model-config.test.ts extensions/ui-context/context-model.test.ts extensions/ui-context/index.test.ts extensions/ui-context/usage-tables.test.ts",
 		"test:profiles": "vitest run extensions/config-profiles",
 		"test:provider-codex": "vitest run extensions/provider-codex",
+		"test:provider-ollama": "vitest run extensions/provider-ollama",
 		"test:todos": "vitest run extensions/tools-todo",
 		"test:web-fetch": "vitest run extensions/tools-web-fetch extensions/tools-web-search",
 		"test:github-repos": "vitest run extensions/tools-github-repos",
