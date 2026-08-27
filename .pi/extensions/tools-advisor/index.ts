@@ -16,7 +16,7 @@ import {
 	PROJECT_SETTINGS_PATH,
 	readSettingsDocument,
 } from "../_shared/settings-document.ts";
-import { registerSessionProfileInitialization } from "../_shared/session-profile-initialization.ts";
+import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
 	formatTokenCount,
 	modelKey,
@@ -395,7 +395,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			updateStatus(ctx);
 		};
 
-		const profileInitialization = registerSessionProfileInitialization(
+		const profileInitialization = registerSessionProfileBinding(
 			{ settingsPath: settingsFilePath, profilesDirectory },
 			{
 				name: "tools-advisor",

@@ -15,9 +15,9 @@ import {
 	parseActiveProfileName,
 	profilePath as resolveProfilePath,
 	validateProfileName,
-} from "../_shared/active-profile.ts";
+} from "../_shared/profile-document.ts";
 
-export { CONFIG_PROFILES_KEY, PI_DIRECTORY, PROFILES_DIRECTORY, PROJECT_SETTINGS_PATH, validateProfileName } from "../_shared/active-profile.ts";
+export { CONFIG_PROFILES_KEY, PI_DIRECTORY, PROFILES_DIRECTORY, PROJECT_SETTINGS_PATH, validateProfileName } from "../_shared/profile-document.ts";
 
 export interface ProfileSwitchResult {
 	changed: boolean;

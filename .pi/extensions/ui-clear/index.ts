@@ -14,10 +14,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	CONFIG_PROFILES_ENTRY_TYPE,
-	clearSessionProfileHandoff,
 	sessionProfileName,
+} from "../_shared/profile-document.ts";
+import {
+	clearSessionProfileHandoff,
 	stageSessionProfileHandoff,
-} from "../_shared/active-profile.ts";
+} from "../_shared/session-profile-binding.ts";
 
 export default function (pi: ExtensionAPI) {
 	// ── Command registration ────────────────────────────────────────────

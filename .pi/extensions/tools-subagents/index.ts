@@ -15,8 +15,8 @@ import {
 	type SubagentProgressEvent,
 	type SubagentService,
 } from "../_shared/subagent-service.ts";
-import { PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
-import { registerSessionProfileInitialization } from "../_shared/session-profile-initialization.ts";
+import { PROFILES_DIRECTORY } from "../_shared/profile-document.ts";
+import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
 	agentRegistry,
 	loadAgents,
@@ -86,7 +86,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 
 		registerSubagentService(service);
 		let maxConcurrency = DEFAULT_MAX_CONCURRENCY;
-		const profileInitialization = registerSessionProfileInitialization(
+		const profileInitialization = registerSessionProfileBinding(
 			{ settingsPath: PROJECT_SETTINGS_PATH, profilesDirectory: PROFILES_DIRECTORY },
 			{
 				name: "tools-subagents",

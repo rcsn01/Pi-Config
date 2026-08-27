@@ -7,7 +7,7 @@ import type { EditorComponent } from "@earendil-works/pi-tui";
 import {
 	CONFIG_PROFILES_ENTRY_TYPE,
 	sessionProfileName,
-} from "../_shared/active-profile.ts";
+} from "../_shared/profile-document.ts";
 import {
 	isAmbiguousPlanAcceptance,
 	isDuplicatePlanText,

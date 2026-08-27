@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CONFIG_PROFILES_ENTRY_TYPE } from "../_shared/active-profile.ts";
+import { CONFIG_PROFILES_ENTRY_TYPE } from "../_shared/profile-document.ts";
 import { createConfigProfilesExtension } from "../config-profiles/index.ts";
 import type { ProfileStore } from "../config-profiles/profile-store.ts";
 import clearExtension from "./index.ts";

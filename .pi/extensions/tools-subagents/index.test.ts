@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PROFILES_DIRECTORY } from "../_shared/active-profile.ts";
+import { PROFILES_DIRECTORY } from "../_shared/profile-document.ts";
 import { requireSubagentService } from "../_shared/subagent-service.ts";
 import subagentsExtension, {
 	createSubagentsExtension,
