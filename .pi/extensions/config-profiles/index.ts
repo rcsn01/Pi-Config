@@ -7,6 +7,7 @@ import {
 	sessionProfileName,
 } from "../_shared/active-profile.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
+import { registerSessionProfileInitialization } from "../_shared/session-profile-initialization.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 
 export interface ConfigProfilesDependencies {
@@ -43,10 +44,47 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 			profilesDirectory: store.profilesDirectory,
 		});
 		let sessionProfile: string | undefined;
+		let profileInitializationStarted = false;
+		let profileInitializationDisposed = false;
 
 		const updateStatus = (ctx: ExtensionContext, profile: string | undefined): void => {
 			if (ctx.hasUI) ctx.ui.setStatus("profile", profile);
 		};
+
+		const profileInitialization = registerSessionProfileInitialization(
+			{
+				settingsPath: store.settingsPath,
+				profilesDirectory: store.profilesDirectory,
+			},
+			{
+				name: "config-profiles",
+				async initialize(binding, _event, ctx) {
+					profileInitializationStarted = true;
+					profileInitializationDisposed = false;
+					if (binding.origin !== "marker" || binding.profileName === undefined) {
+						sessionProfile = binding.profileName;
+						updateStatus(ctx, binding.profileName);
+						return;
+					}
+					try {
+						store.readProfile(binding.profileName);
+						sessionProfile = binding.profileName;
+						updateStatus(ctx, binding.profileName);
+						profileContext.remember(binding, (customType, data) => pi.appendEntry(customType, data));
+					} catch (error) {
+						sessionProfile = undefined;
+						updateStatus(ctx, undefined);
+						ctx.ui.notify(`Could not load the active settings profile: ${errorMessage(error)}`, "error");
+					}
+				},
+				dispose: (_binding, ctx) => {
+					sessionProfile = undefined;
+					profileInitializationStarted = false;
+					profileInitializationDisposed = true;
+					updateStatus(ctx, undefined);
+				},
+			},
+		);
 
 		const applyProfileModel = async (name: string, ctx: ExtensionContext): Promise<void> => {
 			const previousModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
@@ -149,22 +187,7 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 		};
 
 		pi.on("session_start", async (event, ctx) => {
-			const binding = profileContext.enter(event, ctx);
-			if (binding.origin !== "marker" || binding.profileName === undefined) {
-				sessionProfile = binding.profileName;
-				updateStatus(ctx, binding.profileName);
-				return;
-			}
-			try {
-				store.readProfile(binding.profileName);
-				sessionProfile = binding.profileName;
-				updateStatus(ctx, binding.profileName);
-				profileContext.remember(binding, (customType, data) => pi.appendEntry(customType, data));
-			} catch (error) {
-				sessionProfile = undefined;
-				updateStatus(ctx, undefined);
-				ctx.ui.notify(`Could not load the active settings profile: ${errorMessage(error)}`, "error");
-			}
+			await profileInitialization.start(event, ctx);
 		});
 
 		pi.on("session_tree", async (_event, ctx) => {
@@ -172,9 +195,16 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 			updateStatus(ctx, sessionProfile);
 		});
 
-		pi.on("session_shutdown", async (_event, ctx) => {
-			sessionProfile = undefined;
-			updateStatus(ctx, undefined);
+		pi.on("session_shutdown", async (event, ctx) => {
+			try {
+				await profileInitialization.stop(event, ctx);
+			} finally {
+				if (!profileInitializationStarted && !profileInitializationDisposed) {
+					sessionProfile = undefined;
+					updateStatus(ctx, undefined);
+				}
+				profileInitialization.unregister();
+			}
 		});
 
 		pi.registerCommand("profile", {

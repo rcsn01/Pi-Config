@@ -84,7 +84,6 @@ export interface PlanModeDependencies {
 
 export interface PlanLifecycleSessionStarted {
 	type: "sessionStarted";
-	profilePath: string;
 	ctx: ExtensionContext;
 }
 
@@ -248,6 +247,7 @@ export type PlanLifecycleResult<E extends PlanLifecycleEvent> =
 	void;
 
 export interface PlanLifecycle {
+	setProfilePath(path: string): void;
 	dispatch<E extends PlanLifecycleEvent>(event: E): Promise<PlanLifecycleResult<E>>;
 }
 
@@ -843,12 +843,15 @@ export function createPlanLifecycle(
 		);
 	}
 
+	function setProfilePath(path: string): void {
+		profileStore.setPath(path);
+	}
+
 	async function dispatch<E extends PlanLifecycleEvent>(event: E): Promise<PlanLifecycleResult<E>> {
 		switch (event.type) {
 			case "sessionStarted":
 				clearPendingMode(event.ctx);
 				lastPromptedMode = undefined;
-				profileStore.setPath(event.profilePath);
 				await reconstruct(event.ctx);
 				return undefined as PlanLifecycleResult<E>;
 			case "branchChanged":
@@ -1020,5 +1023,5 @@ export function createPlanLifecycle(
 		}
 	}
 
-	return { dispatch };
+	return { dispatch, setProfilePath };
 }

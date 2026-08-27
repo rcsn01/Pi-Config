@@ -16,7 +16,7 @@ import {
 	PROJECT_SETTINGS_PATH,
 	readSettingsDocument,
 } from "../_shared/settings-document.ts";
-import { createSessionProfileContext } from "../_shared/active-profile.ts";
+import { registerSessionProfileInitialization } from "../_shared/session-profile-initialization.ts";
 import {
 	formatTokenCount,
 	modelKey,
@@ -351,10 +351,6 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 	return function advisorExtensionFactory(pi: ExtensionAPI): void {
 		const settingsFilePath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
 		const profilesDirectory = join(dirname(settingsFilePath), "profiles");
-		const profileContext = createSessionProfileContext({
-			settingsPath: settingsFilePath,
-			profilesDirectory,
-		});
 		// The document read/written by loadForSession and the /advisor commands;
 		// repointed at the session's profile file on session start.
 		let settingsPath = settingsFilePath;
@@ -398,6 +394,20 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			}
 			updateStatus(ctx);
 		};
+
+		const profileInitialization = registerSessionProfileInitialization(
+			{ settingsPath: settingsFilePath, profilesDirectory },
+			{
+				name: "tools-advisor",
+				applyPath: (binding) => {
+					settingsPath = binding.settingsPath;
+				},
+				initialize: (_binding, _event, ctx) => loadForSession(ctx),
+				dispose: (_binding, ctx) => {
+					if (ctx.hasUI) ctx.ui.setStatus("advisor", undefined);
+				},
+			},
+		);
 
 		const warnAboutModel = (model: Model<Api>, ctx: ExtensionContext) => {
 			if (ctx.model && model.contextWindow < ctx.model.contextWindow) {
@@ -639,13 +649,14 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 		});
 
 		pi.on("session_start", async (event, ctx) => {
-			// Point the advisor at the session's profile file; no profile means
-			// settings.json.
-			settingsPath = profileContext.enter(event, ctx).settingsPath;
-			await loadForSession(ctx);
+			await profileInitialization.start(event, ctx);
 		});
-		pi.on("session_shutdown", async (_event, ctx) => {
-			if (ctx.hasUI) ctx.ui.setStatus("advisor", undefined);
+		pi.on("session_shutdown", async (event, ctx) => {
+			try {
+				await profileInitialization.stop(event, ctx);
+			} finally {
+				profileInitialization.unregister();
+			}
 		});
 	};
 }
