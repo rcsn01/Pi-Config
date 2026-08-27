@@ -40,6 +40,7 @@ import {
 	type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
+import { reapplyThinkingBorder } from "../_shared/editor-border.ts";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -352,6 +353,7 @@ export default function (pi: ExtensionAPI) {
 					(text) => store.record(currentCwd, text),
 					modelHandler,
 				);
+				reapplyThinkingBorder(ctx, editor, tui);
 				return editor;
 			},
 		);

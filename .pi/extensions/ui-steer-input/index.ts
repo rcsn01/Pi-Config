@@ -18,6 +18,7 @@ import {
 	ModelCommandRoutingEditor,
 	parseModelCommand,
 } from "../_shared/model-command-routing.ts";
+import { reapplyThinkingBorder } from "../_shared/editor-border.ts";
 
 /**
  * Wraps the built-in editor to intercept Tab during agent streaming.
@@ -103,7 +104,7 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 		const modelCommandHandler = getModelCommandHandler();
 
 		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-			return new SteerEditor(
+			const editor = new SteerEditor(
 				tui,
 				theme,
 				keybindings,
@@ -133,6 +134,8 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 					);
 				},
 			);
+			reapplyThinkingBorder(ctx, editor, tui);
+			return editor;
 		});
 	});
 

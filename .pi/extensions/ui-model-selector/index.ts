@@ -15,6 +15,7 @@
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
+import { reapplyThinkingBorder } from "../_shared/editor-border.ts";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import { PROFILES_DIRECTORY } from "../_shared/profile-document.ts";
 import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
@@ -198,8 +199,11 @@ export function createModelSelectorExtension(
 						}
 					};
 					uninstallModelCommandHandler = installModelCommandHandler(handler);
-					ctx.ui.setEditorComponent((tui, theme, keybindings) =>
-						new ModelCommandRoutingEditor(tui, theme, keybindings, handler));
+					ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+						const editor = new ModelCommandRoutingEditor(tui, theme, keybindings, handler);
+						reapplyThinkingBorder(ctx, editor, tui);
+						return editor;
+					});
 
 					const hasConversationHistory = buildSessionContext(
 						ctx.sessionManager.getEntries(),
