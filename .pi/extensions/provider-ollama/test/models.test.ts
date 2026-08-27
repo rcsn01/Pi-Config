@@ -155,87 +155,38 @@ describe("assembleModels", () => {
     expect(models[0].maxTokens).toBe(32768);
   });
 
-  describe("thinking level maps", () => {
-    it("assigns GPT_OSS map to gpt-oss models", () => {
-      const models = assembleModels({
-        "gpt-oss:20b": rawModel({ capabilities: ["tools", "thinking"] }),
-        "gpt-oss:120b": rawModel({ capabilities: ["tools", "thinking"] }),
-      });
-      for (const m of models) {
-        expect(m.thinkingLevelMap).toEqual({
-          off: null,
-          minimal: null,
-          low: "low",
-          medium: "medium",
-          high: "high",
-          xhigh: null,
-        });
-      }
+  it("attaches the resolved family map to thinking-capable models", () => {
+    const models = assembleModels({
+      "qwen3.8:27b": rawModel({ capabilities: ["tools", "thinking", "vision"] }),
+      "glm-5.3-flash": rawModel({ capabilities: ["tools", "thinking", "vision"] }),
+      "unknown-model": rawModel({ capabilities: ["tools", "thinking"] }),
     });
 
-    it("assigns QWEN3 (binary think/nothink) to qwen3 non-VL models", () => {
-      const models = assembleModels({
-        "qwen3:397b": rawModel({ capabilities: ["tools", "thinking"] }),
-        "qwen3-next:80b": rawModel({ capabilities: ["tools", "thinking"] }),
-      });
-      for (const m of models) {
-        expect(m.thinkingLevelMap).toEqual({
-          off: "none",
-          minimal: null,
-          low: null,
-          medium: "medium",
-          high: null,
-          xhigh: null,
-        });
-      }
+    expect(models[0].thinkingLevelMap).toEqual({
+      off: "none",
+      minimal: null,
+      low: "low",
+      medium: "medium",
+      high: null,
+      xhigh: "xhigh",
+      max: null,
     });
-
-    it("assigns NO_OFF to qwen3-vl models (none does not disable thinking)", () => {
-      const models = assembleModels({ "qwen3-vl:235b": rawModel({ capabilities: ["tools", "thinking", "vision"] }) });
-      expect(models[0].thinkingLevelMap).toEqual({
-        off: null,
-        minimal: null,
-        low: "low",
-        medium: "medium",
-        high: "high",
-        xhigh: "max",
-      });
+    expect(models[1].thinkingLevelMap).toEqual({
+      off: null,
+      minimal: null,
+      low: "low",
+      medium: null,
+      high: "high",
+      xhigh: null,
+      max: "max",
     });
-
-    it("assigns GLM_52 to glm-5.2 (off/high/xhigh only)", () => {
-      const models = assembleModels({ "glm-5.2": rawModel({ capabilities: ["tools", "thinking"] }) });
-      expect(models[0].thinkingLevelMap).toEqual({
-        off: "none",
-        minimal: null,
-        low: null,
-        medium: null,
-        high: "high",
-        xhigh: "max",
-      });
-    });
-
-    it("assigns NO_OFF to kimi-k2-thinking (none does not disable thinking)", () => {
-      const models = assembleModels({ "kimi-k2-thinking": rawModel({ capabilities: ["tools", "thinking"] }) });
-      expect(models[0].thinkingLevelMap).toEqual({
-        off: null,
-        minimal: null,
-        low: "low",
-        medium: "medium",
-        high: "high",
-        xhigh: "max",
-      });
-    });
-
-    it("assigns NO_OFF to minimax models (none does not disable thinking)", () => {
-      const models = assembleModels({ "minimax-m2.7": rawModel({ capabilities: ["tools", "thinking"] }) });
-      expect(models[0].thinkingLevelMap).toEqual({
-        off: null,
-        minimal: null,
-        low: "low",
-        medium: "medium",
-        high: "high",
-        xhigh: "max",
-      });
+    expect(models[2].thinkingLevelMap).toEqual({
+      off: "none",
+      minimal: null,
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "max",
     });
   });
 });
@@ -247,6 +198,13 @@ describe("assembleModels", () => {
 describe("GENERATED_MODELS", () => {
   it("ships at least one model", () => {
     expect(GENERATED_MODELS.length).toBeGreaterThan(0);
+  });
+
+  it("keeps generated thinking maps in sync with the resolver", () => {
+    for (const model of GENERATED_MODELS) {
+      const capabilities = model.reasoning ? ["thinking"] : [];
+      expect(model.thinkingLevelMap, model.id).toEqual(resolve(model.id, capabilities));
+    }
   });
 
   it("ships the full explicit compat shape from buildCompat", () => {
@@ -280,14 +238,55 @@ describe("GENERATED_MODELS", () => {
 // ============================================================================
 
 describe("resolve", () => {
+  const thinking = ["tools", "thinking"];
+
   it("returns undefined for models without thinking capability", () => {
     expect(resolve("any-model", [])).toBeUndefined();
-    expect(resolve("any-model", ["tools"])).toBeUndefined();
-    expect(resolve("any-model", ["tools", "vision"])).toBeUndefined();
+    expect(resolve("qwen3.8:27b", ["tools"])).toBeUndefined();
+    expect(resolve("glm-5.3-flash", ["tools", "vision"])).toBeUndefined();
   });
 
-  it("returns DEFAULT for unrecognized thinking models", () => {
-    expect(resolve("unknown-model", ["tools", "thinking"])).toEqual({
+  it.each([
+    [
+      "Qwen",
+      ["qwen3.5:397b", "qwen3.6-27b", "qwen3.8-flash", "qwen3.8-max"],
+      { off: "none", minimal: null, low: "low", medium: "medium", high: null, xhigh: "xhigh", max: null },
+    ],
+    [
+      "DeepSeek",
+      ["deepseek-r1", "deepseek-v4-flash:0731", "deepseek-v4-pro:0813"],
+      { off: "none", minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+    ],
+    [
+      "GLM",
+      ["glm-5.1", "glm-5.2", "glm-5.3", "glm-5.3-flash"],
+      { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+    ],
+    [
+      "Kimi",
+      ["kimi-k2.6", "kimi-k2.7-code", "kimi-k3"],
+      { off: null, minimal: null, low: null, medium: null, high: "high", xhigh: null, max: null },
+    ],
+    [
+      "Nemotron",
+      ["nemotron-3-nano:30b", "nemotron-3-super", "nemotron-3-ultra"],
+      { off: "none", minimal: null, low: null, medium: "medium", high: "high", xhigh: null, max: null },
+    ],
+    [
+      "Muse",
+      ["muse-glimmer-30b", "muse-spark-1.1", "muse-spark-1.2"],
+      { off: null, minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: null },
+    ],
+  ] as const)("uses one newest-generation map for the entire %s family", (_family, ids, expected) => {
+    for (const id of ids) expect(resolve(id, thinking)).toEqual(expected);
+  });
+
+  it("matches family names case-insensitively", () => {
+    expect(resolve("QWEN3.5:397B", thinking)).toEqual(resolve("qwen3.8-max", thinking));
+  });
+
+  it("returns DEFAULT for other thinking-capable models", () => {
+    expect(resolve("unknown-model", thinking)).toEqual({
       off: "none",
       minimal: null,
       low: "low",
@@ -295,113 +294,6 @@ describe("resolve", () => {
       high: "high",
       xhigh: "max",
     });
-  });
-
-  it("returns GPT_OSS for gpt-oss prefix", () => {
-    expect(resolve("gpt-oss:20b", ["tools", "thinking"])).toEqual({
-      off: null,
-      minimal: null,
-      low: "low",
-      medium: "medium",
-      high: "high",
-      xhigh: null,
-    });
-    expect(resolve("gpt-oss:120b", ["tools", "thinking"])).toEqual({
-      off: null,
-      minimal: null,
-      low: "low",
-      medium: "medium",
-      high: "high",
-      xhigh: null,
-    });
-  });
-
-  it("returns QWEN3 for qwen3 models (except qwen3-vl)", () => {
-    expect(resolve("qwen3:397b", ["tools", "thinking"])).toEqual({
-      off: "none",
-      minimal: null,
-      low: null,
-      medium: "medium",
-      high: null,
-      xhigh: null,
-    });
-    expect(resolve("qwen3-next:80b", ["tools", "thinking"])).toEqual({
-      off: "none",
-      minimal: null,
-      low: null,
-      medium: "medium",
-      high: null,
-      xhigh: null,
-    });
-  });
-
-  it("returns NO_OFF for qwen3-vl prefix (none does not disable thinking)", () => {
-    expect(resolve("qwen3-vl:235b", ["tools", "thinking", "vision"])).toEqual({
-      off: null,
-      minimal: null,
-      low: "low",
-      medium: "medium",
-      high: "high",
-      xhigh: "max",
-    });
-  });
-
-  it("returns GLM_52 for glm-5.2 (off/high/xhigh only)", () => {
-    expect(resolve("glm-5.2", ["tools", "thinking"])).toEqual({
-      off: "none",
-      minimal: null,
-      low: null,
-      medium: null,
-      high: "high",
-      xhigh: "max",
-    });
-  });
-
-  it("returns NO_OFF for kimi-k2-thinking (exact match only)", () => {
-    expect(resolve("kimi-k2-thinking", ["tools", "thinking"])).toEqual({
-      off: null,
-      minimal: null,
-      low: "low",
-      medium: "medium",
-      high: "high",
-      xhigh: "max",
-    });
-    // kimi-k2.5 and kimi-k2.6 support "none" correctly — DEFAULT, not NO_OFF
-    expect(resolve("kimi-k2.5", ["tools", "thinking"])).toEqual({
-      off: "none",
-      minimal: null,
-      low: "low",
-      medium: "medium",
-      high: "high",
-      xhigh: "max",
-    });
-    expect(resolve("kimi-k2.6", ["tools", "thinking"])).toEqual({
-      off: "none",
-      minimal: null,
-      low: "low",
-      medium: "medium",
-      high: "high",
-      xhigh: "max",
-    });
-  });
-
-  it("returns NO_OFF for minimax prefix", () => {
-    for (const id of ["minimax-m2.1", "minimax-m2.5", "minimax-m2.7"]) {
-      expect(resolve(id, ["tools", "thinking"])).toEqual({
-        off: null,
-        minimal: null,
-        low: "low",
-        medium: "medium",
-        high: "high",
-        xhigh: "max",
-      });
-    }
-  });
-
-  it("returns undefined when thinking is absent regardless of prefix", () => {
-    expect(resolve("gpt-oss:20b", ["tools"])).toBeUndefined();
-    expect(resolve("qwen3:397b", ["tools"])).toBeUndefined();
-    expect(resolve("minimax-m2.7", ["tools"])).toBeUndefined();
   });
 });
 
