@@ -1,37 +1,10 @@
-export const TELEMETRY_USAGE_PAGE_STYLES = String.raw`
-:root {
-	color-scheme: dark;
-	font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-	background: var(--page-bg);
-	color: var(--page-text);
-	font-synthesis: none;
-	--page-bg: #282828;
-	--page-surface: #303030;
-	--page-surface-raised: #383838;
-	--page-surface-hover: #424242;
-	--page-surface-deep: #242424;
-	--page-line: #4A4A4A;
-	--page-line-strong: #606060;
-	--page-text: #F9F8F6;
-	--page-text-soft: #EFE9E3;
-	--page-text-muted: #D9CFC7;
-	--page-accent: #C9B59C;
-}
-* { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; background: var(--page-bg); color: var(--page-text); }
-button, input { font: inherit; }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--page-accent); outline-offset: 2px; }
-.shell { width: min(1480px, 100%); margin: 0 auto; padding: 24px; }
-header { display: flex; gap: 24px; align-items: flex-start; justify-content: space-between; margin-bottom: 18px; }
-h1 { margin: 0 0 6px; font-size: clamp(1.45rem, 3vw, 2.1rem); letter-spacing: -0.035em; }
+import { DASHBOARD_BASE_STYLES } from "../_shared/dashboard-styles.ts";
+
+export const TELEMETRY_USAGE_PAGE_STYLES = String.raw`${DASHBOARD_BASE_STYLES}
 .subtitle, .secret { margin: 0; color: var(--page-text-muted); }
 .secret { margin-top: 7px; font-size: .86rem; color: var(--page-accent); }
 .header-actions { display: flex; align-items: center; gap: 12px; }
-button { border: 1px solid var(--page-line); border-radius: 8px; color: var(--page-text); background: var(--page-surface-raised); cursor: pointer; }
-button:hover:not(:disabled) { border-color: var(--page-line-strong); background: var(--page-surface-hover); }
-button:disabled { cursor: wait; opacity: .58; }
 #refresh { padding: 9px 14px; white-space: nowrap; }
-.status { min-height: 42px; display: flex; align-items: center; padding: 10px 13px; margin-bottom: 16px; border: 1px solid var(--page-line); border-radius: 9px; background: var(--page-surface); color: var(--page-text-soft); }
 .status[data-phase="scanning"] { color: var(--page-accent); border-color: var(--page-line-strong); }
 .status[data-phase="error"] { color: var(--page-text-soft); border-color: var(--page-accent); }
 .fatal { padding: 18px; border: 1px solid var(--page-accent); border-radius: 10px; background: var(--page-surface-raised); color: var(--page-text-soft); }
@@ -121,8 +94,6 @@ tbody tr:hover td { background: var(--page-surface-raised); }
 	.overview-lower { grid-template-columns: 1fr; gap: 24px; }
 }
 @media (max-width: 760px) {
-	.shell { padding: 14px; }
-	header { display: block; }
 	.header-actions { margin-top: 14px; }
 	.cards { grid-template-columns: repeat(2, minmax(110px, 1fr)); padding: 14px 6px; border-radius: 16px; }
 	.card { padding: 3px 10px; }
