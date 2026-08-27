@@ -88,6 +88,38 @@ describe("refreshOllamaCatalog restore phase", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("rehydrates family thinking maps when restoring a persisted catalog", async () => {
+    const staleDeepSeek = {
+      ...makeStoredModel("deepseek-r1"),
+      reasoning: true,
+      thinkingLevelMap: {
+        off: "none" as const,
+        minimal: null,
+        low: "low" as const,
+        medium: null,
+        high: "high" as const,
+        xhigh: null,
+        max: null,
+      },
+    };
+    const { context } = makeContext({
+      allowNetwork: false,
+      stored: { models: [staleDeepSeek], checkedAt: Date.now() },
+    });
+
+    const result = await refreshOllamaCatalog(context);
+
+    expect(result[0].thinkingLevelMap).toEqual({
+      off: "none",
+      minimal: null,
+      low: "low",
+      medium: null,
+      high: "high",
+      xhigh: null,
+      max: "max",
+    });
+  });
+
   it("returns the baseline immediately when the signal is already aborted", async () => {
     const controller = new AbortController();
     controller.abort();

@@ -237,11 +237,17 @@ export async function refreshOllamaCloudModels(
  * models anyway.
  */
 export async function refreshOllamaCatalog(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
-  // The fallback list: the persisted snapshot (copied) when non-empty, else the
-  // baked-in list. Guards against a stored empty catalog (e.g. a prior bad
-  // refresh) propagating [] across sessions. A mutable copy is returned because
-  // the stored list is `readonly` and the return type is a mutable array.
-  const fallback = context.stored?.models.length ? [...context.stored.models] : GENERATED_MODELS;
+  // Persisted catalogs can outlive extension updates. Re-resolve their thinking
+  // maps on every restore so a reload immediately picks up current family rules
+  // instead of retaining stale choices until the network-refresh cooldown ends.
+  // The stored list is readonly, so mapping also provides the mutable copy
+  // required by the callback return type.
+  const fallback = context.stored?.models.length
+    ? context.stored.models.map((model) => ({
+        ...model,
+        thinkingLevelMap: resolveThinkingLevelMap(model.id, model.reasoning ? ["thinking"] : []),
+      }))
+    : GENERATED_MODELS;
 
   // Restore phase. Rehydrate from the persisted snapshot so removals stick
   // across sessions; fall back to the baked-in list on first launch. Also the
