@@ -4,6 +4,7 @@ import { GENERATED_MODELS } from "./models.generated.ts";
 import { MODEL_PRICING, type ModelPrice } from "./pricing.generated.ts";
 import { resolve as resolveThinkingLevelMap } from "./thinking-levels.ts";
 import { concurrentMap, fetchJsonWithTimeout, getContextLength } from "./utils.ts";
+import { ensureOllamaCatalogInModelsJson, syncOllamaCatalogToModelsJson } from "./catalog-sync.ts";
 
 // --- Pricing ---
 // Estimated per-1M-token prices are generated from models.dev by
@@ -220,6 +221,24 @@ export async function refreshOllamaCloudModels(
   return { models, failed };
 }
 
+// --- models.json sync ---
+
+/**
+ * Best-effort models.json sync. Subagent children run with `--no-extensions`,
+ * so they cannot see the provider registered here; a synced static entry in
+ * models.json (read by every pi process) makes the provider resolvable there.
+ * See catalog-sync.ts for the composition and safety rationale. A failed or
+ * skipped sync must never break the refresh itself — sessions that load this
+ * extension keep their in-memory live catalog regardless.
+ */
+async function syncModelsJsonQuietly(sync: () => Promise<unknown>): Promise<void> {
+  try {
+    await sync();
+  } catch (error) {
+    console.warn(`[pi-ollama-cloud] models.json catalog sync failed: ${(error as Error).message}`);
+  }
+}
+
 // --- refreshModels callback ---
 
 /**
@@ -253,6 +272,12 @@ export async function refreshOllamaCatalog(context: RefreshModelsContext): Promi
   // across sessions; fall back to the baked-in list on first launch. Also the
   // early-out for an already-aborted signal.
   if (!context.allowNetwork || context.signal.aborted) {
+    // Offline-safe bootstrap: only fills a missing/empty entry so a fresh
+    // install still produces a resolvable static catalog for extension-less
+    // processes; never overwrites an existing synced catalog with stale data.
+    if (!context.signal.aborted) {
+      await syncModelsJsonQuietly(() => ensureOllamaCatalogInModelsJson(fallback));
+    }
     return fallback;
   }
 
@@ -264,6 +289,9 @@ export async function refreshOllamaCatalog(context: RefreshModelsContext): Promi
     context.stored?.checkedAt !== undefined &&
     Date.now() - context.stored.checkedAt < REFRESH_COOLDOWN_MS
   ) {
+    // Cooldown: the stored catalog is fresh, so the static models.json entry
+    // only needs to exist, not to be rewritten.
+    await syncModelsJsonQuietly(() => ensureOllamaCatalogInModelsJson(fallback));
     return fallback;
   }
 
@@ -352,6 +380,11 @@ export async function refreshOllamaCatalog(context: RefreshModelsContext): Promi
     }
     throw new Error(`Ollama Cloud catalog refresh incomplete: ${failed} model(s) failed`);
   }
+
+  // Mirror the fresh catalog into models.json so extension-less processes
+  // (subagent children) can resolve the provider. Best-effort: an unwritable
+  // models.json does not invalidate the fresh in-memory catalog below.
+  await syncModelsJsonQuietly(() => syncOllamaCatalogToModelsJson(persisted));
 
   return persisted;
 }
