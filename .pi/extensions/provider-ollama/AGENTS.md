@@ -29,7 +29,7 @@ This is a Pi extension. The split is intentional, do not collapse it:
 - `index.ts` — Extension entry point. Provider registration, command registration, session lifecycle hooks. Should not call the network directly; delegate to `models.ts`.
 - `models.ts` — Provider data plane: API constants, model assembly, fetch helpers, and the `refreshOllamaCatalog` callback wired as `refreshModels` in `index.ts`. Owns `OLLAMA_BASE`.
 - `config.ts` — JSON config file loader and schema validation (`CONFIG_SCHEMA` / `sanitizeConfig`).
-- `thinking-levels.ts` — Per-model reasoning-effort maps. Pure data + a single resolve function.
+- `thinking-levels.ts` — Sourced reasoning-effort maps for selected model families, plus the default map and resolve function.
 - `utils.ts` — Cross-cutting helpers (`fetchJsonWithTimeout`, `concurrentMap`, `getContextLength`). Keep small.
 - `scripts/generate-models.ts` — Generator script. Runs against the live API to refresh `models.generated.ts`. Not shipped at runtime.
 - `scripts/generate-pricing.ts` — Generator script. Fetches `https://models.dev/api.json` plus the Ollama model list and writes `pricing.generated.ts` via a curated `OLLAMA_TO_MODELSDEV` mapping. Not shipped at runtime.

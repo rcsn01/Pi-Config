@@ -104,7 +104,7 @@ jq -r 'select(.effort == "none" and (.response.choices[0].message.reasoning // "
 
 ## Summary
 
-Models where `"none"` **does not** disable thinking (used by `NO_OFF` map in `thinking-levels.ts`):
+Models where `"none"` **does not** disable thinking, retained here as historical test results:
 
 - `gpt-oss:20b`, `gpt-oss:120b` - documented: no off mode
 - `kimi-k2-thinking` - only this specific kimi model; `kimi-k2.5`/`kimi-k2.6` work fine

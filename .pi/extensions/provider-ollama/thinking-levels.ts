@@ -1,31 +1,19 @@
 /**
- * Thinking level mapping for Ollama Cloud models.
+ * Family-level thinking mappings for Ollama Cloud models.
  *
- * Maps Pi's thinking levels to Ollama Cloud's OpenAI-compatible
- * `reasoning_effort` values. The API accepts "none", "low", "medium",
- * "high", and "max". On simple prompts, "max" can be a no-op over
- * "high", but on harder prompts it can increase thinking substantially
- * (e.g. deepseek-v4-pro: ~32k tokens on high vs ~55k on max).
+ * Each requested family uses one map based on its newest audited generation.
+ * A null value hides that level in Pi's UI. Keep model-version checks out of
+ * this resolver so every member of a family behaves consistently.
  *
- * A `null` value means the level is hidden in Pi's UI.
- *
- * Model-specific behavior discovered through testing (see docs/think-experiment.md):
- *   - Most models: all levels work, "none" disables thinking
- *   - GPT-OSS: no off mode, only low/medium/high
- *   - Qwen 3.x (non-VL): binary-only (think/nothink) - off works
- *   - Qwen 3 VL: "none" doesn't disable thinking - off is hidden
- *   - GLM 5.2: off/high/max are exposed; low/medium are hidden
- *   - Kimi K2 Thinking: "none" doesn't disable thinking - off is hidden
- *   - MiniMax M2.x: "none" doesn't disable thinking - off is hidden
- *
- * Reference: https://docs.ollama.com/api/openai-compatibility
+ * Research and source links:
+ * docs/family-thinking-mapping-research.md
  */
 
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 export type ThinkingLevelMap = NonNullable<ProviderModelConfig["thinkingLevelMap"]>;
 
-/** Default: off/low/medium/high/xhigh with minimal hidden. */
+/** Fallback for thinking-capable models outside the mapped families. */
 export const DEFAULT: ThinkingLevelMap = {
   off: "none",
   minimal: null,
@@ -35,63 +23,82 @@ export const DEFAULT: ThinkingLevelMap = {
   xhigh: "max",
 };
 
-/** GPT-OSS: can't disable thinking, only low/medium/high.
- *  https://ollama.com/library/gpt-oss */
-export const GPT_OSS: ThinkingLevelMap = {
-  off: null,
+/** Latest Qwen mapping, based on Qwen 3.8. */
+export const QWEN: ThinkingLevelMap = {
+  off: "none",
   minimal: null,
   low: "low",
   medium: "medium",
-  high: "high",
-  xhigh: null,
+  high: null,
+  xhigh: "xhigh",
+  max: null,
 };
 
-/** Qwen 3.x: binary-only (think/nothink), no gradation.
- *  https://docs.ollama.com/capabilities/thinking */
-export const QWEN3: ThinkingLevelMap = {
+/** Latest DeepSeek mapping, based on DeepSeek V4. */
+export const DEEPSEEK: ThinkingLevelMap = {
   off: "none",
   minimal: null,
-  low: null,
-  medium: "medium",
-  high: null,
+  low: "low",
+  medium: null,
+  high: "high",
   xhigh: null,
+  max: "max",
 };
 
-/** GLM 5.2: Ollama's model page confirms support for "high" and "max" reasoning efforts.
- *  https://ollama.com/library/glm-5.2 */
-export const GLM_52: ThinkingLevelMap = {
-  off: "none",
+/** Latest GLM mapping, based on forced-thinking GLM 5.3. */
+export const GLM: ThinkingLevelMap = {
+  off: null,
+  minimal: null,
+  low: "low",
+  medium: null,
+  high: "high",
+  xhigh: null,
+  max: "max",
+};
+
+/** Latest Kimi mapping, based on Kimi K3's documented enabled/default mode. */
+export const KIMI: ThinkingLevelMap = {
+  off: null,
   minimal: null,
   low: null,
   medium: null,
   high: "high",
-  xhigh: "max",
+  xhigh: null,
+  max: null,
 };
 
-/** "none" doesn't disable thinking - off is hidden.
- *  Used by kimi and minimax families. */
-export const NO_OFF: ThinkingLevelMap = {
-  off: null,
+/** Latest Nemotron mapping, based on Ultra's off, medium, and full modes. */
+export const NEMOTRON: ThinkingLevelMap = {
+  off: "none",
   minimal: null,
+  low: null,
+  medium: "medium",
+  high: "high",
+  xhigh: null,
+  max: null,
+};
+
+/** Latest Muse mapping, based on Muse Spark 1.2. */
+export const MUSE: ThinkingLevelMap = {
+  off: null,
+  minimal: "minimal",
   low: "low",
   medium: "medium",
   high: "high",
-  xhigh: "max",
+  xhigh: "xhigh",
+  max: null,
 };
 
-/**
- * Resolve the thinking level map for a model.
- * Matches by model ID prefix (case-sensitive, checks first chars).
- */
+/** Resolve one case-insensitive mapping per model family. */
 export function resolve(id: string, capabilities: string[]): ThinkingLevelMap | undefined {
   if (!capabilities.includes("thinking")) return undefined;
 
-  if (id.startsWith("gpt-oss")) return GPT_OSS;
-  if (id === "glm-5.2") return GLM_52;
-  if (id.startsWith("qwen3-vl")) return NO_OFF;
-  if (id.startsWith("qwen3")) return QWEN3;
-  if (id === "kimi-k2-thinking") return NO_OFF;
-  if (id.startsWith("minimax")) return NO_OFF;
-
+  const normalized = id.toLowerCase();
+  if (normalized.includes("qwen")) return QWEN;
+  if (normalized.includes("deepseek")) return DEEPSEEK;
+  if (normalized.includes("glm")) return GLM;
+  if (normalized.includes("kimi")) return KIMI;
+  if (normalized.includes("nemotron")) return NEMOTRON;
+  if (normalized.includes("muse")) return MUSE;
   return DEFAULT;
 }
