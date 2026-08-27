@@ -204,15 +204,82 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		return 1;
 	}
 
-	function renderHeatmap(points) {
+	function fillBoxCount(value, maximum) {
+		if (maximum <= 0 || value <= 0) return 0;
+		return Math.min(7, Math.max(1, Math.round(value / maximum * 7)));
+	}
+
+	function shortDay(timestamp) {
+		const date = new Date(timestamp);
+		return date.getDate() + " " + date.toLocaleDateString(undefined, { month: "short" });
+	}
+
+	function weekStartOf(timestamp) {
+		const date = new Date(timestamp);
+		date.setDate(date.getDate() - (date.getDay() + 6) % 7);
+		date.setHours(0, 0, 0, 0);
+		return date.getTime();
+	}
+
+	function weekTokensByStart(series) {
+		const tokens = new Map();
+		for (const point of series) tokens.set(weekStartOf(point.start), point.usage.tokens);
+		return tokens;
+	}
+
+	function weekAlignedDays(points) {
+		if (!points.length) return points;
+		const empty = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 };
+		const first = new Date(points[0].start);
+		const last = new Date(points[points.length - 1].start);
+		const leading = [];
+		for (let offset = (first.getDay() + 6) % 7; offset > 0; offset--) {
+			const date = new Date(first);
+			date.setDate(date.getDate() - offset);
+			leading.push({ start: date.getTime(), usage: empty });
+		}
+		const trailing = [];
+		for (let offset = 6 - ((last.getDay() + 6) % 7); offset > 0; offset--) {
+			const date = new Date(last);
+			date.setDate(date.getDate() + offset);
+			trailing.push({ start: date.getTime(), usage: empty });
+		}
+		return leading.concat(points, trailing);
+	}
+
+	let heatmapTip;
+
+	function showTip(cell) {
+		const text = cell.getAttribute("aria-label");
+		if (!text) return hideTip();
+		if (!heatmapTip) {
+			heatmapTip = element("div", "heatmap-tip");
+			heatmapTip.setAttribute("role", "tooltip");
+			document.body.append(heatmapTip);
+		}
+		heatmapTip.textContent = text;
+		let left = 0;
+		let top = 0;
+		const rect = typeof cell.getBoundingClientRect === "function" ? cell.getBoundingClientRect() : null;
+		if (rect && Number.isFinite(rect.left)) {
+			left = rect.left + rect.width / 2;
+			top = rect.top;
+		}
+		heatmapTip.style.left = left + "px";
+		heatmapTip.style.top = top + "px";
+		heatmapTip.classList.add("visible");
+	}
+
+	function hideTip() {
+		heatmapTip?.classList.remove("visible");
+	}
+
+	function renderActivityGrid(points, title, caption, decorate) {
+		hideTip();
 		const figure = element("figure", "activity-card heatmap-card");
-		const maximum = Math.max(0, ...points.map((point) => point.usage.tokens));
-		const caption = document.createElement("figcaption");
-		caption.append(
-			element("strong", "", "Daily token activity"),
-			element("span", "", "Last 12 months · peak " + formatCompactInteger(maximum) + " tokens"),
-		);
-		figure.append(caption);
+		const header = document.createElement("figcaption");
+		header.append(element("strong", "", title), element("span", "", caption));
+		figure.append(header);
 
 		const firstDate = new Date(points[0]?.start || Date.now());
 		const leadingDays = (firstDate.getDay() + 6) % 7;
@@ -231,27 +298,77 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 			months.append(label);
 		});
 
-		const body = element("div", "heatmap-body");
-		const weekdays = element("div", "heatmap-weekdays");
-		for (const label of ["Mon", "", "Wed", "", "Fri", "", "Sun"]) weekdays.append(element("span", "", label));
 		const grid = element("div", "heatmap-grid");
 		grid.style.setProperty("--weeks", String(weeks));
-		for (const [index, point] of points.entries()) {
-			const date = new Date(point.start);
-			const cell = element("span", "heatmap-cell level-" + heatmapLevel(point.usage.tokens, maximum));
-			const column = Math.floor((leadingDays + index) / 7) + 1;
-			const row = ((leadingDays + index) % 7) + 1;
-			cell.style.gridColumn = String(column);
-			cell.style.gridRow = String(row);
-			cell.title = formatDay(point.start) + ": " + formatInteger(point.usage.tokens) + " tokens, " + formatCost(point.usage.cost) + ", " + formatInteger(point.usage.turns) + " turns";
-			cell.setAttribute("role", "img");
-			cell.setAttribute("aria-label", cell.title);
+		points.forEach((point, index) => {
+			const row = (leadingDays + index) % 7;
+			const state = decorate(point, row);
+			const cell = element("span", state.className);
+			cell.style.gridColumn = String(Math.floor((leadingDays + index) / 7) + 1);
+			cell.style.gridRow = String(row + 1);
+			if (state.description) {
+				cell.setAttribute("role", "img");
+				cell.setAttribute("aria-label", state.description);
+				cell.addEventListener("mouseenter", () => showTip(cell));
+				cell.addEventListener("mouseleave", hideTip);
+			}
 			grid.append(cell);
-		}
-		body.append(weekdays, grid);
-		viewport.append(months, body);
+		});
+		viewport.append(months, grid);
+		viewport.addEventListener("scroll", hideTip, { passive: true });
 		figure.append(viewport);
 		return figure;
+	}
+
+	function renderDailyActivity(points) {
+		const maximum = Math.max(0, ...points.map((point) => point.usage.tokens));
+		return renderActivityGrid(
+			points,
+			"Daily token activity",
+			"Last 12 months · peak " + formatCompactInteger(maximum) + " tokens",
+			(point) => ({
+				className: "heatmap-cell level-" + heatmapLevel(point.usage.tokens, maximum),
+				description: point.usage.tokens > 0
+					? formatCompactInteger(point.usage.tokens) + " tokens on " + shortDay(point.start)
+					: "",
+			}),
+		);
+	}
+
+	function renderWeeklyActivity(points) {
+		const weeks = weekTokensByStart(currentData.activity.weekly);
+		const maximum = Math.max(0, ...currentData.activity.weekly.map((point) => point.usage.tokens));
+		return renderActivityGrid(
+			weekAlignedDays(points),
+			"Weekly token activity",
+			"Last 12 months · peak " + formatCompactInteger(maximum) + " tokens",
+			(point, row) => {
+				const tokens = weeks.get(weekStartOf(point.start)) ?? 0;
+				const filled = row >= 7 - fillBoxCount(tokens, maximum);
+				return {
+					className: "heatmap-cell" + (filled ? " fill-on" : ""),
+					description: filled ? formatCompactInteger(tokens) + " tokens on the week of " + shortDay(weekStartOf(point.start)) : "",
+				};
+			},
+		);
+	}
+
+	function renderCumulativeActivity(points) {
+		const weeks = weekTokensByStart(currentData.activity.cumulative);
+		const maximum = Math.max(0, ...currentData.activity.cumulative.map((point) => point.usage.tokens));
+		return renderActivityGrid(
+			weekAlignedDays(points),
+			"Cumulative token activity",
+			"Last 12 months · running total · " + formatCompactInteger(maximum) + " tokens",
+			(point, row) => {
+				const tokens = weeks.get(weekStartOf(point.start)) ?? 0;
+				const filled = row >= 7 - fillBoxCount(tokens, maximum);
+				return {
+					className: "heatmap-cell" + (filled ? " fill-on" : ""),
+					description: filled ? formatCompactInteger(tokens) + " tokens to date on the week of " + shortDay(weekStartOf(point.start)) : "",
+				};
+			},
+		);
 	}
 
 	function selectActivityView(key, focus) {
@@ -292,11 +409,10 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 	}
 
 	function renderActivityView() {
-		const points = currentData.activity[activeActivityView];
-		if (activeActivityView === "daily") return renderHeatmap(points);
-		const title = activeActivityView === "weekly" ? "Weekly token activity" : "Cumulative token activity";
-		const subtitle = activeActivityView === "weekly" ? "Last 12 months" : "Last 12 months · running total";
-		return usageChart(title, subtitle, points, false);
+		const points = currentData.activity.daily;
+		if (activeActivityView === "daily") return renderDailyActivity(points);
+		if (activeActivityView === "weekly") return renderWeeklyActivity(points);
+		return renderCumulativeActivity(points);
 	}
 
 	function insightRow(list, label, value) {

@@ -53,11 +53,14 @@ function modernPayload() {
 	}));
 	next.activity = {
 		daily,
-		weekly: [{ start: daily[0].start, usage: { ...used } }],
-		cumulative: daily.map((point, index) => ({
-			start: point.start,
-			usage: index === 364 ? { ...used } : { ...zero },
-		})),
+		weekly: [
+			{ start: daily[0].start, usage: { ...used } },
+			{ start: daily[7].start, usage: { input: 500, output: 25, cacheRead: 100, cacheWrite: 15, tokens: 640, cost: 0.6, turns: 1 } },
+		],
+		cumulative: [
+			{ start: daily[0].start, usage: { ...used } },
+			{ start: daily[7].start, usage: { input: 1500, output: 75, cacheRead: 300, cacheWrite: 40, tokens: 1915, cost: 1.8345, turns: 4 } },
+		],
 	};
 	next.overview = {
 		lifetimeTokens: 1275,
@@ -171,6 +174,16 @@ describe("telemetry usage page", () => {
 		expect(document.getElementById("cards")?.textContent).toContain("Sessions");
 		expect(document.getElementById("cards")?.textContent).toContain("1.3k");
 		expect(document.querySelectorAll(".heatmap-cell")).toHaveLength(365);
+		expect(document.querySelector(".heatmap-weekdays")).toBeNull();
+		const usedDay = document.querySelector(".heatmap-grid .heatmap-cell.level-4")!;
+		expect(usedDay.getAttribute("aria-label")).toContain("1.3k tokens on 9 Jan");
+		usedDay.dispatchEvent(new window.Event("mouseenter"));
+		const tip = document.querySelector(".heatmap-tip")!;
+		expect(tip.classList.contains("visible")).toBe(true);
+		expect(tip.textContent).toContain("1.3k tokens on 9 Jan");
+		usedDay.dispatchEvent(new window.Event("mouseleave"));
+		expect(tip.classList.contains("visible")).toBe(false);
+		expect(document.querySelector(".heatmap-grid .heatmap-cell.level-0")!.hasAttribute("aria-label")).toBe(false);
 		expect(document.getElementById("panel")?.textContent).toContain("Activity insights");
 		expect(document.getElementById("panel")?.textContent).toContain("Most used model");
 		expect(document.getElementById("panel")?.textContent).toContain("read");
@@ -179,14 +192,34 @@ describe("telemetry usage page", () => {
 		const weekly = document.querySelector<HTMLButtonElement>('[data-activity="weekly"]')!;
 		weekly.click();
 		expect(document.querySelectorAll(".activity-tab[aria-selected=\"true\"]")).toHaveLength(1);
-		expect(document.querySelector(".chart-card")?.textContent).toContain("Weekly token activity");
+		expect(document.getElementById("panel")?.textContent).toContain("Weekly token activity");
+		expect(document.querySelectorAll(".heatmap-grid .heatmap-cell")).toHaveLength(371);
+		expect(document.querySelectorAll(".heatmap-grid .heatmap-cell.fill-on")).toHaveLength(11);
+		const weeklyCells = document.querySelectorAll(".heatmap-grid .heatmap-cell");
+		expect(weeklyCells[0]!.classList.contains("fill-on")).toBe(true);
+		expect(weeklyCells[0]!.getAttribute("aria-label")).toContain("1.3k tokens on the week of 6 Jan");
+		expect(weeklyCells[7]!.classList.contains("fill-on")).toBe(false);
+		expect(weeklyCells[7]!.hasAttribute("aria-label")).toBe(false);
+		expect(weeklyCells[10]!.classList.contains("fill-on")).toBe(true);
+		expect(weeklyCells[10]!.getAttribute("aria-label")).toContain("640 tokens on the week of 13 Jan");
+		expect(weeklyCells[14]!.classList.contains("fill-on")).toBe(false);
+		expect(weeklyCells[14]!.hasAttribute("aria-label")).toBe(false);
 		const cumulative = document.querySelector<HTMLButtonElement>('[data-activity="cumulative"]')!;
 		const keydown = new window.Event("keydown");
 		Object.defineProperty(keydown, "key", { value: "ArrowLeft" });
 		cumulative.dispatchEvent(keydown);
 		expect(document.querySelector(".activity-tab[aria-selected=\"true\"]")?.getAttribute("data-activity")).toBe("weekly");
 		cumulative.click();
-		expect(document.querySelector(".chart-card")?.textContent).toContain("Cumulative token activity");
+		expect(document.getElementById("panel")?.textContent).toContain("Cumulative token activity");
+		expect(document.getElementById("panel")?.textContent).toContain("running total");
+		expect(document.querySelectorAll(".heatmap-grid .heatmap-cell.fill-on")).toHaveLength(12);
+		const cumulativeCells = document.querySelectorAll(".heatmap-grid .heatmap-cell");
+		expect(cumulativeCells[0]!.classList.contains("fill-on")).toBe(false);
+		expect(cumulativeCells[0]!.hasAttribute("aria-label")).toBe(false);
+		expect(cumulativeCells[2]!.getAttribute("aria-label")).toContain("1.3k tokens to date on the week of 6 Jan");
+		expect(cumulativeCells[7]!.getAttribute("aria-label")).toContain("1.9k tokens to date on the week of 13 Jan");
+		expect(cumulativeCells[14]!.classList.contains("fill-on")).toBe(false);
+		expect(cumulativeCells[14]!.hasAttribute("aria-label")).toBe(false);
 	});
 
 	it("polls only while scanning and starts a new scan from Refresh", async () => {
