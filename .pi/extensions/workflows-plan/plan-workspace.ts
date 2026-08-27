@@ -100,27 +100,55 @@ function isFileSystemError(error: unknown, code: string): error is NodeJS.ErrnoE
 	return error instanceof Error && (error as NodeJS.ErrnoException).code === code;
 }
 
-async function makeTreeRemovable(root: string): Promise<void> {
+interface RemovableTreeOperations {
+	lstat(path: string): Promise<{
+		mode: number;
+		isDirectory(): boolean;
+		isSymbolicLink(): boolean;
+	}>;
+	chmod(path: string, mode: number): Promise<void>;
+	readdir(path: string): Promise<Array<{
+		name: string;
+		isDirectory(): boolean;
+		isSymbolicLink(): boolean;
+	}>>;
+}
+
+const removableTreeOperations: RemovableTreeOperations = {
+	lstat,
+	chmod,
+	readdir: (path) => readdir(path, { withFileTypes: true }),
+};
+
+export async function makeTreeRemovable(
+	root: string,
+	operations: RemovableTreeOperations = removableTreeOperations,
+): Promise<void> {
 	let info;
 	try {
-		info = await lstat(root);
+		info = await operations.lstat(root);
 	} catch (error) {
 		if (isFileSystemError(error, "ENOENT")) return;
 		throw error;
 	}
 	if (!info.isDirectory() || info.isSymbolicLink()) return;
 
-	await chmod(root, (info.mode & 0o7777) | 0o700);
+	try {
+		await operations.chmod(root, (info.mode & 0o7777) | 0o700);
+	} catch (error) {
+		if (isFileSystemError(error, "ENOENT")) return;
+		throw error;
+	}
 	let entries;
 	try {
-		entries = await readdir(root, { withFileTypes: true });
+		entries = await operations.readdir(root);
 	} catch (error) {
 		if (isFileSystemError(error, "ENOENT")) return;
 		throw error;
 	}
 	for (const entry of entries) {
 		if (entry.isDirectory() && !entry.isSymbolicLink()) {
-			await makeTreeRemovable(join(root, entry.name));
+			await makeTreeRemovable(join(root, entry.name), operations);
 		}
 	}
 }
