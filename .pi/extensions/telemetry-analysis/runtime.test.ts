@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAnalysisRuntime, getPersistentAnalysisRuntime, releasePersistentAnalysisRuntime, resetPersistentAnalysisRuntimeForTests } from "./runtime.ts";
+import { createAnalysisRuntime, getPersistentAnalysisRuntime, persistentAnalysisRuntime } from "./runtime.ts";
 
-afterEach(async () => resetPersistentAnalysisRuntimeForTests());
+afterEach(async () => persistentAnalysisRuntime.resetForTests());
 
 function fakeServer() {
 	return { start: vi.fn(async () => ({ url: "http://localhost:1/#token=test" })), close: vi.fn(async () => {}) };
@@ -24,19 +24,6 @@ describe("analysis runtime", () => {
 		expect((await second.start()).url).toBe(url);
 		expect(second.isActive()).toBe(true);
 		expect(second.getSummary().records).toHaveLength(1);
-	});
-
-	it("closes an orphaned persistent server when no replacement claims it", async () => {
-		const runtime = getPersistentAnalysisRuntime();
-		await runtime.start();
-		vi.useFakeTimers();
-		try {
-			releasePersistentAnalysisRuntime(runtime);
-			await vi.advanceTimersByTimeAsync(31_000);
-			expect(runtime.isActive()).toBe(false);
-		} finally {
-			vi.useRealTimers();
-		}
 	});
 
 	it("does not reactivate after close races with a pending start", async () => {

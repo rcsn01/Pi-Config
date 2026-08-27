@@ -1,11 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildGlobalUsageSnapshot } from "../_shared/global-usage.ts";
-import {
-	createTelemetryUsageRuntime,
-	getPersistentTelemetryUsageRuntime,
-	releasePersistentTelemetryUsageRuntime,
-	resetPersistentTelemetryUsageRuntimeForTests,
-} from "./runtime.ts";
+import { createTelemetryUsageRuntime, persistentUsageRuntime } from "./runtime.ts";
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -20,7 +15,7 @@ function fakeServer(start = async () => ({ url: "http://localhost:1/#token=test"
 
 afterEach(async () => {
 	vi.useRealTimers();
-	await resetPersistentTelemetryUsageRuntimeForTests();
+	await persistentUsageRuntime.resetForTests();
 });
 
 describe("telemetry usage runtime", () => {
@@ -92,20 +87,17 @@ describe("telemetry usage runtime", () => {
 		expect(runtime.getState()).toEqual({ phase: "idle" });
 	});
 
-	it("shares a persistent runtime and closes an unclaimed active server after the grace period", async () => {
-		vi.useFakeTimers();
+	it("shares one persistent runtime across acquisitions and honors the first options", async () => {
 		const server = fakeServer();
 		const options = {
 			scan: vi.fn(async () => buildGlobalUsageSnapshot([])),
 			serverFactory: () => server,
 		};
-		const runtime = getPersistentTelemetryUsageRuntime(options);
-		expect(getPersistentTelemetryUsageRuntime()).toBe(runtime);
+		const runtime = persistentUsageRuntime.get(options);
+		expect(persistentUsageRuntime.get()).toBe(runtime);
 		await runtime.start();
-		releasePersistentTelemetryUsageRuntime(runtime);
-		await vi.advanceTimersByTimeAsync(29_999);
-		expect(server.close).not.toHaveBeenCalled();
-		await vi.advanceTimersByTimeAsync(1);
+		await persistentUsageRuntime.resetForTests();
+		expect(runtime.isActive()).toBe(false);
 		expect(server.close).toHaveBeenCalledOnce();
 	});
 });

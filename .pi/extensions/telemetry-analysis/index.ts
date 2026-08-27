@@ -2,9 +2,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { getObservabilityService, type ObservabilitySource } from "../_shared/observability.ts";
 import {
-	closePersistentAnalysisRuntime,
 	getPersistentAnalysisRuntime,
-	releasePersistentAnalysisRuntime,
+	persistentAnalysisRuntime,
 	type AnalysisRuntime,
 	type AnalysisRuntimeStore,
 } from "./runtime.ts";
@@ -136,9 +135,9 @@ export function createAnalysisExtension(dependencies: AnalysisExtensionDependenc
 			locallyActive = false;
 			pendingCompaction = undefined;
 			if (usesPersistentRuntime) {
-				const persistent = runtime as AnalysisRuntimeStore;
-				if (event.reason === "quit") await closePersistentAnalysisRuntime(persistent);
-				else releasePersistentAnalysisRuntime(persistent);
+				await persistentAnalysisRuntime.dispose(runtime as AnalysisRuntimeStore, {
+					permanent: event.reason === "quit",
+				});
 				return;
 			}
 			if (event.reason === "quit") await runtime.close();

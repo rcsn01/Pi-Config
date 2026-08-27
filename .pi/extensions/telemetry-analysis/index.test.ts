@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getObservabilityService, resetObservabilityServiceForTests } from "../_shared/observability.ts";
 import { createAnalysisExtension } from "./index.ts";
-import { getPersistentAnalysisRuntime, resetPersistentAnalysisRuntimeForTests } from "./runtime.ts";
+import { getPersistentAnalysisRuntime, persistentAnalysisRuntime } from "./runtime.ts";
 
 beforeEach(() => resetObservabilityServiceForTests());
 
-afterEach(async () => resetPersistentAnalysisRuntimeForTests());
+afterEach(async () => persistentAnalysisRuntime.resetForTests());
 
 function fakeRuntime(url = "http://localhost:1/#token=secret") {
 	let active = false;
