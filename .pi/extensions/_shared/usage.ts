@@ -119,6 +119,8 @@ export interface SessionUsageEntry {
 	id: string;
 	mode: GlobalMode;
 	model: string;
+	/** Milliseconds since Unix epoch for time-series attribution. */
+	timestamp?: number;
 	input: number;
 	output: number;
 	cacheRead: number;
@@ -142,6 +144,8 @@ interface UsageEntryOptions {
 	turns?: number;
 	/** Keep the entry even when the usage record is missing entirely. */
 	keepWhenMissing?: boolean;
+	/** Milliseconds since Unix epoch from the containing session entry. */
+	timestamp?: number;
 }
 
 function usageEntry(
@@ -158,6 +162,7 @@ function usageEntry(
 		id,
 		mode,
 		model: model ?? "unknown",
+		...(options.timestamp === undefined ? {} : { timestamp: options.timestamp }),
 		input: finiteNonNegative(record?.input),
 		output: finiteNonNegative(record?.output),
 		cacheRead: finiteNonNegative(record?.cacheRead),
@@ -185,12 +190,19 @@ function usageEntry(
  * it. Nested subagent results get deterministic synthetic ids (`<entryId>:<i>`)
  * so they dedup correctly across forked copies.
  */
+function entryTimestamp(entry: FileEntry): number | undefined {
+	if (entry.type === "session") return undefined;
+	const parsed = Date.parse(entry.timestamp);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 export function classifySessionEntries(entries: readonly FileEntry[]): SessionUsageEntry[] {
 	const result: SessionUsageEntry[] = [];
 	const modeById = new Map<string, GlobalMode>();
 	let currentModel: string | undefined;
 
 	for (const entry of entries) {
+		const timestamp = entryTimestamp(entry);
 		const inherited = entry.type !== "session" && entry.parentId ? modeById.get(entry.parentId) : undefined;
 		let mode: GlobalMode = inherited ?? "main";
 		if (entry.type === "custom" && entry.customType === PLAN_STATE_ENTRY_TYPE) {
@@ -208,10 +220,10 @@ export function classifySessionEntries(entries: readonly FileEntry[]): SessionUs
 			if ((entry.type === "custom" || entry.type === "custom_message") &&
 				entry.customType === "auto-review-verdict") {
 				const data = entry.type === "custom_message" ? asRecord(entry.details) : asRecord(entry.data);
-				const verdict = usageEntry(entry.id, "guardian", modelName(data?.model) ?? currentModel, data?.usage);
+				const verdict = usageEntry(entry.id, "guardian", modelName(data?.model) ?? currentModel, data?.usage, { timestamp });
 				if (verdict) result.push(verdict);
 			} else if (entry.type === "compaction" || entry.type === "branch_summary") {
-				const summary = usageEntry(entry.id, mode === "plan" ? "plan" : "main", currentModel, entry.usage);
+				const summary = usageEntry(entry.id, mode === "plan" ? "plan" : "main", currentModel, entry.usage, { timestamp });
 				if (summary) result.push(summary);
 			}
 			continue;
@@ -226,7 +238,7 @@ export function classifySessionEntries(entries: readonly FileEntry[]): SessionUs
 				mode === "plan" ? "plan" : "main",
 				assistantModel ?? currentModel,
 				message.usage,
-				{ turns: 1, keepWhenMissing: true },
+				{ turns: 1, keepWhenMissing: true, timestamp },
 			);
 			if (assistant) result.push(assistant);
 		} else if (message.role === "toolResult") {
@@ -235,7 +247,7 @@ export function classifySessionEntries(entries: readonly FileEntry[]): SessionUs
 				// level; older sessions only have per-result usage in details.
 				// Never add both.
 				if (message.usage !== undefined) {
-					const aggregate = usageEntry(entry.id, "subagent", currentModel, message.usage);
+					const aggregate = usageEntry(entry.id, "subagent", currentModel, message.usage, { timestamp });
 					if (aggregate) result.push(aggregate);
 				} else {
 					nestedSubagentResults(message.details).forEach((nestedResult, index) => {
@@ -244,6 +256,7 @@ export function classifySessionEntries(entries: readonly FileEntry[]): SessionUs
 							"subagent",
 							modelName(nestedResult.model) ?? currentModel,
 							nestedResult.usage,
+							{ timestamp },
 						);
 						if (nested) result.push(nested);
 					});
@@ -254,10 +267,11 @@ export function classifySessionEntries(entries: readonly FileEntry[]): SessionUs
 					"advisor",
 					modelName(asRecord(message.details)?.model) ?? currentModel,
 					message.usage,
+					{ timestamp },
 				);
 				if (advisor) result.push(advisor);
 			} else {
-				const tool = usageEntry(entry.id, "main", currentModel, message.usage);
+				const tool = usageEntry(entry.id, "main", currentModel, message.usage, { timestamp });
 				if (tool) result.push(tool);
 			}
 		}

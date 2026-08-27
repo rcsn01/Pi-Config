@@ -14,7 +14,22 @@ import { GLOBAL_MODE_LABELS, emptyUsageTotals, type GlobalMode, type SessionUsag
 export { classifySessionEntries, GLOBAL_MODES, GLOBAL_MODE_LABELS } from "./usage.ts";
 export type { GlobalMode, SessionUsageEntry } from "./usage.ts";
 
-/** A session file with its classified usage entries (no dedup applied yet). */
+/** Activity persisted in a session file, kept separate from token usage. */
+export type SessionActivityKind = "assistant" | "tool";
+
+export interface SessionActivityEntry {
+	id: string;
+	kind: SessionActivityKind;
+	toolName?: string;
+	/** Milliseconds since Unix epoch for calendar activity attribution. */
+	timestamp?: number;
+}
+
+export interface GlobalToolRow {
+	tool: string;
+	runs: number;
+}
+
 export interface GlobalSessionRecord {
 	file: string;
 	id: string;
@@ -25,6 +40,8 @@ export interface GlobalSessionRecord {
 	messageCount: number;
 	parentSession?: string;
 	entries: SessionUsageEntry[];
+	/** Activity records are separate from usage because tools may have no usage. */
+	activity?: SessionActivityEntry[];
 }
 
 export interface GlobalModeTotals {
@@ -52,6 +69,10 @@ export interface GlobalSessionSummary {
 	firstMessage: string;
 	messageCount: number;
 	parentSession?: string;
+	/** Non-error assistant responses in this session, including copied fork history. */
+	chatTurns: number;
+	/** Persisted toolResult messages in this session, including copied fork history. */
+	toolRuns: number;
 	totals: GlobalModeTotals;
 	total: SessionUsageTotals;
 	models: GlobalModeModelRows;
@@ -59,11 +80,16 @@ export interface GlobalSessionSummary {
 
 export interface GlobalUsageSnapshot {
 	scannedAt: number;
+	/** Deduplicated records retained for time-series bucketing. */
+	timeline: SessionUsageEntry[];
 	sessions: GlobalSessionSummary[];
 	totals: GlobalModeTotals;
 	total: SessionUsageTotals;
 	models: GlobalModeModelRows;
 	modelCount: number;
+	/** All globally deduplicated tool runs, sorted by count. */
+	tools: GlobalToolRow[];
+	toolRunCount: number;
 }
 
 export function emptyGlobalModeTotals(): GlobalModeTotals {
@@ -137,6 +163,12 @@ function toModelRows(accumulator: ModelAccumulator): GlobalModeModelRows {
 	};
 }
 
+function sortedToolRows(counts: Map<string, number>): GlobalToolRow[] {
+	return [...counts.entries()]
+		.map(([tool, runs]) => ({ tool, runs }))
+		.sort((left, right) => right.runs - left.runs || left.tool.localeCompare(right.tool));
+}
+
 function parseCreatedMs(created: string): number {
 	const ms = Date.parse(created);
 	return Number.isFinite(ms) ? ms : 0;
@@ -144,28 +176,59 @@ function parseCreatedMs(created: string): number {
 
 /**
  * Aggregate per-session records into a global snapshot. Entry ids are deduped
- * across files with first-occurrence wins; records are processed oldest-first
- * (by header created time, then path) so a fork's copied history is attributed
- * to the original session and only the fork's own continuation counts under
- * the fork. Buckets are exclusive: `total` is the sum of all five modes.
+ * across files with the parent session processed before its forks, so copied
+ * history is attributed to the original session and only a fork's continuation
+ * counts under the fork. Missing or malformed ancestry falls back to creation
+ * time and path. Buckets are exclusive: `total` is the sum of all five modes.
  */
 export function buildGlobalUsageSnapshot(records: readonly GlobalSessionRecord[]): GlobalUsageSnapshot {
 	const seen = new Set<string>();
+	const seenActivity = new Set<string>();
 	const countedModels = new Set<string>();
-	const ordered = [...records].sort(
+	const globalToolCounts = new Map<string, number>();
+	const byFile = new Map(records.map((record) => [record.file, record]));
+	const sorted = [...records].sort(
 		(a, b) => parseCreatedMs(a.created) - parseCreatedMs(b.created) || a.file.localeCompare(b.file),
 	);
+	const ordered: GlobalSessionRecord[] = [];
+	const visited = new Set<string>();
+	const visiting = new Set<string>();
+	const visit = (record: GlobalSessionRecord): void => {
+		if (visited.has(record.file)) return;
+		if (visiting.has(record.file)) {
+			// Malformed ancestry should not prevent the rest of the scan from loading.
+			return;
+		}
+		visiting.add(record.file);
+		const parent = record.parentSession ? byFile.get(record.parentSession) : undefined;
+		if (parent) visit(parent);
+		visiting.delete(record.file);
+		visited.add(record.file);
+		ordered.push(record);
+	};
+	for (const record of sorted) visit(record);
 
 	const globalTotals = emptyGlobalModeTotals();
 	const globalModels = emptyModelAccumulator();
+	const timeline: SessionUsageEntry[] = [];
 	const sessions: GlobalSessionSummary[] = [];
 
 	for (const record of ordered) {
+		const activity = record.activity ?? [];
+		const chatTurns = activity.filter((entry) => entry.kind === "assistant").length;
+		const toolRuns = activity.filter((entry) => entry.kind === "tool").length;
+		for (const entry of activity) {
+			if (seenActivity.has(entry.id)) continue;
+			seenActivity.add(entry.id);
+			if (entry.kind !== "tool" || !entry.toolName) continue;
+			globalToolCounts.set(entry.toolName, (globalToolCounts.get(entry.toolName) ?? 0) + 1);
+		}
 		const sessionTotals = emptyGlobalModeTotals();
 		const sessionModels = emptyModelAccumulator();
 		for (const entry of record.entries) {
 			if (seen.has(entry.id)) continue;
 			seen.add(entry.id);
+			timeline.push({ ...entry });
 			if (entry.model !== "unknown") countedModels.add(entry.model);
 			addTotals(sessionTotals[entry.mode], entry);
 			addTotals(globalTotals[entry.mode], entry);
@@ -191,6 +254,8 @@ export function buildGlobalUsageSnapshot(records: readonly GlobalSessionRecord[]
 			firstMessage: record.firstMessage,
 			messageCount: record.messageCount,
 			parentSession: record.parentSession,
+			chatTurns,
+			toolRuns,
 			totals: finalizeModeTotals(sessionTotals),
 			total: sumModeTotals(sessionTotals),
 			models: toModelRows(sessionModels),
@@ -199,6 +264,7 @@ export function buildGlobalUsageSnapshot(records: readonly GlobalSessionRecord[]
 
 	return {
 		scannedAt: Date.now(),
+		timeline: timeline.sort((left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0) || left.id.localeCompare(right.id)),
 		sessions: sessions.sort(
 			(a, b) => b.total.cost - a.total.cost || b.total.tokens - a.total.tokens || a.file.localeCompare(b.file),
 		),
@@ -206,5 +272,7 @@ export function buildGlobalUsageSnapshot(records: readonly GlobalSessionRecord[]
 		total: sumModeTotals(globalTotals),
 		models: toModelRows(globalModels),
 		modelCount: countedModels.size,
+		tools: sortedToolRows(globalToolCounts),
+		toolRunCount: [...globalToolCounts.values()].reduce((total, runs) => total + runs, 0),
 	};
 }

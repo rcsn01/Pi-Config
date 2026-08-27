@@ -10,21 +10,11 @@ import {
 } from "@earendil-works/pi-tui";
 import { collectUsageSnapshot } from "../_shared/usage.ts";
 import {
-	GLOBAL_MODE_LABELS,
-	buildGlobalUsageSnapshot,
-	type GlobalModeModelRows,
-	type GlobalModelRow,
-	type GlobalUsageSnapshot,
-} from "../_shared/global-usage.ts";
-import type { SessionUsageTotals } from "../_shared/usage.ts";
-import { scanGlobalUsage } from "./global-usage-store.ts";
-import {
 	COMPACT_RESERVE_FRACTION,
 } from "../_shared/auto-compact.ts";
 import { installOverlayInputGuard } from "./overlay-input-guard.ts";
 import {
 	fit,
-	globalTotalsLines,
 	pad,
 	sortedUsageRows,
 	usageTableLines,
@@ -79,33 +69,6 @@ export function formatBreakdownValue(tokens: number, contextWindow: number): str
 		? formatPercent(tokens / contextWindow * 100)
 		: "n/a";
 	return `${formatTokenCount(tokens)} (${percent})`;
-}
-
-function globalModelBlocks(models: GlobalModeModelRows, theme: Theme, width: number): string[] {
-	const makeBlocks = (blockWidth: number): string[][] => GLOBAL_MODE_LABELS.map(({ mode, label }) =>
-		usageTableLines(`${label} usage`, models[mode], theme, blockWidth)
-	);
-	if (width < 72) {
-		const blocks = makeBlocks(width);
-		return blocks.flatMap((block, index) => index === 0 ? block : ["", ...block]);
-	}
-
-	const gap = 3;
-	const leftWidth = Math.floor((width - gap) / 2);
-	const rightWidth = Math.max(1, width - gap - leftWidth);
-	const leftBlocks = makeBlocks(leftWidth);
-	const rightBlocks = makeBlocks(rightWidth);
-	const lines: string[] = [];
-	for (let index = 0; index < leftBlocks.length; index += 2) {
-		const left = leftBlocks[index]!;
-		const right = rightBlocks[index + 1] ?? [];
-		const rows = Math.max(left.length, right.length);
-		for (let row = 0; row < rows; row++) {
-			lines.push(`${pad(left[row] ?? "", leftWidth)}${" ".repeat(gap)}${fit(right[row] ?? "", rightWidth)}`);
-		}
-		if (index + 2 < leftBlocks.length) lines.push("");
-	}
-	return lines;
 }
 
 function cumulativeUsageLines(
@@ -172,7 +135,7 @@ function breakdownLines(
 
 const DEFAULT_DETAIL_VISIBLE_ROWS = 8;
 
-type ContextView = "summary" | "systemPrompt" | "extensionTools" | "global";
+type ContextView = "summary" | "systemPrompt" | "extensionTools";
 
 export class ContextDiagnosticsComponent implements Component {
 	private view: ContextView = "summary";
@@ -182,10 +145,6 @@ export class ContextDiagnosticsComponent implements Component {
 	private scrollOffset = 0;
 	private maxScroll = 0;
 	private pageSize = 1;
-	private globalSnapshot: GlobalUsageSnapshot | undefined;
-	private globalLoading = false;
-	private globalProgress: { loaded: number; total: number } | undefined;
-	private globalError: string | undefined;
 
 	constructor(
 		private readonly diagnostics: ContextDiagnostics,
@@ -194,14 +153,7 @@ export class ContextDiagnosticsComponent implements Component {
 		private readonly onClose: () => void,
 		private readonly requestRender: () => void,
 		private readonly getTargetRows?: () => number,
-		private readonly loadGlobal: (onProgress?: (loaded: number, total: number) => void) => Promise<GlobalUsageSnapshot> = async () => buildGlobalUsageSnapshot([]),
-		options: { initialView?: "summary" | "global" } = {},
-	) {
-		if (options.initialView === "global") {
-			this.view = "global";
-			queueMicrotask(() => void this.openGlobal());
-		}
-	}
+	) {}
 
 	private detailLines(innerWidth: number, availableRows: number): string[] {
 		const isSystemPrompt = this.view === "systemPrompt";
@@ -264,16 +216,12 @@ export class ContextDiagnosticsComponent implements Component {
 			: DEFAULT_DETAIL_VISIBLE_ROWS;
 		const titleText = this.view === "summary"
 			? "Context Usage"
-			: this.view === "systemPrompt" ? "System Prompt"
-			: this.view === "extensionTools" ? "Extension Tools"
-			: "Global Usage";
+			: this.view === "systemPrompt" ? "System Prompt" : "Extension Tools";
 		const title = this.theme.fg("accent", this.theme.bold(titleText));
 		let body: string[];
 
 		if (this.view === "systemPrompt" || this.view === "extensionTools") {
 			body = this.detailLines(innerWidth, detailRows).map((line) => `  ${line}`);
-		} else if (this.view === "global") {
-			body = this.globalBody(innerWidth);
 		} else if (innerWidth >= 72) {
 			const meterWidth = 10;
 			const gap = 3;
@@ -297,10 +245,8 @@ export class ContextDiagnosticsComponent implements Component {
 		}
 
 		const hintText = this.view === "summary"
-			? "↑↓ select · Enter details · g global · Esc/q close"
-			: this.view === "systemPrompt" || this.view === "extensionTools"
-				? "↑↓ browse · Esc back · q close"
-				: "↑↓ scroll · r rescan · Esc back · q close";
+			? "↑↓ select · Enter details · Esc/q close"
+			: "↑↓ browse · Esc back · q close";
 		const fixedRows = 6;
 		const availableBodyRows = requestedRows > 0
 			? Math.max(1, requestedRows - fixedRows)
@@ -314,9 +260,7 @@ export class ContextDiagnosticsComponent implements Component {
 			: body;
 		const scrollHint = this.view === "summary"
 			? "↑↓ select · PgUp/PgDn scroll · Enter details · Esc/q close"
-			: this.view === "systemPrompt" || this.view === "extensionTools"
-				? "↑↓ browse · Esc back · q close"
-				: "↑↓ scroll · PgUp/PgDn scroll · r rescan · Esc back · q close";
+			: "↑↓ browse · Esc back · q close";
 		const position = scrollable
 			? ` · ${this.scrollOffset + 1}-${Math.min(this.scrollOffset + availableBodyRows, body.length)} of ${body.length}`
 			: "";
@@ -350,21 +294,6 @@ export class ContextDiagnosticsComponent implements Component {
 				this.view = "summary";
 				this.scrollOffset = 0;
 				this.requestRender();
-			}
-			return;
-		}
-		if (this.view === "summary" && (data === "g" || data === "G")) {
-			this.view = "global";
-			this.scrollOffset = 0;
-			this.requestRender();
-			void this.openGlobal();
-			return;
-		}
-		if (this.view === "global" && (data === "r" || data === "R")) {
-			if (!this.globalLoading) {
-				this.globalSnapshot = undefined;
-				this.scrollOffset = 0;
-				void this.openGlobal();
 			}
 			return;
 		}
@@ -448,52 +377,6 @@ export class ContextDiagnosticsComponent implements Component {
 				this.requestRender();
 			}
 		}
-	}
-
-	private async openGlobal(): Promise<void> {
-		if (this.globalLoading) return;
-		this.globalLoading = true;
-		this.globalError = undefined;
-		this.globalProgress = undefined;
-		this.requestRender();
-		try {
-			const snapshot = await this.loadGlobal((loaded, total) => {
-				this.globalProgress = { loaded, total };
-				this.requestRender();
-			});
-			this.globalSnapshot = snapshot;
-		} catch (error) {
-			this.globalError = error instanceof Error ? error.message : String(error);
-		} finally {
-			this.globalLoading = false;
-			this.globalProgress = undefined;
-			this.requestRender();
-		}
-	}
-
-	private globalBody(innerWidth: number): string[] {
-		const theme = this.theme;
-		const lines: string[] = [];
-		if (this.globalLoading) {
-			const progress = this.globalProgress
-				? ` ${this.globalProgress.loaded}/${this.globalProgress.total}`
-				: "";
-			lines.push(theme.fg("warning", `Scanning sessions…${progress}`));
-			if (!this.globalSnapshot && !this.globalError) return lines;
-		}
-		if (this.globalError) {
-			lines.push(theme.fg("error", `Global usage unavailable: ${this.globalError}`));
-			return lines;
-		}
-		const snapshot = this.globalSnapshot;
-		if (!snapshot) return lines;
-		const updated = new Date(snapshot.scannedAt).toLocaleTimeString();
-		lines.push(theme.fg("muted", `${snapshot.sessions.length} sessions · ${snapshot.modelCount} models · updated ${updated}`));
-		lines.push("");
-		lines.push(...globalTotalsLines(snapshot.totals, snapshot.total, theme, innerWidth));
-		lines.push("");
-		lines.push(...globalModelBlocks(snapshot.models, theme, innerWidth));
-		return lines;
 	}
 
 	invalidate(): void {
@@ -599,45 +482,20 @@ export function textualSummary(diagnostics: ContextDiagnostics): string {
 	].join("\n");
 }
 
-export function textualGlobalSummary(snapshot: GlobalUsageSnapshot): string {
-	const modeLines = (label: string, totals: SessionUsageTotals): string =>
-		`  ${label}: ${formatTokenCount(totals.tokens)} tokens · $${totals.cost.toFixed(3)} · ${totals.turns} turns`;
-	const modelLines = (title: string, rows: readonly GlobalModelRow[]): string[] =>
-		rows.length === 0 ? [] : [
-			`${title}:`,
-			...rows.map(({ model, usage }) =>
-				`  ${model}: ${formatTokenCount(usage.tokens)} tokens · $${usage.cost.toFixed(3)} · ${usage.turns} turns`,
-			),
-		];
-	return [
-		`${snapshot.sessions.length} sessions · ${snapshot.modelCount} models (updated ${new Date(snapshot.scannedAt).toLocaleString()})`,
-		`Total: ${formatTokenCount(snapshot.total.tokens)} tokens · $${snapshot.total.cost.toFixed(3)} · ${snapshot.total.turns} turns`,
-		...GLOBAL_MODE_LABELS.map(({ mode, label }) => modeLines(label, snapshot.totals[mode])),
-		...GLOBAL_MODE_LABELS.flatMap(({ mode, label }) => modelLines(label, snapshot.models[mode])),
-	].join("\n");
-}
-
 export default function contextDiagnosticsExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("context", {
-		description: "show model context usage and estimated breakdown, or 'global' for usage across all sessions",
-		getArgumentCompletions: (prefix: string) =>
-			["global"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
+		description: "Show model context usage and estimated breakdown",
 		handler: async (args, ctx) => {
-			const globalRequested = (args || "").trim().toLowerCase() === "global";
-			const loadGlobal = (onProgress?: (loaded: number, total: number) => void) =>
-				scanGlobalUsage({ onProgress });
+			if ((args || "").trim()) {
+				if (ctx.hasUI) ctx.ui.notify("Usage: /context", "warning");
+				else process.stderr.write("Usage: /context\n");
+				return;
+			}
 			const diagnostics = collectDiagnostics(pi, ctx);
 			if (ctx.mode !== "tui") {
-				if (globalRequested) {
-					const snapshot = await loadGlobal();
-					const summary = textualGlobalSummary(snapshot);
-					if (ctx.hasUI) ctx.ui.notify(summary, "info");
-					else process.stderr.write(`${summary}\n`);
-				} else {
-					const summary = textualSummary(diagnostics);
-					if (ctx.hasUI) ctx.ui.notify(summary, "info");
-					else process.stderr.write(`${summary}\n`);
-				}
+				const summary = textualSummary(diagnostics);
+				if (ctx.hasUI) ctx.ui.notify(summary, "info");
+				else process.stderr.write(`${summary}\n`);
 				return;
 			}
 
@@ -658,8 +516,6 @@ export default function contextDiagnosticsExtension(pi: ExtensionAPI): void {
 							},
 							() => tui.requestRender(),
 							() => tui.terminal.rows * 0.88,
-							loadGlobal,
-							{ initialView: globalRequested ? "global" : "summary" },
 						);
 						return component;
 					},

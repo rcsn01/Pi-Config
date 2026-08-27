@@ -10,26 +10,28 @@ export const ANALYSIS_PAGE = String.raw`<!doctype html>
 	<style>${ANALYSIS_PAGE_STYLES}</style>
 </head>
 <body>
-	<header>
-		<h1>Pi provider request analysis</h1>
-		<div id="activation" class="muted">Connecting...</div>
-	</header>
-	<main>
-		<div id="error" class="alert hidden"></div>
-		<div id="paused" class="alert hidden">
-			<div id="pausedText"></div>
-			<button id="clear">Clear and resume</button>
-		</div>
-		<p class="muted">
-			Requests shown here are logical payloads exposed by Pi before transport-specific transformations.
-			Captured prompts and tool data may contain secrets.
-		</p>
-		<div id="sourceTabs" class="source-tabs" role="tablist" aria-label="Request sources"></div>
-		<div id="sourcePanel" class="workspace" role="tabpanel" aria-labelledby="tab-main">
-			<nav id="requestList" class="request-list" aria-label="Captured requests"></nav>
-			<section id="detailPane" class="detail-pane" aria-live="polite"></section>
-		</div>
-	</main>
+	<div class="shell">
+		<header>
+			<h1>Pi provider request analysis</h1>
+		</header>
+		<main>
+			<div id="activation" class="status" data-phase="idle" role="status" aria-live="polite">Connecting...</div>
+			<div id="error" class="alert hidden"></div>
+			<div id="paused" class="alert hidden">
+				<div id="pausedText"></div>
+				<button id="clear">Clear and resume</button>
+			</div>
+			<p class="muted intro">
+				Requests shown here are logical payloads exposed by Pi before transport-specific transformations.
+				Captured prompts and tool data may contain secrets.
+			</p>
+			<div id="sourceTabs" class="source-tabs" role="tablist" aria-label="Request sources"></div>
+			<div id="sourcePanel" class="workspace" role="tabpanel" aria-labelledby="tab-main">
+				<nav id="requestList" class="request-list" aria-label="Captured requests"></nav>
+				<section id="detailPane" class="detail-pane" aria-live="polite"></section>
+			</div>
+		</main>
+	</div>
 	<script>${ANALYSIS_PAGE_CLIENT}</script>
 </body>
 </html>`;

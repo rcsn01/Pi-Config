@@ -162,6 +162,13 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"telemetry-usage": {
+			"displayName": "Global Usage Dashboard",
+			"pack": "observability",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"tools-advisor": {
 			"displayName": "Advisor",
 			"pack": "autonomy",

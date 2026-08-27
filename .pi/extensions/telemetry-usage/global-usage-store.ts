@@ -17,15 +17,16 @@ import {
 	GLOBAL_MODES,
 	type GlobalSessionRecord,
 	type GlobalUsageSnapshot,
+	type SessionActivityEntry,
 	type SessionUsageEntry,
 } from "../_shared/global-usage.ts";
 import { asRecord } from "../_shared/usage.ts";
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 3;
 const MAX_CONCURRENT_READS = 8;
 const FIRST_MESSAGE_LIMIT = 160;
 
-/** [id, modeIdx, modelIdx, input, output, cacheRead, cacheWrite, cost, turns] */
+/** [id, modeIdx, modelIdx, input, output, cacheRead, cacheWrite, cost, turns, timestamp] */
 type CacheEntryRow = [
 	id: string,
 	mode: number,
@@ -36,6 +37,15 @@ type CacheEntryRow = [
 	cacheWrite: number,
 	cost: number,
 	turns: number,
+	timestamp: number,
+];
+
+/** [id, kind, toolName, timestamp] where kind is 0=assistant and 1=tool. */
+type CacheActivityRow = [
+	id: string,
+	kind: 0 | 1,
+	toolName: string,
+	timestamp: number,
 ];
 
 interface CachedFile {
@@ -50,6 +60,7 @@ interface CachedFile {
 	parentSession?: string;
 	models: string[];
 	entries: CacheEntryRow[];
+	activity: CacheActivityRow[];
 }
 
 interface GlobalUsageCache {
@@ -74,7 +85,7 @@ export async function scanGlobalUsage(options: ScanGlobalUsageOptions = {}): Pro
 
 	const fresh: GlobalUsageCache = { version: CACHE_VERSION, updatedAt: Date.now(), files: {} };
 	const records: GlobalSessionRecord[] = [];
-	let changed = false;
+	let changed = previous.updatedAt === 0;
 	let loaded = 0;
 
 	const onLoaded = () => {
@@ -87,21 +98,22 @@ export async function scanGlobalUsage(options: ScanGlobalUsageOptions = {}): Pro
 		try {
 			const stats = await fs.promises.stat(file);
 			const header = await readHeader(file);
-			if (cached &&
+			if (cached && isCachedFileUsable(cached) &&
 				cached.mtime === stats.mtimeMs &&
 				cached.size === stats.size &&
 				cached.headerId === header.id) {
 				records.push(fromCachedFile(file, cached));
 				fresh.files[file] = cached;
 			} else {
+				changed = true;
 				const record = await parseSessionRecord(file, header);
 				if (record) {
 					records.push(record);
 					fresh.files[file] = toCachedFile(record, stats);
-					changed = true;
 				}
 			}
 		} catch {
+			changed = true;
 			// Unreadable or malformed file: skip it (and drop any cached copy).
 		} finally {
 			onLoaded();
@@ -183,7 +195,40 @@ async function parseSessionRecord(
 		messageCount,
 		parentSession: header.parentSession,
 		entries: classifySessionEntries(entries),
+		activity: extractSessionActivity(entries),
 	};
+}
+
+function entryTimestamp(entry: FileEntry): number | undefined {
+	if (entry.type === "session") return undefined;
+	const timestamp = Date.parse(entry.timestamp);
+	return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function extractSessionActivity(entries: readonly FileEntry[]): SessionActivityEntry[] {
+	const activity: SessionActivityEntry[] = [];
+	for (const entry of entries) {
+		if (entry.type !== "message") continue;
+		const timestamp = entryTimestamp(entry);
+		if (entry.message.role === "assistant") {
+			if (entry.message.stopReason === "error") continue;
+			activity.push({
+				id: entry.id,
+				kind: "assistant",
+				...(timestamp === undefined ? {} : { timestamp }),
+			});
+		} else if (entry.message.role === "toolResult") {
+			const toolName = typeof entry.message.toolName === "string" ? entry.message.toolName.trim() : "";
+			if (!toolName) continue;
+			activity.push({
+				id: entry.id,
+				kind: "tool",
+				toolName,
+				...(timestamp === undefined ? {} : { timestamp }),
+			});
+		}
+	}
+	return activity;
 }
 
 function extractSessionMeta(
@@ -239,8 +284,15 @@ function toCachedFile(record: GlobalSessionRecord, stats: { mtimeMs: number; siz
 			entry.cacheWrite,
 			entry.cost,
 			entry.turns,
+			entry.timestamp ?? 0,
 		];
 	});
+	const activity: CacheActivityRow[] = (record.activity ?? []).map((entry) => [
+		entry.id,
+		entry.kind === "tool" ? 1 : 0,
+		entry.toolName ?? "",
+		entry.timestamp ?? 0,
+	]);
 	return {
 		mtime: stats.mtimeMs,
 		size: stats.size,
@@ -253,13 +305,42 @@ function toCachedFile(record: GlobalSessionRecord, stats: { mtimeMs: number; siz
 		parentSession: record.parentSession,
 		models,
 		entries: rows,
+		activity,
 	};
+}
+
+function finiteNonNegative(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isCachedFileUsable(cached: CachedFile): cached is CachedFile {
+	if (!finiteNonNegative(cached.mtime) || !finiteNonNegative(cached.size) ||
+		typeof cached.headerId !== "string" || typeof cached.cwd !== "string" ||
+		typeof cached.created !== "string" || typeof cached.firstMessage !== "string" ||
+		!Number.isInteger(cached.messageCount) || cached.messageCount < 0 ||
+		!Array.isArray(cached.models) || !cached.models.every((model) => typeof model === "string") ||
+		!Array.isArray(cached.entries) || !Array.isArray(cached.activity)) return false;
+	if (cached.name !== undefined && typeof cached.name !== "string") return false;
+	if (cached.parentSession !== undefined && typeof cached.parentSession !== "string") return false;
+	for (const row of cached.entries) {
+		if (!Array.isArray(row) || row.length !== 10 || typeof row[0] !== "string" ||
+			!Number.isInteger(row[1]) || row[1] < 0 || row[1] >= GLOBAL_MODES.length ||
+			!Number.isInteger(row[2]) || row[2] < 0 || row[2] >= cached.models.length ||
+			!row.slice(3).every(finiteNonNegative)) return false;
+	}
+	for (const row of cached.activity) {
+		if (!Array.isArray(row) || row.length !== 4 || typeof row[0] !== "string" ||
+			(row[1] !== 0 && row[1] !== 1) || typeof row[2] !== "string" ||
+			!finiteNonNegative(row[3])) return false;
+		if (row[1] === 1 && !row[2].trim()) return false;
+	}
+	return true;
 }
 
 function fromCachedFile(file: string, cached: CachedFile): GlobalSessionRecord {
 	const entries: SessionUsageEntry[] = [];
 	for (const row of cached.entries) {
-		if (!Array.isArray(row) || row.length < 9) continue;
+		if (!Array.isArray(row) || row.length < 10) continue;
 		const mode = GLOBAL_MODES[row[1]];
 		if (!mode) continue;
 		entries.push({
@@ -272,6 +353,21 @@ function fromCachedFile(file: string, cached: CachedFile): GlobalSessionRecord {
 			cacheWrite: row[6],
 			cost: row[7],
 			turns: row[8],
+			timestamp: row[9] || undefined,
+		});
+	}
+	const activity: SessionActivityEntry[] = [];
+	for (const row of Array.isArray(cached.activity) ? cached.activity : []) {
+		if (!Array.isArray(row) || row.length < 4 || typeof row[0] !== "string") continue;
+		const kind = row[1] === 0 ? "assistant" : row[1] === 1 ? "tool" : undefined;
+		if (!kind) continue;
+		const toolName = typeof row[2] === "string" ? row[2].trim() : "";
+		if (kind === "tool" && !toolName) continue;
+		activity.push({
+			id: row[0],
+			kind,
+			...(kind === "tool" ? { toolName } : {}),
+			...(typeof row[3] === "number" && Number.isFinite(row[3]) && row[3] > 0 ? { timestamp: row[3] } : {}),
 		});
 	}
 	return {
@@ -284,6 +380,7 @@ function fromCachedFile(file: string, cached: CachedFile): GlobalSessionRecord {
 		messageCount: cached.messageCount,
 		parentSession: cached.parentSession,
 		entries,
+		activity,
 	};
 }
 
@@ -291,7 +388,8 @@ async function loadCache(cachePath: string): Promise<GlobalUsageCache> {
 	try {
 		const content = await fs.promises.readFile(cachePath, "utf8");
 		const parsed = JSON.parse(content) as GlobalUsageCache;
-		if (parsed?.version !== CACHE_VERSION || typeof parsed.files !== "object" || parsed.files === null) {
+		if (parsed?.version !== CACHE_VERSION || !finiteNonNegative(parsed.updatedAt) ||
+			typeof parsed.files !== "object" || parsed.files === null || Array.isArray(parsed.files)) {
 			return { version: CACHE_VERSION, updatedAt: 0, files: {} };
 		}
 		return parsed;
