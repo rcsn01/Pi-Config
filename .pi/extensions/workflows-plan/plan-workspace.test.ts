@@ -2,7 +2,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createPlanWorkspace, isSameDevice } from "./plan-workspace.ts";
+import { createPlanWorkspace, isSameDevice, makeTreeRemovable } from "./plan-workspace.ts";
 
 function describeTree(root: string, relPath = ""): string[] {
 	const entries: string[] = [];
@@ -19,6 +19,22 @@ function describeTree(root: string, relPath = ""): string[] {
 	}
 	return entries;
 }
+
+describe("makeTreeRemovable", () => {
+	it("ignores a directory removed between inspection and permission repair", async () => {
+		const missing = Object.assign(new Error("directory disappeared"), { code: "ENOENT" });
+
+		await expect(makeTreeRemovable("/disposable/vanished", {
+			lstat: async () => ({
+				mode: 0o40555,
+				isDirectory: () => true,
+				isSymbolicLink: () => false,
+			}),
+			chmod: async () => { throw missing; },
+			readdir: async () => [],
+		})).resolves.toBeUndefined();
+	});
+});
 
 describe("createPlanWorkspace", () => {
 	it("provides canonical disposable paths", async () => {
