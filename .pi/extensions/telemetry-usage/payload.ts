@@ -40,7 +40,7 @@ export interface TelemetryUsageActivitySeries {
 	daily: TelemetryUsageSeriesPoint[];
 	/** Monday-starting weekly totals covering the daily range. */
 	weekly: TelemetryUsageSeriesPoint[];
-	/** Running totals for each day in the daily range. */
+	/** Running totals at the end of each week covering the daily range. */
 	cumulative: TelemetryUsageSeriesPoint[];
 }
 
@@ -237,7 +237,7 @@ function weeklyActivitySeries(daily: readonly TelemetryUsageSeriesPoint[]): Tele
 
 function cumulativeActivitySeries(daily: readonly TelemetryUsageSeriesPoint[]): TelemetryUsageSeriesPoint[] {
 	const cumulative = emptyUsageTotals();
-	return daily.map((point) => {
+	return weeklyActivitySeries(daily).map((point) => {
 		addTotals(cumulative, point.usage);
 		return { start: point.start, usage: cloneTotals(cumulative) };
 	});

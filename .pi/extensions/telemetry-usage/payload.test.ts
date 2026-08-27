@@ -110,7 +110,7 @@ describe("toTelemetryUsagePayload", () => {
 
 		expect(payload.activity.daily).toHaveLength(365);
 		expect(payload.activity.weekly.length).toBeGreaterThanOrEqual(52);
-		expect(payload.activity.cumulative).toHaveLength(365);
+		expect(payload.activity.cumulative).toHaveLength(payload.activity.weekly.length);
 		expect(payload.activity.cumulative.at(-1)?.usage.tokens).toBe(payload.total.tokens);
 		expect(payload.overview).toMatchObject({
 			lifetimeTokens: 26,

@@ -32,17 +32,18 @@ export const TELEMETRY_USAGE_PAGE_STYLES = String.raw`${DASHBOARD_BASE_STYLES}
 .activity-card figcaption, .chart-card figcaption { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .activity-card figcaption span, .chart-card figcaption span { color: var(--page-text-muted); font-size: .8rem; }
 .heatmap-viewport { overflow-x: auto; padding: 2px 0 5px; }
-.heatmap-months { display: grid; grid-template-columns: repeat(var(--weeks), 12px); column-gap: 3px; min-width: max-content; height: 20px; margin-left: 35px; }
+.heatmap-months { display: grid; grid-template-columns: repeat(var(--weeks), 12px); column-gap: 3px; min-width: max-content; height: 20px; }
 .heatmap-months span { color: var(--page-text-muted); font-size: .72rem; }
-.heatmap-body { display: flex; gap: 8px; min-width: max-content; }
-.heatmap-weekdays { display: grid; grid-template-rows: repeat(7, 12px); row-gap: 3px; width: 27px; color: var(--page-text-muted); font-size: .68rem; line-height: 12px; text-align: right; }
 .heatmap-grid { display: grid; grid-template-columns: repeat(var(--weeks), 12px); grid-template-rows: repeat(7, 12px); gap: 3px; min-width: max-content; }
 .heatmap-cell { display: block; width: 12px; height: 12px; border-radius: 3px; background: #4A4A4A; }
 .heatmap-cell:hover { outline: 1px solid var(--page-accent); outline-offset: 1px; }
+.heatmap-tip { position: fixed; z-index: 20; padding: 6px 9px; border: 1px solid var(--page-line-strong); border-radius: 7px; background: var(--page-surface-deep); color: var(--page-text); font-size: .78rem; white-space: nowrap; pointer-events: none; opacity: 0; transform: translate(-50%, calc(-100% - 6px)); transition: opacity .08s linear; }
+.heatmap-tip.visible { opacity: 1; }
 .heatmap-cell.level-1 { background: #5A5A5A; }
 .heatmap-cell.level-2 { background: var(--page-accent); }
 .heatmap-cell.level-3 { background: var(--page-text-muted); }
 .heatmap-cell.level-4 { background: var(--page-text); }
+.fill-on { background: var(--page-accent); }
 .chart-grid { display: grid; gap: 12px; }
 .chart-card { min-width: 0; margin: 0; padding: 13px 14px 10px; border: 1px solid var(--page-line); border-radius: 9px; background: #292929; }
 .chart-viewport { overflow-x: auto; }
