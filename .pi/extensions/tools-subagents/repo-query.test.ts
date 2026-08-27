@@ -3,12 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	executeRepoQuery,
-	formatRepoQueryResults,
-	REPO_QUERY_LIMITS,
-	type RepoQueryOperation,
-} from "./repo-query.ts";
+import { executeRepoQuery } from "./repo-query.ts";
 import registerRepoQueryTool, {
 	createRepoQueryExecutor,
 	extractToolText,
@@ -28,9 +23,11 @@ function writeFixtureFiles(root: string, count = 3): void {
 	}
 }
 
+type TestOperation = Record<string, unknown>;
+
 async function run(
 	root: string,
-	operations: RepoQueryOperation[],
+	operations: TestOperation[],
 	executor: Parameters<typeof executeRepoQuery>[2],
 	context: Omit<Parameters<typeof executeRepoQuery>[1], "cwd"> = {},
 ) {
@@ -91,7 +88,7 @@ describe("repo_query module", () => {
 			return operation.id!;
 		});
 
-		expect(maximumActive).toBeLessThanOrEqual(REPO_QUERY_LIMITS.maxConcurrency);
+		expect(maximumActive).toBeLessThanOrEqual(6);
 		expect(result.details.operations.map((operation) => operation.id)).toEqual(operations.map((operation) => operation.id));
 		for (let index = 0; index < operations.length; index++) {
 			expect(result.text.indexOf(`## op-${index} [read]`)).toBeLessThan(
@@ -254,24 +251,21 @@ describe("repo_query module", () => {
 		await expect(promise).rejects.toThrow("caller cancelled");
 	});
 
-	it("keeps every operation represented under aggregate truncation and redistributes short output", () => {
-		const records = [
-			{ id: "short", kind: "read" as const, body: "small", durationMs: 1, success: true },
-			...Array.from({ length: 7 }, (_, index) => ({
-				id: `long-${index}`,
-				kind: "grep" as const,
-				body: Array.from({ length: 2_000 }, (_, line) => `long-${index}-${line}-${"x".repeat(80)}`).join("\n"),
-				durationMs: 1,
-				success: true,
-			})),
-		];
-		const formatted = formatRepoQueryResults(records);
+	it("keeps every operation represented under aggregate truncation and redistributes short output", async () => {
+		const root = fixture();
+		const longBody = Array.from({ length: 2_000 }, (_, line) => `long-${line}-${"x".repeat(80)}`).join("\n");
+		const ids = ["short", ...Array.from({ length: 7 }, (_, index) => `long-${index}`)];
+		const result = await run(root, ids.map((id) => ({ id, kind: "read" as const, path: `p-${id}.txt` })), async (operation) => {
+			return operation.id === "short" ? "small" : longBody;
+		}, { maxBytes: 50 * 1024, maxLines: 2_000 });
 
-		expect(formatted.outputBytes).toBeLessThanOrEqual(50 * 1024);
-		expect(formatted.outputLines).toBeLessThanOrEqual(2_000);
-		for (const record of records) expect(formatted.text).toContain(`## ${record.id} [${record.kind}]`);
-		expect(formatted.operationTruncated.filter(Boolean).length).toBeGreaterThan(0);
-		expect(formatted.text).toContain("Output truncated");
+		expect(result.details.originalOutputBytes).toBeGreaterThan(50 * 1024);
+		expect(result.details.outputBytes).toBeLessThanOrEqual(50 * 1024);
+		expect(result.details.outputLines).toBeLessThanOrEqual(2_000);
+		for (const id of ids) expect(result.text).toContain(`## ${id} [read]`);
+		expect(result.text).toContain("small");
+		expect(result.details.operations.filter((operation) => operation.truncated).length).toBeGreaterThan(0);
+		expect(result.text).toContain("Output truncated");
 	});
 
 	it("uses fixed Git helpers and never includes untracked file contents", async () => {

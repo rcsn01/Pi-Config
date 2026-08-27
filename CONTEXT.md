@@ -77,6 +77,12 @@ extension.
 - **Repository snapshot** — an immutable, commit-pinned source tree under `.pi/repos`.
 - **Repository store** — the module that owns acquisition, manifests, limits, listing, locking, and explicit removal.
 
+## Subagent tooling
+
+- **Repo query batch** — the read-only batched evidence tool (`repo_query`) behind
+  the subagent runner: one `executeRepoQuery` interface; validation, path safety,
+  dedupe, truncation, and formatting hide inside.
+
 ## Safety
 
 - **Guardian** — the in-process model review of risky tool calls
