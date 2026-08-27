@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { emptyGlobalModeTotals } from "../_shared/global-usage.ts";
-import { emptyUsageTotals } from "../_shared/usage.ts";
-import { globalTotalsLines, sortedUsageRows, usageTableLines } from "./usage-tables.ts";
+import { sortedUsageRows, usageTableLines } from "./usage-tables.ts";
 
 /** Minimal theme: no ANSI codes so assertions see plain text. */
 const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme;
@@ -61,36 +59,6 @@ describe("usageTableLines", () => {
 		], theme, 30);
 		expect(lines[1]).toContain("…");
 		expect(lines[1]).toContain("anthropic/claude-sonnet-4");
-	});
-});
-
-describe("globalTotalsLines", () => {
-	const totals = emptyGlobalModeTotals();
-	totals.main = { ...emptyUsageTotals(), input: 1_000, cacheRead: 200, output: 50, tokens: 1_250, cost: 1.2345, turns: 3 };
-	totals.plan = { ...emptyUsageTotals(), input: 100, cacheRead: 0, output: 10, tokens: 110, cost: 0.5, turns: 1 };
-	const grandTotal = { ...emptyUsageTotals(), input: 1_100, cacheRead: 200, output: 60, tokens: 1_360, cost: 1.7345, turns: 4 };
-
-	it("renders a header table with right-aligned cost and turns columns", () => {
-		expect(globalTotalsLines(totals, grandTotal, theme, 60)).toEqual([
-			"┌─ Global token usage ─────────────────────────────────────┐",
-			"│ Mode              Input  Cache in  Output    Cost  Turns │",
-			"├──────────────────────────────────────────────────────────┤",
-			"│ Main              1,000       200      50  $1.234      3 │",
-			"│ Plan mode           100         0      10  $0.500      1 │",
-			"│ Subagent              0         0       0  $0.000      0 │",
-			"│ Advisor               0         0       0  $0.000      0 │",
-			"│ Guardian              0         0       0  $0.000      0 │",
-			"│ Total             1,100       200      60  $1.734      4 │",
-			"└──────────────────────────────────────────────────────────┘",
-		]);
-	});
-
-	it("falls back to a label list at narrow widths", () => {
-		const lines = globalTotalsLines(totals, grandTotal, theme, 30);
-		expect(lines).toContain("│ Main                       │");
-		expect(lines).toContain("│   Input     1,000          │");
-		expect(lines).toContain("│   Cost      $1.234         │");
-		expect(lines).toContain("│   Turns     3              │");
 	});
 });
 

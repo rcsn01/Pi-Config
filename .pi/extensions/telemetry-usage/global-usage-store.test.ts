@@ -29,13 +29,14 @@ function assistant(
 	model = "claude-x",
 	provider = "anthropic",
 	usage: unknown = USAGE,
+	stopReason: "stop" | "error" = "stop",
 ): unknown {
 	return {
 		type: "message",
 		id,
 		parentId,
 		timestamp: TS,
-		message: { role: "assistant", provider, model, usage, stopReason: "stop" },
+		message: { role: "assistant", provider, model, usage, stopReason },
 	};
 }
 
@@ -71,7 +72,7 @@ describe("classifySessionEntries", () => {
 			assistant("a2", "a1", "gpt-5", "openai"),
 		]));
 		expect(result).toHaveLength(2);
-		expect(result[0]).toMatchObject({ id: "a1", mode: "main", model: "anthropic/claude-x", turns: 1, input: 100, output: 20, cacheRead: 30, cacheWrite: 5, cost: 0.25 });
+		expect(result[0]).toMatchObject({ id: "a1", mode: "main", model: "anthropic/claude-x", timestamp: Date.parse(TS), turns: 1, input: 100, output: 20, cacheRead: 30, cacheWrite: 5, cost: 0.25 });
 		expect(result[1]).toMatchObject({ id: "a2", mode: "main", model: "openai/gpt-5" });
 	});
 
@@ -266,6 +267,44 @@ describe("buildGlobalUsageSnapshot", () => {
 		expect(snapshot.modelCount).toBe(3);
 	});
 
+	it("deduplicates copied fork records by parent ancestry, regardless of input order", () => {
+		const parent = record("/sessions/parent.jsonl", "pid", "2026-01-01T00:00:00.000Z", [usageEntry("copied", "main", "m1", 10)]);
+		const fork = {
+			...record("/sessions/fork.jsonl", "fid", "2026-01-02T00:00:00.000Z", [
+				usageEntry("copied", "main", "m1", 10),
+				usageEntry("fork-only", "main", "m1", 20),
+			]),
+			parentSession: parent.file,
+		};
+		const snapshot = buildGlobalUsageSnapshot([fork, parent]);
+		expect(snapshot.total.input).toBe(30);
+		expect(snapshot.sessions.find((session) => session.id === "pid")?.total.input).toBe(10);
+		expect(snapshot.sessions.find((session) => session.id === "fid")?.total.input).toBe(20);
+	});
+
+	it("deduplicates global tool runs while keeping fork chat lengths complete", () => {
+		const copiedActivity = [
+			{ id: "assistant-1", kind: "assistant" as const },
+			{ id: "tool-1", kind: "tool" as const, toolName: "read" },
+			{ id: "tool-2", kind: "tool" as const, toolName: "read" },
+		];
+		const snapshot = buildGlobalUsageSnapshot([
+			record("/sessions/p.jsonl", "pid", "2026-01-01T00:00:00.000Z", [usageEntry("e1", "main", "m1", 10)],),
+			record("/sessions/f.jsonl", "fid", "2026-01-02T00:00:00.000Z", [usageEntry("e2", "main", "m1", 20)],),
+		].map((item, index) => ({
+			...item,
+			activity: index === 0
+				? copiedActivity
+				: [...copiedActivity, { id: "assistant-2", kind: "assistant" as const }, { id: "tool-3", kind: "tool" as const, toolName: "bash" }],
+		})));
+		const parent = snapshot.sessions.find((session) => session.id === "pid")!;
+		const fork = snapshot.sessions.find((session) => session.id === "fid")!;
+		expect(parent).toMatchObject({ chatTurns: 1, toolRuns: 2 });
+		expect(fork).toMatchObject({ chatTurns: 2, toolRuns: 3 });
+		expect(snapshot.tools).toEqual([{ tool: "read", runs: 2 }, { tool: "bash", runs: 1 }]);
+		expect(snapshot.toolRunCount).toBe(3);
+	});
+
 	it("orders sessions by cost desc then tokens desc", () => {
 		const snapshot = buildGlobalUsageSnapshot([
 			record("/a.jsonl", "sa", "2026-01-01T00:00:00.000Z", [usageEntry("a1", "main", "m1", 10, 0.01)]),
@@ -311,8 +350,13 @@ describe("scanGlobalUsage store", () => {
 		expect(first.sessions[0]).toMatchObject({ id: "hdr-1", cwd: "/repo", messageCount: 2 });
 		expect(first.total.input).toBe(200);
 		expect(first.total.turns).toBe(2);
+		expect(first.timeline).toHaveLength(2);
+		expect(first.timeline[0]?.timestamp).toBe(Date.parse(TS));
 		expect(fs.existsSync(cachePath)).toBe(true);
 		const ledgerAfterFirst = fs.readFileSync(cachePath, "utf8");
+		const ledger = JSON.parse(ledgerAfterFirst) as { version: number; files: Record<string, { entries: unknown[][] }> };
+		expect(ledger.version).toBe(3);
+		expect(Object.values(ledger.files)[0]!.entries[0]).toHaveLength(10);
 
 		const second = await scanGlobalUsage({ sessionsDir, cachePath });
 		expect(second.total.input).toBe(200);
@@ -328,6 +372,19 @@ describe("scanGlobalUsage store", () => {
 		expect(updated.total.turns).toBe(2);
 	});
 
+	it("re-parses a v3 cache entry with missing activity metadata", async () => {
+		writeSession("s1.jsonl", "hdr-1", "2026-01-01T00:00:00.000Z", [assistant("a1", null), toolResult("t1", "a1", "read")]);
+		await scanGlobalUsage({ sessionsDir, cachePath });
+		const ledger = JSON.parse(fs.readFileSync(cachePath, "utf8")) as { files: Record<string, { activity: unknown }> };
+		const filePath = Object.keys(ledger.files)[0]!;
+		delete ledger.files[filePath]!.activity;
+		fs.writeFileSync(cachePath, JSON.stringify(ledger));
+
+		const rescanned = await scanGlobalUsage({ sessionsDir, cachePath });
+		expect(rescanned.sessions[0]).toMatchObject({ chatTurns: 1, toolRuns: 1 });
+		expect(JSON.parse(fs.readFileSync(cachePath, "utf8")).files[filePath].activity).toHaveLength(2);
+	});
+
 	it("re-parses when the cached header id no longer matches the file", async () => {
 		writeSession("s1.jsonl", "hdr-1", "2026-01-01T00:00:00.000Z", [assistant("a1", null)]);
 		await scanGlobalUsage({ sessionsDir, cachePath });
@@ -338,6 +395,19 @@ describe("scanGlobalUsage store", () => {
 
 		const rescanned = await scanGlobalUsage({ sessionsDir, cachePath });
 		expect(rescanned.sessions[0]?.id).toBe("hdr-1");
+	});
+
+	it("extracts assistant turns and tool runs, including tools without usage", async () => {
+		writeSession("s1.jsonl", "hdr-1", "2026-01-01T00:00:00.000Z", [
+			{ type: "message", id: "u1", parentId: null, timestamp: TS, message: { role: "user", content: "hi" } },
+			assistant("a1", "u1"),
+			toolResult("t1", "a1", "read"),
+			assistant("a2", "t1", "claude-x", "anthropic", { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } }),
+			assistant("a3", "a2", "claude-x", "anthropic", USAGE, "error"),
+		]);
+		const snapshot = await scanGlobalUsage({ sessionsDir, cachePath });
+		expect(snapshot.sessions[0]).toMatchObject({ chatTurns: 2, toolRuns: 1 });
+		expect(snapshot.tools).toEqual([{ tool: "read", runs: 1 }]);
 	});
 
 	it("extracts session name, first message, and message count", async () => {
@@ -365,6 +435,14 @@ describe("scanGlobalUsage store", () => {
 		expect(snapshot.sessions[0]?.id).toBe("hdr-2");
 		const ledger = JSON.parse(fs.readFileSync(cachePath, "utf8")) as { files: Record<string, unknown> };
 		expect(Object.keys(ledger.files)).toHaveLength(1);
+	});
+
+	it("rebuilds a version 1 ledger that has no usage timestamps", async () => {
+		writeSession("s1.jsonl", "hdr-1", "2026-01-01T00:00:00.000Z", [assistant("a1", null)]);
+		fs.writeFileSync(cachePath, JSON.stringify({ version: 1, updatedAt: 0, files: {} }));
+		const snapshot = await scanGlobalUsage({ sessionsDir, cachePath });
+		expect(snapshot.timeline[0]?.timestamp).toBe(Date.parse(TS));
+		expect(JSON.parse(fs.readFileSync(cachePath, "utf8")).version).toBe(3);
 	});
 
 	it("falls back to a full scan on a corrupt ledger", async () => {
