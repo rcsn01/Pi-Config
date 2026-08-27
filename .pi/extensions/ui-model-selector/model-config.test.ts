@@ -212,6 +212,7 @@ function createLifecycleHarness(options: {
 		setModel,
 		setThinkingLevel,
 		setEditorComponent,
+		setPath,
 		notify,
 		load,
 		save,
@@ -222,6 +223,14 @@ function createLifecycleHarness(options: {
 }
 
 describe("model selector lifecycle", () => {
+	it("applies the session path before loading model settings", async () => {
+		const harness = createLifecycleHarness();
+		await harness.emit("startup");
+
+		expect(harness.setPath).toHaveBeenCalledOnce();
+		expect(harness.setPath.mock.invocationCallOrder[0]).toBeLessThan(harness.load.mock.invocationCallOrder[0]);
+	});
+
 	it("opens the picker and applies the selected model", async () => {
 		const harness = createLifecycleHarness();
 		await harness.emit("startup");
