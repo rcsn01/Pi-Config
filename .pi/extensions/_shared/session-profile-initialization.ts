@@ -51,6 +51,7 @@ interface SessionProfileInitializationRecord {
 
 interface SessionProfileInitializationRun {
 	readonly binding: SessionProfileBinding;
+	readonly records: readonly SessionProfileInitializationRecord[];
 	readonly attempted: SessionProfileInitializationRecord[];
 	readonly failures: Map<SessionProfileInitializationRecord, unknown>;
 }
@@ -98,7 +99,7 @@ function canonicalPathOptions(options: SessionProfileInitializationOptions): {
 
 function getPathState(
 	registry: SessionProfileInitializationRegistry,
-	{ settingsPath, profilesDirectory, pathKey }: ReturnType<typeof canonicalPathOptions>,
+	{ pathKey }: ReturnType<typeof canonicalPathOptions>,
 ): SessionProfileInitializationPathState {
 	const existing = registry.paths.get(pathKey);
 	if (existing) return existing;
@@ -133,6 +134,7 @@ async function runInitialization(
 	const records = orderedRecords(state.registrations.values());
 	const run: SessionProfileInitializationRun = {
 		binding,
+		records,
 		attempted: [],
 		failures: new Map(),
 	};
@@ -215,8 +217,9 @@ function beginCleanup(
 		}
 
 		const result = await runCleanup(run, ctx);
+		const recordsToRemove = run ? new Set(run.records) : recordsAtShutdown;
 		for (const [name, record] of state.registrations) {
-			if (recordsAtShutdown.has(record)) state.registrations.delete(name);
+			if (recordsToRemove.has(record)) state.registrations.delete(name);
 		}
 		if (state.activeRun === activeRun) state.activeRun = undefined;
 		if (state.cleanupInFlight === cleanup) state.cleanupInFlight = undefined;
@@ -252,12 +255,14 @@ export function registerSessionProfileInitialization(
 
 	return {
 		async start(event, ctx) {
-			const run = await beginInitialization(state, record, event, ctx);
+			const currentState = registry.paths.get(canonical.pathKey) ?? state;
+			const run = await beginInitialization(currentState, record, event, ctx);
 			if (run.failures.has(record)) throw run.failures.get(record);
 			return run.binding;
 		},
 
 		async stop(event, ctx) {
+			if (!state.stopsByEvent.has(event) && state.activeRun === undefined && state.registrations.get(adapter.name) !== record) return;
 			const cleanup = await beginCleanup(registry, state, event, ctx);
 			if (cleanup.failures.has(record)) throw cleanup.failures.get(record);
 		},

@@ -189,6 +189,23 @@ describe("session profile initialization", () => {
 		]);
 	});
 
+	it("lets a stale start join a replacement after an empty state was removed", async () => {
+		const paths = fixture();
+		const staleActions: string[] = [];
+		const replacementActions: string[] = [];
+		const stale = register(paths, adapter("tools-advisor", staleActions));
+		stale.unregister();
+		const replacement = register(paths, adapter("tools-advisor", replacementActions));
+		const { event, ctx } = lifecycle();
+
+		const binding = await stale.start(event, ctx);
+		const sameBinding = await replacement.start(event, ctx);
+
+		expect(sameBinding).toBe(binding);
+		expect(staleActions).toEqual([]);
+		expect(replacementActions).toEqual(["path:tools-advisor", "init:tools-advisor"]);
+	});
+
 	it("cleans up once in reverse attempt order and isolates cleanup failures", async () => {
 		const paths = fixture();
 		const actions: string[] = [];
@@ -206,7 +223,7 @@ describe("session profile initialization", () => {
 		const stopEvent = shutdown();
 
 		await last.stop(stopEvent, {} as ExtensionContext);
-		expect(() => failing.stop(stopEvent, {} as ExtensionContext)).rejects.toBe(cleanupFailure);
+		await expect(failing.stop(stopEvent, {} as ExtensionContext)).rejects.toBe(cleanupFailure);
 		await first.stop(stopEvent, {} as ExtensionContext);
 		await expect(last.stop(shutdown(), {} as ExtensionContext)).resolves.toBeUndefined();
 		expect(actions.slice(-3)).toEqual([
@@ -227,4 +244,3 @@ describe("session profile initialization", () => {
 		expect(binding.settingsPath).toBe(paths.profilesDirectory + "/focused.json");
 	});
 });
-

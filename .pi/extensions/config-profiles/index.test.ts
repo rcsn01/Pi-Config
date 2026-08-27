@@ -256,6 +256,15 @@ describe("config profiles extension", () => {
 		expect(harness.setStatus).toHaveBeenCalledWith("profile", undefined);
 	});
 
+	it("clears the profile status once after coordinated initialization", async () => {
+		const harness = createHarness({ active: "default" });
+		await harness.emit("session_start");
+		harness.setStatus.mockClear();
+		await harness.emit("session_shutdown");
+		expect(harness.setStatus).toHaveBeenCalledOnce();
+		expect(harness.setStatus).toHaveBeenCalledWith("profile", undefined);
+	});
+
 	it("switches a direct argument, records the entry, notifies, and reloads exactly once", async () => {
 		const harness = createHarness({ active: "default" });
 		await harness.runProfileCommand("focused");
