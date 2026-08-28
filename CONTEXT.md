@@ -34,9 +34,10 @@ extension.
   a usage snapshot and serves it to the browser.
 - **Analysis dashboard** — the `/analysis` dashboard: captures provider
   request/response events as inspectable records.
-- **Persistent dashboard runtime** — the shared lifetime store in
-  `_shared/dashboard-runtime.ts` both dashboards sit on: one runtime per symbol
-  key; claim/release, orphan grace, and close-on-quit hide behind it.
+- **Persistent dashboard runtime** — the deep lifetime and server lifecycle
+  module in `_shared/dashboard-runtime.ts` both dashboards sit on: one runtime
+  per symbol key; lazy server adapters, coalesced start/close, close/start
+  ordering, claim/release, orphan grace, and close-on-quit hide behind it.
 
 ## Subscriptions & quotas
 
@@ -81,6 +82,13 @@ extension.
 - **Plan Mode lifecycle** — the deep orchestration module that owns live Plan
   State, transitions, Profile rollback, tool projection, proposed-plan state,
   and ordering across Plan Runtime and Plan Review.
+
+## Advisor tooling
+
+- **Advisor execution outcome** — the structured result of one Advisor run:
+  success, warning, or failure with a stable code, message, model, budget effect,
+  truncation state, and optional usage. The Advisor runner owns outcome meaning;
+  one Pi adapter owns tool text, details, error flags, and legacy result reading.
 
 ## Repository snapshots
 

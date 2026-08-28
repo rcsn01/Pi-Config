@@ -26,21 +26,18 @@ describe("analysis runtime", () => {
 		expect(second.getSummary().records).toHaveLength(1);
 	});
 
-	it("does not reactivate after close races with a pending start", async () => {
-		let resolveStart!: (result: { url: string }) => void;
+	it("keeps its close-during-start error at the dashboard seam", async () => {
+		let rejectStart!: (error: unknown) => void;
 		const server = {
-			start: vi.fn(() => new Promise<{ url: string }>((resolve) => { resolveStart = resolve; })),
-			close: vi.fn(async () => {}),
+			start: vi.fn(() => new Promise<{ url: string }>((_resolve, reject) => { rejectStart = reject; })),
+			close: vi.fn(async () => rejectStart(new Error("listen cancelled"))),
 		};
 		const runtime = createAnalysisRuntime({ serverFactory: () => server });
+
 		const starting = runtime.start();
 		const closing = runtime.close();
-		resolveStart({ url: "http://localhost:1/#token=test" });
-
-		await expect(starting).rejects.toThrow("closed while starting");
+		await expect(starting).rejects.toThrow("Analysis server was closed while starting.");
 		await closing;
-		expect(runtime.isActive()).toBe(false);
-		expect(server.close).toHaveBeenCalledOnce();
 	});
 
 	it("does not retain events before successful activation and starts idempotently", async () => {

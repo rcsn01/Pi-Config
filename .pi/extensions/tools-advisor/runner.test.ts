@@ -145,8 +145,12 @@ describe("advisor runner", () => {
 			sessionId: deriveAdvisorSessionId("main-session", "anthropic/strong"),
 		});
 		expect(result).toMatchObject({
-			content: [{ type: "text", text: "Use the narrow change and verify it." }],
-			details: { model: "anthropic/strong", consumesBudget: true, truncated: false },
+			disposition: "success",
+			code: "advisor_ok",
+			message: "Use the narrow change and verify it.",
+			model: "anthropic/strong",
+			consumesBudget: true,
+			truncated: false,
 			usage,
 		});
 	});
@@ -189,7 +193,7 @@ describe("advisor runner", () => {
 		expect(offStream.mock.calls[0][2]).not.toHaveProperty("reasoning");
 	});
 
-	it("rejects a saved context window above the normalized catalogue maximum", async () => {
+	it("reports a saved context window above the normalized catalogue maximum", async () => {
 		const ctx = context();
 		const result = await createAdvisorRunner().execute(runInput(ctx, {
 			settings: {
@@ -197,7 +201,7 @@ describe("advisor runner", () => {
 				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
 			},
 		}));
-		expect(result.content[0].text).toMatch(/^advisor_context_window_invalid/);
+		expect(result).toMatchObject({ disposition: "failure", code: "advisor_context_window_invalid", consumesBudget: false });
 		expect(ctx.modelRegistry.getProvider).not.toHaveBeenCalled();
 	});
 
@@ -221,19 +225,18 @@ describe("advisor runner", () => {
 		expect(streamSimple.mock.calls[0][2]).toMatchObject({ reasoning: "high" });
 	});
 
-	it("rejects a configured model outside the session scope before auth or provider dispatch", async () => {
+	it("reports a configured model outside the session scope before auth or provider dispatch", async () => {
 		const ctx = context({ scopedModels: [{ model: { provider: "anthropic", id: "other" } }] });
 		const result = await createAdvisorRunner().execute(runInput(ctx));
 
-		expect(result.content[0].text).toMatch(/^advisor_model_unavailable/);
-		expect(result.details.consumesBudget).toBe(false);
+		expect(result).toMatchObject({ disposition: "failure", code: "advisor_model_unavailable", consumesBudget: false });
 		expect(ctx.modelRegistry.hasConfiguredAuth).not.toHaveBeenCalled();
 		expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
 		expect(ctx.modelRegistry.getProvider).not.toHaveBeenCalled();
 		expect(ctx.modelRegistry.complete).not.toHaveBeenCalled();
 	});
 
-	it("returns visible fail-soft results for empty, truncated, aborted, and provider-error responses", async () => {
+	it("returns structured outcomes for empty, truncated, aborted, and provider-error responses", async () => {
 		for (const response of [
 			assistantResponse({ content: [], stopReason: "stop" }),
 			assistantResponse({ content: [{ type: "text", text: "partial" }], stopReason: "length" }),
@@ -243,10 +246,14 @@ describe("advisor runner", () => {
 			const ctx = context();
 			ctx.modelRegistry.complete.mockResolvedValue(response);
 			const result = await createAdvisorRunner().execute(runInput(ctx));
-			expect(result.content[0]?.type).toBe("text");
-			expect(result.details.consumesBudget).toBe(true);
-			if (response.stopReason === "length") expect(result.details.truncated).toBe(true);
-			expect(result.content[0].text).toMatch(/^advisor_/);
+			expect(result.message).toEqual(expect.any(String));
+			expect(result.consumesBudget).toBe(true);
+			if (response.stopReason === "length") {
+				expect(result).toMatchObject({ disposition: "warning", code: "advisor_truncated", truncated: true });
+			} else {
+				expect(result.disposition).toBe("failure");
+				expect(result.code).toMatch(/^advisor_/);
+			}
 		}
 	});
 
@@ -257,8 +264,7 @@ describe("advisor runner", () => {
 			nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
 		};
 		const result = await createAdvisorRunner().execute(runInput(ctx, { settings }));
-		expect(result.content[0].text).toMatch(/^advisor_off/);
-		expect(result.details.consumesBudget).toBe(false);
+		expect(result).toMatchObject({ disposition: "failure", code: "advisor_off", consumesBudget: false });
 		expect(ctx.modelRegistry.complete).not.toHaveBeenCalled();
 	});
 
@@ -278,8 +284,7 @@ describe("advisor runner", () => {
 		});
 		const second = await runner.execute(runInput(ctx, { settings }));
 		expect(ctx.modelRegistry.complete).toHaveBeenCalledOnce();
-		expect(second.content[0].text).toMatch(/^advisor_turn_budget_exhausted/);
-		expect(second.details.consumesBudget).toBe(false);
+		expect(second).toMatchObject({ disposition: "failure", code: "advisor_turn_budget_exhausted", consumesBudget: false });
 	});
 
 	it("resets the per-turn budget on a new user message", async () => {
@@ -297,11 +302,11 @@ describe("advisor runner", () => {
 			},
 		});
 		const second = await runner.execute(runInput(ctx, { settings }));
-		expect(second.content[0].text).toMatch(/^advisor_turn_budget_exhausted/);
+		expect(second).toMatchObject({ disposition: "failure", code: "advisor_turn_budget_exhausted" });
 		entries.push({ type: "message", id: "next-user", parentId: "advisor-result", timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "Next turn", timestamp: 0 } });
 		const third = await runner.execute(runInput(ctx, { settings }));
 		expect(ctx.modelRegistry.complete).toHaveBeenCalledTimes(2);
-		expect(third.details.consumesBudget).toBe(true);
+		expect(third).toMatchObject({ disposition: "success", consumesBudget: true });
 	});
 
 	it("enforces the session ceiling even when the per-turn budget resets", async () => {
@@ -321,8 +326,7 @@ describe("advisor runner", () => {
 		entries.push({ type: "message", id: "next-user", parentId: "advisor-result", timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "Next turn", timestamp: 0 } });
 		const second = await runner.execute(runInput(ctx, { settings }));
 		expect(ctx.modelRegistry.complete).toHaveBeenCalledOnce();
-		expect(second.content[0].text).toMatch(/^advisor_budget_exhausted/);
-		expect(second.details.consumesBudget).toBe(false);
+		expect(second).toMatchObject({ disposition: "failure", code: "advisor_budget_exhausted", consumesBudget: false });
 	});
 
 	it("treats a per-turn budget of 0 as unlimited", async () => {
@@ -332,8 +336,11 @@ describe("advisor runner", () => {
 		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 0, maxUsesPerSession: 20, maxTokens: 2048 };
 		for (let consultation = 0; consultation < 4; consultation++) {
 			const result = await runner.execute(runInput(ctx, { settings }));
-			expect(result.content[0].text).toBe("Use the narrow change and verify it.");
-			expect(result.details.consumesBudget).toBe(true);
+			expect(result).toMatchObject({
+				disposition: "success",
+				message: "Use the narrow change and verify it.",
+				consumesBudget: true,
+			});
 			entries.push({
 				type: "message", id: `advisor-result-${consultation}`, parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
 				message: {
@@ -354,7 +361,7 @@ describe("advisor runner", () => {
 		// Run past the finite default of 20 session uses to prove the 0 sentinel bypasses it.
 		for (let turn = 0; turn < 21; turn++) {
 			const result = await runner.execute(runInput(ctx, { settings }));
-			expect(result.details.consumesBudget).toBe(true);
+			expect(result).toMatchObject({ disposition: "success", consumesBudget: true });
 			entries.push({
 				type: "message", id: `advisor-result-${turn}`, parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
 				message: {
@@ -388,21 +395,19 @@ describe("advisor runner", () => {
 		const second = await runner.execute(runInput(ctx, { settings: { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048 } }));
 		expect(first.usage?.cacheWrite).toBeGreaterThan(0);
 		expect(second.usage?.cacheRead).toBeGreaterThan(0);
-		expect(first.details.model).toBe(second.details.model);
+		expect(first.model).toBe(second.model);
 	});
 
-	it("rejects missing model/auth and explicit zero-usage overflow without consuming budget", async () => {
+	it("reports missing model/auth and explicit zero-usage overflow without consuming budget", async () => {
 		const missingModel = context();
 		missingModel.modelRegistry.find.mockReturnValue(undefined);
 		let result = await createAdvisorRunner().execute(runInput(missingModel));
-		expect(result.content[0].text).toMatch(/^advisor_model_unavailable/);
-		expect(result.details.consumesBudget).toBe(false);
+		expect(result).toMatchObject({ disposition: "failure", code: "advisor_model_unavailable", consumesBudget: false });
 
 		const missingAuth = context();
 		missingAuth.modelRegistry.hasConfiguredAuth.mockReturnValue(false);
 		result = await createAdvisorRunner().execute(runInput(missingAuth));
-		expect(result.content[0].text).toMatch(/^advisor_auth_unavailable/);
-		expect(result.details.consumesBudget).toBe(false);
+		expect(result).toMatchObject({ disposition: "failure", code: "advisor_auth_unavailable", consumesBudget: false });
 
 		const overflow = context();
 		overflow.modelRegistry.complete.mockResolvedValue(assistantResponse({
@@ -411,8 +416,7 @@ describe("advisor runner", () => {
 		}));
 		const overflowRunner = createAdvisorRunner();
 		result = await overflowRunner.execute(runInput(overflow));
-		expect(result.content[0].text).toMatch(/^advisor_context_too_large/);
-		expect(result.details.consumesBudget).toBe(false);
+		expect(result).toMatchObject({ disposition: "failure", code: "advisor_context_too_large", consumesBudget: false });
 
 		const promptTooLong = context();
 		promptTooLong.modelRegistry.complete.mockResolvedValue(assistantResponse({
@@ -420,7 +424,6 @@ describe("advisor runner", () => {
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 		}));
 		result = await createAdvisorRunner().execute(runInput(promptTooLong));
-		expect(result.content[0].text).toMatch(/^advisor_context_too_large/);
-		expect(result.details.consumesBudget).toBe(false);
+		expect(result).toMatchObject({ disposition: "failure", code: "advisor_context_too_large", consumesBudget: false });
 	});
 });

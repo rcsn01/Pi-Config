@@ -1,5 +1,9 @@
 import { Buffer } from "node:buffer";
-import { createPersistentDashboardRuntime, type PersistentDashboardRuntime } from "../_shared/dashboard-runtime.ts";
+import {
+	createDashboardRuntimeLifecycle,
+	createPersistentDashboardRuntime,
+	type PersistentDashboardRuntime,
+} from "../_shared/dashboard-runtime.ts";
 import type { ObservabilityEvent, ObservabilitySource } from "../_shared/observability.ts";
 import type { AnalysisServer } from "./server.ts";
 import { createAnalysisServer } from "./server.ts";
@@ -97,9 +101,6 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 	const maxRecordBytes = options.maxRecordBytes ?? DEFAULT_RECORD_LIMIT;
 	const maxTotalBytes = options.maxTotalBytes ?? DEFAULT_TOTAL_LIMIT;
 	const now = options.now ?? Date.now;
-	let server: AnalysisServer | undefined;
-	let startPromise: Promise<{ url: string }> | undefined;
-	let lifecycle = 0;
 	let activatedAt: number | undefined;
 	let notify = options.notify;
 	let paused = false;
@@ -265,48 +266,25 @@ export function createAnalysisRuntime(options: RuntimeOptions = {}): AnalysisRun
 		}
 	}
 
-	return {
-		isActive: () => activatedAt !== undefined,
-		setNotify(next) {
-			notify = next;
+	const lifecycle = createDashboardRuntimeLifecycle({
+		createServer: () => (options.serverFactory ?? createAnalysisServer)(source),
+		onActivated: () => {
+			activatedAt = now();
 		},
-		async start() {
-			if (startPromise) return startPromise;
-			const generation = ++lifecycle;
-			server = (options.serverFactory ?? createAnalysisServer)(source);
-			const current = server;
-			startPromise = current.start().then((result) => {
-				if (generation !== lifecycle) throw new Error("Analysis server was closed while starting.");
-				activatedAt = now();
-				return result;
-			}).catch((error) => {
-				if (generation === lifecycle) {
-					startPromise = undefined;
-					if (server === current) server = undefined;
-				}
-				throw error;
-			});
-			return startPromise;
-		},
-		observe,
-		async close() {
-			const active = server;
-			const pending = startPromise;
-			lifecycle++;
-			server = undefined;
-			startPromise = undefined;
+		onReset: () => {
 			activatedAt = undefined;
 			notify = undefined;
 			clear();
-			if (pending) {
-				try {
-					await pending;
-				} catch {
-					// The close invalidated a pending start. Its error is not a close failure.
-				}
-			}
-			if (active) await active.close();
 		},
+		closedWhileStartingMessage: "Analysis server was closed while starting.",
+	});
+
+	return {
+		...lifecycle,
+		setNotify(next) {
+			notify = next;
+		},
+		observe,
 		getSummary: summary,
 		getRecord,
 		clear,

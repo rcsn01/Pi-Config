@@ -72,19 +72,63 @@ describe("telemetry usage runtime", () => {
 		});
 	});
 
-	it("invalidates pending work and closes a server that is still starting", async () => {
-		const startResult = deferred<{ url: string }>();
-		const server = fakeServer(() => startResult.promise);
+	it("keeps its close-during-start error at the dashboard seam", async () => {
+		let rejectStart!: (error: unknown) => void;
+		const server = {
+			start: vi.fn(() => new Promise<{ url: string }>((_resolve, reject) => { rejectStart = reject; })),
+			close: vi.fn(async () => rejectStart(new Error("listen cancelled"))),
+		};
 		const scan = vi.fn(async () => buildGlobalUsageSnapshot([]));
 		const runtime = createTelemetryUsageRuntime({ scan, serverFactory: () => server });
+
 		const starting = runtime.start();
 		const closing = runtime.close();
-		startResult.resolve({ url: "http://localhost:1/#token=test" });
-		await expect(starting).rejects.toThrow("closed while starting");
+		await expect(starting).rejects.toThrow("Telemetry usage server was closed while starting.");
 		await closing;
-		expect(server.close).toHaveBeenCalledOnce();
 		expect(scan).not.toHaveBeenCalled();
+	});
+
+	it("invalidates a pending scan when the dashboard closes", async () => {
+		const scanResult = deferred<ReturnType<typeof buildGlobalUsageSnapshot>>();
+		const server = fakeServer();
+		const scan = vi.fn(() => scanResult.promise);
+		const runtime = createTelemetryUsageRuntime({ scan, serverFactory: () => server });
+		await runtime.start();
+		expect(runtime.getState().phase).toBe("scanning");
+
+		await runtime.close();
+		scanResult.resolve(buildGlobalUsageSnapshot([]));
+		await scanResult.promise;
+		await Promise.resolve();
+
+		expect(server.close).toHaveBeenCalledOnce();
 		expect(runtime.getState()).toEqual({ phase: "idle" });
+	});
+
+	it("ignores an old scan that settles after a restarted dashboard", async () => {
+		const oldScan = deferred<ReturnType<typeof buildGlobalUsageSnapshot>>();
+		const newScan = deferred<ReturnType<typeof buildGlobalUsageSnapshot>>();
+		const scan = vi.fn()
+			.mockImplementationOnce(() => oldScan.promise)
+			.mockImplementationOnce(() => newScan.promise);
+		const runtime = createTelemetryUsageRuntime({ scan, serverFactory: () => fakeServer() });
+		await runtime.start();
+		await runtime.close();
+		await runtime.start();
+		const currentRefresh = runtime.refresh();
+
+		const currentSnapshot = buildGlobalUsageSnapshot([]);
+		currentSnapshot.scannedAt = 2;
+		newScan.resolve(currentSnapshot);
+		await currentRefresh;
+
+		const staleSnapshot = buildGlobalUsageSnapshot([]);
+		staleSnapshot.scannedAt = 1;
+		oldScan.resolve(staleSnapshot);
+		await oldScan.promise;
+		await Promise.resolve();
+
+		expect(runtime.getState()).toMatchObject({ phase: "ready", data: { scannedAt: 2 } });
 	});
 
 	it("shares one persistent runtime across acquisitions and honors the first options", async () => {
