@@ -87,8 +87,19 @@ extension.
 - **Repository snapshot** — an immutable, commit-pinned source tree under `.pi/repos`.
 - **Repository store** — the module that owns acquisition, manifests, limits, listing, locking, and explicit removal.
 
+## Ollama Cloud catalog
+
+- **Ollama catalog publication** — the deep consistency operation that applies
+  one refresh outcome to native catalog persistence and the static `models.json`
+  catalog used by extension-less child processes. It owns restore and cooldown
+  bootstrap, partial-failure persistence, supersession, and best-effort static
+  writes; fetching and model assembly stay outside.
+
 ## Subagent tooling
 
+- **Parallel subagent batch** — one ordered, bounded-concurrency execution of
+  subagent tasks. The deep module owns validation, launch resolution, scheduling,
+  and immutable task-state snapshots; Pi-specific rendering stays in its adapter.
 - **Repo query batch** — the read-only batched evidence tool (`repo_query`) behind
   the subagent runner: one `executeRepoQuery` interface; validation, path safety,
   dedupe, truncation, and formatting hide inside.

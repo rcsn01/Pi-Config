@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROFILES_DIRECTORY } from "../_shared/profile-document.ts";
 import { requireSubagentService } from "../_shared/subagent-service.ts";
+import * as subagentExports from "./index.ts";
 import subagentsExtension, {
 	createSubagentsExtension,
 	loadAgents,
@@ -38,7 +39,7 @@ const BUNDLED_AGENTS = ["default", "explorer", "judge", "researcher", "worker"];
 
 function extensionHarness(
 	runSingle = vi.fn(async (options: any) => agentResult({ agent: options.agent.name, task: options.task })),
-	options: { config?: any; runOrdered?: any } = {},
+	options: { config?: any } = {},
 ) {
 	const handlers = new Map<string, any>();
 	const commands = new Map<string, any>();
@@ -64,7 +65,6 @@ function extensionHarness(
 		registry,
 		config,
 		runSingle: runSingle as any,
-		runOrdered: options.runOrdered,
 	})(pi as any);
 	const ctx = {
 		cwd: "/workspace",
@@ -87,6 +87,8 @@ describe("subagent extension interfaces", () => {
 		expect(loadAgents).toEqual(expect.any(Function));
 		expect(runSubagent).toEqual(expect.any(Function));
 		expect(runSubagentsParallel).toEqual(expect.any(Function));
+		expect(subagentExports).not.toHaveProperty("runOrderedConcurrently");
+		expect(subagentExports).not.toHaveProperty("createParallelRunner");
 	});
 
 	it("discovers bundled agents from the extension directory", () => {
@@ -244,22 +246,31 @@ describe("subagent tool adaptation", () => {
 				originalSetSettingsPath(path);
 				config.document.maxConcurrency = 7;
 			};
-			const runOrdered = vi.fn(async (items: any[], concurrency: number, run: (item: any, index: number) => Promise<any>) => {
-				const results: any[] = [];
-				for (let index = 0; index < items.length; index++) results.push(await run(items[index], index));
-				return results;
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			let active = 0;
+			let peak = 0;
+			const runSingle = vi.fn(async (options: any) => {
+				active++;
+				peak = Math.max(peak, active);
+				await gate;
+				active--;
+				return agentResult({ agent: options.agent.name, task: options.task });
 			});
 			try {
-				const harness = extensionHarness(undefined, { config, runOrdered });
+				const harness = extensionHarness(runSingle, { config });
 				await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
-				await harness.tools.get("subagent").execute("call", {
-					tasks: [
-						{ agent: "worker", task: "first" },
-						{ agent: "explorer", task: "second" },
-					],
+				const execution = harness.tools.get("subagent").execute("call", {
+					tasks: Array.from({ length: 8 }, (_, index) => ({
+						agent: index % 2 === 0 ? "worker" : "explorer",
+						task: `task ${index}`,
+					})),
 				}, undefined, undefined, harness.ctx);
 
-				expect(runOrdered).toHaveBeenCalledWith(expect.any(Array), 7, expect.any(Function));
+				await vi.waitFor(() => expect(peak).toBe(7));
+				release();
+				await execution;
+				expect(peak).toBe(7);
 			} finally {
 				profileFixture.settingsPath = "";
 			}

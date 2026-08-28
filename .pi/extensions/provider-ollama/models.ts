@@ -4,7 +4,7 @@ import { GENERATED_MODELS } from "./models.generated.ts";
 import { MODEL_PRICING, type ModelPrice } from "./pricing.generated.ts";
 import { resolve as resolveThinkingLevelMap } from "./thinking-levels.ts";
 import { concurrentMap, fetchJsonWithTimeout, getContextLength } from "./utils.ts";
-import { ensureOllamaCatalogInModelsJson, syncOllamaCatalogToModelsJson } from "./catalog-sync.ts";
+import { createOllamaCatalogPublication } from "./catalog-publication.ts";
 
 // --- Pricing ---
 // Estimated per-1M-token prices are generated from models.dev by
@@ -221,24 +221,6 @@ export async function refreshOllamaCloudModels(
   return { models, failed };
 }
 
-// --- models.json sync ---
-
-/**
- * Best-effort models.json sync. Subagent children run with `--no-extensions`,
- * so they cannot see the provider registered here; a synced static entry in
- * models.json (read by every pi process) makes the provider resolvable there.
- * See catalog-sync.ts for the composition and safety rationale. A failed or
- * skipped sync must never break the refresh itself — sessions that load this
- * extension keep their in-memory live catalog regardless.
- */
-async function syncModelsJsonQuietly(sync: () => Promise<unknown>): Promise<void> {
-  try {
-    await sync();
-  } catch (error) {
-    console.warn(`[pi-ollama-cloud] models.json catalog sync failed: ${(error as Error).message}`);
-  }
-}
-
 // --- refreshModels callback ---
 
 /**
@@ -267,6 +249,7 @@ export async function refreshOllamaCatalog(context: RefreshModelsContext): Promi
         thinkingLevelMap: resolveThinkingLevelMap(model.id, model.reasoning ? ["thinking"] : []),
       }))
     : GENERATED_MODELS;
+  const publication = createOllamaCatalogPublication({ publishNative: context.publish });
 
   // Restore phase. Rehydrate from the persisted snapshot so removals stick
   // across sessions; fall back to the baked-in list on first launch. Also the
@@ -276,7 +259,7 @@ export async function refreshOllamaCatalog(context: RefreshModelsContext): Promi
     // install still produces a resolvable static catalog for extension-less
     // processes; never overwrites an existing synced catalog with stale data.
     if (!context.signal.aborted) {
-      await syncModelsJsonQuietly(() => ensureOllamaCatalogInModelsJson(fallback));
+      return publication.apply({ kind: "bootstrap", models: fallback });
     }
     return fallback;
   }
@@ -291,8 +274,7 @@ export async function refreshOllamaCatalog(context: RefreshModelsContext): Promi
   ) {
     // Cooldown: the stored catalog is fresh, so the static models.json entry
     // only needs to exist, not to be rewritten.
-    await syncModelsJsonQuietly(() => ensureOllamaCatalogInModelsJson(fallback));
-    return fallback;
+    return publication.apply({ kind: "bootstrap", models: fallback });
   }
 
   // Network phase. The /v1/models and /api/show endpoints are publicly
@@ -333,7 +315,7 @@ export async function refreshOllamaCatalog(context: RefreshModelsContext): Promi
   // models) must not be persisted or swapped in, or it would kill the provider
   // for the cooldown window. Keep the last good catalog instead.
   if (models.length === 0) {
-    return fallback;
+    return publication.apply({ kind: "empty", fallback });
   }
 
   // The store is typed to pi-ai's internal Model shape, so rehydrate the live
@@ -347,44 +329,9 @@ export async function refreshOllamaCatalog(context: RefreshModelsContext): Promi
     baseUrl: `${OLLAMA_BASE}/v1`,
   }));
 
-  // Best-effort persistence into pi's FileModelsStore. The in-memory list swap
-  // happens automatically from the return value, so a failed store write must
-  // not prevent returning the fresh catalog.
-  if (failed === 0) {
-    // Fully successful: persist the fresh catalog.
-    try {
-      const published = await context.publish({ persist: { models: persisted, checkedAt: Date.now() } });
-      if (!published) {
-        console.warn("[pi-ollama-cloud] Catalog persist rejected (generation check failed or refresh superseded).");
-      }
-    } catch {
-      // Persistence failure is non-fatal.
-    }
-  } else {
-    // Partial failure: keep the last-good catalog (if any) but advance checkedAt
-    // so the cooldown applies and a flaky catalog isn't re-fetched on every
-    // /model open, then surface the incomplete refresh. Mirrors pi-mono's
-    // remote-catalog-provider, which persists then throws on a transient failure;
-    // pi keeps the last-good catalog and reports the error.
-    if (context.stored?.models.length) {
-      try {
-        const published = await context.publish({ persist: { ...context.stored, checkedAt: Date.now() } });
-        if (!published) {
-          console.warn(
-            "[pi-ollama-cloud] Partial-failure persist rejected (generation check failed or refresh superseded).",
-          );
-        }
-      } catch {
-        // Persistence failure is non-fatal.
-      }
-    }
-    throw new Error(`Ollama Cloud catalog refresh incomplete: ${failed} model(s) failed`);
+  if (failed > 0) {
+    return publication.apply({ kind: "partial", failed, stored: context.stored, fallback });
   }
 
-  // Mirror the fresh catalog into models.json so extension-less processes
-  // (subagent children) can resolve the provider. Best-effort: an unwritable
-  // models.json does not invalidate the fresh in-memory catalog below.
-  await syncModelsJsonQuietly(() => syncOllamaCatalogToModelsJson(persisted));
-
-  return persisted;
+  return publication.apply({ kind: "complete", models: persisted });
 }
