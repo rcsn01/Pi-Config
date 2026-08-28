@@ -28,11 +28,9 @@ import { LEGACY_CONFIG_PATH, migrateSubagentConfigLegacy, subagentConfig, type S
 import { PROJECT_SETTINGS_PATH } from "./settings-store.ts";
 import { createSubagentsCommand } from "./model-commands.ts";
 import {
-	createParallelRunner,
+	createParallelSubagentBatch,
 	DEFAULT_MAX_CONCURRENCY,
-	runOrderedConcurrently,
-	runSubagentsParallel,
-} from "./parallel-runner.ts";
+} from "./parallel-batch.ts";
 import { renderSubagentCall, renderSubagentResult } from "./progress-renderer.ts";
 import { createSubagentRunner, runSubagent, throttle } from "./subagent-runner.ts";
 
@@ -46,14 +44,12 @@ export type {
 } from "../_shared/subagent-service.ts";
 export { loadAgents, registerAgent, unregisterAgent } from "./agent-registry.ts";
 export { runSubagent } from "./subagent-runner.ts";
-export { runSubagentsParallel } from "./parallel-runner.ts";
+export { runSubagentsParallel } from "./parallel-batch.ts";
 
 export interface SubagentsExtensionDependencies {
 	registry?: AgentRegistry;
 	config?: SubagentConfigStore;
 	runSingle?: typeof runSubagent;
-	runParallel?: typeof runSubagentsParallel;
-	runOrdered?: typeof runOrderedConcurrently;
 }
 
 export function createSubagentsExtension(dependencies: SubagentsExtensionDependencies = {}) {
@@ -71,17 +67,14 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		const runSingle = dependencies.runSingle ?? (hasInjectedRuntime
 			? createSubagentRunner({ registry, config: configStore })
 			: runSubagent);
-		const runParallel = dependencies.runParallel ?? (hasInjectedRuntime
-			? createParallelRunner({ registry, config: configStore, runSingle })
-			: runSubagentsParallel);
-		const runOrdered = dependencies.runOrdered ?? runOrderedConcurrently;
+		const parallelBatch = createParallelSubagentBatch({ registry, config: configStore, runSingle });
 		const service: SubagentService = {
 			id: "tools-subagents",
 			registerAgent: (config) => registry.register(config),
 			unregisterAgent: (name) => registry.unregister(name),
 			loadAgents: () => registry.load(),
 			runSubagent: (options) => runSingle(options),
-			runSubagentsParallel: (options) => runParallel(options),
+			runSubagentsParallel: (options) => parallelBatch.runSubagentsParallel(options),
 		};
 
 		registerSubagentService(service);
@@ -153,71 +146,34 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 			const cwd = ctx.cwd;
 			const cacheAffinitySeed = ctx.sessionManager.getSessionId();
 			configStore.rememberMainModel(ctx.model);
-			const agents = registry.load();
 
 			// Validate mode
 			if (params.tasks && params.tasks.length > 0) {
 				// ── Parallel mode ──
 				const taskList = params.tasks;
 
-				// Validate all agents
-				const available = agents.map((a) => a.name).join(", ") || "none";
-				for (const t of taskList) {
-					if (!agents.find((a) => a.name === t.agent)) {
-						throw new Error(`Unknown agent: ${t.agent}. Available agents: ${available}`);
-					}
-				}
-
-				const allResults: AgentResult[] = [];
-
-				// Initialize all result slots as pending
-				for (let i = 0; i < taskList.length; i++) {
-					allResults[i] = {
-						agent: taskList[i].agent,
-						task: taskList[i].task,
-						output: "",
-						exitCode: -1,
-						model: undefined,
-						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-						progress: { agent: taskList[i].agent, status: "pending" as any, task: taskList[i].task, recentTools: [], toolCount: 0, tokens: 0, durationMs: 0, lastMessage: "" },
-					};
-				}
-
+				let displayedResults: readonly AgentResult[] = [];
 				const flushParallelUpdate = () => {
 					onUpdate?.({
 						content: [{ type: "text", text: `Running ${taskList.length} tasks...` }],
 						details: {
 							mode: "parallel" as const,
-							results: [...allResults],
+							results: [...displayedResults],
 						},
 					});
 				};
 				const fireParallelUpdate = throttle(flushParallelUpdate, 150);
 
-				const results = await runOrdered(taskList, maxConcurrency, async (t, idx) => {
-					const agent = agents.find((a) => a.name === t.agent)!;
-					const launch = configStore.resolveLaunch(agent);
-					allResults[idx].model = launch.model;
-					allResults[idx].thinkingLevel = launch.thinkingLevel;
-					allResults[idx].progress.status = "running";
-					flushParallelUpdate();
-					const result = await runSingle({
-						agent,
-						task: t.task,
-						cwd: t.cwd ?? cwd,
-						signal,
-						cacheAffinitySeed,
-						onUpdate: (progress) => {
-							allResults[idx].progress = progress;
-							fireParallelUpdate();
-						},
-					});
-
-					// Update allResults with the completed result so the UI reflects it immediately
-					allResults[idx] = result;
-					flushParallelUpdate();
-
-					return result;
+				const results = await parallelBatch.runBatch(taskList, {
+					cwd,
+					maxConcurrency,
+					signal,
+					cacheAffinitySeed,
+					onSnapshot: (snapshot) => {
+						displayedResults = snapshot.results;
+						if (snapshot.phase === "progress") fireParallelUpdate();
+						else flushParallelUpdate();
+					},
 				});
 
 				// Build final output text
@@ -235,6 +191,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 				};
 			} else if (params.agent && params.task) {
 				// ── Single mode ──
+				const agents = registry.load();
 				const agent = agents.find((a) => a.name === params.agent);
 				if (!agent) {
 					const available = agents.map((a) => a.name).join(", ") || "none";

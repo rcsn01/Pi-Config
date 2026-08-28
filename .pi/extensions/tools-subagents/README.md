@@ -293,7 +293,7 @@ tools-subagents/
 ├── agent-registry.ts        # Agent discovery, registration, and lookup
 ├── config.ts                # Configuration storage, validation, and launch resolution
 ├── subagent-runner.ts       # Single child process execution and stream parsing
-├── parallel-runner.ts       # Ordered concurrency and parallel execution
+├── parallel-batch.ts        # Parallel validation, execution, and task-state snapshots
 ├── progress-renderer.ts     # Tool call and progress presentation
 ├── model-commands.ts        # /subagents command and interactive configuration
 ├── formatting.ts            # Token, duration, preview, and width formatting

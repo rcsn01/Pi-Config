@@ -7,6 +7,7 @@
   ],
   "files": [
     "index.ts",
+    "catalog-publication.ts",
     "catalog-sync.ts",
     "models.ts",
     "models.generated.ts",
