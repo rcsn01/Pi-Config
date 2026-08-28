@@ -1,178 +1,123 @@
 /**
- * Custom /model selector.
+ * Pi adapter for the custom /model selector.
  *
- * Applies the saved normal profile silently on fresh-session startup and routes
- * the built-in command through a searchable model picker with thinking and
- * context-window choices. The context window comes from a preset derived from
- * the model's catalogue value, or the saved profile's contextWindow when a
- * startup profile is applied. On reload and resume, the session model's
- * context window is refreshed from the profile without switching models.
- * Explicit --model startup overrides and resumed sessions preserve their session
- * profile. Normal and Plan Mode selections are persisted separately in
- * .pi/settings.json.
+ * Session profile binding, command routing, editor ownership, picker rendering,
+ * notifications, and concrete Pi calls stay here. Selection ordering and
+ * session initialization policy live in model-selection-lifecycle.ts.
  */
 
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { reapplyThinkingBorder } from "../_shared/editor-border.ts";
-import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import { PROFILES_DIRECTORY } from "../_shared/profile-document.ts";
 import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
 	installModelCommandHandler,
 	ModelCommandRoutingEditor,
 } from "../_shared/model-command-routing.ts";
-import { COMPACT_THRESHOLD, SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
 import {
 	applyModelSelection,
 	applyPickedModelSelection,
 	currentSelectionMode,
-	ModelSelectionPersistenceError,
-	resolveContextWindow,
-	resolveModelContext,
-	type ModelSelectionMode,
-	type ModelSelectionSettings,
 } from "../_shared/model-selection.ts";
 import {
 	createProjectSettingsStore,
 	PROJECT_SETTINGS_PATH,
 	type ProjectSettingsStore,
 } from "../_shared/model-selection-store.ts";
+import { formatTokenCount, pickModelConfiguration } from "../_shared/model-picker.ts";
 import {
-	formatTokenCount,
-	modelKey,
-	pickModelConfiguration,
-	type ModelPickerPreviousSelection,
-} from "../_shared/model-picker.ts";
-import { shouldOpenStartupModelSelector } from "./model-config.ts";
+	createModelSelectionLifecycle,
+	type ContextReduction,
+	type ModelSelectionLifecycleAdapter,
+	type ModelSelectionLifecycleNotice,
+	type ModelSelectionLifecycleOutcome,
+} from "./model-selection-lifecycle.ts";
 
-/**
- * Compact after a context-window reduction. Only kick compaction off while the
- * agent is idle; mid-run the auto-compact extension's turn_end and
- * before_agent_start hooks will compact and resume on their own.
- */
-function compactWithHandoffFocus(ctx: ExtensionContext): void {
-	if (!ctx.isIdle()) {
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function renderModelSelectionLifecycleNotice(
+	ctx: ExtensionContext,
+	notice: ModelSelectionLifecycleNotice,
+): void {
+	if (notice.kind === "startup-profile-apply-failed") {
+		ctx.ui.notify(`Could not apply the normal startup profile: ${errorText(notice.cause)}`, "error");
+		return;
+	}
+	ctx.ui.notify(
+		`Could not read the saved model selection: ${errorText(notice.cause)}. Using picker defaults.`,
+		"warning",
+	);
+}
+
+function renderModelSelectionLifecycleOutcome(
+	ctx: ExtensionContext,
+	outcome: ModelSelectionLifecycleOutcome,
+): void {
+	if (outcome.kind !== "interactive-applied" && outcome.kind !== "interactive-applied-not-saved") {
+		return;
+	}
+	if (outcome.compaction === "deferred") {
 		ctx.ui.notify(
 			"The agent is busy; auto-compact will compact and resume this turn.",
 			"info",
 		);
-		return;
 	}
-	ctx.compact({
-		customInstructions: SEMANTIC_COMPACTION_FOCUS,
-		onError: (error) => {
-			ctx.ui.notify(`Compaction failed: ${error.message}`, "error");
-		},
-	});
-}
-
-async function confirmAndApplySelection(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	selectedModel: Model<Api>,
-	thinkingLevel: ModelThinkingLevel,
-	mode: ModelSelectionMode,
-	settingsStore: ProjectSettingsStore,
-): Promise<void> {
-	const contextWindow = selectedModel.contextWindow;
-	const usage = ctx.getContextUsage();
-	const isContextReduction = ctx.model !== undefined && contextWindow < ctx.model.contextWindow;
-	const needsCompaction = isContextReduction &&
-		usage?.tokens !== null && usage?.tokens !== undefined &&
-		usage.tokens >= contextWindow * COMPACT_THRESHOLD;
-
-	if (needsCompaction) {
-		const approved = await ctx.ui.confirm(
-			"Context window reduction",
-			`This session uses about ${formatTokenCount(usage.tokens!)} tokens, at or above the auto-compact threshold of the ${formatTokenCount(contextWindow)} window. Apply the selection and compact now?`,
-		);
-		if (!approved) return;
-	}
-
-	let selection: ModelSelectionSettings;
-	try {
-		selection = await applyPickedModelSelection(pi, ctx, selectedModel, thinkingLevel, {
-			mode,
-			persistence: settingsStore,
-		});
-	} catch (error) {
-		if (!(error instanceof ModelSelectionPersistenceError)) throw error;
-		if (needsCompaction) compactWithHandoffFocus(ctx);
-		const cause = error.cause instanceof Error ? error.cause.message : String(error.cause);
+	if (outcome.kind === "interactive-applied-not-saved") {
 		ctx.ui.notify(
-			`${error.appliedSelection.provider}/${error.appliedSelection.modelId} was applied, but settings were not fully saved: ${cause}`,
+			`${outcome.selection.provider}/${outcome.selection.modelId} was applied, but settings were not fully saved: ${errorText(outcome.cause)}`,
 			"warning",
 		);
 		return;
 	}
 
-	if (needsCompaction) compactWithHandoffFocus(ctx);
-	const thinkingNote = selection.thinkingLevel === thinkingLevel
-		? selection.thinkingLevel
-		: `${selection.thinkingLevel} (requested ${thinkingLevel})`;
+	const thinkingNote = outcome.selection.thinkingLevel === outcome.requestedThinkingLevel
+		? outcome.selection.thinkingLevel
+		: `${outcome.selection.thinkingLevel} (requested ${outcome.requestedThinkingLevel})`;
 	ctx.ui.notify(
-		`${selection.provider}/${selection.modelId} · thinking ${thinkingNote} · context ${formatTokenCount(selection.contextWindow)}`,
-		selection.thinkingLevel === thinkingLevel ? "info" : "warning",
+		`${outcome.selection.provider}/${outcome.selection.modelId} · thinking ${thinkingNote} · context ${formatTokenCount(outcome.selection.contextWindow)}`,
+		outcome.selection.thinkingLevel === outcome.requestedThinkingLevel ? "info" : "warning",
 	);
 }
 
-async function runModelControl(
+function createPiModelSelectionLifecycleAdapter(
 	pi: ExtensionAPI,
-	args: string,
 	ctx: ExtensionContext,
 	settingsStore: ProjectSettingsStore,
-): Promise<void> {
-	if (ctx.mode !== "tui") {
-		ctx.ui.notify("The custom /model selector requires TUI mode.", "error");
-		return;
-	}
-
-	const mode = currentSelectionMode(ctx);
-	const liveThinking = typeof pi.getThinkingLevel === "function"
-		? pi.getThinkingLevel() as ModelThinkingLevel
-		: undefined;
-	let previous: ModelPickerPreviousSelection | undefined;
-	try {
-		const preferences = await settingsStore.load();
-		const profile = preferences.profiles[mode];
-		previous = profile && profile.provider !== DEFAULT_SENTINEL && profile.modelId !== DEFAULT_SENTINEL
-			? {
-				provider: profile.provider,
-				modelId: profile.modelId,
-				thinkingLevel: profile.thinkingLevel !== DEFAULT_SENTINEL ? profile.thinkingLevel : liveThinking,
-				contextWindow: typeof profile.contextWindow === "number" ? resolveContextWindow(profile.contextWindow) : undefined,
-			}
-			: undefined;
-	} catch (error) {
-		ctx.ui.notify(`Could not read the saved model selection: ${error instanceof Error ? error.message : String(error)}. Using picker defaults.`, "warning");
-		previous = undefined;
-	}
-
-	const pickerSelection = await pickModelConfiguration(ctx, {
-		initialQuery: args.trim(),
-		previous: previous ?? {
-			provider: ctx.model?.provider,
-			modelId: ctx.model?.id,
-			thinkingLevel: liveThinking,
+): ModelSelectionLifecycleAdapter {
+	return {
+		loadPreferences: () => settingsStore.load(),
+		getRuntimeState: () => ({
+			model: ctx.model,
+			thinkingLevel: typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() : undefined,
+			usageTokens: ctx.getContextUsage()?.tokens,
+		}),
+		pick: (options) => pickModelConfiguration(ctx, options),
+		applyStoredSelection: (selection, label) =>
+			applyModelSelection(pi, ctx, selection, { label }),
+		applyPickedSelection: (selection, mode) =>
+			applyPickedModelSelection(pi, ctx, selection.model, selection.thinkingLevel, {
+				mode,
+				persistence: settingsStore,
+			}),
+		setModel: (model) => pi.setModel(model),
+		confirmContextReduction: (reduction: ContextReduction) => ctx.ui.confirm(
+			"Context window reduction",
+			`This session uses about ${formatTokenCount(reduction.usageTokens)} tokens, at or above the auto-compact threshold of the ${formatTokenCount(reduction.contextWindow)} window. Apply the selection and compact now?`,
+		),
+		isIdle: () => ctx.isIdle(),
+		requestCompaction: (customInstructions) => {
+			ctx.compact({
+				customInstructions,
+				onError: (error) => {
+					ctx.ui.notify(`Compaction failed: ${error.message}`, "error");
+				},
+			});
 		},
-		currentModel: ctx.model,
-	});
-	if (!pickerSelection) return;
-
-	try {
-		await confirmAndApplySelection(
-			pi,
-			ctx,
-			pickerSelection.model,
-			pickerSelection.thinkingLevel,
-			mode,
-			settingsStore,
-		);
-	} catch (error) {
-		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-	}
+		reportNotice: (notice) => renderModelSelectionLifecycleNotice(ctx, notice),
+	};
 }
 
 export function createModelSelectorExtension(
@@ -191,11 +136,18 @@ export function createModelSelectorExtension(
 					uninstallModelCommandHandler = undefined;
 					if (ctx.mode !== "tui") return;
 
+					const lifecycle = createModelSelectionLifecycle(
+						createPiModelSelectionLifecycleAdapter(pi, ctx, settingsStore),
+					);
 					const handler = async (args: string): Promise<void> => {
 						try {
-							await runModelControl(pi, args, ctx, settingsStore);
+							const outcome = await lifecycle.selectInteractively({
+								initialQuery: args.trim(),
+								mode: currentSelectionMode(ctx),
+							});
+							renderModelSelectionLifecycleOutcome(ctx, outcome);
 						} catch (error) {
-							ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+							ctx.ui.notify(errorText(error), "error");
 						}
 					};
 					uninstallModelCommandHandler = installModelCommandHandler(handler);
@@ -209,52 +161,16 @@ export function createModelSelectorExtension(
 						ctx.sessionManager.getEntries(),
 						ctx.sessionManager.getLeafId(),
 					).messages.length > 0;
-					const shouldOpen = shouldOpenStartupModelSelector(
-						event.reason,
-						hasConversationHistory,
-						process.argv.slice(2),
-					);
-					if (shouldOpen) {
-						let appliedNormalProfile = false;
-						try {
-							const preferences = await settingsStore.load();
-							if (preferences.profiles.normal) {
-								await applyModelSelection(pi, ctx, preferences.profiles.normal, {
-									label: "Normal profile",
-								});
-								appliedNormalProfile = true;
-							}
-						} catch (error) {
-							ctx.ui.notify(
-								`Could not apply the normal startup profile: ${error instanceof Error ? error.message : String(error)}`,
-								"error",
-							);
-						}
-						// A configured normal profile is the startup default. Only prompt on
-						// first run or after an invalid profile fails to apply.
-						if (!appliedNormalProfile) await handler("");
-					} else if (ctx.model && (hasConversationHistory || ["reload", "resume", "fork"].includes(event.reason))) {
-						try {
-							const restoredModel = resolveModelContext(ctx.model);
-							// Keep the session model's context window in sync with the saved
-							// profile for the active mode (settings.json edits take effect on
-							// reload) without switching models.
-							const preferences = await settingsStore.load();
-							const profile = preferences.profiles[currentSelectionMode(ctx)];
-							const profileContext = profile && profile.contextWindow !== DEFAULT_SENTINEL &&
-								profile.contextWindow !== undefined &&
-								ctx.model.provider === profile.provider && ctx.model.id === profile.modelId
-								? resolveContextWindow(profile.contextWindow)
-								: restoredModel.contextWindow;
-							const targetModel = profileContext !== restoredModel.contextWindow
-								? { ...restoredModel, contextWindow: profileContext }
-								: restoredModel;
-							if (targetModel !== ctx.model && !(await pi.setModel(targetModel))) {
-								ctx.ui.notify(`No configured authentication for ${modelKey(targetModel)}`, "error");
-							}
-						} catch (error) {
-							ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-						}
+					try {
+						const outcome = await lifecycle.initializeSession({
+							reason: event.reason,
+							hasConversationHistory,
+							argv: process.argv.slice(2),
+							mode: currentSelectionMode(ctx),
+						});
+						renderModelSelectionLifecycleOutcome(ctx, outcome);
+					} catch (error) {
+						ctx.ui.notify(errorText(error), "error");
 					}
 				},
 				dispose: (_binding, ctx) => {
