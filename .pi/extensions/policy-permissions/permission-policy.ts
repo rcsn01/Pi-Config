@@ -1,10 +1,9 @@
 /**
  * Pure permission classification for the Safety Permissions extension.
  *
- * `evaluateToolCall` decides whether a single tool call is allowed or blocked
- * for the current mode. All side effects (user prompts, guardian runs, denial
- * tracking) are delegated to the injected `EvaluateDeps`, keeping this module
- * pure and table-testable.
+ * `evaluateToolCall` classifies one tool call for the current mode. The
+ * permission enforcement lifecycle owns its ordering, side effects, and state;
+ * this file keeps path and command classification readable.
  */
 import {
 	dangerousShellReason,
@@ -25,11 +24,6 @@ import {
 	resolveToolPath,
 } from "./path-policy.ts";
 import type { EvaluateContext, EvaluateDeps, PermissionDecision, ToolCallInput } from "./policy-types.ts";
-
-/** Stable identity for a tool call, used for one-shot /approve tracking. */
-export function actionKey(toolName: string, input: unknown): string {
-	return `${toolName}:${JSON.stringify(input ?? {})}`;
-}
 
 function commandOf(input: ToolCallInput): string {
 	return (input.input && typeof input.input === "object"

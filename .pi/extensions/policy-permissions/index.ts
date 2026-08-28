@@ -11,13 +11,10 @@
  *   /guardian   — select the profile-scoped Guardian model
  *   /execpolicy — regex allow/prompt/block rules
  *
- * This module wires together the focused policy modules:
- *   - permission-policy.ts  — pure evaluateToolCall decision seam
- *   - path-policy.ts        — tool/path tables and extraction
- *   - guardian-runner.ts    — guardian in-process session + verdict parsing
- *   - approvals.ts          — user + guardian approval flows
- *   - mode-store.ts         — approval-mode persistence
- *   - commands.ts           — /permissions, /approve, /execpolicy
+ * This Pi adapter wires the permission enforcement lifecycle to command
+ * routing, Guardian execution, Session entries, context capture, and status
+ * rendering. Policy ordering and mutable authorization state stay behind the
+ * lifecycle interface.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { dirname, join } from "node:path";
@@ -27,8 +24,8 @@ import { resolveModelContext } from "../_shared/model-selection.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { renderTranscriptCard } from "../_shared/transcript-card.ts";
 import { loadExecPolicy } from "../_shared/command-policy.ts";
-import { createApprovalService } from "./approvals.ts";
-import { registerPermissionCommands, type CommandService, type DeniedAction } from "./commands.ts";
+import { runGuardianReview } from "./approvals.ts";
+import { registerPermissionCommands, type CommandService } from "./commands.ts";
 import {
 	disposeAutoReviewer,
 	parseGuardianDefinition,
@@ -39,20 +36,19 @@ import {
 	saveGuardianSettings,
 	type GuardianSettings,
 } from "./guardian-settings.ts";
+import { loadModeFromFile, saveModeToFile } from "./mode-store.ts";
 import {
-	DEFAULT_MODE_STATE,
-	loadModeFromFile,
-	saveModeToFile,
-	type ModeState,
-} from "./mode-store.ts";
-import { actionKey, evaluateToolCall } from "./permission-policy.ts";
+	createPermissionEnforcementLifecycle,
+	permissionActionKey,
+} from "./permission-enforcement-lifecycle.ts";
+import { evaluateToolCall } from "./permission-policy.ts";
 
 // Re-exported for backward compatibility (guardian-config.test.ts and external
 // importers depend on these public functions).
 export { parseGuardianDefinition, resolveGuardianPath };
 export type { GuardianDefinition } from "./guardian-runner.ts";
 
-export { actionKey, evaluateToolCall };
+export { permissionActionKey as actionKey, evaluateToolCall };
 
 // ── Extension ──────────────────────────────────────────────────────────
 
@@ -75,24 +71,27 @@ function installSafetyPermissions(
 	let guardianSettingsPath = settingsFilePath;
 	let guardianSettings: GuardianSettings | undefined;
 	let profileBindingGeneration = 0;
-	let mode: ModeState = { mode: "default", setAt: Date.now() };
-	let lastDeniedAction: DeniedAction | undefined;
 	let lastUserPrompt = "";
 	let lastAssistantMessage = ""; // most recent assistant message text (updated via message_end)
 	let precedingAssistantMessage = ""; // snapshot of lastAssistantMessage at turn start — the prior turn's final assistant message (e.g. a proposal the user is replying to)
-	const oneShotApprovals = new Set<string>();
-	let projectCwd = process.cwd();
 
-	// ── Persistence ────────────────────────────────────────────────────
-
-	function reconstruct(ctx: ExtensionContext) {
-		projectCwd = ctx.cwd;
-		mode = loadModeFromFile(ctx.cwd) ?? DEFAULT_MODE_STATE;
-	}
-
-	function persistMode() {
-		saveModeToFile(projectCwd, mode);
-	}
+	const enforcement = createPermissionEnforcementLifecycle<ExtensionContext>({
+		loadMode: (cwd) => loadModeFromFile(cwd) ?? undefined,
+		saveMode: (cwd, mode) => saveModeToFile(cwd, mode),
+		requestUserConfirmation: (ctx, title, message) => ctx.ui.confirm(title, message),
+		runGuardianReview: (ctx, title, evaluationMessage) =>
+			runGuardianReview(ctx, guardianSettings, title, evaluationMessage),
+		persistGuardianVerdict: (_ctx, verdict) => {
+			pi.appendEntry("auto-review-verdict", {
+				title: verdict.title,
+				allowed: verdict.allowed,
+				reason: verdict.reason,
+				...(verdict.model ? { model: verdict.model } : {}),
+				...(verdict.usage ? { usage: verdict.usage } : {}),
+				...(verdict.triggers.length > 0 ? { triggers: verdict.triggers } : {}),
+			});
+		},
+	});
 
 	// ── Status display ─────────────────────────────────────────────────
 
@@ -103,35 +102,18 @@ function installSafetyPermissions(
 			"auto-review": "auto-review",
 			"full-access": "full-access",
 		};
-		ctx.ui.setStatus("approval-mode", modeLabels[mode.mode]);
+		ctx.ui.setStatus("approval-mode", modeLabels[enforcement.mode.mode]);
 	}
 
-	// ── Approval service (user + guardian flows) ───────────────────────
-
-	const approvals = createApprovalService({
-		getMode: () => mode,
-		getContext: () => ({ lastUserPrompt, precedingAssistantMessage }),
-		getGuardianSettings: () => guardianSettings,
-		appendEntry: (customType, data) => pi.appendEntry(customType, data),
-	});
-
-	// ── Command service (shared state for /permissions, /approve) ─────
+	// ── Command adapter ────────────────────────────────────────────────
 
 	const commandService: CommandService = {
-		getMode: () => mode,
-		setModeAndPersist: (m) => {
-			mode = m;
-			persistMode();
+		getMode: () => enforcement.mode,
+		changeMode: (mode) => {
+			enforcement.changeMode(mode);
 		},
 		updateStatus,
-		lastDeniedAction: () => lastDeniedAction,
-		approveLastDenied: () => {
-			if (!lastDeniedAction) return undefined;
-			const approved = lastDeniedAction;
-			lastDeniedAction = undefined;
-			oneShotApprovals.add(approved.key);
-			return approved;
-		},
+		approveLastDenied: () => enforcement.approveLastDenied(),
 	};
 
 	const profileInitialization = registerSessionProfileBinding(
@@ -142,7 +124,7 @@ function installSafetyPermissions(
 				guardianSettingsPath = binding.settingsPath;
 			},
 			initialize: async (_binding, _event, ctx) => {
-				reconstruct(ctx);
+				enforcement.synchronizeSession({ cwd: ctx.cwd, resetTransientApprovals: true });
 				profileBindingGeneration++;
 				try {
 					guardianSettings = loadGuardianSettings(guardianSettingsPath);
@@ -167,7 +149,10 @@ function installSafetyPermissions(
 	pi.on("session_start", async (event, ctx) => {
 		await profileInitialization.start(event, ctx);
 	});
-	pi.on("session_tree", async (_event, ctx) => { reconstruct(ctx); updateStatus(ctx); });
+	pi.on("session_tree", async (_event, ctx) => {
+		enforcement.synchronizeSession({ cwd: ctx.cwd, resetTransientApprovals: false });
+		updateStatus(ctx);
+	});
 	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx));
 	pi.on("session_shutdown", async (event, ctx) => {
 		try {
@@ -205,27 +190,17 @@ function installSafetyPermissions(
 	// ── tool_call handler ──────────────────────────────────────────────
 
 	pi.on("tool_call", async (event, ctx) => {
-		const key = actionKey(event.toolName, event.input);
-		if (oneShotApprovals.has(key)) {
-			oneShotApprovals.delete(key);
-			return;
-		}
-
-		const decision = await evaluateToolCall(
+		const outcome = await enforcement.evaluate(
 			{ toolName: event.toolName, input: event.input },
-			{ mode: mode.mode, cwd: ctx.cwd, hasUI: ctx.hasUI, execPolicy: loadExecPolicy() },
 			{
-				requestApproval: (title, message) => approvals.requestApproval(ctx, title, message),
-				guardianReview: (title, desc, triggers) => approvals.guardianReview(ctx, title, desc, triggers),
-				onDenied: (input, title, message) => {
-					lastDeniedAction = { key: actionKey(input.toolName, input.input), title, message, at: Date.now() };
-				},
+				cwd: ctx.cwd,
+				hasUI: ctx.hasUI,
+				execPolicy: loadExecPolicy(),
+				guardianContext: { lastUserPrompt, precedingAssistantMessage },
+				hostContext: ctx,
 			},
 		);
-
-		if (decision.action === "block") {
-			return { block: true, reason: decision.reason };
-		}
+		if (outcome.kind === "blocked") return { block: true, reason: outcome.reason };
 	});
 
 	// ── System prompt injection ────────────────────────────────────────
@@ -243,7 +218,7 @@ function installSafetyPermissions(
 			"auto-review": `\n\n## Permission Mode: AUTO-REVIEW\nFull auto — no restrictions on reading, writing within the workspace, web searches, or running commands.\nA guardian LLM reviews dangerous commands, network installs, and writes outside the workspace.\nSafe actions pass silently. Risky actions may trigger a user prompt.`,
 			"full-access": `\n\n## Permission Mode: FULL ACCESS\nNo restrictions. You have full access to read, write, and execute any command, including network access and writing outside the workspace.\nExercise caution and always inform the user of destructive operations.`,
 		};
-		return { systemPrompt: event.systemPrompt + modeInstructions[mode.mode] };
+		return { systemPrompt: event.systemPrompt + modeInstructions[enforcement.mode.mode] };
 	});
 
 	// ── Commands ────────────────────────────────────────────────────────

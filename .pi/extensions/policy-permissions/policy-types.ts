@@ -28,7 +28,7 @@ export interface ApprovalResult {
 	reason?: string;
 }
 
-/** Side-effecting dependencies injected so `evaluateToolCall` stays pure/testable. */
+/** Approval operations supplied by the permission enforcement lifecycle. */
 export interface EvaluateDeps {
 	/** Prompt the user for approval (default mode). */
 	requestApproval(title: string, message: string): Promise<ApprovalResult>;
