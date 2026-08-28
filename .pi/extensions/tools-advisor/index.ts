@@ -28,6 +28,12 @@ import { resolveModelContext } from "../_shared/model-selection.ts";
 import { Text } from "@earendil-works/pi-tui";
 import { registerToolErrorHandler, renderToolMarkdown, renderToolSummary } from "../_shared/tool-result-ui.ts";
 import {
+	advisorFailure,
+	classifyAdvisorToolResult,
+	toAdvisorToolResult,
+	type AdvisorToolDetails,
+} from "./outcome.ts";
+import {
 	ADVISOR_NUDGE_MESSAGE,
 	ADVISOR_TOOL_DESCRIPTION,
 	transformAdvisorPrompt,
@@ -43,7 +49,6 @@ import {
 	DEFAULT_NUDGE_TURN,
 	type AdvisorRunner,
 	type AdvisorSettings,
-	type AdvisorToolDetails,
 } from "./runner.ts";
 import { DEFAULT_CONTEXT_BUDGET, type AdvisorContextBudget } from "./transcript.ts";
 
@@ -53,7 +58,8 @@ export {
 	DEFAULT_MAX_USES_PER_SESSION,
 	DEFAULT_NUDGE_TURN,
 } from "./runner.ts";
-export type { AdvisorSettings, AdvisorToolDetails, AdvisorToolResult } from "./runner.ts";
+export type { AdvisorToolDetails, AdvisorToolResult } from "./outcome.ts";
+export type { AdvisorSettings } from "./runner.ts";
 
 export const DEFAULT_MAX_TOKENS = 2048;
 
@@ -358,8 +364,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 		let settings: AdvisorSettings = parseAdvisorSettings({});
 
 		registerToolErrorHandler(pi, ["advisor"], (event) =>
-			event.content.some((content) => content.type === "text" && content.text?.startsWith("advisor_") &&
-				!(event.details && typeof event.details === "object" && "truncated" in event.details && event.details.truncated === true)),
+			classifyAdvisorToolResult(event) === "failure",
 		);
 
 		const notify = (ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info") => {
@@ -493,11 +498,12 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 					settings = loadAdvisorSettings(settingsPath);
 				} catch (error) {
 					updateStatus(ctx);
-					return {
-						content: [{ type: "text", text: `advisor_settings_error: ${errorText(error)}` }],
-						details: { model: "(invalid settings)", consumesBudget: false, truncated: false },
-						isError: true,
-					};
+					return toAdvisorToolResult(advisorFailure(
+						"advisor_settings_error",
+						errorText(error),
+						"(invalid settings)",
+						false,
+					));
 				}
 				updateStatus(ctx);
 				const result = await runner.execute({
@@ -510,10 +516,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 					signal,
 					onStatus: () => updateStatus(ctx),
 				});
-				const text = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
-			const details = result.details as AdvisorToolDetails | undefined;
-			const isFailure = text.startsWith("advisor_") && !details?.truncated;
-			return isFailure ? { ...result, isError: true } : result;
+				return toAdvisorToolResult(result);
 			},
 			renderCall(args, theme) {
 				const focus = args.question ? ` ${theme.fg("muted", args.question)}` : "";
@@ -522,12 +525,17 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			renderResult(result, options, theme, context) {
 				const text = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
 				const details = result.details as AdvisorToolDetails | undefined;
+				const disposition = classifyAdvisorToolResult({
+					content: result.content,
+					details,
+					isError: context.isError,
+				});
 				if (options.isPartial) return renderToolSummary(theme, "running", "Advising…");
-				if (details?.truncated) {
+				if (disposition === "warning") {
 					if (options.expanded) return renderToolMarkdown(text.replace(/^advisor_truncated:\s*/, ""), theme);
 					return renderToolSummary(theme, "warning", "Advice may be incomplete", true);
 				}
-				if (context.isError || text.startsWith("advisor_")) {
+				if (disposition === "failure") {
 					if (options.expanded) return renderToolMarkdown(text, theme);
 					return renderToolSummary(theme, "error", text || "Advisor consultation failed.");
 				}

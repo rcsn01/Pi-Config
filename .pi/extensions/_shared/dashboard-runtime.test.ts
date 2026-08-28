@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	createDashboardRuntimeLifecycle,
 	createPersistentDashboardRuntime,
 	type DashboardRuntimeLike,
 	type PersistentDashboardRuntime,
@@ -19,6 +20,20 @@ function fakeRuntime(overrides: Partial<FakeRuntime> = {}): FakeRuntime {
 		...overrides,
 	};
 	return runtime;
+}
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+	return { promise, resolve, reject };
+}
+
+function fakeServer(
+	start: () => Promise<{ url: string }> = async () => ({ url: "http://localhost:1/#token=test" }),
+	close: () => Promise<void> = async () => {},
+) {
+	return { start: vi.fn(start), close: vi.fn(close) };
 }
 
 function uniqueKey(): symbol {
@@ -109,5 +124,149 @@ describe("persistent dashboard runtime", () => {
 
 		const replacement = store.get();
 		expect(replacement).not.toBe(runtime);
+	});
+});
+
+describe("dashboard runtime lifecycle", () => {
+	it("coalesces starts and activates only after the server starts", async () => {
+		const started = deferred<{ url: string }>();
+		const server = fakeServer(() => started.promise);
+		const onActivated = vi.fn();
+		const lifecycle = createDashboardRuntimeLifecycle({
+			createServer: () => server,
+			onActivated,
+			onReset: vi.fn(),
+			closedWhileStartingMessage: "closed while starting",
+		});
+
+		const first = lifecycle.start();
+		const second = lifecycle.start();
+		expect(server.start).toHaveBeenCalledOnce();
+		expect(lifecycle.isActive()).toBe(false);
+		started.resolve({ url: "http://localhost:1/#token=test" });
+		expect(await first).toEqual(await second);
+		expect(lifecycle.isActive()).toBe(true);
+		expect(onActivated).toHaveBeenCalledOnce();
+	});
+
+	it("invalidates a pending start, resets immediately, and closes its adapter", async () => {
+		const started = deferred<{ url: string }>();
+		const server = fakeServer(() => started.promise);
+		const onReset = vi.fn();
+		const lifecycle = createDashboardRuntimeLifecycle({
+			createServer: () => server,
+			onActivated: vi.fn(),
+			onReset,
+			closedWhileStartingMessage: "dashboard closed while starting",
+		});
+
+		const starting = lifecycle.start();
+		const closing = lifecycle.close();
+		expect(onReset).toHaveBeenCalledOnce();
+		expect(lifecycle.isActive()).toBe(false);
+		started.resolve({ url: "http://localhost:1/#token=test" });
+		await expect(starting).rejects.toThrow("dashboard closed while starting");
+		await closing;
+		expect(server.close).toHaveBeenCalledOnce();
+	});
+
+	it("closes an adapter whose pending start settles only when cancelled", async () => {
+		let rejectStart!: (error: unknown) => void;
+		const server = fakeServer(
+			() => new Promise((_, reject) => { rejectStart = reject; }),
+			async () => rejectStart(new Error("listen cancelled")),
+		);
+		const lifecycle = createDashboardRuntimeLifecycle({
+			createServer: () => server,
+			onActivated: vi.fn(),
+			onReset: vi.fn(),
+			closedWhileStartingMessage: "dashboard closed while starting",
+		});
+
+		const starting = lifecycle.start();
+		const closing = lifecycle.close();
+		await closing;
+		await expect(starting).rejects.toThrow("dashboard closed while starting");
+		expect(server.close).toHaveBeenCalledOnce();
+	});
+
+	it("coalesces closes and makes a new start wait for close", async () => {
+		const closed = deferred<void>();
+		const firstServer = fakeServer(undefined, () => closed.promise);
+		const secondServer = fakeServer();
+		const createServer = vi.fn()
+			.mockReturnValueOnce(firstServer)
+			.mockReturnValueOnce(secondServer);
+		const lifecycle = createDashboardRuntimeLifecycle({
+			createServer,
+			onActivated: vi.fn(),
+			onReset: vi.fn(),
+			closedWhileStartingMessage: "closed while starting",
+		});
+		await lifecycle.start();
+
+		const firstClose = lifecycle.close();
+		const secondClose = lifecycle.close();
+		expect(firstClose).toBe(secondClose);
+		const restarting = lifecycle.start();
+		expect(secondServer.start).not.toHaveBeenCalled();
+		closed.resolve();
+		await firstClose;
+		await restarting;
+		expect(secondServer.start).toHaveBeenCalledOnce();
+	});
+
+	it("rejects a queued start on close failure, then permits an explicit retry", async () => {
+		const closeError = new Error("close failed");
+		const firstServer = fakeServer(undefined, async () => { throw closeError; });
+		const secondServer = fakeServer();
+		const createServer = vi.fn()
+			.mockReturnValueOnce(firstServer)
+			.mockReturnValueOnce(secondServer);
+		const lifecycle = createDashboardRuntimeLifecycle({
+			createServer,
+			onActivated: vi.fn(),
+			onReset: vi.fn(),
+			closedWhileStartingMessage: "closed while starting",
+		});
+		await lifecycle.start();
+
+		const closing = lifecycle.close();
+		const queuedStart = lifecycle.start();
+		await expect(closing).rejects.toBe(closeError);
+		await expect(queuedStart).rejects.toBe(closeError);
+		await expect(lifecycle.start()).resolves.toEqual({ url: "http://localhost:1/#token=test" });
+	});
+
+	it("retries with a fresh adapter after start failure", async () => {
+		const startError = new Error("start failed");
+		const failedServer = fakeServer(async () => { throw startError; });
+		const replacement = fakeServer();
+		const lifecycle = createDashboardRuntimeLifecycle({
+			createServer: vi.fn()
+				.mockReturnValueOnce(failedServer)
+				.mockReturnValueOnce(replacement),
+			onActivated: vi.fn(),
+			onReset: vi.fn(),
+			closedWhileStartingMessage: "closed while starting",
+		});
+
+		await expect(lifecycle.start()).rejects.toBe(startError);
+		expect(failedServer.close).not.toHaveBeenCalled();
+		await expect(lifecycle.start()).resolves.toEqual({ url: "http://localhost:1/#token=test" });
+		expect(replacement.start).toHaveBeenCalledOnce();
+	});
+
+	it("resets an inactive runtime and resolves", async () => {
+		const onReset = vi.fn();
+		const lifecycle = createDashboardRuntimeLifecycle({
+			createServer: () => fakeServer(),
+			onActivated: vi.fn(),
+			onReset,
+			closedWhileStartingMessage: "closed while starting",
+		});
+
+		await expect(lifecycle.close()).resolves.toBeUndefined();
+		expect(onReset).toHaveBeenCalledOnce();
 	});
 });

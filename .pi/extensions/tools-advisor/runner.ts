@@ -14,6 +14,14 @@ import {
 import type { ExtensionContext, SessionEntry, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { resolveModelContext } from "../_shared/model-selection.ts";
 import {
+	advisorFailure,
+	advisorSuccess,
+	advisorWarning,
+	type AdvisorFailureCode,
+	type AdvisorOutcome,
+	type AdvisorToolDetails,
+} from "./outcome.ts";
+import {
 	type AdvisorContextBudget,
 	projectTranscript,
 	TranscriptProjectionError,
@@ -47,18 +55,6 @@ export interface AdvisorSettings {
 	contextWindow?: number;
 }
 
-export interface AdvisorToolDetails {
-	model: string;
-	consumesBudget: boolean;
-	truncated: boolean;
-}
-
-export interface AdvisorToolResult {
-	content: [{ type: "text"; text: string }];
-	details: AdvisorToolDetails;
-	usage?: Usage;
-}
-
 export interface AdvisorRunInput {
 	ctx: ExtensionContext;
 	settings: AdvisorSettings;
@@ -71,7 +67,7 @@ export interface AdvisorRunInput {
 }
 
 export interface AdvisorRunner {
-	execute(input: AdvisorRunInput): Promise<AdvisorToolResult>;
+	execute(input: AdvisorRunInput): Promise<AdvisorOutcome>;
 }
 
 export function deriveAdvisorSessionId(mainSessionId: string, resolvedModel: string): string {
@@ -94,15 +90,10 @@ export function createAdvisorRunner(): AdvisorRunner {
 	// depends on event delivery.
 	let inFlight = 0;
 
-	async function execute(input: AdvisorRunInput): Promise<AdvisorToolResult> {
+	async function execute(input: AdvisorRunInput): Promise<AdvisorOutcome> {
 		const modelName = configuredModelName(input.settings);
-		const localFailure = (code: string, message: string): AdvisorToolResult => failure(
-			code,
-			message,
-			modelName,
-			false,
-			false,
-		);
+		const localFailure = (code: AdvisorFailureCode, message: string): AdvisorOutcome =>
+			advisorFailure(code, message, modelName, false);
 
 		if (input.settings.enabled === false || !input.settings.provider || !input.settings.modelId) {
 			return localFailure("advisor_off", "Advisor is disabled. Select a model with /advisor first.");
@@ -242,20 +233,19 @@ export function createAdvisorRunner(): AdvisorRunner {
 			const message = error instanceof Error ? error.message : String(error);
 			if (isAbortError(error) || signal?.aborted) {
 				inFlight--;
-				return failure("advisor_aborted", message || "The advisor consultation was aborted.", resolvedModel, true, false);
+				return advisorFailure("advisor_aborted", message || "The advisor consultation was aborted.", resolvedModel, true);
 			}
 			if (isExplicitOverflow(message) && !hasNonzeroUsage((error as { usage?: Usage }).usage)) {
 				inFlight--;
-				return failure(
+				return advisorFailure(
 					"advisor_context_too_large",
 					`The advisor provider rejected the complete request as too large: ${message}`,
 					resolvedModel,
 					false,
-					false,
 				);
 			}
 			inFlight--;
-			return failure("advisor_provider_error", message || "The advisor provider failed.", resolvedModel, true, false);
+			return advisorFailure("advisor_provider_error", message || "The advisor provider failed.", resolvedModel, true);
 		} finally {
 			setStatus(false);
 		}
@@ -333,7 +323,7 @@ function resultFromResponse(
 	response: AssistantMessage,
 	model: string,
 	releaseBudget: () => void,
-): AdvisorToolResult {
+): AdvisorOutcome {
 	const text = response.content
 		.filter((block): block is { type: "text"; text: string } => block.type === "text")
 		.map((block) => block.text)
@@ -344,58 +334,35 @@ function resultFromResponse(
 	if (response.stopReason === "error") {
 		if (overflow && !hasNonzeroUsage(response.usage)) {
 			releaseBudget();
-			return failure(
+			return advisorFailure(
 				"advisor_context_too_large",
 				`The advisor provider rejected the complete request as too large: ${response.errorMessage ?? "context limit exceeded"}${partialAdvice}`,
 				model,
-				false,
 				false,
 				response.usage,
 			);
 		}
 		releaseBudget();
-		return failure("advisor_provider_error", `${response.errorMessage ?? "The advisor provider returned an error."}${partialAdvice}`, model, true, false, response.usage);
+		return advisorFailure("advisor_provider_error", `${response.errorMessage ?? "The advisor provider returned an error."}${partialAdvice}`, model, true, response.usage);
 	}
 	if (response.stopReason === "aborted") {
 		releaseBudget();
-		return failure("advisor_aborted", `${response.errorMessage ?? "The advisor consultation was aborted."}${partialAdvice}`, model, true, false, response.usage);
+		return advisorFailure("advisor_aborted", `${response.errorMessage ?? "The advisor consultation was aborted."}${partialAdvice}`, model, true, response.usage);
 	}
 	if (response.stopReason === "length") {
 		releaseBudget();
-		return failure(
-			"advisor_truncated",
+		return advisorWarning(
 			text ? `The advisor response was truncated and may be incomplete.\n\n${text}` : "The advisor response was truncated before producing visible advice.",
 			model,
-			true,
-			true,
 			response.usage,
 		);
 	}
 	if (!text) {
 		releaseBudget();
-		return failure("advisor_empty", "The advisor returned no visible advice. Its response may have used the output budget for reasoning.", model, true, false, response.usage);
+		return advisorFailure("advisor_empty", "The advisor returned no visible advice. Its response may have used the output budget for reasoning.", model, true, response.usage);
 	}
 	releaseBudget();
-	return {
-		content: [{ type: "text", text }],
-		details: { model, consumesBudget: true, truncated: false },
-		usage: response.usage,
-	};
-}
-
-function failure(
-	code: string,
-	message: string,
-	model: string,
-	consumesBudget: boolean,
-	truncated: boolean,
-	usage?: Usage,
-): AdvisorToolResult {
-	return {
-		content: [{ type: "text", text: `${code}: ${message}` }],
-		details: { model, consumesBudget, truncated },
-		...(usage ? { usage } : {}),
-	};
+	return advisorSuccess(text, model, response.usage);
 }
 
 function configuredModelName(settings: AdvisorSettings): string {

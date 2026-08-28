@@ -1,5 +1,9 @@
 import type { GlobalUsageSnapshot } from "../_shared/global-usage.ts";
-import { createPersistentDashboardRuntime, type PersistentDashboardRuntime } from "../_shared/dashboard-runtime.ts";
+import {
+	createDashboardRuntimeLifecycle,
+	createPersistentDashboardRuntime,
+	type PersistentDashboardRuntime,
+} from "../_shared/dashboard-runtime.ts";
 import { scanGlobalUsage, type ScanGlobalUsageOptions } from "./global-usage-store.ts";
 import { toTelemetryUsagePayload, type TelemetryUsageState } from "./payload.ts";
 import { createTelemetryUsageServer, type TelemetryUsageServer } from "./server.ts";
@@ -37,21 +41,18 @@ export function createTelemetryUsageRuntime(
 ): TelemetryUsageRuntimeStore {
 	const scan = options.scan ?? scanGlobalUsage;
 	let state: TelemetryUsageState = { phase: "idle" };
-	let server: TelemetryUsageServer | undefined;
-	let startPromise: Promise<{ url: string }> | undefined;
 	let refreshPromise: Promise<void> | undefined;
-	let active = false;
-	let lifecycle = 0;
+	let scanGeneration = 0;
 
 	const getState = () => cloneState(state);
 
 	const refresh = (): Promise<void> => {
 		if (refreshPromise) return refreshPromise;
-		const generation = lifecycle;
+		const generation = scanGeneration;
 		state = { phase: "scanning", ...(state.data ? { data: state.data } : {}) };
 		const current = scan({
 			onProgress: (loaded, total) => {
-				if (generation !== lifecycle) return;
+				if (generation !== scanGeneration) return;
 				state = {
 					phase: "scanning",
 					progress: { loaded, total },
@@ -59,10 +60,10 @@ export function createTelemetryUsageRuntime(
 				};
 			},
 		}).then((snapshot) => {
-			if (generation !== lifecycle) return;
+			if (generation !== scanGeneration) return;
 			state = { phase: "ready", data: toTelemetryUsagePayload(snapshot) };
 		}).catch((error) => {
-			if (generation !== lifecycle) return;
+			if (generation !== scanGeneration) return;
 			state = {
 				phase: "error",
 				diagnostic: error instanceof Error ? error.message : String(error),
@@ -76,48 +77,23 @@ export function createTelemetryUsageRuntime(
 	};
 
 	const source = { getState, refresh };
+	const lifecycle = createDashboardRuntimeLifecycle({
+		createServer: () => (options.serverFactory ?? createTelemetryUsageServer)(source),
+		onActivated: () => {
+			void refresh();
+		},
+		onReset: () => {
+			scanGeneration++;
+			refreshPromise = undefined;
+			state = { phase: "idle" };
+		},
+		closedWhileStartingMessage: "Telemetry usage server was closed while starting.",
+	});
 
 	return {
-		isActive: () => active,
+		...lifecycle,
 		getState,
 		refresh,
-		async start() {
-			if (startPromise) return startPromise;
-			const generation = ++lifecycle;
-			server = (options.serverFactory ?? createTelemetryUsageServer)(source);
-			const currentServer = server;
-			startPromise = currentServer.start().then((result) => {
-				if (generation !== lifecycle) throw new Error("Telemetry usage server was closed while starting.");
-				active = true;
-				void refresh();
-				return result;
-			}).catch((error) => {
-				if (generation === lifecycle) {
-					startPromise = undefined;
-					if (server === currentServer) server = undefined;
-				}
-				throw error;
-			});
-			return startPromise;
-		},
-		async close() {
-			const currentServer = server;
-			const pendingStart = startPromise;
-			lifecycle++;
-			server = undefined;
-			startPromise = undefined;
-			refreshPromise = undefined;
-			active = false;
-			state = { phase: "idle" };
-			if (pendingStart) {
-				try {
-					await pendingStart;
-				} catch {
-					// Closing invalidates an in-flight start.
-				}
-			}
-			if (currentServer) await currentServer.close();
-		},
 	};
 }
 

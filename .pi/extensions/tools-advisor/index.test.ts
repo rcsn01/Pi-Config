@@ -492,8 +492,12 @@ describe("advisor extension", () => {
 		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
 		const runner: any = {
 			execute: vi.fn(async () => ({
-				content: [{ type: "text", text: "advisor_provider_error: unavailable" }],
-				details: { model: "anthropic/strong", consumesBudget: false, truncated: false },
+				disposition: "failure",
+				code: "advisor_provider_error",
+				message: "unavailable",
+				model: "anthropic/strong",
+				consumesBudget: false,
+				truncated: false,
 			})),
 		};
 		const harness = makePi({ settingsPath: path });
@@ -513,8 +517,12 @@ describe("advisor extension", () => {
 		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
 		const runner: any = {
 			execute: vi.fn(async () => ({
-				content: [{ type: "text", text: "advisor_truncated: Advice so far" }],
-				details: { model: "anthropic/strong", consumesBudget: true, truncated: true },
+				disposition: "warning",
+				code: "advisor_truncated",
+				message: "Advice so far",
+				model: "anthropic/strong",
+				consumesBudget: true,
+				truncated: true,
 			})),
 		};
 		const harness = makePi({ settingsPath: path });
@@ -537,8 +545,12 @@ describe("advisor extension", () => {
 				input.onStatus?.(true, "anthropic/strong");
 				input.onStatus?.(false, "anthropic/strong");
 				return {
-					content: [{ type: "text", text: "Advice" }],
-					details: { model: "anthropic/strong", consumesBudget: true, truncated: false },
+					disposition: "success",
+					code: "advisor_ok",
+					message: "Advice",
+					model: "anthropic/strong",
+					consumesBudget: true,
+					truncated: false,
 				};
 			}),
 		};
@@ -733,8 +745,11 @@ describe("advisor extension", () => {
 				activeToolNames: ["advisor"],
 				allTools: [],
 			});
-			expect(second.content[0].text).toMatch(/^advisor_turn_budget_exhausted/);
-			expect(second.details.consumesBudget).toBe(false);
+			expect(second).toMatchObject({
+				disposition: "failure",
+				code: "advisor_turn_budget_exhausted",
+				consumesBudget: false,
+			});
 		} finally {
 			created.session.dispose();
 		}

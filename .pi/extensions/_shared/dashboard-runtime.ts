@@ -11,10 +11,116 @@
  * the existing instance unchanged.
  */
 
-/** The runtime surface the lifetime policy touches. */
+import type { DashboardServer } from "./dashboard-server.ts";
+
+/** The runtime interface the lifetime policy touches. */
 export interface DashboardRuntimeLike {
 	isActive(): boolean;
 	close(): Promise<void>;
+}
+
+export interface DashboardRuntimeLifecycle extends DashboardRuntimeLike {
+	start(): Promise<{ url: string }>;
+}
+
+export interface DashboardRuntimeLifecycleOptions {
+	/** Construct a fresh server adapter lazily for each start attempt. */
+	createServer(): DashboardServer;
+	/** Synchronous, non-throwing dashboard state transition after activation. */
+	onActivated(): void;
+	/** Synchronous, non-throwing dashboard state reset at the start of close. */
+	onReset(): void;
+	closedWhileStartingMessage: string;
+}
+
+/**
+ * Own one dashboard server's lifecycle. Starts and closes are single-flight;
+ * a start received during close waits for that close before constructing a
+ * fresh adapter. A failed close rejects the waiting start, but a later start
+ * may retry.
+ */
+export function createDashboardRuntimeLifecycle(
+	options: DashboardRuntimeLifecycleOptions,
+): DashboardRuntimeLifecycle {
+	let server: DashboardServer | undefined;
+	let startPromise: Promise<{ url: string }> | undefined;
+	let closePromise: Promise<void> | undefined;
+	let generation = 0;
+	let active = false;
+
+	const lifecycle: DashboardRuntimeLifecycle = {
+		isActive: () => active,
+
+		start(): Promise<{ url: string }> {
+			const closing = closePromise;
+			if (closing) return closing.then(() => lifecycle.start());
+			if (startPromise) return startPromise;
+
+			const currentGeneration = ++generation;
+			let current: DashboardServer;
+			try {
+				current = options.createServer();
+				server = current;
+			} catch (error) {
+				return Promise.reject(error);
+			}
+
+			let serverStart: Promise<{ url: string }>;
+			try {
+				serverStart = current.start();
+			} catch (error) {
+				serverStart = Promise.reject(error);
+			}
+			const pending = serverStart.then((result) => {
+				if (currentGeneration !== generation) {
+					throw new Error(options.closedWhileStartingMessage);
+				}
+				active = true;
+				options.onActivated();
+				return result;
+			}).catch((error) => {
+				if (currentGeneration !== generation) {
+					throw new Error(options.closedWhileStartingMessage);
+				}
+				active = false;
+				if (server === current) server = undefined;
+				if (startPromise === pending) startPromise = undefined;
+				throw error;
+			});
+			startPromise = pending;
+			return pending;
+		},
+
+		close(): Promise<void> {
+			if (closePromise) return closePromise;
+
+			const current = server;
+			const pendingStart = startPromise;
+			generation++;
+			server = undefined;
+			startPromise = undefined;
+			active = false;
+			options.onReset();
+
+			const pendingSettlement = pendingStart?.catch(() => {
+				// Close owns invalidation of an in-flight start.
+			});
+			// Start and close must settle together: some adapters only reject a
+			// pending start after close cancels their listen attempt.
+			const adapterClose = current
+				? Promise.resolve().then(() => current.close())
+				: Promise.resolve();
+			const closing = Promise.all([pendingSettlement, adapterClose]).then(() => undefined);
+			let trackedClose: Promise<void>;
+			trackedClose = closing.finally(() => {
+				if (closePromise === trackedClose) closePromise = undefined;
+			});
+			closePromise = trackedClose;
+			return trackedClose;
+		},
+	};
+
+	return lifecycle;
 }
 
 export interface PersistentDashboardRuntime<T extends DashboardRuntimeLike, Options = void> {
