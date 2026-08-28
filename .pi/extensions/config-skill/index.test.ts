@@ -580,7 +580,7 @@ describe("updateSkillExtension", () => {
 		const root = tmpRoot();
 		const git = new FakeGit();
 		const pi = fakePi();
-		updateSkillExtension(pi, () => git);
+		updateSkillExtension(pi, () => git, { extensionDir: root });
 
 		// Stale last-checked state plus one behind skill.
 		const state = loadState(stateDirFor(root));
@@ -610,7 +610,7 @@ describe("updateSkillExtension", () => {
 		const root = tmpRoot();
 		const git = new FakeGit();
 		const pi = fakePi();
-		updateSkillExtension(pi, () => git);
+		updateSkillExtension(pi, () => git, { extensionDir: root });
 
 		const state = loadState(stateDirFor(root));
 		state.lastCheckedAt = new Date().toISOString();

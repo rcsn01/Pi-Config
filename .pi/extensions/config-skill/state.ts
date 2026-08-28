@@ -1,7 +1,8 @@
 /**
  * update-skill — persistent state.
  *
- * Lives in `.pi/update-skill/state.json` (gitignored): when the last
+ * Lives in `update-skill/state.json` inside this extension's directory
+ * (gitignored): when the last
  * background check ran, and the pinned upstream commit per installed skill.
  * Pinning mirrors how pi's own git packages work: a skill is "up to date"
  * when the pinned commit equals the current `origin/<branch>` commit for its
@@ -20,7 +21,7 @@ export interface UpdateSkillState {
 
 export const EMPTY_STATE: UpdateSkillState = { lastCheckedAt: null, skills: {} };
 
-/** Load `.pi/update-skill/state.json`; missing or corrupt file → empty state. */
+/** Load `update-skill/state.json` (relative to `dir`); missing or corrupt file → empty state. */
 export function loadState(dir: string): UpdateSkillState {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));

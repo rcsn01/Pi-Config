@@ -12,5 +12,8 @@
 	"include": [
 		"extensions/**/*.ts",
 		"extensions-disabled/**/*.ts"
+	],
+	"exclude": [
+		"extensions/config-skill/update-skill"
 	]
 }
