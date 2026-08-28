@@ -8,6 +8,15 @@ import {
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
 import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
+import {
+	createAndActivateProfile,
+	createProfileTransitionLifecycle,
+	deleteActiveProfile,
+	switchProfile,
+	type ProfileTransitionLifecycleAdapter,
+	type ProfileTransitionNotice,
+	type ProfileTransitionRequest,
+} from "./profile-transition-lifecycle.ts";
 
 export interface ConfigProfilesDependencies {
 	store?: ProfileStore;
@@ -17,6 +26,31 @@ export interface ConfigProfilesDependencies {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function renderProfileTransitionNotice(
+	ctx: ExtensionCommandContext,
+	notice: ProfileTransitionNotice,
+): void {
+	switch (notice.kind) {
+		case "profile-model-applied":
+			ctx.ui.notify(`Profile model: ${notice.selection.provider}/${notice.selection.modelId}`, "info");
+			return;
+		case "profile-model-apply-failed":
+			ctx.ui.notify(`Could not apply the profile model: ${errorMessage(notice.cause)}`, "error");
+			return;
+		case "profile-switched":
+			ctx.ui.notify(`Switched to profile "${notice.name}". Reloading…`, "info");
+			return;
+		case "profile-added":
+			ctx.ui.notify(`Added profile "${notice.name}". Reloading…`, "info");
+			return;
+		case "active-profile-deleted":
+			ctx.ui.notify(
+				`Deleted profile "${notice.name}". Switched to "${notice.replacement}". Reloading…`,
+				"info",
+			);
+	}
 }
 
 const ADD_PROFILE_ACTION = "\u0000add-profile";
@@ -79,40 +113,40 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 			},
 		);
 
-		const applyProfileModel = async (name: string, ctx: ExtensionContext): Promise<void> => {
-			const previousModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-			try {
-				const document = store.readProfile(name);
-				const selection = document
-					? await applySelectionFromDocument(
-						pi,
-						ctx,
-						document,
-						dependencies.nativeDefaults,
-					)
-					: undefined;
-				if (selection && `${selection.provider}/${selection.modelId}` !== previousModel) {
-					ctx.ui.notify(`Profile model: ${selection.provider}/${selection.modelId}`, "info");
-				}
-			} catch (error) {
-				// The profile switch is already committed. Keep the current model when
-				// applying the saved selection fails, then let reload rebind the rest.
-				ctx.ui.notify(`Could not apply the profile model: ${errorMessage(error)}`, "error");
-			}
-		};
-
-		const applyAndReload = async (name: string, ctx: ExtensionCommandContext, message: string): Promise<void> => {
-			await applyProfileModel(name, ctx);
-			ctx.ui.notify(message, "info");
-			await ctx.reload();
-		};
-
-		const activateAndReload = async (name: string, ctx: ExtensionCommandContext, message: string): Promise<void> => {
-			// Remember the session's profile before reloading so sibling extensions
-			// re-read the profile file with this name at the new session boundary.
-			pi.appendEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: name });
-			sessionProfile = name;
-			await applyAndReload(name, ctx, message);
+		const runProfileTransition = (
+			request: ProfileTransitionRequest,
+			ctx: ExtensionCommandContext,
+		) => {
+			const adapter: ProfileTransitionLifecycleAdapter = {
+				switchProfile: async (name) => {
+					await store.switchProfile(name);
+				},
+				createProfile: async (name, source) => {
+					await store.createProfile(name, source);
+				},
+				deleteProfile: async (name, options) => {
+					await store.deleteProfile(name, options);
+				},
+				readProfile: (name) => store.readProfile(name),
+				publishSessionProfile: (name) => {
+					// Remember the session's Profile before reload so sibling extensions
+					// re-read the same Profile at the next session boundary.
+					pi.appendEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: name });
+					sessionProfile = name;
+				},
+				getCurrentModelKey: () => ctx.model
+					? `${ctx.model.provider}/${ctx.model.id}`
+					: undefined,
+				applyProfileSelection: (document) => applySelectionFromDocument(
+					pi,
+					ctx,
+					document,
+					dependencies.nativeDefaults,
+				),
+				reportNotice: (notice) => renderProfileTransitionNotice(ctx, notice),
+				reload: () => ctx.reload(),
+			};
+			return createProfileTransitionLifecycle(adapter).transition(request);
 		};
 
 		const addProfile = async (source: string | undefined, ctx: ExtensionCommandContext): Promise<void> => {
@@ -121,8 +155,7 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 			if (!name) return;
 
 			try {
-				await store.createProfile(name, source);
-				await activateAndReload(name, ctx, `Added profile "${name}". Reloading…`);
+				await runProfileTransition(createAndActivateProfile(name, source), ctx);
 			} catch (error) {
 				ctx.ui.notify(`Could not add settings profile: ${errorMessage(error)}`, "error");
 			}
@@ -155,23 +188,9 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 
 				const sessionOwnsProfile = sessionCurrent === name;
 				if (sessionOwnsProfile) {
-					// Validate the target and fallback before changing the session entry.
-					// If appending the replacement entry fails, the deleted profile is
-					// still present and this session remains safely bound to it.
-					store.readProfile(name);
-					store.readProfile(DEFAULT_PROFILE_NAME);
-					pi.appendEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: DEFAULT_PROFILE_NAME });
-					sessionProfile = DEFAULT_PROFILE_NAME;
-				}
-
-				await store.deleteProfile(name, { replaceMarker: sessionOwnsProfile });
-				if (sessionOwnsProfile) {
-					await applyAndReload(
-						DEFAULT_PROFILE_NAME,
-						ctx,
-						`Deleted profile "${name}". Switched to "${DEFAULT_PROFILE_NAME}". Reloading…`,
-					);
+					await runProfileTransition(deleteActiveProfile(name), ctx);
 				} else {
+					await store.deleteProfile(name, { replaceMarker: false });
 					ctx.ui.notify(`Deleted profile "${name}".`, "info");
 				}
 			} catch (error) {
@@ -257,8 +276,7 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 
 					// The marker write may be a no-op while this session still needs
 					// rebinding (its entry differs), so the switch proceeds regardless.
-					await store.switchProfile(name);
-					await activateAndReload(name, ctx, `Switched to profile "${name}". Reloading…`);
+					await runProfileTransition(switchProfile(name), ctx);
 					return;
 				} catch (error) {
 					ctx.ui.notify(`Could not switch settings profile: ${errorMessage(error)}`, "error");

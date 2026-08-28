@@ -34,6 +34,10 @@ extension.
   a usage snapshot and serves it to the browser.
 - **Analysis dashboard** — the `/analysis` dashboard: captures provider
   request/response events as inspectable records.
+- **Analysis capture module** — the deep in-process module that owns event
+  correlation, record retention, payload analysis, byte accounting, pause state,
+  and diagnostics behind one synchronous interface. Analysis dashboard lifecycle
+  and Pi event adaptation stay outside.
 - **Persistent dashboard runtime** — the deep lifetime and server lifecycle
   module in `_shared/dashboard-runtime.ts` both dashboards sit on: one runtime
   per symbol key; lazy server adapters, coalesced start/close, close/start
@@ -73,6 +77,10 @@ extension.
   read/mutate machinery in `_shared/settings-document.ts`.
 - **Profile** — a full settings document in `.pi/profiles/<name>.json`;
   switching replaces the active document.
+- **Profile transition lifecycle** — the deep in-process module in
+  `config-profiles/` that owns switch, create-and-activate, and active-Profile
+  deletion ordering through model application, transition notices, and reload.
+  Profile prompts and Pi adaptation stay outside.
 - **Session profile binding** — the deep module in
   `_shared/session-profile-binding.ts` that resolves one immutable binding per
   `session_start`, owns entry/handoff/marker/reload precedence and validated
@@ -82,6 +90,10 @@ extension.
 - **Plan Mode lifecycle** — the deep orchestration module that owns live Plan
   State, transitions, Profile rollback, tool projection, proposed-plan state,
   and ordering across Plan Runtime and Plan Review.
+- **Model-selection lifecycle** — the deep in-process module in
+  `ui-model-selector/` that owns session initialization decisions, interactive
+  selection ordering, Profile persistence outcomes, and context-reduction and
+  compaction policy. Pi adaptation and Session profile binding stay outside.
 
 ## Advisor tooling
 
