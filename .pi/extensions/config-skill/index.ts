@@ -11,14 +11,16 @@
  * Design notes:
  * - Tracking is commit-based per skill path on the source's `main`, mirroring
  *   how pi's own git packages pin commits (cursor/plugins has no releases).
- * - Cache clones live in `.pi/update-skill/cache/<sourceId>/`; state in
- *   `.pi/update-skill/state.json` (both gitignored). Installed skills in
- *   `.pi/skills/` stay tracked — they are the point of this repo.
+ * - State and cache are self-contained inside the extension directory:
+ *   `update-skill/state.json` and `update-skill/cache/<sourceId>/` live next
+ *   to this file (gitignored). Installed skills in `.pi/skills/` stay
+ *   tracked — they are the point of this repo.
  * - The `Git` seam keeps every flow function testable with a fake layer.
  */
 
 import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	classifyStatus,
@@ -73,16 +75,24 @@ export interface CheckAllResult {
 // Paths
 // ---------------------------------------------------------------------------
 
-export function stateDirFor(projectRoot: string): string {
-	return join(projectRoot, CONFIG_DIR_NAME, "update-skill");
+/** Directory containing this extension — the self-contained data root. */
+const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * State + cache directory: `<extension dir>/update-skill/` (state.json and
+ * cache/). Anchored to the extension itself rather than the project, so the
+ * same state and cache follow the extension wherever it is loaded from.
+ */
+export function stateDirFor(extensionDir: string = EXTENSION_DIR): string {
+	return join(extensionDir, "update-skill");
 }
 
 export function skillsDirFor(projectRoot: string): string {
 	return join(projectRoot, CONFIG_DIR_NAME, "skills");
 }
 
-export function cacheDirFor(projectRoot: string, sourceId: string): string {
-	return join(stateDirFor(projectRoot), "cache", sourceId);
+export function cacheDirFor(extensionDir: string, sourceId: string): string {
+	return join(stateDirFor(extensionDir), "cache", sourceId);
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +108,7 @@ export async function checkAll(
 	git: Git,
 	projectRoot: string,
 	state: UpdateSkillState,
+	extensionDir: string = projectRoot,
 ): Promise<CheckAllResult> {
 	const skillsDir = skillsDirFor(projectRoot);
 	const bySource = new Map<string, TrackedSkill[]>();
@@ -110,7 +121,7 @@ export async function checkAll(
 	const checks: SkillCheck[] = [];
 	let ok = true;
 	for (const [sourceId, skills] of bySource) {
-		const dir = cacheDirFor(projectRoot, sourceId);
+		const dir = cacheDirFor(extensionDir, sourceId);
 		let head: string | null = null;
 		try {
 			await git.ensureClone(dir, skills[0].url);
@@ -182,8 +193,9 @@ export async function applySkill(
 	projectRoot: string,
 	state: UpdateSkillState,
 	skill: TrackedSkill,
+	extensionDir: string = projectRoot,
 ): Promise<ApplyResult> {
-	const cache = cacheDirFor(projectRoot, skill.sourceId);
+	const cache = cacheDirFor(extensionDir, skill.sourceId);
 	const ref = `origin/${skill.branch}`;
 	await git.checkout(cache, ref);
 
@@ -197,7 +209,7 @@ export async function applySkill(
 
 	const head = await git.revParse(cache, ref);
 	setPinned(state, skill.name, head);
-	saveState(stateDirFor(projectRoot), state);
+	saveState(stateDirFor(extensionDir), state);
 
 	return { head, action: wasInstalled ? "updated" : "installed" };
 }
@@ -209,10 +221,11 @@ export function removeSkill(
 	projectRoot: string,
 	state: UpdateSkillState,
 	skill: TrackedSkill,
+	extensionDir: string = projectRoot,
 ): void {
 	rmSync(join(skillsDirFor(projectRoot), skill.name), { recursive: true, force: true });
 	unpin(state, skill.name);
-	saveState(stateDirFor(projectRoot), state);
+	saveState(stateDirFor(extensionDir), state);
 }
 
 /**
@@ -333,11 +346,12 @@ export async function runBackgroundCheck(
 	projectRoot: string,
 	state: UpdateSkillState,
 	now: number,
+	extensionDir: string = projectRoot,
 ): Promise<BackgroundCheckResult> {
-	const { checks, ok } = await checkAll(git, projectRoot, state);
+	const { checks, ok } = await checkAll(git, projectRoot, state, extensionDir);
 	if (ok) {
 		state.lastCheckedAt = new Date(now).toISOString();
-		saveState(stateDirFor(projectRoot), state);
+		saveState(stateDirFor(extensionDir), state);
 	}
 	const updates = checks
 		.filter((c) => c.status === "behind")
@@ -359,11 +373,12 @@ export async function runUpdateSkillFlow(
 	projectRoot: string,
 	state: UpdateSkillState,
 	ui: UpdateSkillUI,
+	extensionDir: string = projectRoot,
 ): Promise<void> {
-	const { checks, ok } = await checkAll(git, projectRoot, state);
+	const { checks, ok } = await checkAll(git, projectRoot, state, extensionDir);
 	if (ok) {
 		state.lastCheckedAt = new Date().toISOString();
-		saveState(stateDirFor(projectRoot), state);
+		saveState(stateDirFor(extensionDir), state);
 	} else {
 		ui.notify("update-skill: upstream check failed — showing last known status", "warning");
 	}
@@ -379,10 +394,10 @@ export async function runUpdateSkillFlow(
 
 		if (action.kind === "cancel") return;
 		if (action.kind === "check-now") {
-			const fresh = await checkAll(git, projectRoot, state);
+			const fresh = await checkAll(git, projectRoot, state, extensionDir);
 			if (fresh.ok) {
 				state.lastCheckedAt = new Date().toISOString();
-				saveState(stateDirFor(projectRoot), state);
+				saveState(stateDirFor(extensionDir), state);
 			}
 			for (const check of fresh.checks) {
 				const slot = byName.get(check.skill.name);
@@ -498,8 +513,9 @@ export async function buildSkillPreview(
 	git: Git,
 	projectRoot: string,
 	check: SkillCheck,
+	extensionDir: string = projectRoot,
 ): Promise<string> {
-	const dir = cacheDirFor(projectRoot, check.skill.sourceId);
+	const dir = cacheDirFor(extensionDir, check.skill.sourceId);
 	const ref = `origin/${check.skill.branch}`;
 	const range = `${check.pinned}..${ref}`;
 	const [log, stat, diff] = await Promise.all([
@@ -523,17 +539,19 @@ export async function buildSkillPreview(
 export default function updateSkillExtension(
 	pi: ExtensionAPI,
 	gitFactory: () => Git = createGit,
+	options: { extensionDir?: string } = {},
 ): void {
+	const extensionDir = options.extensionDir ?? EXTENSION_DIR;
 	let backgroundPromise: Promise<void> | null = null;
 
 	pi.on("session_start", (_event, ctx) => {
 		if (backgroundPromise) return; // already checking
 		backgroundPromise = (async () => {
 			const root = ctx.cwd;
-			const state = loadState(stateDirFor(root));
+			const state = loadState(stateDirFor(extensionDir));
 			if (!shouldCheck(state, Date.now(), CHECK_COOLDOWN_MS)) return;
 			try {
-				const result = await runBackgroundCheck(gitFactory(), root, state, Date.now());
+				const result = await runBackgroundCheck(gitFactory(), root, state, Date.now(), extensionDir);
 				if (result.updates.length > 0) {
 					ctx.ui.notify(
 						`update-skill: ${result.updates.length} skill${
@@ -553,7 +571,13 @@ export default function updateSkillExtension(
 	pi.registerCommand("update-skill", {
 		description: "Check and update the mattpocock + pstack skills installed from this repo",
 		handler: async (_args, ctx) => {
-			await runUpdateSkillFlow(gitFactory(), ctx.cwd, loadState(stateDirFor(ctx.cwd)), ctx.ui);
+			await runUpdateSkillFlow(
+				gitFactory(),
+				ctx.cwd,
+				loadState(stateDirFor(extensionDir)),
+				ctx.ui,
+				extensionDir,
+			);
 		},
 	});
 }

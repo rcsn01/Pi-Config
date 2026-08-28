@@ -9,7 +9,7 @@
 import { join } from "node:path";
 
 export interface SkillSource {
-	/** Source id — also the name of the cache directory under `.pi/update-skill/cache/`. */
+	/** Source id — also the name of the cache directory under the extension's `update-skill/cache/`. */
 	id: string;
 	/** Clone URL. */
 	url: string;

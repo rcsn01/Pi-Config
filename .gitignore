@@ -26,7 +26,7 @@ Deployment/
 .pi/repos/
 .pi/workflow-runs/
 .pi/workflow-approvals/
-.pi/update-skill/
+.pi/extensions/config-skill/update-skill/
 .pi/profiles/*.json
 !.pi/profiles/default.json
 
