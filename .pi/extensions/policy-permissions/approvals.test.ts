@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 const mocked = vi.hoisted(() => ({ runAutoReviewer: vi.fn() }));
 vi.mock("./guardian-runner.ts", () => mocked);
 
-import { createApprovalService } from "./approvals.ts";
+import { runGuardianReview } from "./approvals.ts";
 
 const usage = {
 	input: 10,
@@ -14,59 +14,52 @@ const usage = {
 	cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
 };
 
-describe("guardian approval persistence", () => {
-	it("persists guardian usage on the verdict entry without transcript data", async () => {
-		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe", model: "openai/guardian", usage });
-		const appendEntry = vi.fn();
-		const guardianSettings = {
+describe("Guardian review adapter", () => {
+	it("runs with profile settings and native provider registration", async () => {
+		mocked.runAutoReviewer.mockResolvedValue({
+			allowed: true,
+			reason: "safe",
+			model: "openai/guardian",
+			usage,
+		});
+		const settings = {
 			provider: "openai",
 			modelId: "guardian",
 			thinkingLevel: "high" as const,
 			contextWindow: 256_000,
 		};
-		const service = createApprovalService({
-			getMode: () => ({ mode: "auto-review", setAt: 0 }),
-			getContext: () => ({ lastUserPrompt: "Review this", precedingAssistantMessage: "I will inspect it" }),
-			getGuardianSettings: () => guardianSettings,
-			appendEntry,
-		});
+		const native = { id: "native" };
+		const ctx = {
+			modelRegistry: {
+				getRegisteredNativeProvider: vi.fn(() => native),
+				getRegisteredProviderConfig: vi.fn(),
+			},
+		} as any;
 
-		const result = await service.guardianReview({ hasUI: true } as any, "Read file", "Read /tmp/example.txt", ["external-write"]);
+		const result = await runGuardianReview(ctx, settings, "Read file", "evaluation context");
 
-		expect(result).toEqual({ allowed: true, reason: "safe" });
-		expect(mocked.runAutoReviewer).toHaveBeenCalledWith(
-			"Read file",
-			expect.stringContaining("Read /tmp/example.txt"),
-			{ settings: guardianSettings },
-		);
-		expect(appendEntry).toHaveBeenCalledWith("auto-review-verdict", {
-			title: "Read file",
+		expect(result).toEqual({
 			allowed: true,
 			reason: "safe",
 			model: "openai/guardian",
 			usage,
-			triggers: ["external-write"],
+		});
+		expect(mocked.runAutoReviewer).toHaveBeenCalledWith("Read file", "evaluation context", {
+			settings,
+			providerRegistration: { native, config: undefined },
 		});
 	});
 
-	it("omits triggers from the verdict entry when none are provided", async () => {
-		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe", model: "openai/guardian", usage });
-		const appendEntry = vi.fn();
-		const service = createApprovalService({
-			getMode: () => ({ mode: "auto-review", setAt: 0 }),
-			getContext: () => ({ lastUserPrompt: "Review this", precedingAssistantMessage: "I will inspect it" }),
-			appendEntry,
-		});
-
-		const result = await service.guardianReview({ hasUI: true } as any, "Read file", "Read /tmp/example.txt", []);
-
-		expect(result).toEqual({ allowed: true, reason: "safe" });
-		expect(appendEntry).toHaveBeenCalledWith("auto-review-verdict", {
-			title: "Read file",
-			allowed: true,
-			reason: "safe",
-			model: "openai/guardian",
-			usage,
-		});
+	it("runs without provider registration when none is available", async () => {
+		mocked.runAutoReviewer.mockResolvedValue({ allowed: false, reason: "unsafe" });
+		const ctx = {
+			modelRegistry: {
+				getRegisteredNativeProvider: vi.fn(),
+				getRegisteredProviderConfig: vi.fn(),
+			},
+		} as any;
+		expect(await runGuardianReview(ctx, undefined, "Command", "context"))
+			.toEqual({ allowed: false, reason: "unsafe" });
+		expect(mocked.runAutoReviewer).toHaveBeenCalledWith("Command", "context", { settings: undefined });
 	});
 });

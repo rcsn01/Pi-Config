@@ -132,3 +132,7 @@ extension.
 
 - **Guardian** — the in-process model review of risky tool calls
   (`policy-permissions/`); verdicts land as `auto-review-verdict` entries.
+- **Permission enforcement lifecycle** — the deep in-process module in
+  `policy-permissions/` that owns permission mode, decision ordering, prompted
+  denials, one-shot retry approvals, Guardian fallback, and verdict persistence
+  policy. Pi event capture, rendering, and concrete host calls stay outside.

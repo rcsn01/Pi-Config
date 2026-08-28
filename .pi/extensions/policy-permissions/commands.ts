@@ -2,9 +2,8 @@
  * Slash commands for the Safety Permissions extension: `/permissions`,
  * `/approve`, and `/execpolicy`, plus the `switchMode` helper.
  *
- * Commands are registered through a factory that receives a `CommandService`
- * exposing the extension's live mode state and approval tracking, so all
- * side-effecting state stays in `index.ts`.
+ * Commands are registered through a factory that adapts the permission
+ * enforcement lifecycle to Pi notifications and full-access confirmation.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -17,20 +16,13 @@ import {
 } from "../_shared/command-policy.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
 import type { ModeState } from "./mode-store.ts";
-
-export interface DeniedAction {
-	key: string;
-	title: string;
-	message: string;
-	at: number;
-}
+import type { ApprovalIssueOutcome } from "./permission-enforcement-lifecycle.ts";
 
 export interface CommandService {
 	getMode(): ModeState;
-	setModeAndPersist(mode: ModeState): void;
+	changeMode(mode: ModeState): void;
 	updateStatus(ctx: ExtensionContext): void;
-	lastDeniedAction(): DeniedAction | undefined;
-	approveLastDenied(): DeniedAction | undefined;
+	approveLastDenied(): ApprovalIssueOutcome;
 }
 
 const VALID_MODES: ApprovalMode[] = ["read-only", "default", "auto-review", "full-access"];
@@ -50,7 +42,7 @@ const MODE_LABELS: Record<ApprovalMode, string> = {
 };
 
 export function registerPermissionCommands(pi: ExtensionAPI, service: CommandService): void {
-	const { getMode, setModeAndPersist, updateStatus } = service;
+	const { getMode, changeMode, updateStatus } = service;
 
 	async function switchMode(newMode: ApprovalMode, ctx: ExtensionContext): Promise<boolean> {
 		if (newMode === "full-access" && ctx.hasUI) {
@@ -61,7 +53,7 @@ export function registerPermissionCommands(pi: ExtensionAPI, service: CommandSer
 			if (!confirmed) return false;
 		}
 		const mode = { mode: newMode, setAt: Date.now() };
-		setModeAndPersist(mode);
+		changeMode(mode);
 		updateStatus(ctx);
 		ctx.ui.notify(`Mode changed: ${mode.mode}`, "info");
 		return true;
@@ -111,13 +103,13 @@ export function registerPermissionCommands(pi: ExtensionAPI, service: CommandSer
 	pi.registerCommand("approve", {
 		description: "Allow the last denied action once, then retry it",
 		handler: async (_args, ctx) => {
-			const approved = service.approveLastDenied();
-			if (!approved) {
+			const outcome = service.approveLastDenied();
+			if (outcome.kind === "none") {
 				ctx.ui.notify("No denied action to approve.", "info");
 				return;
 			}
 			ctx.ui.notify(
-				`Approved once: ${approved.title}\nRetry the same action now. This approval will be consumed by the next matching tool call.`,
+				`Approved once: ${outcome.action.title}\nRetry the same action now. This approval will be consumed by the next matching tool call.`,
 				"info",
 			);
 		},

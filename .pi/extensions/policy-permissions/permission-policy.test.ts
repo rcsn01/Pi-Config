@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ExecPolicyConfig } from "../_shared/command-policy.ts";
-import { actionKey, evaluateToolCall } from "./permission-policy.ts";
+import { createPermissionEnforcementLifecycle } from "./permission-enforcement-lifecycle.ts";
 import type {
 	ApprovalResult,
 	EvaluateContext,
 	EvaluateDeps,
+	PermissionDecision,
 	ToolCallInput,
 } from "./policy-types.ts";
 
@@ -46,7 +47,34 @@ function makeDeps(opts: { approve?: boolean; guardianAllow?: boolean } = {}): St
 	return { deps, prompts, guardian, denied };
 }
 
-describe("evaluateToolCall", () => {
+async function evaluateToolCall(
+	input: ToolCallInput,
+	ctx: EvaluateContext,
+	deps: EvaluateDeps,
+): Promise<PermissionDecision> {
+	const lifecycle = createPermissionEnforcementLifecycle({
+		loadMode: () => ({ mode: ctx.mode, setAt: 0 }),
+		saveMode: () => {},
+		requestUserConfirmation: async (_host, title, message) =>
+			(await deps.requestApproval(title, message)).allowed,
+		runGuardianReview: (_host, title, message, triggers) =>
+			deps.guardianReview(title, message, [...triggers]),
+		persistGuardianVerdict: () => {},
+	});
+	lifecycle.synchronizeSession({ cwd: ctx.cwd, resetTransientApprovals: true });
+	const outcome = await lifecycle.evaluate(input, {
+		cwd: ctx.cwd,
+		hasUI: ctx.hasUI,
+		execPolicy: ctx.execPolicy,
+		guardianContext: { lastUserPrompt: "", precedingAssistantMessage: "" },
+		hostContext: undefined,
+	});
+	return outcome.kind === "allowed"
+		? { action: "allow" }
+		: { action: "block", reason: outcome.reason };
+}
+
+describe("permission enforcement policy through the lifecycle interface", () => {
 	// ── Read-only mode ──────────────────────────────────────────────
 	describe("read-only mode", () => {
 		it("blocks write tools", async () => {
@@ -134,7 +162,6 @@ describe("evaluateToolCall", () => {
 				s.deps,
 			);
 			expect(s.prompts[0].title).toBe("Dangerous Command");
-			expect(s.denied[0]?.title).toBe("Dangerous Command");
 			expect(d).toEqual({ action: "block", reason: "User declined." });
 		});
 
@@ -364,13 +391,5 @@ describe("evaluateToolCall", () => {
 			expect(s.prompts.length).toBe(0);
 			expect(s.guardian.length).toBe(0);
 		});
-	});
-});
-
-describe("actionKey", () => {
-	it("produces a stable key from tool name and input", () => {
-		expect(actionKey("bash", { command: "ls" })).toBe('bash:{"command":"ls"}');
-		expect(actionKey("bash", undefined)).toBe("bash:{}");
-		expect(actionKey("write", { path: "/a" })).not.toBe(actionKey("read", { path: "/a" }));
 	});
 });

@@ -50,7 +50,7 @@ function createHarness(options: { settingsPath?: string; branch?: any[] } = {}) 
 		hasUI: true,
 		mode: "tui",
 		scopedModels: [],
-		ui: { setStatus, notify: vi.fn() },
+		ui: { setStatus, notify: vi.fn(), confirm: vi.fn(async () => false) },
 		modelRegistry: { find: vi.fn() },
 		sessionManager: {
 			getBranch: () => options.branch ?? [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
@@ -70,6 +70,32 @@ describe("safety permission status", () => {
 		expect(harness.setStatus).toHaveBeenCalledWith("approval-mode", "default");
 		expect(harness.setStatus).not.toHaveBeenCalledWith("approval-mode", expect.stringContaining(" · "));
 		expect(harness.setStatus).not.toHaveBeenCalledWith("profile", expect.anything());
+	});
+});
+
+describe("permission enforcement adapter", () => {
+	it("issues and consumes one canonical one-shot approval through /approve", async () => {
+		const harness = createHarness();
+		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+		const toolCall = harness.handlers.get("tool_call")!;
+
+		expect(await toolCall(
+			{ toolName: "ddg_search", input: { query: "x", max_results: 5 } },
+			harness.ctx,
+		)).toEqual(expect.objectContaining({ block: true }));
+		await harness.commands.get("approve").handler("", harness.ctx);
+		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Approved once: Network Tool"),
+			"info",
+		);
+		expect(await toolCall(
+			{ toolName: "ddg_search", input: { max_results: 5, query: "x" } },
+			harness.ctx,
+		)).toBeUndefined();
+		expect(await toolCall(
+			{ toolName: "ddg_search", input: { query: "x", max_results: 5 } },
+			harness.ctx,
+		)).toEqual(expect.objectContaining({ block: true }));
 	});
 });
 
