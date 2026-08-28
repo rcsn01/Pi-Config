@@ -105,6 +105,10 @@ extension.
 
 ## Subagent tooling
 
+- **Subagent invocation adapter** — the Pi-facing deep module for one `subagent`
+  tool call: selects single or parallel mode, publishes immutable live snapshots,
+  formats final text and details, and applies one failure rule. Child execution
+  stays in the runner; scheduling stays in the Parallel subagent batch.
 - **Parallel subagent batch** — one ordered, bounded-concurrency execution of
   subagent tasks. The deep module owns validation, launch resolution, scheduling,
   and immutable task-state snapshots; Pi-specific rendering stays in its adapter.
