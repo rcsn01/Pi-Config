@@ -9,15 +9,13 @@ import {
 } from "../_shared/settings-document.ts";
 import {
 	CONFIG_PROFILES_KEY,
-	PI_DIRECTORY,
-	PROFILES_DIRECTORY,
-	PROJECT_SETTINGS_PATH,
 	parseActiveProfileName,
 	profilePath as resolveProfilePath,
+	profilesDirectoryFor,
 	validateProfileName,
 } from "../_shared/profile-document.ts";
 
-export { CONFIG_PROFILES_KEY, PI_DIRECTORY, PROFILES_DIRECTORY, PROJECT_SETTINGS_PATH, validateProfileName } from "../_shared/profile-document.ts";
+export { CONFIG_PROFILES_KEY, validateProfileName } from "../_shared/profile-document.ts";
 
 export interface ProfileSwitchResult {
 	changed: boolean;
@@ -60,11 +58,11 @@ function withActiveProfile(document: Record<string, unknown>, name: string): Rec
 }
 
 export function createProfileStore(options: {
-	settingsPath?: string;
+	settingsPath: string;
 	profilesDirectory?: string;
-} = {}): ProfileStore {
-	const settingsPath = options.settingsPath ?? PROJECT_SETTINGS_PATH;
-	const profilesDirectory = options.profilesDirectory ?? PROFILES_DIRECTORY;
+}): ProfileStore {
+	const { settingsPath } = options;
+	const profilesDirectory = options.profilesDirectory ?? profilesDirectoryFor(settingsPath);
 	const profilePath = (name: string) => resolveProfilePath(profilesDirectory, name);
 
 	return {

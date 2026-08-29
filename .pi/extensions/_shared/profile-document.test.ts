@@ -6,6 +6,7 @@ import {
 	CONFIG_PROFILES_ENTRY_TYPE,
 	parseActiveProfileName,
 	profilePath,
+	profilesDirectoryFor,
 	readActiveProfileName,
 	sessionProfileName,
 	validateProfileName,
@@ -62,6 +63,10 @@ describe("Profile document helpers", () => {
 		expect(sessionProfileName([entry("default"), { type: "custom", customType: "other", data: { active: "x" } }]))
 			.toBe("default");
 		expect(sessionProfileName([entry("../bad")])).toBeUndefined();
+	});
+
+	it("derives the default Profile directory from the Settings document", () => {
+		expect(profilesDirectoryFor("/project/.pi/settings.json")).toBe("/project/.pi/profiles");
 	});
 
 	it("builds Profile paths from validated names", () => {

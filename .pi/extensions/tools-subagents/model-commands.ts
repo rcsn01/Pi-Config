@@ -18,7 +18,7 @@ import {
 	setAllThinkingAssignments,
 	splitModelThinkingSetting,
 	THINKING_LEVELS,
-	subagentConfig,
+	getDefaultSubagentConfig,
 	type ModelConfiguration,
 	type SubagentConfigStore,
 	type SubagentThinkingLevel,
@@ -34,7 +34,7 @@ export interface ModelCommandDependencies {
 
 export function createSubagentsCommand(dependencies: ModelCommandDependencies = {}) {
 	const registry = dependencies.registry ?? agentRegistry;
-	const configStore = dependencies.config ?? subagentConfig;
+	const configStore = dependencies.config ?? getDefaultSubagentConfig();
 	const SUBAGENT_MODEL_USAGE = [
 		"Usage:",
 		"  /subagents",

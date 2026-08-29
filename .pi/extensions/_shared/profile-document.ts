@@ -1,15 +1,14 @@
 import { readFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
-import { PROJECT_SETTINGS_PATH } from "./settings-document.ts";
-
 /** Top-level settings.json key holding the active profile marker. */
 export const CONFIG_PROFILES_KEY = "configProfiles";
 /** Custom session entry type recording the session's profile name. */
 export const CONFIG_PROFILES_ENTRY_TYPE = "configProfiles";
 
-export const PI_DIRECTORY = dirname(PROJECT_SETTINGS_PATH);
-export { PROJECT_SETTINGS_PATH } from "./settings-document.ts";
-export const PROFILES_DIRECTORY = join(PI_DIRECTORY, "profiles");
+/** Return the default Profile directory adjacent to a Settings document. */
+export function profilesDirectoryFor(settingsPath: string): string {
+	return join(dirname(settingsPath), "profiles");
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);

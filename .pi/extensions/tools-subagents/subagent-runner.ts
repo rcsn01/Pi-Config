@@ -19,7 +19,7 @@ import { agentRegistry, type AgentRegistry } from "./agent-registry.ts";
 import {
 	appendChildModelArgument,
 	appendChildThinkingArgument,
-	subagentConfig,
+	getDefaultSubagentConfig,
 	type ResolvedLaunchConfiguration,
 	type SubagentConfigStore,
 } from "./config.ts";
@@ -245,7 +245,7 @@ async function executeSubagent(
 		? agentOrOptions as RunSubagentOptions
 		: { agent: agentOrOptions as AgentConfig, task: taskArg, cwd: cwdArg || process.cwd(), signal: signalArg, onUpdate: onUpdateArg };
 	const registry = dependencies.registry ?? agentRegistry;
-	const config = dependencies.config ?? subagentConfig;
+	const config = dependencies.config ?? getDefaultSubagentConfig();
 	const agent = registry.resolve(options.agent);
 	const task = options.task ?? options.prompt ?? "";
 	const launch = config.resolveLaunch(agent, options.model, options.thinkingLevel);

@@ -74,7 +74,9 @@ extension.
 ## Settings & profiles
 
 - **Settings document** — the `.pi/settings.json` document and the shared
-  read/mutate machinery in `_shared/settings-document.ts`.
+  read/mutate machinery in `_shared/settings-document.ts`; its canonical path
+  is composed at extension entry points and passed through their dependency
+  interfaces rather than rediscovered by leaf stores.
 - **Profile** — a full settings document in `.pi/profiles/<name>.json`;
   switching replaces the active document.
 - **Profile transition lifecycle** — the deep in-process module in
@@ -86,7 +88,9 @@ extension.
   `session_start`, owns entry/handoff/marker/reload precedence and validated
   Profile persistence, supplies the concrete Settings document path, applies
   Profile-aware adapter paths before stable initialization, isolates adapter
-  failures, and performs reverse cleanup.
+  failures, and performs reverse cleanup. Registration accepts the required
+  Settings document path plus an optional custom Profiles directory; when the
+  latter is omitted, it is derived next to the Settings document.
 - **Plan Mode lifecycle** — the deep orchestration module that owns live Plan
   State, transitions, Profile rollback, tool projection, proposed-plan state,
   and ordering across Plan Runtime and Plan Review.

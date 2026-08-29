@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import * as config from "./config.ts";
 import { createParallelSubagentBatch } from "./parallel-batch.ts";
 import { agent, agentResult, memoryConfigStore, memoryRegistry } from "./test-harness.ts";
 
@@ -9,6 +10,15 @@ function deferred<T>() {
 }
 
 describe("parallel subagent batch", () => {
+	it("defers standalone configuration resolution until batch execution", () => {
+		const getDefaultSubagentConfig = vi.spyOn(config, "getDefaultSubagentConfig");
+
+		createParallelSubagentBatch();
+
+		expect(getDefaultSubagentConfig).not.toHaveBeenCalled();
+		getDefaultSubagentConfig.mockRestore();
+	});
+
 	it("owns bounded execution, ordered results, task options, and stable snapshots", async () => {
 		const registry = memoryRegistry([agent({ name: "slow" }), agent({ name: "fast" })]);
 		const gates = { slow: deferred<void>(), fast: deferred<void>() };

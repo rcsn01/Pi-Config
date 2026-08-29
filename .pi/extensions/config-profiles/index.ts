@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { resolve } from "node:path";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import { applySelectionFromDocument } from "../_shared/model-selection.ts";
 import {
@@ -7,6 +8,7 @@ import {
 } from "../_shared/profile-document.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
 import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
+import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 import {
 	createAndActivateProfile,
@@ -19,6 +21,7 @@ import {
 } from "./profile-transition-lifecycle.ts";
 
 export interface ConfigProfilesDependencies {
+	settingsPath?: string;
 	store?: ProfileStore;
 	output?: (message: string) => void;
 	nativeDefaults?: PiNativeDefaults;
@@ -69,7 +72,15 @@ function profileListMessage(store: ProfileStore, active: string | undefined): st
 
 export function createConfigProfilesExtension(dependencies: ConfigProfilesDependencies = {}) {
 	return function configProfilesExtension(pi: ExtensionAPI): void {
-		const store = dependencies.store ?? createProfileStore();
+		const requestedSettingsPath = dependencies.settingsPath;
+		const store = dependencies.store ?? createProfileStore({
+			settingsPath: requestedSettingsPath ?? PROJECT_SETTINGS_PATH,
+		});
+		if (requestedSettingsPath !== undefined && resolve(requestedSettingsPath) !== resolve(store.settingsPath)) {
+			throw new Error(
+				`Config profiles settingsPath ${requestedSettingsPath} does not match the injected ProfileStore path ${store.settingsPath}.`,
+			);
+		}
 		const output = dependencies.output ?? console.log;
 
 		let sessionProfile: string | undefined;

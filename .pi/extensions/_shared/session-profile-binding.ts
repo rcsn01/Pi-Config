@@ -6,6 +6,7 @@ import type {
 import { resolve } from "node:path";
 import {
 	profilePath,
+	profilesDirectoryFor,
 	readActiveProfileName,
 	sessionProfileName,
 	validateProfileName,
@@ -60,7 +61,7 @@ export type SessionProfileAdapter = ConfigProfilesSessionProfileAdapter | Ordina
 
 export interface SessionProfileBindingOptions {
 	readonly settingsPath: string;
-	readonly profilesDirectory: string;
+	readonly profilesDirectory?: string;
 }
 
 export interface SessionProfileBindingRegistration {
@@ -252,7 +253,7 @@ function canonicalPathOptions(options: SessionProfileBindingOptions): {
 	pathKey: string;
 } {
 	const settingsPath = resolve(options.settingsPath);
-	const profilesDirectory = resolve(options.profilesDirectory);
+	const profilesDirectory = resolve(options.profilesDirectory ?? profilesDirectoryFor(options.settingsPath));
 	return {
 		settingsPath,
 		profilesDirectory,

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PROFILES_DIRECTORY } from "../_shared/profile-document.ts";
+import { profilesDirectoryFor } from "../_shared/profile-document.ts";
 import { requireSubagentService } from "../_shared/subagent-service.ts";
 import * as subagentExports from "./index.ts";
 import subagentsExtension, {
@@ -15,20 +15,6 @@ import subagentsExtension, {
 } from "./index.ts";
 import { agent, agentResult, memoryConfigStore, memoryRegistry } from "./test-harness.ts";
 
-// The extension hardcodes PROJECT_SETTINGS_PATH; redirect it to a per-test
-// fixture so the session profile binding is exercised hermetically.
-const profileFixture = vi.hoisted(() => ({ settingsPath: "" }));
-
-vi.mock("./settings-store.ts", async (importOriginal) => {
-	const original = await importOriginal<typeof import("./settings-store.ts")>();
-	return {
-		...original,
-		get PROJECT_SETTINGS_PATH() {
-			return profileFixture.settingsPath;
-		},
-	};
-});
-
 const roots: string[] = [];
 
 afterEach(() => {
@@ -39,7 +25,7 @@ const BUNDLED_AGENTS = ["default", "explorer", "judge", "researcher", "worker"];
 
 function extensionHarness(
 	runSingle = vi.fn(async (options: any) => agentResult({ agent: options.agent.name, task: options.task })),
-	options: { config?: any } = {},
+	options: { config?: any; settingsPath?: string; alignConfigPath?: boolean; injectConfig?: boolean } = {},
 ) {
 	const handlers = new Map<string, any>();
 	const commands = new Map<string, any>();
@@ -47,6 +33,10 @@ function extensionHarness(
 	const registrations: string[] = [];
 	const registry = memoryRegistry([agent(), agent({ name: "explorer", description: "Explorer" })]);
 	const config = options.config ?? memoryConfigStore({ maxConcurrency: 2, defaultThinkingLevel: "minimal" });
+	const injectedConfig = options.injectConfig === false ? undefined : config;
+	if (options.settingsPath !== undefined && injectedConfig !== undefined && options.alignConfigPath !== false) {
+		injectedConfig.setSettingsPath(options.settingsPath);
+	}
 	const pi = {
 		on: (event: string, handler: any) => {
 			registrations.push(`event:${event}`);
@@ -62,8 +52,9 @@ function extensionHarness(
 		},
 	};
 	createSubagentsExtension({
+		settingsPath: options.settingsPath,
 		registry,
-		config,
+		...(injectedConfig ? { config: injectedConfig } : {}),
 		runSingle: runSingle as any,
 	})(pi as any);
 	const ctx = {
@@ -75,10 +66,36 @@ function extensionHarness(
 		modelRegistry: { refresh: vi.fn(), getAvailable: vi.fn(() => []), find: vi.fn() },
 		scopedModels: [],
 	} as any;
-	return { handlers, commands, tools, registrations, registry, config, runSingle, ctx };
+	return { handlers, commands, tools, registrations, registry, config: injectedConfig ?? config, runSingle, ctx };
 }
 
 describe("subagent extension interfaces", () => {
+	it("rejects a settings path that conflicts with an injected configuration", () => {
+		expect(() => extensionHarness(undefined, {
+			settingsPath: "/other-project/settings.json",
+			alignConfigPath: false,
+		})).toThrow(/does not match the injected configuration path/);
+	});
+
+	it("accepts normalized-equivalent settings paths with an injected configuration", () => {
+		expect(() => extensionHarness(undefined, {
+			settingsPath: "/tmp/../config.json",
+			alignConfigPath: false,
+		})).not.toThrow();
+	});
+
+	it("creates its default configuration store from the extension settings path", async () => {
+		const root = mkdtempSync(join(tmpdir(), "subagents-default-config-"));
+		roots.push(root);
+		const settingsPath = join(root, "settings.json");
+		mkdirSync(join(root, "profiles"));
+		writeFileSync(settingsPath, JSON.stringify({ subagents: { maxConcurrency: 0 } }));
+		const harness = extensionHarness(undefined, { settingsPath, injectConfig: false });
+
+		await expect(harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx))
+			.rejects.toThrow(/maxConcurrency/);
+	});
+
 	it("preserves public entrypoint, runner, and registration exports", () => {
 		expect(subagentsExtension).toEqual(expect.any(Function));
 		expect(createSubagentsExtension).toEqual(expect.any(Function));
@@ -205,14 +222,9 @@ describe("subagent tool adaptation", () => {
 			const settingsPath = join(root, "settings.json");
 			mkdirSync(join(root, "profiles"));
 			writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
-			profileFixture.settingsPath = settingsPath;
-			try {
-				const harness = extensionHarness();
-				await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
-				expect(harness.config.configPath).toBe(join(PROFILES_DIRECTORY, "focused.json"));
-			} finally {
-				profileFixture.settingsPath = "";
-			}
+			const harness = extensionHarness(undefined, { settingsPath });
+			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+			expect(harness.config.configPath).toBe(join(profilesDirectoryFor(settingsPath), "focused.json"));
 		});
 
 		it("keeps the config store on settings.json when no profile is bound", async () => {
@@ -221,14 +233,9 @@ describe("subagent tool adaptation", () => {
 			const settingsPath = join(root, "settings.json");
 			mkdirSync(join(root, "profiles"));
 			writeFileSync(settingsPath, JSON.stringify({}));
-			profileFixture.settingsPath = settingsPath;
-			try {
-				const harness = extensionHarness();
-				await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
-				expect(harness.config.configPath).toBe(settingsPath);
-			} finally {
-				profileFixture.settingsPath = "";
-			}
+			const harness = extensionHarness(undefined, { settingsPath });
+			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+			expect(harness.config.configPath).toBe(settingsPath);
 		});
 
 		it("loads profile-specific maxConcurrency after applying the session path", async () => {
@@ -237,7 +244,6 @@ describe("subagent tool adaptation", () => {
 			const settingsPath = join(root, "settings.json");
 			mkdirSync(join(root, "profiles"));
 			writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
-			profileFixture.settingsPath = settingsPath;
 
 			const config = memoryConfigStore({ maxConcurrency: 2, defaultThinkingLevel: "minimal" });
 			const originalSetSettingsPath = config.setSettingsPath;
@@ -256,23 +262,19 @@ describe("subagent tool adaptation", () => {
 				active--;
 				return agentResult({ agent: options.agent.name, task: options.task });
 			});
-			try {
-				const harness = extensionHarness(runSingle, { config });
-				await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
-				const execution = harness.tools.get("subagent").execute("call", {
-					tasks: Array.from({ length: 8 }, (_, index) => ({
-						agent: index % 2 === 0 ? "worker" : "explorer",
-						task: `task ${index}`,
-					})),
-				}, undefined, undefined, harness.ctx);
+			const harness = extensionHarness(runSingle, { config, settingsPath });
+			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+			const execution = harness.tools.get("subagent").execute("call", {
+				tasks: Array.from({ length: 8 }, (_, index) => ({
+					agent: index % 2 === 0 ? "worker" : "explorer",
+					task: `task ${index}`,
+				})),
+			}, undefined, undefined, harness.ctx);
 
-				await vi.waitFor(() => expect(peak).toBe(7));
-				release();
-				await execution;
-				expect(peak).toBe(7);
-			} finally {
-				profileFixture.settingsPath = "";
-			}
+			await vi.waitFor(() => expect(peak).toBe(7));
+			release();
+			await execution;
+			expect(peak).toBe(7);
 		});
 	});
 });

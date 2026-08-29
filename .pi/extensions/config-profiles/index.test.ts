@@ -2,10 +2,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { createConfigProfilesExtension } from "./index.ts";
-import type { ProfileStore } from "./profile-store.ts";
+import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 
 interface HarnessOptions {
+	settingsPath?: string;
+	normalizedSettingsPath?: boolean;
 	profiles?: string[];
 	active?: string;
 	switchError?: Error;
@@ -103,7 +106,15 @@ function createHarness(options: HarnessOptions = {}) {
 		setThinkingLevel,
 		appendEntry,
 	};
-	createConfigProfilesExtension({ store, output, nativeDefaults: options.nativeDefaults })(pi as any);
+	const requestedSettingsPath = options.normalizedSettingsPath
+		? `${settingsPath}/./`
+		: options.settingsPath;
+	createConfigProfilesExtension({
+		settingsPath: requestedSettingsPath,
+		store,
+		output,
+		nativeDefaults: options.nativeDefaults,
+	})(pi as any);
 	const emit = async (event: string, reason = "startup") =>
 		handlers.get(event)?.({ type: event, reason }, ctx);
 	const runProfileCommand = async (args: string, context = ctx) => {
@@ -147,6 +158,62 @@ afterEach(() => {
 });
 
 describe("config profiles extension", () => {
+	it("rejects a settings path that conflicts with an injected ProfileStore", () => {
+		expect(() => createHarness({ settingsPath: join("/other-project", "settings.json") }))
+			.toThrow(/does not match the injected ProfileStore path/);
+	});
+
+	it("accepts a normalized-equivalent settings path with an injected ProfileStore", () => {
+		expect(() => createHarness({ normalizedSettingsPath: true })).not.toThrow();
+	});
+
+	it("coordinates an injected ProfileStore using a custom directory", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-config-profiles-custom-"));
+		tempDirectories.push(root);
+		const settingsPath = join(root, "settings.json");
+		const profilesDirectory = join(root, "custom-profiles");
+		mkdirSync(profilesDirectory);
+		writeFileSync(settingsPath, `${JSON.stringify({ configProfiles: { active: "focused" } })}\n`);
+		writeFileSync(join(profilesDirectory, "focused.json"), "{}\n");
+		const store = createProfileStore({ settingsPath, profilesDirectory });
+		const handlers = new Map<string, (event: any, ctx: any) => unknown>();
+		const appendEntry = vi.fn();
+		const pi = {
+			on: (event: string, handler: (event: any, ctx: any) => unknown) => handlers.set(event, handler),
+			registerCommand: vi.fn(),
+			setModel: vi.fn(),
+			setThinkingLevel: vi.fn(),
+			appendEntry,
+		};
+		createConfigProfilesExtension({ store, output: vi.fn() })(pi as any);
+		const initialize = vi.fn();
+		const registration = registerSessionProfileBinding(
+			{ settingsPath, profilesDirectory },
+			{ name: "tools-advisor", initialize },
+		);
+		const ctx = {
+			hasUI: true,
+			ui: { notify: vi.fn(), setStatus: vi.fn() },
+			sessionManager: { getBranch: vi.fn(() => []) },
+		} as any;
+		const event = { type: "session_start", reason: "startup" } as any;
+		const shutdown = { type: "session_shutdown", reason: "quit" } as any;
+
+		try {
+			await registration.start(event, ctx);
+			expect(appendEntry).toHaveBeenCalledWith("configProfiles", { active: "focused" });
+			expect(initialize).toHaveBeenCalledWith(
+				expect.objectContaining({ settingsPath: join(profilesDirectory, "focused.json") }),
+				event,
+				ctx,
+			);
+		} finally {
+			await registration.stop(shutdown, ctx).catch(() => {});
+			registration.unregister();
+			await handlers.get("session_shutdown")?.(shutdown, ctx);
+		}
+	});
+
 	it("records and publishes the active profile on startup", async () => {
 		const harness = createHarness({ active: "default" });
 		await harness.emit("session_start", "startup");

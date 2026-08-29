@@ -9,7 +9,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { reapplyThinkingBorder } from "../_shared/editor-border.ts";
-import { PROFILES_DIRECTORY } from "../_shared/profile-document.ts";
 import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
 	installModelCommandHandler,
@@ -22,9 +21,9 @@ import {
 } from "../_shared/model-selection.ts";
 import {
 	createProjectSettingsStore,
-	PROJECT_SETTINGS_PATH,
 	type ProjectSettingsStore,
 } from "../_shared/model-selection-store.ts";
+import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { formatTokenCount, pickModelConfiguration } from "../_shared/model-picker.ts";
 import {
 	createModelSelectionLifecycle,
@@ -120,14 +119,21 @@ function createPiModelSelectionLifecycleAdapter(
 	};
 }
 
+export interface ModelSelectorExtensionDependencies {
+	settingsPath?: string;
+	settingsStore?: ProjectSettingsStore;
+}
+
 export function createModelSelectorExtension(
-	settingsStore: ProjectSettingsStore = createProjectSettingsStore(),
+	dependencies: ModelSelectorExtensionDependencies = {},
 ) {
+	const settingsPath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
 	return function modelSelectorExtension(pi: ExtensionAPI) {
+		const settingsStore = dependencies.settingsStore ?? createProjectSettingsStore(settingsPath);
 		let uninstallModelCommandHandler: (() => void) | undefined;
 
 		const profileInitialization = registerSessionProfileBinding(
-			{ settingsPath: PROJECT_SETTINGS_PATH, profilesDirectory: PROFILES_DIRECTORY },
+			{ settingsPath },
 			{
 				name: "ui-model-selector",
 				applyPath: (binding) => settingsStore.setPath(binding.settingsPath),

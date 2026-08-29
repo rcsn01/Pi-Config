@@ -13,7 +13,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
 	mutateSettingsDocument,
-	PROJECT_SETTINGS_PATH,
 	readSettingsDocument,
 } from "../_shared/settings-document.ts";
 import {
@@ -69,7 +68,7 @@ export function profileFromCurrentSession(
  * session's settings document (a profile file when one is bound, else
  * settings.json).
  */
-export function createPlanModeProfileStore(path = PROJECT_SETTINGS_PATH): PlanModeProfileStore {
+export function createPlanModeProfileStore(path: string): PlanModeProfileStore {
 	let currentPath = path;
 	return {
 		async load() {

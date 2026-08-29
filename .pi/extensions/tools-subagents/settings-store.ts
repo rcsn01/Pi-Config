@@ -1,11 +1,8 @@
 import {
 	isRecord,
 	mutateSettingsDocument,
-	PROJECT_SETTINGS_PATH,
 	readSettingsDocument,
 } from "../_shared/settings-document.ts";
-
-export { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 
 /** Top-level settings.json key under which all subagent configuration is stored. */
 export const SUBAGENTS_SETTINGS_KEY = "subagents";
@@ -27,7 +24,7 @@ export interface SubagentsSettingsStore {
 	setSettingsPath(path: string): void;
 }
 
-export function createSubagentsSettingsStore(path = PROJECT_SETTINGS_PATH): SubagentsSettingsStore {
+export function createSubagentsSettingsStore(path: string): SubagentsSettingsStore {
 	let settingsPath = path;
 
 	function readDocument(): Record<string, unknown> {

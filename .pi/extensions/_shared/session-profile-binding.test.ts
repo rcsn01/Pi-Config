@@ -92,7 +92,7 @@ function testAdapter(
 }
 
 function register(
-	paths: { settingsPath: string; profilesDirectory: string },
+	paths: { settingsPath: string; profilesDirectory?: string },
 	adapter: SessionProfileAdapter,
 ): SessionProfileBindingRegistration {
 	const registration = registerSessionProfileBinding(paths, adapter);
@@ -111,6 +111,19 @@ afterEach(async () => {
 });
 
 describe("Session profile binding", () => {
+	it("derives the Profile directory when it is omitted", async () => {
+		const paths = fixture("focused");
+		let observed: SessionProfileBinding | undefined;
+		const registration = register({ settingsPath: paths.settingsPath }, testAdapter("tools-advisor", [], {
+			initialize: (binding) => { observed = binding; },
+		}));
+		const { event, ctx } = lifecycle();
+
+		await registration.start(event, ctx);
+
+		expect(observed?.settingsPath).toBe(join(paths.profilesDirectory, "focused.json"));
+	});
+
 	it.each(["startup", "resume", "fork"] as const)("prefers the session entry on %s", async (reason) => {
 		const paths = fixture("marker");
 		let observed: SessionProfileBinding | undefined;

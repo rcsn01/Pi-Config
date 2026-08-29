@@ -13,7 +13,7 @@ function fixture(settings: Record<string, unknown> = { configProfiles: { active:
 	const settingsPath = join(root, "settings.json");
 	mkdirSync(profilesDirectory);
 	writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
-	const store = createProfileStore({ settingsPath, profilesDirectory });
+	const store = createProfileStore({ settingsPath });
 	const writeProfile = (name: string, value: unknown) =>
 		writeFileSync(join(profilesDirectory, `${name}.json`), `${JSON.stringify(value, null, 2)}\n`);
 	const read = (path: string) => JSON.parse(readFileSync(path, "utf-8"));
@@ -25,6 +25,19 @@ afterEach(() => {
 });
 
 describe("profile store", () => {
+	it("preserves an explicitly supplied custom Profile directory", () => {
+		const root = mkdtempSync(join(tmpdir(), "config-profiles-custom-"));
+		temporaryDirectories.push(root);
+		const settingsPath = join(root, "settings.json");
+		const profilesDirectory = join(root, "custom-profiles");
+		mkdirSync(profilesDirectory);
+		writeFileSync(settingsPath, "{}\n");
+
+		const store = createProfileStore({ settingsPath, profilesDirectory });
+
+		expect(store.profilesDirectory).toBe(profilesDirectory);
+	});
+
 	it("discovers and sorts top-level JSON profile filenames", () => {
 		const { profilesDirectory, store, writeProfile } = fixture();
 		writeProfile("zeta", {});

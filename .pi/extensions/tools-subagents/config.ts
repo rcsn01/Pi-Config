@@ -3,9 +3,9 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import type { AgentConfig } from "../_shared/subagent-service.ts";
+import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import {
 	createSubagentsSettingsStore,
-	PROJECT_SETTINGS_PATH,
 	SUBAGENTS_SETTINGS_KEY,
 	type SubagentsSettingsStore,
 } from "./settings-store.ts";
@@ -425,7 +425,8 @@ export interface SubagentConfigStoreOptions {
 }
 
 export function createSubagentConfigStore(options: SubagentConfigStoreOptions = {}): SubagentConfigStore {
-	const settingsStore: SubagentsSettingsStore = createSubagentsSettingsStore(options.settingsPath);
+	const settingsPath = options.settingsPath ?? PROJECT_SETTINGS_PATH;
+	const settingsStore: SubagentsSettingsStore = createSubagentsSettingsStore(settingsPath);
 	const legacyPath = options.legacyConfigPath;
 	let activeMainModel: string | undefined;
 
@@ -507,10 +508,16 @@ export function createSubagentConfigStore(options: SubagentConfigStoreOptions = 
 
 const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const LEGACY_CONFIG_PATH = path.join(EXT_DIR, "config.json");
-export const subagentConfig = createSubagentConfigStore({
-	settingsPath: PROJECT_SETTINGS_PATH,
-	legacyConfigPath: LEGACY_CONFIG_PATH,
-});
+
+let defaultSubagentConfig: SubagentConfigStore | undefined;
+
+/** Lazily preserve the standalone helper default without binding Settings at module load. */
+export function getDefaultSubagentConfig(): SubagentConfigStore {
+	return defaultSubagentConfig ??= createSubagentConfigStore({
+		settingsPath: PROJECT_SETTINGS_PATH,
+		legacyConfigPath: LEGACY_CONFIG_PATH,
+	});
+}
 
 /**
  * One-time migration: copy a legacy config.json into the target settings

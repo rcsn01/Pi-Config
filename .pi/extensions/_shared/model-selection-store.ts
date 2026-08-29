@@ -1,6 +1,5 @@
 import {
 	mutateSettingsDocument,
-	PROJECT_SETTINGS_PATH,
 	readSettingsDocument as readRawDocument,
 } from "./settings-document.ts";
 import {
@@ -10,8 +9,6 @@ import {
 	type ModelSelectionSettings,
 	type ProjectModelPreferences,
 } from "./model-selection.ts";
-
-export { PROJECT_SETTINGS_PATH } from "./settings-document.ts";
 
 export interface ProjectSettingsStore {
 	load(): Promise<ProjectModelPreferences>;
@@ -26,7 +23,7 @@ export interface ProjectSettingsStore {
  * Compaction policy belongs to the auto-compact extension; this store never
  * writes pi's native `compaction` settings.
  */
-export function createProjectSettingsStore(path = PROJECT_SETTINGS_PATH): ProjectSettingsStore {
+export function createProjectSettingsStore(path: string): ProjectSettingsStore {
 	let currentPath = path;
 
 	return {

@@ -6,8 +6,8 @@ import type {
 	SubagentProgressEvent,
 } from "../_shared/subagent-service.ts";
 import { agentRegistry, type AgentRegistry } from "./agent-registry.ts";
-import { subagentConfig, type SubagentConfigStore } from "./config.ts";
-import { runSubagent } from "./subagent-runner.ts";
+import { getDefaultSubagentConfig, type SubagentConfigStore } from "./config.ts";
+import { createSubagentRunner } from "./subagent-runner.ts";
 
 export const DEFAULT_MAX_CONCURRENCY = 4;
 
@@ -107,14 +107,19 @@ async function runOrdered<T, R>(
 
 export function createParallelSubagentBatch(dependencies: ParallelBatchDependencies = {}): ParallelSubagentBatch {
 	const registry = dependencies.registry ?? agentRegistry;
-	const config = dependencies.config ?? subagentConfig;
-	const runSingle = dependencies.runSingle ?? ((options: RunSubagentOptions) => runSubagent(options));
+	const getConfig = () => dependencies.config ?? getDefaultSubagentConfig();
+	let fallbackRunSingle: ((options: RunSubagentOptions) => Promise<AgentResult>) | undefined;
+	const runSingle = dependencies.runSingle ?? ((options: RunSubagentOptions) => {
+		fallbackRunSingle ??= createSubagentRunner({ registry, config: getConfig() });
+		return fallbackRunSingle(options);
+	});
 
 	async function execute(
 		tasks: readonly ParallelBatchTask[],
 		options: RunParallelBatchOptions,
 		compatibility: CompatibilityCallbacks = {},
 	): Promise<AgentResult[]> {
+		const config = getConfig();
 		const availableAgents = registry.load();
 		const available = availableAgents.map((agent) => agent.name).join(", ") || "none";
 		const agentsByName = new Map<string, AgentConfig>(availableAgents.map((agent) => [agent.name, agent]));
