@@ -21,6 +21,7 @@ import type {
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
+import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { UI_GLYPHS } from "../_shared/ui-style.ts";
 import {
 	applyModelSelection,
@@ -74,6 +75,7 @@ import {
 } from "./plan-workspace.ts";
 
 export interface PlanModeDependencies {
+	settingsPath?: string;
 	profileStore?: PlanModeProfileStore;
 	nativeDefaults?: PiNativeDefaults;
 	normalDefaultsStore?: NormalDefaultsStore;
@@ -311,7 +313,9 @@ export function createPlanLifecycle(
 
 	const workspaceFactory = dependencies.createWorkspace ?? createPlanWorkspace;
 	const sandboxFactory = dependencies.createSandbox ?? createPlanSandboxController;
-	const profileStore = dependencies.profileStore ?? createPlanModeProfileStore();
+	const profileStore = dependencies.profileStore ?? createPlanModeProfileStore(
+		dependencies.settingsPath ?? PROJECT_SETTINGS_PATH,
+	);
 	const normalDefaultsStore = dependencies.normalDefaultsStore ?? createNormalDefaultsStore();
 	const waitForNativePersistence = dependencies.waitForNativePersistence ??
 		(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));

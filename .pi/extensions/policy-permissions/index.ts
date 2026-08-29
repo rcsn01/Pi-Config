@@ -17,7 +17,6 @@
  * lifecycle interface.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { dirname, join } from "node:path";
 import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { formatTokenCount, modelKey, pickModelConfiguration } from "../_shared/model-picker.ts";
 import { resolveModelContext } from "../_shared/model-selection.ts";
@@ -67,7 +66,6 @@ function installSafetyPermissions(
 	dependencies: SafetyPermissionsDependencies,
 ): void {
 	const settingsFilePath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
-	const profilesDirectory = join(dirname(settingsFilePath), "profiles");
 	let guardianSettingsPath = settingsFilePath;
 	let guardianSettings: GuardianSettings | undefined;
 	let profileBindingGeneration = 0;
@@ -117,7 +115,7 @@ function installSafetyPermissions(
 	};
 
 	const profileInitialization = registerSessionProfileBinding(
-		{ settingsPath: settingsFilePath, profilesDirectory },
+		{ settingsPath: settingsFilePath },
 		{
 			name: "policy-permissions",
 			applyPath: (binding) => {

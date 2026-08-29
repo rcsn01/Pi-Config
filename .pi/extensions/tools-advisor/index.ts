@@ -1,4 +1,3 @@
-import { dirname, join } from "node:path";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
@@ -62,8 +61,6 @@ export type { AdvisorToolDetails, AdvisorToolResult } from "./outcome.ts";
 export type { AdvisorSettings } from "./runner.ts";
 
 export const DEFAULT_MAX_TOKENS = 2048;
-
-export { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 
 export interface AdvisorExtensionDependencies {
 	settingsPath?: string;
@@ -206,7 +203,7 @@ export function parseAdvisorSettings(document: unknown): AdvisorSettings {
 	};
 }
 
-export function loadAdvisorSettings(path = PROJECT_SETTINGS_PATH): AdvisorSettings {
+export function loadAdvisorSettings(path: string): AdvisorSettings {
 	return parseAdvisorSettings(readSettingsDocument(path));
 }
 
@@ -356,7 +353,6 @@ export function formatConfiguredAdvisorStatus(
 export function createAdvisorExtension(dependencies: AdvisorExtensionDependencies = {}) {
 	return function advisorExtensionFactory(pi: ExtensionAPI): void {
 		const settingsFilePath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
-		const profilesDirectory = join(dirname(settingsFilePath), "profiles");
 		// The document read/written by loadForSession and the /advisor commands;
 		// repointed at the session's profile file on session start.
 		let settingsPath = settingsFilePath;
@@ -401,7 +397,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 		};
 
 		const profileInitialization = registerSessionProfileBinding(
-			{ settingsPath: settingsFilePath, profilesDirectory },
+			{ settingsPath: settingsFilePath },
 			{
 				name: "tools-advisor",
 				applyPath: (binding) => {

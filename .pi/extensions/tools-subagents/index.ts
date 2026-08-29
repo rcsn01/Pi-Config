@@ -3,6 +3,7 @@
  * Supports single and parallel execution with verbal result handoff.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { resolve } from "node:path";
 import { Type } from "typebox";
 import { registerToolErrorHandler } from "../_shared/tool-result-ui.ts";
 import {
@@ -15,8 +16,8 @@ import {
 	type SubagentProgressEvent,
 	type SubagentService,
 } from "../_shared/subagent-service.ts";
-import { PROFILES_DIRECTORY } from "../_shared/profile-document.ts";
 import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
+import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import {
 	agentRegistry,
 	loadAgents,
@@ -24,8 +25,12 @@ import {
 	unregisterAgent,
 	type AgentRegistry,
 } from "./agent-registry.ts";
-import { LEGACY_CONFIG_PATH, migrateSubagentConfigLegacy, subagentConfig, type SubagentConfigStore } from "./config.ts";
-import { PROJECT_SETTINGS_PATH } from "./settings-store.ts";
+import {
+	createSubagentConfigStore,
+	LEGACY_CONFIG_PATH,
+	migrateSubagentConfigLegacy,
+	type SubagentConfigStore,
+} from "./config.ts";
 import { createSubagentsCommand } from "./model-commands.ts";
 import {
 	createParallelSubagentBatch,
@@ -47,6 +52,7 @@ export { runSubagent } from "./subagent-runner.ts";
 export { runSubagentsParallel } from "./parallel-batch.ts";
 
 export interface SubagentsExtensionDependencies {
+	settingsPath?: string;
 	registry?: AgentRegistry;
 	config?: SubagentConfigStore;
 	runSingle?: typeof runSubagent;
@@ -62,11 +68,19 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		});
 
 		const registry = dependencies.registry ?? agentRegistry;
-		const configStore = dependencies.config ?? subagentConfig;
-		const hasInjectedRuntime = dependencies.registry !== undefined || dependencies.config !== undefined;
-		const runSingle = dependencies.runSingle ?? (hasInjectedRuntime
-			? createSubagentRunner({ registry, config: configStore })
-			: runSubagent);
+		const injectedConfig = dependencies.config;
+		const settingsPath = dependencies.settingsPath ?? injectedConfig?.configPath ?? PROJECT_SETTINGS_PATH;
+		if (dependencies.settingsPath !== undefined && injectedConfig !== undefined &&
+			resolve(dependencies.settingsPath) !== resolve(injectedConfig.configPath)) {
+			throw new Error(
+				`Subagent settingsPath ${dependencies.settingsPath} does not match the injected configuration path ${injectedConfig.configPath}.`,
+			);
+		}
+		const configStore = injectedConfig ?? createSubagentConfigStore({
+			settingsPath,
+			legacyConfigPath: LEGACY_CONFIG_PATH,
+		});
+		const runSingle = dependencies.runSingle ?? createSubagentRunner({ registry, config: configStore });
 		const parallelBatch = createParallelSubagentBatch({ registry, config: configStore, runSingle });
 		const service: SubagentService = {
 			id: "tools-subagents",
@@ -80,7 +94,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		registerSubagentService(service);
 		let maxConcurrency = DEFAULT_MAX_CONCURRENCY;
 		const profileInitialization = registerSessionProfileBinding(
-			{ settingsPath: PROJECT_SETTINGS_PATH, profilesDirectory: PROFILES_DIRECTORY },
+			{ settingsPath },
 			{
 				name: "tools-subagents",
 				applyPath: (binding) => configStore.setSettingsPath(binding.settingsPath),

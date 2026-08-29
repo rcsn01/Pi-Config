@@ -115,7 +115,7 @@ function createAdapterHarness(options: {
 			thinkingLevel = options.effectiveThinkingLevel ?? level;
 		}),
 	} as unknown as ExtensionAPI;
-	createModelSelectorExtension({ load, save, setPath })(pi);
+	createModelSelectorExtension({ settingsStore: { load, save, setPath } })(pi);
 
 	return {
 		ctx,
