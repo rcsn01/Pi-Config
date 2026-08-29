@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 export interface GitRunOptions {
 	signal?: AbortSignal;
@@ -60,6 +61,8 @@ export async function runGit(
 		});
 		let stdout = "";
 		let stderr = "";
+		const stdoutDecoder = new StringDecoder("utf8");
+		const stderrDecoder = new StringDecoder("utf8");
 		let outputBytes = 0;
 		let settled = false;
 		const timer = setTimeout(() => {
@@ -86,14 +89,16 @@ export async function runGit(
 				finish(undefined, new Error(`git ${args[0] ?? "command"} exceeded ${maxOutputBytes} output bytes.`));
 				return;
 			}
-			if (target === "stdout") stdout += chunk.toString();
-			else stderr += chunk.toString();
+			if (target === "stdout") stdout += stdoutDecoder.write(chunk);
+			else stderr += stderrDecoder.write(chunk);
 		};
 
 		child.stdout?.on("data", (chunk: Buffer) => append("stdout", chunk));
 		child.stderr?.on("data", (chunk: Buffer) => append("stderr", chunk));
 		child.once("error", (error) => finish(undefined, error));
 		child.once("close", (exitCode) => {
+			stdout += stdoutDecoder.end();
+			stderr += stderrDecoder.end();
 			const result = { stdout, stderr, exitCode: exitCode ?? 1 };
 			if (result.exitCode !== 0 && !options.allowFailure) {
 				finish(undefined, new Error(stderr.trim() || stdout.trim() || `git ${args.join(" ")} failed.`));
@@ -260,6 +265,68 @@ export async function collectWorkingTreeDiff(
 			return parts.join("\n\n") || "(no changes)";
 		}
 	}
+}
+
+export interface WorkingTreePatches {
+	/** Short porcelain status for summaries, or "" when the status call failed. */
+	status: string;
+	/** Paths with staged, unstaged, or untracked changes. */
+	changedFiles: string[];
+	/** Staged binary diff, or "" when the diff call failed. */
+	staged: string;
+	/** Unstaged binary diff, or "" when the diff call failed. */
+	unstaged: string;
+	/** One `--no-index` binary patch per untracked file. */
+	untrackedPatches: string[];
+}
+
+/**
+ * Collect the raw parts of a working-tree patch: status, changed paths, and
+ * binary diffs. Status and the tracked diffs collapse any failure to "",
+ * matching best-effort artifact collection; the untracked file list and
+ * per-file patches propagate failures, and an exit code of 1 from
+ * `diff --no-index` means differences, not failure.
+ */
+export async function collectWorkingTreePatches(
+	cwd: string,
+	options: GitRunOptions = {},
+): Promise<WorkingTreePatches> {
+	const status = outputOrEmpty(await runOptional(cwd, ["status", "--porcelain"], { ...options, maxOutputBytes: 2_000_000 }));
+	const statusRecords = await runGit(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+		...options,
+		maxOutputBytes: 2_000_000,
+	});
+	const changedFiles = parsePorcelainStatus(statusRecords.stdout).map((entry) => entry.path);
+	const staged = outputOrEmpty(await runOptional(cwd, ["diff", "--binary", "--cached"], options));
+	const unstaged = outputOrEmpty(await runOptional(cwd, ["diff", "--binary"], options));
+	const untrackedList = await runGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z"], {
+		...options,
+		maxOutputBytes: 2_000_000,
+	});
+	const untrackedPatches: string[] = [];
+	for (const file of untrackedList.stdout.split("\0").filter(Boolean)) {
+		const result = await runGit(cwd, ["diff", "--binary", "--no-index", "--", "/dev/null", file], {
+			...options,
+			allowFailure: true,
+			maxOutputBytes: 10_000_000,
+		});
+		if (result.exitCode === 1 && result.stdout) untrackedPatches.push(result.stdout);
+		else if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `Could not collect patch for untracked file: ${file}`);
+	}
+	return { status, changedFiles, staged, unstaged, untrackedPatches };
+}
+
+/** Run git for best-effort collection: any failure collapses to `undefined`. */
+async function runOptional(
+	cwd: string,
+	args: readonly string[],
+	options: GitRunOptions,
+): Promise<GitResult | undefined> {
+	return runGit(cwd, args, { ...options, allowFailure: true }).catch(() => undefined);
+}
+
+function outputOrEmpty(result: GitResult | undefined): string {
+	return result && result.exitCode === 0 ? result.stdout : "";
 }
 
 async function resolveGitPathScope(

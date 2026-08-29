@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { collectGitFacts, collectWorkingTreeDiff, runGit } from "./git.ts";
+import { collectGitFacts, collectWorkingTreeDiff, collectWorkingTreePatches, runGit } from "./git.ts";
 
 const roots: string[] = [];
 
@@ -169,5 +169,46 @@ describe("shared git", () => {
 		const controller = new AbortController();
 		controller.abort(new Error("cancelled"));
 		await expect(runGit(root, ["status"], { signal: controller.signal })).rejects.toThrow("cancelled");
+	});
+});
+
+describe("collectWorkingTreePatches", () => {
+	it("collects status, changed paths, and binary diffs across staged, unstaged, and untracked changes", async () => {
+		const root = await repository();
+		await fs.writeFile(path.join(root, "staged.txt"), "staged\n");
+		await runGit(root, ["add", "staged.txt"]);
+		await fs.writeFile(path.join(root, "tracked file.txt"), "first\nsecond\n");
+		await fs.writeFile(path.join(root, "untracked.txt"), "fresh\n");
+		await fs.writeFile(path.join(root, "blob.bin"), Buffer.from([0x00, 0x01, 0x02, 0x00]));
+
+		const patches = await collectWorkingTreePatches(root);
+
+		expect(patches.status).toContain("A  staged.txt");
+		expect(patches.status).toContain("?? untracked.txt");
+		expect(new Set(patches.changedFiles)).toEqual(
+			new Set(["staged.txt", "tracked file.txt", "untracked.txt", "blob.bin"]),
+		);
+		expect(patches.staged).toContain("diff --git a/staged.txt b/staged.txt");
+		expect(patches.unstaged).toContain("diff --git a/tracked file.txt b/tracked file.txt");
+		expect(patches.untrackedPatches.join("")).toContain("new file mode");
+		expect(patches.untrackedPatches.join("")).toContain("GIT binary patch");
+	});
+
+	it("preserves multi-byte UTF-8 content and filenames across output chunks", async () => {
+		const root = await repository();
+		// ~150 KB forces stdout to arrive in multiple pipe chunks.
+		const filler = "héllo wörld ✓\n".repeat(10_000);
+		await fs.writeFile(path.join(root, "groß-ünicode.txt"), filler);
+		await runGit(root, ["add", "groß-ünicode.txt"]);
+		await fs.writeFile(path.join(root, "café-notes.txt"), "crème brûlée\n");
+
+		const patches = await collectWorkingTreePatches(root);
+
+		expect(patches.changedFiles).toContain("groß-ünicode.txt");
+		expect(patches.changedFiles).toContain("café-notes.txt");
+		expect(patches.staged).toContain("héllo wörld ✓");
+		expect(patches.staged).not.toContain("\uFFFD");
+		expect(patches.untrackedPatches.join("")).toContain("crème brûlée");
+		expect(patches.status).not.toContain("\uFFFD");
 	});
 });
