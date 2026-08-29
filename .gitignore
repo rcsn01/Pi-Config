@@ -24,6 +24,7 @@ Deployment/
 .pi/settings.json
 .pi/worktrees/
 .pi/repos/
+.pi/update-skill/
 .pi/workflow-runs/
 .pi/workflow-approvals/
 .pi/extensions/config-skill/update-skill/

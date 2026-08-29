@@ -1,7 +1,5 @@
-import { execFile as execFileCb } from "node:child_process";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
-import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { NormalizedWorkflowDefinition, WorkflowAgentOptions, WorkflowParallelOptions } from "./definition.ts";
 import { parsePorcelainStatus, runGit } from "../../_shared/git.ts";
@@ -10,9 +8,8 @@ import { enrichEntryWithWorkflow, entrySource, loadWorkflowFromEntry, nowId, wri
 import { approve, removeApproval } from "./approval.ts";
 import { RunStore, initialState, readRunState, runPaths, safeArtifactPath, type RunState } from "./run-store.ts";
 import { AbortError, Semaphore, throwIfAborted } from "./scheduler.ts";
+import { collectWorktreeArtifacts, type WorktreeInfo } from "./worktree-artifacts.ts";
 import { loadAgents, runSubagent, type AgentConfig, type AgentResult, type WorkflowSubagentProgressEvent } from "./subagent-runner.ts";
-
-const execFile = promisify(execFileCb);
 const DEFAULT_MAX_AGENTS = 20;
 const DEFAULT_MAX_CONCURRENT = 4;
 
@@ -86,11 +83,6 @@ function safeWorktreeId(value: string): string {
 	const cleaned = value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
 	if (!cleaned) throw new Error(`Invalid worktree branch id: ${value}`);
 	return cleaned;
-}
-
-async function git(cwd: string, args: string[]): Promise<string> {
-	const { stdout } = await execFile("git", args, { cwd, maxBuffer: 20 * 1024 * 1024 });
-	return stdout;
 }
 
 async function pathExists(file: string): Promise<boolean> {
@@ -283,7 +275,12 @@ export class WorkflowRun {
 				}
 				let returned: unknown = options.output === "json" ? parseJsonOutput(result.output) : result.output;
 				if (runTarget.worktree) {
-					const worktreeResult = await this.collectWorktreeArtifacts(options.key, runTarget.worktree as any, returned);
+					const worktreeResult = await collectWorktreeArtifacts(
+						options.key,
+						runTarget.worktree as WorktreeInfo,
+						returned,
+						{ signal: this.commandCtx.signal, writeArtifact: this.artifact.bind(this) },
+					);
 					returned = typeof returned === "object" && returned !== null ? { ...(returned as any), worktree: worktreeResult } : { output: returned, worktree: worktreeResult };
 				}
 				this.state = await this.store.append({ type: "agent_completed", key: options.key, agent: options.agent, result: clone(returned), raw: result, usage: result.usage });
@@ -368,39 +365,11 @@ export class WorkflowRun {
 		const worktreePath = path.join(this.commandCtx.cwd, ".pi", "worktrees", branchId);
 		if (!(await pathExists(worktreePath))) {
 			await fsp.mkdir(path.dirname(worktreePath), { recursive: true });
-			await git(this.commandCtx.cwd, ["worktree", "add", "-b", branch, worktreePath, opts.baseRef || "HEAD"]);
+			await runGit(this.commandCtx.cwd, ["worktree", "add", "-b", branch, worktreePath, opts.baseRef || "HEAD"], {
+				signal: this.commandCtx.signal,
+			});
 		}
 		return { cwd: worktreePath, worktree: { path: worktreePath, branch, branchId, preserve: opts.preserve !== false, fileOwnership: opts.fileOwnership || [] } };
-	}
-
-	private async collectWorktreeArtifacts(key: string, worktree: { path: string; branch: string; branchId: string; preserve?: boolean; fileOwnership?: string[] }, returned: unknown): Promise<Record<string, unknown>> {
-		const status = await git(worktree.path, ["status", "--porcelain"]).catch(() => "");
-		const statusRecords = await runGit(worktree.path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
-			signal: this.commandCtx.signal,
-			maxOutputBytes: 2_000_000,
-		});
-		const changedFiles = parsePorcelainStatus(statusRecords.stdout).map((entry) => entry.path);
-		const unstaged = await git(worktree.path, ["diff", "--binary"]).catch(() => "");
-		const staged = await git(worktree.path, ["diff", "--binary", "--cached"]).catch(() => "");
-		const untrackedList = await runGit(worktree.path, ["ls-files", "--others", "--exclude-standard", "-z"], {
-			signal: this.commandCtx.signal,
-			maxOutputBytes: 2_000_000,
-		});
-		const untrackedPatches: string[] = [];
-		for (const file of untrackedList.stdout.split("\0").filter(Boolean)) {
-			const result = await runGit(worktree.path, ["diff", "--binary", "--no-index", "--", "/dev/null", file], {
-				signal: this.commandCtx.signal,
-				allowFailure: true,
-				maxOutputBytes: 10_000_000,
-			});
-			if (result.exitCode === 1 && result.stdout) untrackedPatches.push(result.stdout);
-			else if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `Could not collect patch for untracked file: ${file}`);
-		}
-		const patch = [staged, unstaged, ...untrackedPatches].filter(Boolean).join("\n");
-		const patchPath = patch ? await this.artifact(`diffs/${key}.patch`, patch) : undefined;
-		const summary = { ...worktree, changedFiles, status, patchPath, result: returned };
-		const jsonPath = await this.artifact(`diffs/${key}.json`, summary);
-		return { ...summary, jsonPath };
 	}
 
 	private validateDependsOn(dependsOn: string[] | undefined): void {

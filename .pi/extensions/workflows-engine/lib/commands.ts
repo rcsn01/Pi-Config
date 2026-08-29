@@ -1,14 +1,12 @@
-import { execFile as execFileCb } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { runGit } from "../../_shared/git.ts";
 import { discoverWorkflows, entrySource, type RegistryEntry } from "./registry.ts";
 import { appendRunEvent, listRunStates, readEvents, readRunState, runPaths, type RunState } from "./run-store.ts";
 import { formatRunDetail, formatRunList, formatWorkflowList } from "./ui.ts";
 import { invalidateKeyAndDependents, prepareExistingWorkflowRun, prepareNewWorkflowRun, prepareStateEntry, runPreparedWorkflow, type WorkflowRunControl } from "./runner.ts";
 
-const execFile = promisify(execFileCb);
 const CUSTOM_TYPE = "workflow-result";
 
 interface ActiveRun {
@@ -135,11 +133,6 @@ async function handleSource(ctx: ExtensionContext, target: string): Promise<void
 	ctx.ui.notify(entrySource(entry).slice(0, 20000), "info");
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
-	const { stdout } = await execFile("git", args, { cwd, maxBuffer: 20 * 1024 * 1024 });
-	return stdout;
-}
-
 function worktreeInfoFromState(state: RunState, key: string): any {
 	const result = state.agents[key]?.result as any;
 	return result?.worktree || result?.output?.worktree;
@@ -153,12 +146,12 @@ async function handleIntegrate(ctx: ExtensionContext, runId: string, key: string
 	const patchPath = path.join(runPaths(ctx.cwd, runId).root, info.patchPath);
 	const patch = await fs.readFile(patchPath, "utf-8");
 	if (!patch.trim()) { ctx.ui.notify(`Diff artifact for ${key} is empty.`, "warning"); return; }
-	await execFile("git", ["apply", "--check", patchPath], { cwd: ctx.cwd });
+	await runGit(ctx.cwd, ["apply", "--check", patchPath], { signal: ctx.signal });
 	if (ctx.hasUI) {
 		const ok = await ctx.ui.confirm("Integrate workflow patch?", `Apply ${info.patchPath} from ${key} into the main checkout? This will modify files but will not commit.`);
 		if (!ok) return;
 	}
-	await execFile("git", ["apply", patchPath], { cwd: ctx.cwd });
+	await runGit(ctx.cwd, ["apply", patchPath], { signal: ctx.signal });
 	ctx.ui.notify(`Applied workflow patch ${info.patchPath}. Review, test, and commit manually.`, "info");
 }
 
@@ -171,9 +164,9 @@ async function handleCleanupWorktrees(ctx: ExtensionContext, runId: string): Pro
 		const info = worktreeInfoFromState(state, key);
 		if (!info?.path) continue;
 		try {
-			const status = await git(info.path, ["status", "--porcelain"]);
-			if (status.trim()) { skipped.push(`${key} (dirty worktree preserved)`); continue; }
-			await git(ctx.cwd, ["worktree", "remove", info.path]);
+			const status = await runGit(info.path, ["status", "--porcelain"], { signal: ctx.signal });
+			if (status.stdout.trim()) { skipped.push(`${key} (dirty worktree preserved)`); continue; }
+			await runGit(ctx.cwd, ["worktree", "remove", info.path], { signal: ctx.signal });
 			cleaned.push(key);
 		} catch (error: any) {
 			skipped.push(`${key} (${error?.message || String(error)})`);

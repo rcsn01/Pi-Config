@@ -102,6 +102,14 @@ extension.
   truncation state, and optional usage. The Advisor runner owns outcome meaning;
   one Pi adapter owns tool text, details, error flags, and legacy result reading.
 
+## Git machinery
+
+- **Git executor** — the deep module in `_shared/git.ts` that owns bounded git
+  process execution: timeout, abort, output caps, failure semantics, porcelain
+  parsing, and working-tree diff collection. One executor, N callers. The
+  Repository store's bounded remote fetch and tools-worktree's host-exec
+  adapter sit deliberately outside it.
+
 ## Repository snapshots
 
 - **Repository snapshot** — an immutable, commit-pinned source tree under `.pi/repos`.

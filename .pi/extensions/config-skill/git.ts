@@ -1,24 +1,26 @@
 /**
- * update-skill — thin git wrapper.
+ * update-skill — git adapter.
  *
- * Every operation is a single `git` invocation via `child_process.execFile`,
- * against a private cache clone per source under
- * `.pi/update-skill/cache/<sourceId>/`. Clones are full (mattpocock is small,
- * cursor/plugins ~5.5 MB) so `git log <pinned>..origin/main -- <path>` and
- * diffs against old pinned commits always work without shallow-boundary
+ * Every operation is a single `git` invocation through the shared git
+ * executor (`_shared/git.ts`), against a private cache clone per source
+ * under `.pi/update-skill/cache/<sourceId>/`. Clones are full (mattpocock is
+ * small, cursor/plugins ~5.5 MB) so `git log <pinned>..origin/main -- <path>`
+ * and diffs against old pinned commits always work without shallow-boundary
  * surprises.
  *
  * The `Git` interface is the seam tests fake: the menu/apply logic in
- * index.ts depends only on it, never on `execFile` directly.
+ * index.ts depends only on it, never on process spawning directly.
  */
 
-import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { rmSync } from "node:fs";
-import { join } from "node:path";
-import { promisify } from "node:util";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { runGit, type GitResult, type GitRunOptions } from "../_shared/git.ts";
 
-const execFileAsync = promisify(execFile);
+/** Clone and fetch hit the network; they outwait the executor's 30s default. */
+const CLONE_TIMEOUT_MS = 300_000;
+
+/** The former private executor allowed 16 MiB per invocation; keep that bound. */
+const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 export class GitError extends Error {
 	constructor(
@@ -50,40 +52,42 @@ export interface Git {
 	checkout(dir: string, ref: string): Promise<void>;
 }
 
-/** Real git implementation over `execFile("git", ...)`. */
+/** Real git implementation over the shared git executor. */
 export function createGit(): Git {
 	return {
 		async ensureClone(dir, url) {
 			if (isRepo(dir)) return;
 			// Partial/corrupt cache dir: replace it rather than failing forever.
 			rmSync(dir, { recursive: true, force: true });
-			await runGit(["clone", "--quiet", url, dir]);
+			// The clone target does not exist yet, so run git from its parent.
+			mkdirSync(dirname(dir), { recursive: true });
+			await checkedRun(dirname(dir), ["clone", "--quiet", url, dir], { timeoutMs: CLONE_TIMEOUT_MS });
 		},
 		async fetch(dir) {
-			await runGit(["fetch", "--quiet", "origin"], dir);
+			await checkedRun(dir, ["fetch", "--quiet", "origin"], { timeoutMs: CLONE_TIMEOUT_MS });
 		},
 		async revParse(dir, ref) {
-			const { stdout } = await runGit(["rev-parse", ref], dir);
+			const { stdout } = await checkedRun(dir, ["rev-parse", ref]);
 			return stdout.trim();
 		},
 		async pathExistsAtRef(dir, ref, path) {
-			const { stdout } = await runGit(["ls-tree", ref, "--", `${path}/SKILL.md`], dir);
+			const { stdout } = await checkedRun(dir, ["ls-tree", ref, "--", `${path}/SKILL.md`]);
 			return stdout.trim().length > 0;
 		},
 		async logOneline(dir, range, path) {
-			const { stdout } = await runGit(["log", "--oneline", range, "--", path], dir);
+			const { stdout } = await checkedRun(dir, ["log", "--oneline", range, "--", path]);
 			return stdout.trim();
 		},
 		async diffStat(dir, range, path) {
-			const { stdout } = await runGit(["diff", "--stat", range, "--", path], dir);
+			const { stdout } = await checkedRun(dir, ["diff", "--stat", range, "--", path]);
 			return stdout.trim();
 		},
 		async diffSkillMarkdown(dir, range, path) {
-			const { stdout } = await runGit(["diff", range, "--", `${path}/SKILL.md`], dir);
+			const { stdout } = await checkedRun(dir, ["diff", range, "--", `${path}/SKILL.md`]);
 			return stdout;
 		},
 		async checkout(dir, ref) {
-			await runGit(["checkout", "--quiet", "--force", ref], dir);
+			await checkedRun(dir, ["checkout", "--quiet", "--force", ref]);
 		},
 	};
 }
@@ -92,18 +96,22 @@ function isRepo(dir: string): boolean {
 	return existsSync(join(dir, ".git"));
 }
 
-async function runGit(
-	args: string[],
-	cwd?: string,
-): Promise<{ stdout: string; stderr: string }> {
+/**
+ * Run one git invocation through the shared executor and surface failures
+ * as `GitError`. Abort errors propagate untouched so cancellation keeps its
+ * own meaning.
+ */
+async function checkedRun(dir: string, args: string[], options: GitRunOptions = {}): Promise<GitResult> {
 	try {
-		const { stdout, stderr } = await execFileAsync("git", args, {
-			cwd,
-			maxBuffer: 16 * 1024 * 1024,
-		});
-		return { stdout, stderr };
+		const result = await runGit(dir, args, { maxOutputBytes: MAX_OUTPUT_BYTES, ...options, allowFailure: true });
+		if (result.exitCode !== 0) throw gitFailure(args, result.stderr || result.stdout);
+		return result;
 	} catch (error) {
-		const stderr = (error as { stderr?: string }).stderr ?? String(error);
-		throw new GitError(`git ${args.join(" ")} failed: ${stderr.trim()}`, stderr);
+		if (error instanceof GitError || (error as Error | undefined)?.name === "AbortError") throw error;
+		throw gitFailure(args, error instanceof Error ? error.message : String(error));
 	}
+}
+
+function gitFailure(args: string[], detail: string): GitError {
+	return new GitError(`git ${args.join(" ")} failed: ${detail.trim()}`, detail);
 }
