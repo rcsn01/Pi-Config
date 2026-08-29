@@ -11,7 +11,7 @@ PI_CONFIG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SOURCE_DIR="$PI_CONFIG_DIR/.pi"
 AGENT_DIR="$HOME/.pi/agent"
 
-ITEMS=(APPEND_SYSTEM.md extensions profiles skills themes settings.json)
+ITEMS=(SYSTEM.md APPEND_SYSTEM.md extensions profiles skills themes settings.json)
 
 if [[ ! -d "$SOURCE_DIR" ]]; then
   echo "Error: expected Pi config directory at: $SOURCE_DIR" >&2

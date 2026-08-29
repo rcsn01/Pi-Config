@@ -15,6 +15,13 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"config-system-prompt": {
+			"displayName": "System Prompt",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"provider-codex": {
 			"displayName": "Codex Credential Slots",
 			"pack": "core",
