@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
+import { openInBrowser } from "../_shared/browser.ts";
 import { getObservabilityService, type ObservabilitySource } from "../_shared/observability.ts";
 import {
 	getPersistentAnalysisRuntime,
@@ -10,6 +11,8 @@ import {
 
 export interface AnalysisExtensionDependencies {
 	createRuntime?: (notify: (message: string) => void) => AnalysisRuntime;
+	/** Best-effort opener for the dashboard URL; must not throw. Defaults to spawning the platform browser opener. */
+	openUrl?: (url: string) => void;
 }
 
 export function createAnalysisExtension(dependencies: AnalysisExtensionDependencies = {}) {
@@ -46,6 +49,7 @@ export function createAnalysisExtension(dependencies: AnalysisExtensionDependenc
 				}
 				try {
 					const { url } = await runtime.start();
+					(dependencies.openUrl ?? openInBrowser)(url);
 					locallyActive = true;
 					attach();
 					ctx.ui.notify(`Provider request analysis is active. Treat this URL as a secret:\n${url}`, "info");

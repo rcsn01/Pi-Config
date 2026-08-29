@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { openInBrowser } from "./browser.ts";
+import { openInBrowser } from "../_shared/browser.ts";
 import {
 	persistentUsageRuntime,
 	type TelemetryUsageRuntime,
@@ -28,7 +28,7 @@ export function createTelemetryUsageExtension(
 				}
 				try {
 					const { url } = await runtime.start();
-				(dependencies.openUrl ?? openInBrowser)(url);
+					(dependencies.openUrl ?? openInBrowser)(url);
 					ctx.ui.notify(`Global usage dashboard is active. Treat this URL as a secret:\n${url}`, "info");
 				} catch (error) {
 					ctx.ui.notify(
