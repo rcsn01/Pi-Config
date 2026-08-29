@@ -50,11 +50,8 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		name: "plan_bash",
 		label: "Plan Bash (isolated)",
 		description:
-			"Plan Mode only. Execute any shell command in a disposable, network-restricted copy of the workspace. Host files are not modified.",
+			"Plan Mode only. Execute any shell command in a disposable, network-restricted copy of the workspace; use for tests, builds, and shell exploration while Plan Mode is active. Host files are not modified — filesystem changes are discarded.",
 		promptSnippet: "Execute arbitrary checks in an isolated disposable workspace",
-		promptGuidelines: [
-			"Use plan_bash for tests, builds, and shell exploration while Plan Mode is active; its filesystem changes are discarded.",
-		],
 	});
 	registerPlanRenderers(pi);
 

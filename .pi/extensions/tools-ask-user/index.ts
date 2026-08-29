@@ -256,12 +256,8 @@ export function createAskUserTool(): ToolDefinition<typeof AskUserParams, AskUse
 		name: "ask_user",
 		label: "Ask User",
 		description:
-			"Ask the user 1-3 concise multiple-choice questions. Provide exactly three options per question; ‘None of the above’ is always added as option 4.",
+			"Ask the user 1-3 concise multiple-choice questions. Use only when missing user input materially affects the work: first inspect available context, since exploration can often answer the question, and recommend a default when appropriate. Provide exactly three meaningful options per question and never generate ‘None of the above’; the tool adds it automatically as option 4.",
 		promptSnippet: "Ask concise multiple-choice clarification questions",
-		promptGuidelines: [
-			"Use ask_user only when missing user input materially affects the work; first inspect available context when exploration can answer the question, and recommend a default when appropriate.",
-			"Provide exactly three generated options for each question and never generate ‘None of the above’; the tool adds it automatically.",
-		],
 		parameters: AskUserParams,
 		executionMode: "sequential",
 

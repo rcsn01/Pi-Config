@@ -113,17 +113,9 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: "Delegate a task to an isolated subagent; include all needed context.",
+		description:
+			"Delegate a task to an isolated subagent; include all needed context. Use only when the final handoff will be substantially smaller than the raw material inspected — handle simple lookups, known-symbol traces, and one-or-two-file reads locally with parallel tool calls instead. Use explorer for repository evidence across several files and researcher only when several external sources must be read and summarized; keep direct documentation lookups local. Do not delegate planning, architecture, task decomposition, or implementation decisions — the main agent owns synthesis and planning. Give each subagent a narrow question, explicit scope, and requested evidence; ask for compact findings, not a work log. After it returns, rely on its cited findings; do not repeat its searches or reread cited files unless the handoff identifies a gap or conflicting evidence. For multiple independent tasks, use parallel mode with the tasks[] array.",
 		promptSnippet: "Delegate tasks",
-		promptGuidelines: [
-			"Use subagents only when their final handoff will be substantially smaller than the raw material they inspect.",
-			"Keep simple lookups, known-symbol traces, and reads of one or two files local. Use parallel tool calls for independent I/O.",
-			"Use explorer to gather repository evidence across several files. Do not delegate planning, architecture, task decomposition, or implementation decisions. The main agent owns synthesis and planning.",
-			"After a subagent returns, rely on its cited findings. Do not repeat its searches or reread cited files unless the handoff identifies a gap or conflicting evidence.",
-			"Give subagents a narrow question, explicit scope, and requested evidence. Ask for compact findings rather than a work log.",
-			"Use researcher only when several external sources must be read and summarized. Keep direct documentation lookups local.",
-			"For multiple independent subagent tasks, use parallel mode with tasks[] array.",
-		],
 		parameters: Type.Object({
 			agent: Type.Optional(
 				Type.String({ description: "Name of the agent to invoke (SINGLE mode)" }),

@@ -118,18 +118,17 @@ describe("subagent extension interfaces", () => {
 		expect(harness.tools.get("subagent")).toMatchObject({
 			name: "subagent",
 			label: "Subagent",
-			description: "Delegate a task to an isolated subagent; include all needed context.",
+			description: expect.stringContaining("Delegate a task to an isolated subagent"),
 			promptSnippet: "Delegate tasks",
-			promptGuidelines: [
-				expect.stringContaining("substantially smaller than the raw material"),
-				expect.stringContaining("one or two files local"),
-				expect.stringContaining("Do not delegate planning"),
-				expect.stringContaining("Do not repeat its searches"),
-				expect.stringContaining("narrow question"),
-				expect.stringContaining("several external sources"),
-				expect.stringContaining("parallel mode"),
-			],
 		});
+		const subagentDescription = harness.tools.get("subagent").description as string;
+		expect(subagentDescription).toContain("substantially smaller than the raw material");
+		expect(subagentDescription).toContain("one-or-two-file reads");
+		expect(subagentDescription).toContain("Do not delegate planning");
+		expect(subagentDescription).toContain("narrow question");
+		expect(subagentDescription).toContain("several external sources");
+		expect(subagentDescription).toContain("tasks[] array");
+		expect(harness.tools.get("subagent")).not.toHaveProperty("promptGuidelines");
 		expect(Object.keys((harness.tools.get("subagent").parameters as any).properties)).toEqual(["agent", "task", "tasks", "cwd"]);
 		expect(requireSubagentService().id).toBe("tools-subagents");
 	});

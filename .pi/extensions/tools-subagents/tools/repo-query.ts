@@ -177,12 +177,9 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "repo_query",
 		label: "Repository query",
-		description: "Run independent read-only repository searches and reads in one bounded batch.",
+		description:
+			"Run independent read-only repository searches and reads in one bounded batch: 1-24 read, grep, find, ls, files, or fixed Git operations per batch. Paths must stay inside the subagent working directory; the tool never writes files or runs shell commands.",
 		promptSnippet: "Batch repository evidence",
-		promptGuidelines: [
-			"Use 1-24 independent read, grep, find, ls, files, or fixed Git operations per batch.",
-			"Paths must stay inside the subagent working directory; repo_query never writes or runs shell commands.",
-		],
 		parameters: RepoQueryParameters,
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx): Promise<RepoQueryToolResult> {

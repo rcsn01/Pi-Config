@@ -105,10 +105,11 @@ describe("ask_user", () => {
 			name: "ask_user",
 			label: "Ask User",
 			executionMode: "sequential",
-			description: expect.stringContaining("exactly three options"),
+			description: expect.stringContaining("exactly three"),
 			promptSnippet: "Ask concise multiple-choice clarification questions",
-			promptGuidelines: expect.arrayContaining([expect.stringContaining("never generate")]),
 		});
+		expect(tool.description).toContain("never generate");
+		expect(tool).not.toHaveProperty("promptGuidelines");
 		const optionsSchema = (tool.parameters as any).properties.questions.items.properties.options;
 		expect(optionsSchema).toMatchObject({ minItems: 3, maxItems: 3 });
 		expect(optionsSchema.description).toContain("do not include");
