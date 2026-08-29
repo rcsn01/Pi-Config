@@ -24,7 +24,9 @@
 	"scripts": {
 		"typecheck": "tsc --noEmit",
 		"test": "pnpm test:core && pnpm test:features && pnpm test:analysis && pnpm test:telemetry-usage && pnpm test:cache-effort && pnpm test:profiles && pnpm test:config-skill && pnpm test:provider-codex && pnpm test:provider-ollama && pnpm test:subscription-usage && pnpm test:safety && pnpm test:ask-user && pnpm test:advisor && pnpm test:subagents && pnpm test:todos && pnpm test:web-fetch && pnpm test:github-repos && pnpm test:status && pnpm test:steer && pnpm test:goal && pnpm test:plan && pnpm test:workflows && pnpm test:integrations",
-		"test:core": "vitest run extensions/_shared",
+		"test:core": "pnpm test:shared && pnpm test:system-prompt",
+		"test:shared": "vitest run extensions/_shared",
+		"test:system-prompt": "vitest run extensions/config-system-prompt",
 		"test:analysis": "vitest run extensions/telemetry-analysis",
 		"test:telemetry-usage": "vitest run extensions/telemetry-usage",
 		"test:cache-effort": "vitest run extensions/telemetry-cache-effort",
