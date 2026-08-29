@@ -29,6 +29,15 @@ runs twice.
 `/system-prompt` writes the fully composed prompt (after all extensions) to a
 temp file for inspection.
 
+## Extension tool policy
+
+Extension tools in this repo intentionally register no `promptGuidelines` —
+usage policy lives in each tool's `description`, so the model reads mechanics
+and policy together at schema-evaluation time (pi still supports
+`promptGuidelines` for tools that need prompt-side bullets). The restored
+section therefore carries pi's builtin-tool bullets, the tool-conditional
+file-operations bullet, and the always-on pair.
+
 ## Coupling
 
 `../SYSTEM.md` must contain the advisor executor persona verbatim —
