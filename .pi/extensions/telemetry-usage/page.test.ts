@@ -93,6 +93,8 @@ describe("telemetry usage page", () => {
 		expect(TELEMETRY_USAGE_PAGE).toContain("textContent");
 		expect(TELEMETRY_USAGE_PAGE).toContain("@media (max-width: 760px)");
 		expect(TELEMETRY_USAGE_PAGE).toContain('role="tablist"');
+		expect(TELEMETRY_USAGE_PAGE).not.toContain("<h1>Global usage</h1>");
+		expect(TELEMETRY_USAGE_PAGE).not.toContain("Token usage and cost across persisted Pi sessions.");
 		expect(() => new Function(script())).not.toThrow();
 	});
 
@@ -120,7 +122,8 @@ describe("telemetry usage page", () => {
 		expect(fetch).toHaveBeenCalledWith("/api/usage", expect.objectContaining({
 			headers: { Authorization: "Bearer test-token" },
 		}));
-		expect(document.getElementById("status")?.textContent).toContain("Updated");
+		expect(document.getElementById("status")?.hidden).toBe(true);
+		expect(document.getElementById("status")?.textContent).toBe("");
 		expect(document.getElementById("cards")?.textContent).toContain("1,275");
 		expect(document.getElementById("panel")?.textContent).toContain("Daily usage");
 		expect(document.getElementById("panel")?.textContent).toContain("Last 30 days");
@@ -255,7 +258,8 @@ describe("telemetry usage page", () => {
 		timer = undefined;
 		scheduled();
 		await flush();
-		expect(document.getElementById("status")?.textContent).toContain("Updated");
+		expect(document.getElementById("status")?.hidden).toBe(true);
+		expect(document.getElementById("status")?.textContent).toBe("");
 		expect(timer).toBeUndefined();
 
 		(document.getElementById("refresh") as HTMLButtonElement).click();

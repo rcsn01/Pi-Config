@@ -609,6 +609,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 
 	function renderState(next) {
 		status.setAttribute("data-phase", next.phase);
+		status.hidden = next.phase === "ready";
 		refreshButton.disabled = next.phase === "scanning";
 		if (next.phase === "scanning") {
 			status.textContent = next.progress
@@ -619,7 +620,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 				? "Refresh failed: " + next.diagnostic + " Showing the previous scan."
 				: "Global usage unavailable: " + next.diagnostic;
 		} else if (next.phase === "ready") {
-			status.textContent = "Updated " + formatDate(next.data.scannedAt);
+			status.textContent = "";
 		} else {
 			status.textContent = "Waiting to scan sessions...";
 		}
@@ -658,6 +659,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 			if (next.phase === "scanning") schedulePoll();
 		} catch (error) {
 			if (generation !== requestGeneration) return;
+			status.hidden = false;
 			status.setAttribute("data-phase", "error");
 			status.textContent = "Could not load usage: " + (error && error.message ? error.message : String(error));
 			refreshButton.disabled = false;
@@ -668,6 +670,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		clearTimeout(pollTimer);
 		requestGeneration++;
 		refreshButton.disabled = true;
+		status.hidden = false;
 		status.setAttribute("data-phase", "scanning");
 		status.textContent = "Starting scan...";
 		try {
@@ -697,6 +700,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 	refreshButton.addEventListener("click", requestRefresh);
 
 	if (!token) {
+		status.hidden = true;
 		fatal.hidden = false;
 		fatal.textContent = "This dashboard URL is missing its capability token. Run /global-usage again and use the complete URL.";
 		content.hidden = true;
