@@ -37,7 +37,11 @@ import {
 	DEFAULT_MAX_CONCURRENCY,
 } from "./parallel-batch.ts";
 import { renderSubagentCall, renderSubagentResult } from "./progress-renderer.ts";
-import { createSubagentRunner, runSubagent, throttle } from "./subagent-runner.ts";
+import {
+	createSubagentInvocationAdapter,
+	isFailedSubagentResult,
+} from "./subagent-invocation.ts";
+import { createSubagentRunner, runSubagent } from "./subagent-runner.ts";
 
 export type {
 	AgentConfig,
@@ -62,9 +66,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 	return (pi: ExtensionAPI): void => {
 		registerToolErrorHandler(pi, ["subagent"], (event) => {
 			const details = event.details as { results?: AgentResult[] } | undefined;
-			return details?.results?.some((result) =>
-				result.exitCode !== 0 || result.progress.status === "failed" || Boolean(result.progress.error),
-			) ?? false;
+			return details?.results?.some(isFailedSubagentResult) ?? false;
 		});
 
 		const registry = dependencies.registry ?? agentRegistry;
@@ -82,6 +84,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		});
 		const runSingle = dependencies.runSingle ?? createSubagentRunner({ registry, config: configStore });
 		const parallelBatch = createParallelSubagentBatch({ registry, config: configStore, runSingle });
+		const invocationAdapter = createSubagentInvocationAdapter({ batch: parallelBatch });
 		const service: SubagentService = {
 			id: "tools-subagents",
 			registerAgent: (config) => registry.register(config),
@@ -148,97 +151,15 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 			cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 		}),
 
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const cwd = ctx.cwd;
-			const cacheAffinitySeed = ctx.sessionManager.getSessionId();
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			configStore.rememberMainModel(ctx.model);
-
-			// Validate mode
-			if (params.tasks && params.tasks.length > 0) {
-				// ── Parallel mode ──
-				const taskList = params.tasks;
-
-				let displayedResults: readonly AgentResult[] = [];
-				const flushParallelUpdate = () => {
-					onUpdate?.({
-						content: [{ type: "text", text: `Running ${taskList.length} tasks...` }],
-						details: {
-							mode: "parallel" as const,
-							results: [...displayedResults],
-						},
-					});
-				};
-				const fireParallelUpdate = throttle(flushParallelUpdate, 150);
-
-				const results = await parallelBatch.runBatch(taskList, {
-					cwd,
-					maxConcurrency,
-					signal,
-					cacheAffinitySeed,
-					onSnapshot: (snapshot) => {
-						displayedResults = snapshot.results;
-						if (snapshot.phase === "progress") fireParallelUpdate();
-						else flushParallelUpdate();
-					},
-				});
-
-				// Build final output text
-				const outputParts = results.map((r) => {
-					const failed = r.exitCode !== 0 || r.progress.status === "failed" || Boolean(r.progress.error);
-					const header = `## ${r.agent}${failed ? " (FAILED)" : ""}`;
-					return `${header}\n\n${r.output || "(no output)"}`;
-				});
-
-				const isError = results.some((result) => result.exitCode !== 0 || !!result.progress.error);
-				return {
-					content: [{ type: "text", text: outputParts.join("\n\n---\n\n") }],
-					details: { mode: "parallel" as const, results },
-					...(isError ? { isError: true } : {}),
-				};
-			} else if (params.agent && params.task) {
-				// ── Single mode ──
-				const agents = registry.load();
-				const agent = agents.find((a) => a.name === params.agent);
-				if (!agent) {
-					const available = agents.map((a) => a.name).join(", ") || "none";
-					throw new Error(`Unknown agent: ${params.agent}. Available agents: ${available}`);
-				}
-
-				const launch = configStore.resolveLaunch(agent);
-				const liveResult: AgentResult = {
-					agent: params.agent!,
-					task: params.task!,
-					output: "",
-					exitCode: -1,
-					model: launch.model,
-					thinkingLevel: launch.thinkingLevel,
-					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-					progress: { agent: params.agent!, status: "running" as const, task: params.task!, recentTools: [], toolCount: 0, tokens: 0, durationMs: 0, lastMessage: "" },
-				};
-				const result = await runSingle({
-					agent,
-					task: params.task,
-					cwd: params.cwd ?? cwd,
-					signal,
-					cacheAffinitySeed,
-					onUpdate: (progress) => {
-						liveResult.progress = progress;
-						onUpdate?.({
-							content: [{ type: "text", text: "(running...)" }],
-							details: { mode: "single" as const, results: [liveResult] },
-						});
-					},
-				});
-
-				const isError = result.exitCode !== 0 || !!result.progress.error;
-				return {
-					content: [{ type: "text", text: result.output || "(no output)" }],
-					details: { mode: "single" as const, results: [result] },
-					...(isError ? { isError: true } : {}),
-				};
-			} else {
-				throw new Error("Provide either (agent + task) for single mode, or tasks[] for parallel mode.");
-			}
+			return invocationAdapter.execute(params, {
+				cwd: ctx.cwd,
+				maxConcurrency,
+				signal,
+				cacheAffinitySeed: ctx.sessionManager.getSessionId(),
+				onUpdate,
+			});
 		},
 
 		renderCall(args, theme, _context) {
