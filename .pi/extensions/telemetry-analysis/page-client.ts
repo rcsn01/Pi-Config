@@ -9,6 +9,7 @@ const requestList = document.getElementById('requestList');
 const detailPane = document.getElementById('detailPane');
 const sourceTabs = document.getElementById('sourceTabs');
 const sourcePanel = document.getElementById('sourcePanel');
+const activation = document.getElementById('activation');
 const error = document.getElementById('error');
 
 const tabs = [
@@ -367,12 +368,8 @@ async function refresh() {
 	try {
 		const data = await api('/api/summary');
 		error.classList.add('hidden');
-		text(
-			document.getElementById('activation'),
-			data.activatedAt
-				? 'Capturing requests completed after ' + new Date(data.activatedAt).toLocaleString()
-				: 'Capture is not active.',
-		);
+		activation.classList.toggle('hidden', Boolean(data.activatedAt));
+		text(activation, data.activatedAt ? '' : 'Capture is not active.');
 		const paused = document.getElementById('paused');
 		paused.classList.toggle('hidden', !data.paused);
 		text(document.getElementById('pausedText'), data.diagnostic || 'Capture paused.');
@@ -398,6 +395,7 @@ async function refresh() {
 			renderDetail(selected);
 		}
 	} catch (caught) {
+		activation.classList.add('hidden');
 		error.classList.remove('hidden');
 		text(error, caught.message);
 	}
@@ -409,6 +407,7 @@ document.getElementById('clear').addEventListener('click', async () => {
 });
 
 if (!token) {
+	activation.classList.add('hidden');
 	error.classList.remove('hidden');
 	text(error, 'The capability token is missing from the URL fragment.');
 } else {
