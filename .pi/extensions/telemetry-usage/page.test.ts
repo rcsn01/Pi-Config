@@ -174,6 +174,9 @@ describe("telemetry usage page", () => {
 		expect(document.getElementById("cards")?.textContent).toContain("Sessions");
 		expect(document.getElementById("cards")?.textContent).toContain("1.3k");
 		expect(document.querySelectorAll(".heatmap-cell")).toHaveLength(365);
+		expect(document.querySelector(".activity-card figcaption")).toBeNull();
+		expect(document.querySelector(".activity-card")?.textContent).not.toContain("Daily token activity");
+		expect(document.querySelector(".activity-card")?.textContent).not.toContain("Last 12 months");
 		expect(document.querySelector(".heatmap-weekdays")).toBeNull();
 		const usedDay = document.querySelector(".heatmap-grid .heatmap-cell.level-4")!;
 		expect(usedDay.getAttribute("aria-label")).toContain("1.3k tokens on 9 Jan");
@@ -192,7 +195,7 @@ describe("telemetry usage page", () => {
 		const weekly = document.querySelector<HTMLButtonElement>('[data-activity="weekly"]')!;
 		weekly.click();
 		expect(document.querySelectorAll(".activity-tab[aria-selected=\"true\"]")).toHaveLength(1);
-		expect(document.getElementById("panel")?.textContent).toContain("Weekly token activity");
+		expect(document.querySelector(".activity-card")?.getAttribute("aria-label")).toBe("Weekly token activity");
 		expect(document.querySelectorAll(".heatmap-grid .heatmap-cell")).toHaveLength(371);
 		expect(document.querySelectorAll(".heatmap-grid .heatmap-cell.fill-on")).toHaveLength(11);
 		const weeklyCells = document.querySelectorAll(".heatmap-grid .heatmap-cell");
@@ -210,8 +213,8 @@ describe("telemetry usage page", () => {
 		cumulative.dispatchEvent(keydown);
 		expect(document.querySelector(".activity-tab[aria-selected=\"true\"]")?.getAttribute("data-activity")).toBe("weekly");
 		cumulative.click();
-		expect(document.getElementById("panel")?.textContent).toContain("Cumulative token activity");
-		expect(document.getElementById("panel")?.textContent).toContain("running total");
+		expect(document.querySelector(".activity-card")?.getAttribute("aria-label")).toBe("Cumulative token activity");
+		expect(document.querySelector(".activity-card")?.textContent).not.toContain("running total");
 		expect(document.querySelectorAll(".heatmap-grid .heatmap-cell.fill-on")).toHaveLength(12);
 		const cumulativeCells = document.querySelectorAll(".heatmap-grid .heatmap-cell");
 		expect(cumulativeCells[0]!.classList.contains("fill-on")).toBe(false);

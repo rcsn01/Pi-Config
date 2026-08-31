@@ -274,12 +274,10 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		heatmapTip?.classList.remove("visible");
 	}
 
-	function renderActivityGrid(points, title, caption, decorate) {
+	function renderActivityGrid(points, title, decorate) {
 		hideTip();
 		const figure = element("figure", "activity-card heatmap-card");
-		const header = document.createElement("figcaption");
-		header.append(element("strong", "", title), element("span", "", caption));
-		figure.append(header);
+		figure.setAttribute("aria-label", title);
 
 		const firstDate = new Date(points[0]?.start || Date.now());
 		const leadingDays = (firstDate.getDay() + 6) % 7;
@@ -325,7 +323,6 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		return renderActivityGrid(
 			points,
 			"Daily token activity",
-			"Last 12 months · peak " + formatCompactInteger(maximum) + " tokens",
 			(point) => ({
 				className: "heatmap-cell level-" + heatmapLevel(point.usage.tokens, maximum),
 				description: point.usage.tokens > 0
@@ -341,7 +338,6 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		return renderActivityGrid(
 			weekAlignedDays(points),
 			"Weekly token activity",
-			"Last 12 months · peak " + formatCompactInteger(maximum) + " tokens",
 			(point, row) => {
 				const tokens = weeks.get(weekStartOf(point.start)) ?? 0;
 				const filled = row >= 7 - fillBoxCount(tokens, maximum);
@@ -359,7 +355,6 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		return renderActivityGrid(
 			weekAlignedDays(points),
 			"Cumulative token activity",
-			"Last 12 months · running total · " + formatCompactInteger(maximum) + " tokens",
 			(point, row) => {
 				const tokens = weeks.get(weekStartOf(point.start)) ?? 0;
 				const filled = row >= 7 - fillBoxCount(tokens, maximum);
