@@ -101,6 +101,8 @@ extension.
   `ui-model-selector/` that owns session initialization decisions, interactive
   selection ordering, Profile persistence outcomes, and context-reduction and
   compaction policy. Pi adaptation and Session profile binding stay outside.
+- **Model-selection persistence** — Profile-aware storage of one mode's model
+  selection; it preserves other modes and unrelated Settings document fields.
 
 ## Advisor tooling
 

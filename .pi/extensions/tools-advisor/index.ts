@@ -35,7 +35,6 @@ import {
 import {
 	ADVISOR_NUDGE_MESSAGE,
 	ADVISOR_TOOL_DESCRIPTION,
-	transformAdvisorPrompt,
 } from "./prompt.ts";
 import {
 	ADVISOR_NUDGE_CUSTOM_TYPE,
@@ -467,16 +466,6 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				notify(ctx, `Could not save advisor settings: ${errorText(error)}`, "error");
 			}
 		};
-
-		pi.on("before_agent_start", async (event) => {
-			if (
-				settings.enabled === false ||
-				!settings.provider ||
-				!settings.modelId ||
-				!pi.getActiveTools().includes("advisor")
-			) return;
-			return { systemPrompt: transformAdvisorPrompt(event.systemPrompt) };
-		});
 
 		pi.registerTool({
 			name: "advisor",

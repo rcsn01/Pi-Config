@@ -90,7 +90,7 @@ The opt-in `tools-advisor` extension lets the executor consult one stronger, rea
 - Direct `/advisor <provider>/<model>` arguments are rejected. Use the full picker instead.
 - `/advisor off` disables future consultations while retaining the selected model, thinking level, and context window.
 
-When advisor is enabled, the executor's opening role changes to describe the executor-advisor workflow. The default budget is three consultations per user turn and twenty per session. The advisor receives the executor system prompt, active tool manifest, conversation, code, and tool output; selecting a different provider requires explicit confirmation. Advice is experimental and remains disabled until configured in the `advisor` namespace of the active settings profile.
+Enabling advisor adds the `advisor` tool without rewriting the executor's system prompt. The default budget is three consultations per user turn and twenty per session. The advisor receives the unchanged executor system prompt, active tool manifest, conversation, code, and tool output; selecting a different provider requires explicit confirmation. Advice is experimental and remains disabled until configured in the `advisor` namespace of the active settings profile.
 
 ## Settings profiles
 
