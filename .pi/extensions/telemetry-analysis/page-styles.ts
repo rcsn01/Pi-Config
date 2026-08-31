@@ -43,7 +43,8 @@ h2 { margin: 0 0 14px; font-size: 1.1rem; font-weight: 570; }
 .section-controls { display: flex; gap: 8px; margin: 10px 0 16px; }
 .section-controls button { padding: 6px 10px; background: var(--page-surface-raised); color: var(--page-text); border: 1px solid var(--page-line-strong); }
 .section-group { margin: 20px 0 8px; color: var(--page-text-soft); font-size: .92rem; font-weight: 600; }
-.analysis-section, .tool-section-group { margin: 6px 0; border-bottom: 1px solid var(--page-line); background: transparent; }
+.analysis-section, .tool-section-group { margin: 8px 0; border-bottom: 1px solid var(--page-line); background: transparent; }
+.analysis-section[open] { margin-bottom: 18px; }
 .analysis-section > summary, .tool-section-group > summary { position: relative; min-height: 34px; padding: 7px 0; background: transparent; cursor: pointer; list-style: none; }
 .analysis-section > summary::-webkit-details-marker, .tool-section-group > summary::-webkit-details-marker { display: none; }
 .analysis-section > summary::before, .tool-section-group > summary::before { display: inline-block; width: 16px; color: var(--page-accent); content: "▸"; }
@@ -55,7 +56,7 @@ h2 { margin: 0 0 14px; font-size: 1.1rem; font-weight: 570; }
 .section-label { position: relative; }
 .option-section > summary { background: transparent; }
 pre { max-height: 600px; overflow: auto; padding: 12px 0; background: transparent; color: var(--page-text-soft); white-space: pre-wrap; word-break: break-word; }
-.section-content { max-height: 600px; margin: 0; border-top: 1px solid var(--page-line); }
+.section-content { max-height: 600px; margin: 0; padding: 16px; border-top: 1px solid var(--page-line); font-size: .9rem; line-height: 1.55; }
 code { color: var(--page-text-soft); }
 details details { margin-top: 10px; }
 @media (max-width: 760px) {

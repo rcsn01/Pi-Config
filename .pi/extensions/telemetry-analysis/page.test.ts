@@ -106,7 +106,7 @@ describe("analysis page", () => {
 					{ name: "bash", description: "Run a command", parameters: { type: "object" } },
 					{ name: "edit", description: "Edit a file", parameters: { type: "object" } },
 				],
-				afterTools: "keeps its position",
+				afterTools: { role: "user", content: "first line\nsecond line" },
 				metadata: { "a/b~c": "decoded pointer value" },
 				model: "gpt-test",
 			}),
@@ -148,6 +148,9 @@ describe("analysis page", () => {
 		expect(toolContent).toContain("Read exact files");
 		expect(toolContent).toContain('"parameters"');
 		expect(toolContent).toContain('"type": "object"');
+		const messageContent = document.querySelector('[data-pointer="/afterTools"] pre')?.textContent;
+		expect(messageContent).toBe("role: user\ncontent:\nfirst line\nsecond line");
+		expect(messageContent).not.toContain("\\n");
 		expect(document.querySelector('[data-pointer="/metadata/a~1b~0c"] pre')?.textContent).toBe("decoded pointer value");
 
 		const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".section-controls button"));
