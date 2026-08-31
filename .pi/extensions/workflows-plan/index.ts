@@ -35,8 +35,8 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		{
 			name: "workflows-plan",
 			applyPath: (binding) => lifecycle.setProfilePath(binding.settingsPath),
-			initialize: (_binding, _event, ctx) => lifecycle.dispatch({ type: "sessionStarted", ctx }),
-			dispose: (_binding, ctx) => lifecycle.dispatch({ type: "sessionStopping", ctx }),
+			initialize: (binding, _event, ctx) => lifecycle.dispatch({ type: "sessionStarted", binding, ctx }),
+			dispose: (binding, ctx) => lifecycle.dispatch({ type: "sessionStopping", binding, ctx }),
 		},
 	);
 	const planBash = createBashTool(process.cwd(), {

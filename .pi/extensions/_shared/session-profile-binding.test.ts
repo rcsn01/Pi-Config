@@ -9,15 +9,14 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CONFIG_PROFILES_ENTRY_TYPE } from "./profile-document.ts";
 import {
-	clearSessionProfileHandoff,
 	registerSessionProfileBinding,
 	SESSION_PROFILE_ADAPTER_ORDER,
-	stageSessionProfileHandoff,
 	type SessionProfileAdapter,
 	type SessionProfileAdapterName,
 	type SessionProfileBinding,
 	type SessionProfileBindingRegistration,
 } from "./session-profile-binding.ts";
+import { createSessionProfileTransfer } from "./session-profile-transfer.ts";
 
 const roots: string[] = [];
 const registrations: SessionProfileBindingRegistration[] = [];
@@ -105,8 +104,6 @@ afterEach(async () => {
 	for (const registration of registrations) await registration.stop(event, {} as ExtensionContext).catch(() => {});
 	for (const registration of registrations) registration.unregister();
 	registrations.length = 0;
-	clearSessionProfileHandoff(undefined);
-	clearSessionProfileHandoff("parent.jsonl");
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -146,12 +143,21 @@ describe("Session profile binding", () => {
 		const markerPaths = fixture("focused");
 		const unboundPaths = fixture(null);
 		const observed: SessionProfileBinding[] = [];
-		stageSessionProfileHandoff("parent.jsonl", "handoff");
 		const handoff = register(handoffPaths, testAdapter("tools-advisor", [], { initialize: (binding) => { observed.push(binding); } }));
 		const marker = register(markerPaths, testAdapter("tools-advisor", [], { initialize: (binding) => { observed.push(binding); } }));
 		const unbound = register(unboundPaths, testAdapter("tools-advisor", [], { initialize: (binding) => { observed.push(binding); } }));
+		const parentCtx = {
+			sessionManager: { getSessionFile: () => "parent.jsonl" },
+			newSession: async () => {
+				await handoff.start(...Object.values(lifecycle([], "new", "parent.jsonl")) as [SessionStartEvent, ExtensionContext]);
+				return { cancelled: false };
+			},
+		} as any;
 
-		await handoff.start(...Object.values(lifecycle([], "new", "parent.jsonl")) as [SessionStartEvent, ExtensionContext]);
+		await createSessionProfileTransfer().openFreshSession(parentCtx, {
+			profileName: "handoff",
+			settingsPath: join(handoffPaths.profilesDirectory, "handoff.json"),
+		});
 		await marker.start(...Object.values(lifecycle([], "new", "other.jsonl")) as [SessionStartEvent, ExtensionContext]);
 		await unbound.start(...Object.values(lifecycle([], "startup")) as [SessionStartEvent, ExtensionContext]);
 
@@ -159,16 +165,48 @@ describe("Session profile binding", () => {
 		expect(observed[2]?.settingsPath).toBe(unboundPaths.settingsPath);
 	});
 
-	it("consults entries only on reload", async () => {
+	it("preserves an explicit unbound handoff instead of falling back to the marker", async () => {
 		const paths = fixture("marker");
-		stageSessionProfileHandoff("parent.jsonl", "handoff");
 		let observed: SessionProfileBinding | undefined;
 		const registration = register(paths, testAdapter("tools-advisor", [], {
 			initialize: (binding) => { observed = binding; },
 		}));
-		const { event, ctx } = lifecycle([], "reload", "parent.jsonl");
+		const parentCtx = {
+			sessionManager: { getSessionFile: () => "parent.jsonl" },
+			newSession: async () => {
+				const { event, ctx } = lifecycle([], "new", "parent.jsonl");
+				await registration.start(event, ctx);
+				return { cancelled: false };
+			},
+		} as any;
 
-		await registration.start(event, ctx);
+		await createSessionProfileTransfer().openFreshSession(parentCtx, {
+			profileName: undefined,
+			settingsPath: paths.settingsPath,
+		});
+
+		expect(observed).toEqual({ profileName: undefined, settingsPath: paths.settingsPath });
+	});
+
+	it("consults entries only on reload", async () => {
+		const paths = fixture("marker");
+		let observed: SessionProfileBinding | undefined;
+		const registration = register(paths, testAdapter("tools-advisor", [], {
+			initialize: (binding) => { observed = binding; },
+		}));
+		const parentCtx = {
+			sessionManager: { getSessionFile: () => "parent.jsonl" },
+			newSession: async () => {
+				const { event, ctx } = lifecycle([], "reload", "parent.jsonl");
+				await registration.start(event, ctx);
+				return { cancelled: false };
+			},
+		} as any;
+
+		await createSessionProfileTransfer().openFreshSession(parentCtx, {
+			profileName: "handoff",
+			settingsPath: join(paths.profilesDirectory, "handoff.json"),
+		});
 
 		expect(observed).toEqual({ profileName: undefined, settingsPath: paths.settingsPath });
 	});

@@ -9,8 +9,8 @@ import {
 	profilesDirectoryFor,
 	readActiveProfileName,
 	sessionProfileName,
-	validateProfileName,
 } from "./profile-document.ts";
+import { readSessionProfileHandoff } from "./session-profile-transfer.ts";
 
 /** Why a session started; only reload changes Profile resolution. */
 export type SessionBoundaryReason = "startup" | "reload" | "new" | "resume" | "fork";
@@ -25,6 +25,7 @@ export interface SessionProfileBinding {
 
 export const SESSION_PROFILE_ADAPTER_ORDER = [
 	"config-profiles",
+	"ui-clear",
 	"policy-permissions",
 	"tools-advisor",
 	"tools-subagents",
@@ -70,44 +71,6 @@ export interface SessionProfileBindingRegistration {
 	unregister(): void;
 }
 
-const SESSION_PROFILE_HANDOFF_KEY = Symbol.for("pi.extensions.config-profiles.session-handoff.v1");
-
-interface SessionProfileHandoff {
-	previousSessionFile?: string;
-	profile: string;
-}
-
-function sessionProfileHandoff(): SessionProfileHandoff | undefined {
-	const globals = globalThis as typeof globalThis & { [SESSION_PROFILE_HANDOFF_KEY]?: SessionProfileHandoff };
-	return globals[SESSION_PROFILE_HANDOFF_KEY];
-}
-
-/** Stage a Profile for a fresh session before its session_start handlers run. */
-export function stageSessionProfileHandoff(previousSessionFile: string | undefined, profile: string | undefined): void {
-	const globals = globalThis as typeof globalThis & { [SESSION_PROFILE_HANDOFF_KEY]?: SessionProfileHandoff };
-	if (profile === undefined) {
-		clearSessionProfileHandoff(previousSessionFile);
-		return;
-	}
-	globals[SESSION_PROFILE_HANDOFF_KEY] = {
-		previousSessionFile,
-		profile: validateProfileName(profile),
-	};
-}
-
-function readSessionProfileHandoff(previousSessionFile: string | undefined): string | undefined {
-	const handoff = sessionProfileHandoff();
-	if (!handoff || handoff.previousSessionFile !== previousSessionFile) return undefined;
-	return handoff.profile;
-}
-
-/** Clear a completed or cancelled Profile handoff. */
-export function clearSessionProfileHandoff(previousSessionFile: string | undefined): void {
-	const globals = globalThis as typeof globalThis & { [SESSION_PROFILE_HANDOFF_KEY]?: SessionProfileHandoff };
-	const handoff = globals[SESSION_PROFILE_HANDOFF_KEY];
-	if (handoff && handoff.previousSessionFile === previousSessionFile) delete globals[SESSION_PROFILE_HANDOFF_KEY];
-}
-
 interface SessionProfileSlot {
 	readonly binding: SessionProfileBinding;
 	readonly origin: SessionProfileOrigin;
@@ -147,14 +110,16 @@ function resolveSessionProfileSlot(input: {
 	}
 
 	if (input.reason !== "reload") {
-		const fromHandoff = input.reason === "new"
+		const handoff = input.reason === "new"
 			? readSessionProfileHandoff(input.previousSessionFile)
 			: undefined;
-		if (fromHandoff !== undefined) {
+		if (handoff !== undefined) {
 			return {
 				binding: Object.freeze({
-					profileName: fromHandoff,
-					settingsPath: profilePath(input.profilesDirectory, fromHandoff),
+					profileName: handoff.profileName,
+					settingsPath: handoff.profileName === undefined
+						? input.settingsPath
+						: profilePath(input.profilesDirectory, handoff.profileName),
 				}),
 				origin: "handoff",
 				remembered: false,

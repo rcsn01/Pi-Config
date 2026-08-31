@@ -30,6 +30,8 @@ export interface HarnessOptions {
 	editorPromise?: Promise<string | undefined>;
 	editorSubmitAvailable?: boolean;
 	newSessionCancelled?: boolean;
+	newSessionError?: Error;
+	freshSendUserMessageError?: Error;
 	model?: any;
 	thinkingLevel?: ModelThinkingLevel;
 	availableModels?: any[];
@@ -94,13 +96,17 @@ export function createHarness(options: HarnessOptions = {}) {
 	const setStatus = vi.fn();
 	const editor = vi.fn(async () => options.editorPromise ? await options.editorPromise : options.editorResult);
 	const setEditorText = vi.fn();
-	const freshSendUserMessage = vi.fn();
+	const freshSendUserMessage = vi.fn(async () => {
+		if (options.freshSendUserMessageError) throw options.freshSendUserMessageError;
+	});
 	const freshAppendCustomEntry = vi.fn();
 	const newSession = vi.fn(async (sessionOptions?: any) => {
 		timeline.push("newSession");
+		if (options.newSessionError) throw options.newSessionError;
+		if (options.newSessionCancelled) return { cancelled: true };
 		await sessionOptions?.setup?.({ appendCustomEntry: freshAppendCustomEntry });
 		await sessionOptions?.withSession?.({ sendUserMessage: freshSendUserMessage });
-		return { cancelled: options.newSessionCancelled ?? false };
+		return { cancelled: false };
 	});
 	let currentEditorFactory: any;
 	const getEditorComponent = vi.fn(() => currentEditorFactory);
@@ -249,9 +255,13 @@ export function createHarness(options: HarnessOptions = {}) {
 
 	createPlanModeExtension(runtimeDependencies)(pi);
 
-	async function emit(event: string, payload: any = { type: event }): Promise<any[]> {
+	async function emit(
+		event: string,
+		payload: any = { type: event },
+		eventContext: ExtensionContext = ctx,
+	): Promise<any[]> {
 		const results = [];
-		for (const handler of handlers.get(event) ?? []) results.push(await handler(payload, ctx));
+		for (const handler of handlers.get(event) ?? []) results.push(await handler(payload, eventContext));
 		return results;
 	}
 

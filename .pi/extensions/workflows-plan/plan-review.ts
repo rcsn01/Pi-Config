@@ -4,10 +4,11 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { EditorComponent } from "@earendil-works/pi-tui";
+import type { SessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
-	CONFIG_PROFILES_ENTRY_TYPE,
-	sessionProfileName,
-} from "../_shared/profile-document.ts";
+	sessionProfileTransfer,
+	type SessionProfileTransfer,
+} from "../_shared/session-profile-transfer.ts";
 import {
 	isAmbiguousPlanAcceptance,
 	isDuplicatePlanText,
@@ -72,6 +73,7 @@ export interface PlanReviewSnapshot {
 
 export interface PlanReviewHost {
 	getSnapshot(): PlanReviewSnapshot;
+	getSessionProfileBinding(ctx: ExtensionContext): SessionProfileBinding | undefined;
 	exitPlanMode(ctx: ExtensionContext): Promise<boolean>;
 	enterPlanMode(ctx: ExtensionContext): Promise<boolean>;
 	markPlanPrompted(signature: string): void;
@@ -132,7 +134,10 @@ function isCommandContext(ctx: ExtensionContext): ctx is ExtensionCommandContext
 	return typeof (ctx as any).newSession === "function";
 }
 
-export function createPlanReviewController(host: PlanReviewHost): PlanReviewController {
+export function createPlanReviewController(
+	host: PlanReviewHost,
+	transfer: SessionProfileTransfer = sessionProfileTransfer,
+): PlanReviewController {
 	let pendingFreshImplementationPlan: string | undefined;
 
 	function clearDeferredPlan(): void {
@@ -156,27 +161,28 @@ export function createPlanReviewController(host: PlanReviewHost): PlanReviewCont
 	}
 
 	async function startFreshImplementation(ctx: ExtensionCommandContext, plan: string): Promise<void> {
+		const binding = host.getSessionProfileBinding(ctx);
+		if (!binding) {
+			ctx.ui.notify(
+				"Cannot start fresh implementation because the Session profile binding is unavailable.",
+				"error",
+			);
+			return;
+		}
+
 		const signature = planSignature(plan);
-		const profileName = sessionProfileName(ctx.sessionManager.getBranch());
 		pendingFreshImplementationPlan = undefined;
 		if (!(await host.exitPlanMode(ctx))) return;
 		ctx.ui.notify("Plan mode exited. Starting fresh implementation session…", "info");
 
-		const parentSession = ctx.sessionManager.getSessionFile();
 		const handoffPrompt = `${PLAN_IMPLEMENT_FRESH_PREFIX}\n\n${plan}`;
-		const result = await ctx.newSession({
-			parentSession: parentSession || undefined,
-			setup: async (sessionManager) => {
-				if (profileName) {
-					sessionManager.appendCustomEntry(CONFIG_PROFILES_ENTRY_TYPE, { active: profileName });
-				}
-			},
-			withSession: async (freshCtx) => {
+		const result = await transfer.openFreshSession(ctx, binding, {
+			withFreshSession: async (freshCtx) => {
 				await freshCtx.sendUserMessage(handoffPrompt);
 			},
 		});
 
-		if (result.cancelled && await host.enterPlanMode(ctx)) {
+		if (result.status === "cancelled" && await host.enterPlanMode(ctx)) {
 			host.restoreReviewedPlan(ctx, plan, signature);
 			ctx.ui.notify("Fresh implementation session cancelled. Plan mode restored.", "info");
 		}

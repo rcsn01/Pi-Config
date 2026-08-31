@@ -21,6 +21,11 @@ import type {
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
+import type { SessionProfileBinding } from "../_shared/session-profile-binding.ts";
+import {
+	sessionProfileTransfer,
+	type SessionProfileTransfer,
+} from "../_shared/session-profile-transfer.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { UI_GLYPHS } from "../_shared/ui-style.ts";
 import {
@@ -77,6 +82,7 @@ import {
 export interface PlanModeDependencies {
 	settingsPath?: string;
 	profileStore?: PlanModeProfileStore;
+	sessionProfileTransfer?: SessionProfileTransfer;
 	nativeDefaults?: PiNativeDefaults;
 	normalDefaultsStore?: NormalDefaultsStore;
 	waitForNativePersistence?: () => Promise<void>;
@@ -86,6 +92,7 @@ export interface PlanModeDependencies {
 
 export interface PlanLifecycleSessionStarted {
 	type: "sessionStarted";
+	binding: SessionProfileBinding;
 	ctx: ExtensionContext;
 }
 
@@ -96,6 +103,7 @@ export interface PlanLifecycleBranchChanged {
 
 export interface PlanLifecycleSessionStopping {
 	type: "sessionStopping";
+	binding: SessionProfileBinding;
 	ctx: ExtensionContext;
 }
 
@@ -282,6 +290,7 @@ export function createPlanLifecycle(
 	let pendingModeRequest: { target: AgentMode; prompt?: string; task?: string } | undefined;
 	let lastPromptedMode: AgentMode | undefined;
 	let runtimeContext: ExtensionContext | undefined;
+	let currentSessionProfile: { binding: SessionProfileBinding; sessionId: string } | undefined;
 	let requestModeRevision: number | undefined;
 	let modeRevisionCounter = planState.revision;
 	let hasReconstructedState = false;
@@ -699,6 +708,10 @@ export function createPlanLifecycle(
 			latestPlanKey: latestProposedPlanKey,
 			lifecycleGeneration,
 		}),
+		getSessionProfileBinding: (ctx) =>
+			currentSessionProfile?.sessionId === ctx.sessionManager.getSessionId()
+				? currentSessionProfile.binding
+				: undefined,
 		exitPlanMode,
 		enterPlanMode,
 		markPlanPrompted(signature) {
@@ -720,7 +733,7 @@ export function createPlanLifecycle(
 		},
 		appendEntry: (customType, data) => pi.appendEntry(customType, data),
 		sendUserMessage: (message, options) => pi.sendUserMessage(message, options),
-	});
+	}, dependencies.sessionProfileTransfer ?? sessionProfileTransfer);
 
 	function clearPendingMode(ctx: ExtensionContext): void {
 		pendingModeRequest = undefined;
@@ -854,6 +867,10 @@ export function createPlanLifecycle(
 	async function dispatch<E extends PlanLifecycleEvent>(event: E): Promise<PlanLifecycleResult<E>> {
 		switch (event.type) {
 			case "sessionStarted":
+				currentSessionProfile = {
+					binding: event.binding,
+					sessionId: event.ctx.sessionManager.getSessionId(),
+				};
 				clearPendingMode(event.ctx);
 				lastPromptedMode = undefined;
 				await reconstruct(event.ctx);
@@ -863,6 +880,11 @@ export function createPlanLifecycle(
 				await reconstruct(event.ctx);
 				return undefined as PlanLifecycleResult<E>;
 			case "sessionStopping":
+				if (
+					currentSessionProfile?.binding !== event.binding ||
+					currentSessionProfile.sessionId !== event.ctx.sessionManager.getSessionId()
+				) return undefined as PlanLifecycleResult<E>;
+				currentSessionProfile = undefined;
 				clearPendingMode(event.ctx);
 				lifecycleGeneration++;
 				await enqueueLifecycle(async () => {

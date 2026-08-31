@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import safetyPermissions, { createSafetyPermissionsExtension } from "./index.ts";
 import { saveModeToFile } from "./mode-store.ts";
-import { clearSessionProfileHandoff, stageSessionProfileHandoff } from "../_shared/session-profile-binding.ts";
+import { createSessionProfileTransfer } from "../_shared/session-profile-transfer.ts";
 
 const mocked = vi.hoisted(() => ({
 	runAutoReviewer: vi.fn(),
@@ -204,24 +204,32 @@ describe("guardian model command", () => {
 			contextWindow: 256_000,
 		});
 
-		stageSessionProfileHandoff(previousSessionFile, "focused");
-		try {
-			const harness = createHarness({ settingsPath, branch: [] });
-			await harness.handlers.get("session_start")?.({
-				reason: "new",
-				previousSessionFile,
-			}, harness.ctx);
+		const harness = createHarness({ settingsPath, branch: [] });
+		const parentCtx = {
+			sessionManager: { getSessionFile: () => previousSessionFile },
+			newSession: async (options: any) => {
+				await harness.handlers.get("session_start")?.({
+					reason: "new",
+					previousSessionFile,
+				}, harness.ctx);
+				await options.setup?.({ appendCustomEntry: vi.fn() });
+				await options.withSession?.(harness.ctx);
+				return { cancelled: false };
+			},
+		} as any;
 
-			await harness.commands.get("guardian").handler("", harness.ctx);
+		await createSessionProfileTransfer().openFreshSession(parentCtx, {
+			profileName: "focused",
+			settingsPath: join(profilesDirectory, "focused.json"),
+		}, {
+			withFreshSession: async () => harness.commands.get("guardian").handler("", harness.ctx),
+		});
 
-			expect(JSON.parse(readFileSync(join(profilesDirectory, "focused.json"), "utf8"))).toMatchObject({
-				keep: true,
-				guardian: { provider: "anthropic", modelId: "strong", thinkingLevel: "high", contextWindow: 256_000 },
-			});
-			expect(JSON.parse(readFileSync(join(profilesDirectory, "other.json"), "utf8"))).toEqual({ keep: "other" });
-		} finally {
-			clearSessionProfileHandoff(previousSessionFile);
-		}
+		expect(JSON.parse(readFileSync(join(profilesDirectory, "focused.json"), "utf8"))).toMatchObject({
+			keep: true,
+			guardian: { provider: "anthropic", modelId: "strong", thinkingLevel: "high", contextWindow: 256_000 },
+		});
+		expect(JSON.parse(readFileSync(join(profilesDirectory, "other.json"), "utf8"))).toEqual({ keep: "other" });
 	});
 });
 

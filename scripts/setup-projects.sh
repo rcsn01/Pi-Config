@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Link a project's .pi directory to this Pi-Config project's .pi.
 # Run with no arguments to be prompted for project paths, or pass one or more
-# project paths as arguments. Assumes this script lives in the Pi-Config root.
+# project paths as arguments. Assumes this script lives in Pi-Config/scripts.
 
-PI_CONFIG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+PI_CONFIG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 TARGET_DIR="$PI_CONFIG_DIR/.pi"
 
 if [[ ! -d "$TARGET_DIR" ]]; then
