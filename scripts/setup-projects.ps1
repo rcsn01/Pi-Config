@@ -1,13 +1,13 @@
 [CmdletBinding()]
 param(
-	[string]$ConfigRoot = $PSScriptRoot,
+	[string]$ConfigRoot = (Split-Path -Parent $PSScriptRoot),
 	[Parameter(ValueFromRemainingArguments = $true)]
 	[string[]]$ProjectPaths
 )
 
 # Link a project's .pi directory to this Pi-Config project's .pi.
 # Run with no arguments to be prompted for project paths, or pass one or more
-# project paths as arguments. Assumes this script lives in the Pi-Config root.
+# project paths as arguments. Assumes this script lives in Pi-Config/scripts.
 
 $ErrorActionPreference = "Stop"
 

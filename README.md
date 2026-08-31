@@ -48,8 +48,8 @@ The `provider-usage` extension's `/usage codex` command queries every saved Pi C
 
 Run the setup script and enter the path to each project you want to link:
 
-- macOS/Linux: `./setup-projects.sh`
-- Windows: `.\setup-projects.ps1`
+- macOS/Linux: `./scripts/setup-projects.sh`
+- Windows: `.\scripts\setup-projects.ps1`
 
 This links the project's `.pi` directory to this repo's `.pi`, so it picks up the shared configuration.
 

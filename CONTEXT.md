@@ -91,6 +91,9 @@ extension.
   failures, and performs reverse cleanup. Registration accepts the required
   Settings document path plus an optional custom Profiles directory; when the
   latter is omitted, it is derived next to the Settings document.
+- **Session profile transfer** — explicit retention of the resolved Profile when
+  one fresh Session replaces another; cancellation leaves the original Session
+  and its Profile unchanged.
 - **Plan Mode lifecycle** — the deep orchestration module that owns live Plan
   State, transitions, Profile rollback, tool projection, proposed-plan state,
   and ordering across Plan Runtime and Plan Review.

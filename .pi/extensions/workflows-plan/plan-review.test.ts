@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createPlanReviewController } from "./plan-review.ts";
 import {
 	actionLabels,
 	activePlanningEntry,
@@ -213,6 +214,10 @@ describe("simple plan review UI", () => {
 			],
 		});
 		await initializeAndExtract(harness, "# Fresh Plan");
+		harness.setBranch([
+			activePlanningEntry(),
+			{ type: "custom", customType: "configProfiles", data: { active: "default" } },
+		]);
 		await harness.emit("agent_settled");
 
 		expect(harness.timeline).toContain("submit:/plan-implement-fresh");
@@ -224,6 +229,103 @@ describe("simple plan review UI", () => {
 		expect(harness.freshSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("# Fresh Plan"));
 		expect(harness.setEditorText).not.toHaveBeenCalled();
 		expect(harness.sendUserMessage).not.toHaveBeenCalled();
+	});
+
+	it("keeps an unbound Session unbound during fresh implementation", async () => {
+		const harness = createHarness({
+			selection: "Clear context and implement (recommended)",
+			branch: [activePlanningEntry()],
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "reload" });
+		await harness.emit("message_end", {
+			type: "message_end",
+			message: assistantWithPlan("# Unbound Fresh Plan"),
+		});
+		await harness.emit("agent_settled");
+
+		expect(harness.newSession).toHaveBeenCalledOnce();
+		expect(harness.freshAppendCustomEntry).not.toHaveBeenCalled();
+	});
+
+	it("does not leave Plan Mode when the Session profile binding is unavailable", async () => {
+		const notify = vi.fn();
+		const exitPlanMode = vi.fn(async () => true);
+		const newSession = vi.fn();
+		const controller = createPlanReviewController({
+			getSnapshot: () => ({
+				state: { mode: "plan", revision: 1, changedAt: "now", phase: "awaiting_review" } as any,
+				latestPlan: "# Plan",
+				lifecycleGeneration: 1,
+			}),
+			getSessionProfileBinding: () => undefined,
+			exitPlanMode,
+			enterPlanMode: vi.fn(async () => true),
+			markPlanPrompted: vi.fn(),
+			restoreReviewedPlan: vi.fn(),
+			appendEntry: vi.fn(),
+			sendUserMessage: vi.fn(),
+		});
+		const ctx = {
+			newSession,
+			ui: { notify },
+			sessionManager: { getSessionId: () => "session" },
+		} as any;
+
+		await controller.implementDeferredFresh(ctx);
+
+		expect(exitPlanMode).not.toHaveBeenCalled();
+		expect(newSession).not.toHaveBeenCalled();
+		expect(notify).toHaveBeenCalledWith(
+			"Cannot start fresh implementation because the Session profile binding is unavailable.",
+			"error",
+		);
+	});
+
+	it("ignores a late shutdown from an older Session after a newer binding starts", async () => {
+		const harness = createHarness();
+		await initializeAndExtract(harness, "# Current Plan");
+		const newerCtx = {
+			...harness.ctx,
+			sessionManager: {
+				...harness.ctx.sessionManager,
+				getSessionId: () => "newer-session",
+			},
+		} as any;
+		await harness.emit(
+			"session_start",
+			{ type: "session_start", reason: "reload" },
+			newerCtx,
+		);
+		const disposalsBeforeStaleShutdown = harness.sandboxDispose.mock.calls.length;
+
+		await harness.emit(
+			"session_shutdown",
+			{ type: "session_shutdown", reason: "switch" },
+			harness.ctx,
+		);
+
+		expect(harness.sandboxDispose).toHaveBeenCalledTimes(disposalsBeforeStaleShutdown);
+	});
+
+	it.each([
+		["newSession", { newSessionError: new Error("new session failed") }],
+		["fresh prompt", { freshSendUserMessageError: new Error("fresh prompt failed") }],
+	] as const)("propagates %s failure without cancellation restoration", async (_label, failureOptions) => {
+		const harness = createHarness({
+			selection: "Clear context and implement (recommended)",
+			...failureOptions,
+		});
+		await initializeAndExtract(harness, "# Failed Fresh Plan");
+
+		await expect(harness.emit("agent_settled")).rejects.toThrow(/failed/);
+		expect(harness.notify).not.toHaveBeenCalledWith(
+			"Fresh implementation session cancelled. Plan mode restored.",
+			"info",
+		);
+		const persistedStates = harness.appendedEntries
+			.filter((entry) => entry.customType === "plan-mode-state")
+			.map((entry) => entry.data);
+		expect(persistedStates.at(-1)).toMatchObject({ mode: "default" });
 	});
 
 	it("restores Plan Mode and the reviewed plan when fresh-session creation is cancelled", async () => {

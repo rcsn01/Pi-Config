@@ -5,9 +5,9 @@ set -euo pipefail
 #   APPEND_SYSTEM.md, extensions, profiles, skills, themes, settings.json
 # Idempotent: existing correct links report ok, foreign links and real files
 # are skipped, never overwritten. Run from anywhere; assumes this script
-# lives in the Pi-Config root.
+# lives in Pi-Config/scripts.
 
-PI_CONFIG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+PI_CONFIG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SOURCE_DIR="$PI_CONFIG_DIR/.pi"
 AGENT_DIR="$HOME/.pi/agent"
 
