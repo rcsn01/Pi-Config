@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ADVISOR_EXECUTOR_ROLE } from "../tools-advisor/prompt.ts";
 import {
 	buildGuidelines,
 	insertGuidelines,
@@ -180,8 +179,11 @@ describe("insertGuidelines", () => {
 });
 
 describe("SYSTEM.md contract", () => {
-	it("contains the advisor executor persona verbatim (tools-advisor transform no-op guard)", () => {
+	it("starts with a standalone coding-agent role that does not depend on advisor", () => {
 		const systemMd = readFileSync(join(projectRoot, "SYSTEM.md"), "utf-8");
-		expect(systemMd).toContain(ADVISOR_EXECUTOR_ROLE);
+		expect(systemMd.startsWith(
+			"You are a coding agent operating inside pi. Your job is to inspect the repository, gather evidence, execute commands, edit files, and verify the result.",
+		)).toBe(true);
+		expect(systemMd.toLowerCase()).not.toContain("advisor");
 	});
 });
