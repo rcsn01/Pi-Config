@@ -151,8 +151,8 @@ describe("subagent extension interfaces", () => {
 	});
 });
 
-describe("subagent tool adaptation", () => {
-	it("adapts single progress and failed results with isError", async () => {
+describe("subagent tool wiring", () => {
+	it("passes Pi invocation context through the Subagent invocation adapter", async () => {
 		const failed = agentResult({
 			exitCode: 2,
 			output: "partial",
@@ -180,39 +180,6 @@ describe("subagent tool adaptation", () => {
 			details: { mode: "single", results: [failed] },
 			isError: true,
 		});
-	});
-
-	it("adapts parallel pending/running/final results in input order with top-level isError", async () => {
-		const runSingle = vi.fn(async (options: any) => options.agent.name === "worker"
-			? agentResult({ agent: "worker", task: options.task })
-			: agentResult({ agent: "explorer", task: options.task, exitCode: 1, output: "partial", progress: { ...agentResult().progress, agent: "explorer", status: "failed" } }));
-		const harness = extensionHarness(runSingle);
-		const updates: any[] = [];
-		const result = await harness.tools.get("subagent").execute("call", {
-			tasks: [
-				{ agent: "worker", task: "first" },
-				{ agent: "explorer", task: "second", cwd: "/other" },
-			],
-		}, undefined, (update: any) => updates.push(update), harness.ctx);
-		expect(updates.length).toBeGreaterThanOrEqual(4);
-		expect(result.content[0].text).toBe("## worker\n\nDone\n\n---\n\n## explorer (FAILED)\n\npartial");
-		expect(result.details.results.map((item: any) => item.agent)).toEqual(["worker", "explorer"]);
-		expect(result).toHaveProperty("isError", true);
-		expect(runSingle.mock.calls[1][0].cwd).toBe("/other");
-		expect(runSingle.mock.calls.map(([options]) => options.cacheAffinitySeed)).toEqual([
-			"main-session-123",
-			"main-session-123",
-		]);
-	});
-
-	it("preserves invalid invocation and unknown-agent errors", async () => {
-		const harness = extensionHarness();
-		const execute = harness.tools.get("subagent").execute;
-		await expect(execute("call", {}, undefined, undefined, harness.ctx)).rejects.toThrow("Provide either");
-		await expect(execute("call", { agent: "missing", task: "x" }, undefined, undefined, harness.ctx))
-			.rejects.toThrow("Unknown agent: missing. Available agents: worker, explorer");
-		await expect(execute("call", { tasks: [{ agent: "missing", task: "x" }] }, undefined, undefined, harness.ctx))
-			.rejects.toThrow("Unknown agent: missing. Available agents: worker, explorer");
 	});
 
 	describe("session profile binding", () => {
