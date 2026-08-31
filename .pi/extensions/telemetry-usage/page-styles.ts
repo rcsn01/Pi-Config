@@ -1,10 +1,8 @@
 import { DASHBOARD_BASE_STYLES } from "../_shared/dashboard-styles.ts";
 
 export const TELEMETRY_USAGE_PAGE_STYLES = String.raw`${DASHBOARD_BASE_STYLES}
-.subtitle, .secret { margin: 0; color: var(--page-text-muted); }
-.secret { margin-top: 7px; font-size: .86rem; color: var(--page-accent); }
-.header-actions { display: flex; align-items: center; gap: 12px; }
-#refresh { padding: 9px 14px; white-space: nowrap; }
+.topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 30px; }
+#refresh { flex: 0 0 auto; padding: 9px 14px; white-space: nowrap; }
 .status { min-height: 0; padding: 0; border: 0; background: transparent; }
 .status[data-phase="scanning"] { color: var(--page-accent); }
 .status[data-phase="error"] { color: var(--page-text-soft); }
@@ -16,7 +14,7 @@ export const TELEMETRY_USAGE_PAGE_STYLES = String.raw`${DASHBOARD_BASE_STYLES}
 .card-value { display: block; overflow: hidden; color: var(--page-text); font-size: 1.45rem; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
 .overview-card .card-value { font-size: clamp(1.2rem, 2.2vw, 1.65rem); }
 .card-detail { display: block; margin-top: 3px; overflow: hidden; color: var(--page-text-soft); font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }
-.tabs { display: flex; gap: 18px; overflow-x: auto; margin-bottom: 12px; }
+.tabs { display: flex; gap: 18px; overflow-x: auto; }
 .tab { padding: 8px 0 6px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--page-text-muted); white-space: nowrap; }
 .tab:hover:not(:disabled) { border-bottom-color: var(--page-line-strong); background: transparent; }
 .tab[aria-selected="true"] { border-bottom-color: var(--page-accent); background: transparent; color: var(--page-text); }
@@ -96,7 +94,7 @@ tbody tr:hover td { background: var(--page-surface-raised); }
 	.overview-lower { grid-template-columns: 1fr; gap: 24px; }
 }
 @media (max-width: 760px) {
-	.header-actions { margin-top: 14px; }
+	.topbar { gap: 14px; }
 	.cards { grid-template-columns: repeat(2, minmax(110px, 1fr)); gap: 20px; }
 	.card { padding: 3px 0; }
 	.card:nth-child(n + 3) { margin-top: 14px; }
