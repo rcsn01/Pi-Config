@@ -123,8 +123,33 @@ function pointerValue(root, pointer) {
 	);
 }
 
-function displayValue(value) {
+function readableMessage(value, kind) {
+	if (!['instruction', 'conversation', 'reasoning'].includes(kind)
+		|| value === null || typeof value !== 'object' || Array.isArray(value)
+		|| !Object.hasOwn(value, 'content')) return null;
+	const fields = Object.entries(value)
+		.filter(([key]) => key !== 'content')
+		.map(([key, fieldValue]) => key + ': ' + (typeof fieldValue === 'string'
+			? fieldValue
+			: JSON.stringify(fieldValue, null, 2)));
+	let content = value.content;
+	if (Array.isArray(content)) {
+		content = content.map((part, index) => {
+			if (part && typeof part === 'object' && typeof part.text === 'string') {
+				return '[' + (part.type || 'part ' + (index + 1)) + ']\n' + part.text;
+			}
+			return JSON.stringify(part, null, 2);
+		}).join('\n\n');
+	} else if (typeof content !== 'string') {
+		content = JSON.stringify(content, null, 2);
+	}
+	return fields.concat('content:', content ?? '').join('\n');
+}
+
+function displayValue(value, kind) {
 	if (typeof value === 'string') return value;
+	const readable = readableMessage(value, kind);
+	if (readable !== null) return readable;
 	const json = JSON.stringify(value, null, 2);
 	return json === undefined ? 'Value is missing from the captured request.' : json;
 }
@@ -159,7 +184,7 @@ function sectionDetails(section, root) {
 
 	const content = document.createElement('pre');
 	content.className = 'section-content';
-	text(content, displayValue(pointerValue(root, section.pointer)));
+	text(content, displayValue(pointerValue(root, section.pointer), section.kind));
 	details.append(summary, content);
 	return details;
 }
