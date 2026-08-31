@@ -1,8 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveSubagentSessionId } from "./cache-affinity.ts";
 import { getObservabilityService, resetObservabilityServiceForTests } from "../_shared/observability.ts";
-import { createRelayParser, createSubagentRunner, MAX_RELAY_MESSAGE_BYTES } from "./subagent-runner.ts";
+import { createSubagentRunner } from "./subagent-runner.ts";
 import {
 	agent,
 	emitProcessResult,
@@ -76,19 +76,13 @@ describe("single subagent runner", () => {
 		expect(updates.length).toBeGreaterThan(0);
 	});
 
-	it("loads the observer only for active capture and relays bounded events over fd 3", async () => {
+	it("delivers child events through the observation seam when capture is active", async () => {
 		const observed: any[] = [];
 		const unsubscribe = getObservabilityService().activate((event) => observed.push(event));
 		const spawn = spawnHarness();
 		const run = createSubagentRunner({ registry: memoryRegistry(), config: memoryConfigStore(), spawnProcess: spawn.spawnProcess });
 		const promise = run({ agent: "worker", task: "observe", cwd: "/workspace" });
 		await waitForProcess(spawn.processes);
-		const [, args, options] = spawn.spawnProcess.mock.calls[0];
-		const observerPath = args.find((value) => value.endsWith("telemetry-analysis/child-observer.ts"));
-		expect(observerPath).toBeDefined();
-		expect(existsSync(observerPath!)).toBe(true);
-		expect(options).toMatchObject({ stdio: ["ignore", "pipe", "pipe", "pipe"], env: { PI_ANALYSIS_RELAY_FD: "3" } });
-
 		const request = JSON.stringify({ type: "request", provider: "openai", api: "openai-responses", model: "gpt", payload: { exact: true } });
 		spawn.processes[0].stdout.write(`${request}\n`);
 		spawn.processes[0].stdio[3].write("not-json\n" + JSON.stringify({ type: "agent_start" }) + "\n" + JSON.stringify({ type: "turn_start", turnIndex: 0 }) + "\n" + request.slice(0, 17));
@@ -101,31 +95,12 @@ describe("single subagent runner", () => {
 		unsubscribe();
 	});
 
-	it("drops malformed and oversized relay frames without losing later messages", () => {
-		const events: any[] = [];
-		const parser = createRelayParser((event) => events.push(event));
-		parser.push("{bad}\n");
-		parser.push("x".repeat(MAX_RELAY_MESSAGE_BYTES + 1));
-		parser.push("\n" + JSON.stringify({ type: "agent_start" }) + "\n");
-		parser.push(JSON.stringify({ type: "turn_start", turnIndex: 4 }));
-		const unicode = Buffer.from("\n" + JSON.stringify({ type: "assistant", message: { role: "assistant", content: "café" } }) + "\n");
-		const split = unicode.indexOf(Buffer.from("é")) + 1;
-		parser.push(unicode.subarray(0, split));
-		parser.push(unicode.subarray(split));
-		parser.end();
-		expect(events).toEqual([
-			{ type: "agent_start" }, { type: "turn_start", turnIndex: 4 },
-			{ type: "assistant", message: { role: "assistant", content: "café" } },
-		]);
-	});
-
 	it("keeps child launch unchanged while capture is inactive", async () => {
 		const spawn = spawnHarness();
 		const run = createSubagentRunner({ registry: memoryRegistry(), config: memoryConfigStore(), spawnProcess: spawn.spawnProcess });
 		const promise = run({ agent: "worker", task: "plain", cwd: "/workspace" });
 		await waitForProcess(spawn.processes);
-		const [, args, options] = spawn.spawnProcess.mock.calls[0];
-		expect(args.some((value) => value.endsWith("telemetry-analysis/child-observer.ts"))).toBe(false);
+		const [, , options] = spawn.spawnProcess.mock.calls[0];
 		expect(options).toEqual({ cwd: "/workspace", stdio: ["ignore", "pipe", "pipe"] });
 		spawn.processes[0].emit("close", 0);
 		await promise;

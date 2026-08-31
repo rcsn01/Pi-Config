@@ -2,10 +2,7 @@ import type { AgentResult } from "../_shared/subagent-service.ts";
 import type { ParallelBatchTask, ParallelSubagentBatch } from "./parallel-batch.ts";
 
 export interface SubagentInvocationParameters {
-	agent?: string;
-	task?: string;
-	tasks?: readonly ParallelBatchTask[];
-	cwd?: string;
+	tasks: readonly ParallelBatchTask[];
 }
 
 export interface SubagentInvocationOptions {
@@ -69,24 +66,12 @@ export function createSubagentInvocationAdapter(
 ): SubagentInvocationAdapter {
 	return {
 		async execute(parameters, options) {
-			const hasParallelInvocation = Boolean(parameters.tasks?.length);
-			const hasSingleFields = parameters.agent !== undefined || parameters.task !== undefined || parameters.cwd !== undefined;
-			const hasCompleteSingleInvocation = Boolean(parameters.agent && parameters.task);
-			if (
-				(hasParallelInvocation && hasSingleFields) ||
-				(!hasParallelInvocation && !hasCompleteSingleInvocation)
-			) {
-				throw new Error("Provide exactly one invocation mode: agent + task for single mode, or a non-empty tasks[] for parallel mode.");
+			if (parameters.tasks.length === 0) {
+				throw new Error("Provide at least one subagent task.");
 			}
 
-			const mode = hasParallelInvocation ? "parallel" : "single";
-			const tasks = mode === "parallel"
-				? parameters.tasks!
-				: [{
-					agent: parameters.agent!,
-					task: parameters.task!,
-					...(parameters.cwd ? { cwd: parameters.cwd } : {}),
-				}];
+			const tasks = parameters.tasks;
+			const mode = tasks.length === 1 ? "single" : "parallel";
 			let displayedResults: readonly AgentResult[] = [];
 			const publishUpdate = () => options.onUpdate?.({
 				content: [{

@@ -1,10 +1,7 @@
 export const ANALYSIS_PAGE_CLIENT = String.raw`
 'use strict';
 
-const token = new URLSearchParams(location.hash.slice(1)).get('token');
-history.replaceState(null, '', location.pathname);
-
-const auth = { Authorization: 'Bearer ' + token };
+const requests = createDashboardRequestLifecycle();
 const requestList = document.getElementById('requestList');
 const detailPane = document.getElementById('detailPane');
 const sourceTabs = document.getElementById('sourceTabs');
@@ -23,7 +20,6 @@ let activeChannel = 'main';
 let selectedSequence = null;
 const selections = new Map();
 let renderedFingerprint = null;
-let detailGeneration = 0;
 
 function text(element, value) {
 	element.textContent = value == null ? '' : String(value);
@@ -34,15 +30,6 @@ function div(className, value) {
 	if (className) element.className = className;
 	text(element, value);
 	return element;
-}
-
-async function api(path, options = {}) {
-	const response = await fetch(path, {
-		...options,
-		headers: { ...auth, ...options.headers },
-	});
-	if (!response.ok) throw new Error('HTTP ' + response.status);
-	return response.status === 204 ? null : response.json();
 }
 
 function fmt(number) {
@@ -323,7 +310,7 @@ function renderTabs() {
 			const selected = visible.find((item) => item.sequence === selectedSequence);
 			if (selected) renderDetail(selected);
 			else {
-				detailGeneration++;
+				requests?.cancel('detail');
 				detailPane.removeAttribute('data-sequence');
 				detailPane.replaceChildren(div('empty-state', 'No captured requests for ' + tab.label + '.'));
 			}
@@ -373,8 +360,7 @@ function renderRequestList() {
 	});
 }
 
-async function renderDetail(item) {
-	const generation = ++detailGeneration;
+function renderDetail(item) {
 	const fingerprint = itemFingerprint(item);
 	const openPointers = detailPane.dataset.sequence === String(item.sequence)
 		? expandedPointers()
@@ -383,91 +369,95 @@ async function renderDetail(item) {
 	renderedFingerprint = fingerprint;
 	detailPane.replaceChildren(div('status', 'Loading request #' + item.sequence + '...'));
 
-	try {
-		const detail = await api('/api/records/' + item.sequence);
-		if (generation !== detailGeneration || selectedSequence !== item.sequence) return;
+	requests.read('detail', '/api/records/' + item.sequence, {
+		success(detail) {
+			if (selectedSequence !== item.sequence) return;
 
-		const heading = document.createElement('h2');
-		text(heading, (detail.source?.channel === 'compaction' ? 'Compaction #' : 'Request #') + item.sequence + ' · ' + detail.provider + '/' + detail.model);
-		const grid = div('grid');
-		grid.append(
-			metric('Source', (detail.source?.displayLabel || 'Main agent') + ' · ' + (detail.source?.invocationId || 'legacy')),
-			metric('Run / turn', detail.run + ' / ' + detail.turn),
-			metric('API', detail.api),
-			metric('Payload type', detail.apiLabel),
-			metric('Payload fidelity', detail.fidelity === 'pi-preparation' ? 'Pi-level preparation, not exact provider payload' : 'Exact provider payload'),
-			metric(
-				'HTTP status',
-				detail.status == null ? (detail.statusEvidence?.join(', ') || 'unavailable') : detail.status,
-			),
-			metric('Correlation', detail.correlation),
-			metric('Retained bytes', fmt(detail.bytes)),
-		);
-		detailPane.replaceChildren(heading, grid);
+			const heading = document.createElement('h2');
+			text(heading, (detail.source?.channel === 'compaction' ? 'Compaction #' : 'Request #') + item.sequence + ' · ' + detail.provider + '/' + detail.model);
+			const grid = div('grid');
+			grid.append(
+				metric('Source', (detail.source?.displayLabel || 'Main agent') + ' · ' + (detail.source?.invocationId || 'legacy')),
+				metric('Run / turn', detail.run + ' / ' + detail.turn),
+				metric('API', detail.api),
+				metric('Payload type', detail.apiLabel),
+				metric('Payload fidelity', detail.fidelity === 'pi-preparation' ? 'Pi-level preparation, not exact provider payload' : 'Exact provider payload'),
+				metric(
+					'HTTP status',
+					detail.status == null ? (detail.statusEvidence?.join(', ') || 'unavailable') : detail.status,
+				),
+				metric('Correlation', detail.correlation),
+				metric('Retained bytes', fmt(detail.bytes)),
+			);
+			detailPane.replaceChildren(heading, grid);
 
-		if (detail.diagnostic) detailPane.append(div('alert', detail.diagnostic));
-		if (detail.usage) {
-			const usageHeading = document.createElement('h2');
-			text(usageHeading, 'Exact provider-reported usage');
-			detailPane.append(usageHeading, usageView(detail.usage));
-		}
-		detailPane.append(
-			sectionView(detail, openPointers),
-			rawDetails('Complete logical request JSON', detail.requestJson),
-		);
-		if (detail.assistantJson) {
-			detailPane.append(rawDetails('Complete Pi-normalized assistant JSON', detail.assistantJson));
-		}
-	} catch (caught) {
-		if (generation !== detailGeneration) return;
-		renderedFingerprint = null;
-		detailPane.replaceChildren(div('alert', caught.message));
-	}
+			if (detail.diagnostic) detailPane.append(div('alert', detail.diagnostic));
+			if (detail.usage) {
+				const usageHeading = document.createElement('h2');
+				text(usageHeading, 'Exact provider-reported usage');
+				detailPane.append(usageHeading, usageView(detail.usage));
+			}
+			detailPane.append(
+				sectionView(detail, openPointers),
+				rawDetails('Complete logical request JSON', detail.requestJson),
+			);
+			if (detail.assistantJson) {
+				detailPane.append(rawDetails('Complete Pi-normalized assistant JSON', detail.assistantJson));
+			}
+		},
+		failure(caught) {
+			renderedFingerprint = null;
+			detailPane.replaceChildren(div('alert', caught.message));
+		},
+	});
 }
 
-async function refresh() {
-	try {
-		const data = await api('/api/summary');
-		error.classList.add('hidden');
-		activation.classList.toggle('hidden', Boolean(data.activatedAt));
-		text(activation, data.activatedAt ? '' : 'Capture is not active.');
-		const paused = document.getElementById('paused');
-		paused.classList.toggle('hidden', !data.paused);
-		text(document.getElementById('pausedText'), data.diagnostic || 'Capture paused.');
+function refresh() {
+	requests.read('summary', '/api/summary', {
+		success(data) {
+			error.classList.add('hidden');
+			activation.classList.toggle('hidden', Boolean(data.activatedAt));
+			text(activation, data.activatedAt ? '' : 'Capture is not active.');
+			const paused = document.getElementById('paused');
+			paused.classList.toggle('hidden', !data.paused);
+			text(document.getElementById('pausedText'), data.diagnostic || 'Capture paused.');
 
-		summaries = data.records.slice().reverse();
-		const visible = visibleSummaries();
-		if (!visible.some((item) => item.sequence === selectedSequence)) {
-			const saved = selections.get(activeChannel);
-			selectedSequence = visible.some((item) => item.sequence === saved) ? saved : (visible[0]?.sequence ?? null);
-		}
-		if (selectedSequence != null) selections.set(activeChannel, selectedSequence);
-		renderTabs();
-		renderRequestList();
+			summaries = data.records.slice().reverse();
+			const visible = visibleSummaries();
+			if (!visible.some((item) => item.sequence === selectedSequence)) {
+				const saved = selections.get(activeChannel);
+				selectedSequence = visible.some((item) => item.sequence === saved) ? saved : (visible[0]?.sequence ?? null);
+			}
+			if (selectedSequence != null) selections.set(activeChannel, selectedSequence);
+			renderTabs();
+			renderRequestList();
 
-		const selected = visible.find((item) => item.sequence === selectedSequence);
-		if (!selected) {
-			detailGeneration++;
-			renderedFingerprint = null;
-			const label = tabs.find((tab) => tab.channel === activeChannel)?.label || activeChannel;
-			detailPane.removeAttribute('data-sequence');
-			detailPane.replaceChildren(div('empty-state', 'No captured requests for ' + label + '.'));
-		} else if (renderedFingerprint !== itemFingerprint(selected)) {
-			renderDetail(selected);
-		}
-	} catch (caught) {
-		activation.classList.add('hidden');
-		error.classList.remove('hidden');
-		text(error, caught.message);
-	}
+			const selected = visible.find((item) => item.sequence === selectedSequence);
+			if (!selected) {
+				requests.cancel('detail');
+				renderedFingerprint = null;
+				const label = tabs.find((tab) => tab.channel === activeChannel)?.label || activeChannel;
+				detailPane.removeAttribute('data-sequence');
+				detailPane.replaceChildren(div('empty-state', 'No captured requests for ' + label + '.'));
+			} else if (renderedFingerprint !== itemFingerprint(selected)) {
+				renderDetail(selected);
+			}
+		},
+		failure(caught) {
+			activation.classList.add('hidden');
+			error.classList.remove('hidden');
+			text(error, caught.message);
+		},
+	});
 }
 
 document.getElementById('clear').addEventListener('click', async () => {
-	await api('/api/clear', { method: 'POST' });
-	await refresh();
+	if (!requests) return;
+	await requests.mutate('clear', '/api/clear', { method: 'POST' });
+	refresh();
 });
 
-if (!token) {
+if (!requests) {
 	activation.classList.add('hidden');
 	error.classList.remove('hidden');
 	text(error, 'The capability token is missing from the URL fragment.');

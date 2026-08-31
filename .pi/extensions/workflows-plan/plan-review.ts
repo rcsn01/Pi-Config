@@ -173,6 +173,7 @@ export function createPlanReviewController(
 		const signature = planSignature(plan);
 		pendingFreshImplementationPlan = undefined;
 		if (!(await host.exitPlanMode(ctx))) return;
+		if (host.getSessionProfileBinding(ctx) !== binding) return;
 		ctx.ui.notify("Plan mode exited. Starting fresh implementation session…", "info");
 
 		const handoffPrompt = `${PLAN_IMPLEMENT_FRESH_PREFIX}\n\n${plan}`;
@@ -182,7 +183,9 @@ export function createPlanReviewController(
 			},
 		});
 
-		if (result.status === "cancelled" && await host.enterPlanMode(ctx)) {
+		if (result.status !== "cancelled" || host.getSessionProfileBinding(ctx) !== binding) return;
+		if (await host.enterPlanMode(ctx)) {
+			if (host.getSessionProfileBinding(ctx) !== binding) return;
 			host.restoreReviewedPlan(ctx, plan, signature);
 			ctx.ui.notify("Fresh implementation session cancelled. Plan mode restored.", "info");
 		}
@@ -224,7 +227,9 @@ export function createPlanReviewController(
 		const revision = snapshot.state.revision;
 		const generation = snapshot.lifecycleGeneration;
 		const signature = snapshot.latestPlanKey ?? planSignature(plan);
+		const binding = host.getSessionProfileBinding(ctx);
 		const trimmed = feedback?.trim() || (await ctx.ui.editor("What should Pi do differently?", ""))?.trim();
+		if (binding && host.getSessionProfileBinding(ctx) !== binding) return;
 		if (!trimmed) {
 			ctx.ui.notify("Plan revision cancelled.", "info");
 			return;
@@ -292,7 +297,9 @@ export function createPlanReviewController(
 		const reviewRevision = snapshot.state.revision;
 		const reviewGeneration = snapshot.lifecycleGeneration;
 		const reviewSignature = snapshot.latestPlanKey ?? planSignature(plan);
+		const binding = host.getSessionProfileBinding(ctx);
 		const selected = await selectAction(ctx, reason);
+		if (binding && host.getSessionProfileBinding(ctx) !== binding) return;
 		if (selected === "stay") return;
 		const current = host.getSnapshot();
 		if (

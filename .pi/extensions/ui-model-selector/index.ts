@@ -20,9 +20,10 @@ import {
 	currentSelectionMode,
 } from "../_shared/model-selection.ts";
 import {
-	createModelSelectionStore,
-	type ModelSelectionStore,
-} from "../_shared/model-selection-store.ts";
+	createModelSelectionPersistence,
+	type CreateModelSelectionPersistence,
+	type ModelSelectionPersistence,
+} from "../_shared/model-selection-persistence.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { formatTokenCount, pickModelConfiguration } from "../_shared/model-picker.ts";
 import {
@@ -81,33 +82,68 @@ function renderModelSelectionLifecycleOutcome(
 	);
 }
 
+class StaleModelSelectionSessionError extends Error {}
+
 function createPiModelSelectionLifecycleAdapter(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-	modelSelectionStore: ModelSelectionStore,
+	persistence: ModelSelectionPersistence,
+	isCurrent: () => boolean,
 ): ModelSelectionLifecycleAdapter {
+	const assertCurrent = () => {
+		if (!isCurrent()) throw new StaleModelSelectionSessionError();
+	};
 	return {
-		loadSelection: (mode) => modelSelectionStore.load(mode),
+		loadSelection: async (mode) => {
+			assertCurrent();
+			const selection = await persistence.load(mode);
+			assertCurrent();
+			return selection;
+		},
 		getRuntimeState: () => ({
 			model: ctx.model,
 			thinkingLevel: typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() : undefined,
 			usageTokens: ctx.getContextUsage()?.tokens,
 		}),
-		pick: (options) => pickModelConfiguration(ctx, options),
-		applyStoredSelection: (selection, label) =>
-			applyModelSelection(pi, ctx, selection, { label }),
-		applyPickedSelection: (selection, mode) =>
-			applyPickedModelSelection(pi, ctx, selection.model, selection.thinkingLevel, {
+		pick: async (options) => {
+			assertCurrent();
+			const selection = await pickModelConfiguration(ctx, options);
+			assertCurrent();
+			return selection;
+		},
+		applyStoredSelection: async (selection, label) => {
+			assertCurrent();
+			const applied = await applyModelSelection(pi, ctx, selection, { label });
+			assertCurrent();
+			return applied;
+		},
+		applyPickedSelection: async (selection, mode) => {
+			assertCurrent();
+			const applied = await applyPickedModelSelection(pi, ctx, selection.model, selection.thinkingLevel, {
 				mode,
-				persistence: modelSelectionStore,
-			}),
-		setModel: (model) => pi.setModel(model),
-		confirmContextReduction: (reduction: ContextReduction) => ctx.ui.confirm(
-			"Context window reduction",
-			`This session uses about ${formatTokenCount(reduction.usageTokens)} tokens, at or above the auto-compact threshold of the ${formatTokenCount(reduction.contextWindow)} window. Apply the selection and compact now?`,
-		),
+				persistence,
+			});
+			assertCurrent();
+			return applied;
+		},
+		setModel: async (model) => {
+			assertCurrent();
+			const applied = await pi.setModel(model);
+			assertCurrent();
+			return applied;
+		},
+		confirmContextReduction: async (reduction: ContextReduction) => {
+			assertCurrent();
+			const confirmed = await ctx.ui.confirm(
+				"Context window reduction",
+				`This session uses about ${formatTokenCount(reduction.usageTokens)} tokens, at or above the auto-compact threshold of the ${formatTokenCount(reduction.contextWindow)} window. Apply the selection and compact now?`,
+			);
+			assertCurrent();
+			return confirmed;
+		},
 		isIdle: () => ctx.isIdle(),
 		requestCompaction: (customInstructions) => {
+			if (!isCurrent()) return;
 			ctx.compact({
 				customInstructions,
 				onError: (error) => {
@@ -115,47 +151,67 @@ function createPiModelSelectionLifecycleAdapter(
 				},
 			});
 		},
-		reportNotice: (notice) => renderModelSelectionLifecycleNotice(ctx, notice),
+		reportNotice: (notice) => {
+			if (isCurrent()) renderModelSelectionLifecycleNotice(ctx, notice);
+		},
 	};
 }
 
 export interface ModelSelectorExtensionDependencies {
 	settingsPath?: string;
-	modelSelectionStore?: ModelSelectionStore;
+	createModelSelectionPersistence?: CreateModelSelectionPersistence;
 }
 
 export function createModelSelectorExtension(
 	dependencies: ModelSelectorExtensionDependencies = {},
 ) {
 	const settingsPath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
+	const persistenceFactory = dependencies.createModelSelectionPersistence ?? createModelSelectionPersistence;
 	return function modelSelectorExtension(pi: ExtensionAPI) {
-		const modelSelectionStore = dependencies.modelSelectionStore ?? createModelSelectionStore(settingsPath);
 		let uninstallModelCommandHandler: (() => void) | undefined;
+		let activeSession: object | undefined;
+		const inFlightSelections = new Set<Promise<void>>();
+		const trackSelection = (operation: Promise<void>): Promise<void> => {
+			inFlightSelections.add(operation);
+			void operation.then(
+				() => inFlightSelections.delete(operation),
+				() => inFlightSelections.delete(operation),
+			);
+			return operation;
+		};
+		const waitForSelections = async () => {
+			await Promise.allSettled([...inFlightSelections]);
+		};
 
 		const profileInitialization = registerSessionProfileBinding(
 			{ settingsPath },
 			{
 				name: "ui-model-selector",
-				applyPath: (binding) => modelSelectionStore.setPath(binding.settingsPath),
-				initialize: async (_binding, event, ctx) => {
+				initialize: async (binding, event, ctx) => {
 					uninstallModelCommandHandler?.();
 					uninstallModelCommandHandler = undefined;
+					await waitForSelections();
+					const persistence = persistenceFactory(binding.settingsPath);
+					const session = { binding, persistence };
+					activeSession = session;
 					if (ctx.mode !== "tui") return;
 
 					const lifecycle = createModelSelectionLifecycle(
-						createPiModelSelectionLifecycleAdapter(pi, ctx, modelSelectionStore),
+						createPiModelSelectionLifecycleAdapter(pi, ctx, persistence, () => activeSession === session),
 					);
-					const handler = async (args: string): Promise<void> => {
+					const handler = (args: string): Promise<void> => trackSelection((async () => {
 						try {
 							const outcome = await lifecycle.selectInteractively({
 								initialQuery: args.trim(),
 								mode: currentSelectionMode(ctx),
 							});
-							renderModelSelectionLifecycleOutcome(ctx, outcome);
+							if (activeSession === session) renderModelSelectionLifecycleOutcome(ctx, outcome);
 						} catch (error) {
-							ctx.ui.notify(errorText(error), "error");
+							if (!(error instanceof StaleModelSelectionSessionError)) {
+								ctx.ui.notify(errorText(error), "error");
+							}
 						}
-					};
+					})());
 					uninstallModelCommandHandler = installModelCommandHandler(handler);
 					ctx.ui.setEditorComponent((tui, theme, keybindings) => {
 						const editor = new ModelCommandRoutingEditor(tui, theme, keybindings, handler);
@@ -176,10 +232,14 @@ export function createModelSelectorExtension(
 						});
 						renderModelSelectionLifecycleOutcome(ctx, outcome);
 					} catch (error) {
-						ctx.ui.notify(errorText(error), "error");
+						if (!(error instanceof StaleModelSelectionSessionError)) {
+							ctx.ui.notify(errorText(error), "error");
+						}
 					}
 				},
-				dispose: (_binding, ctx) => {
+				dispose: async (_binding, ctx) => {
+					await waitForSelections();
+					activeSession = undefined;
 					uninstallModelCommandHandler?.();
 					uninstallModelCommandHandler = undefined;
 					if (ctx.mode === "tui") ctx.ui.setEditorComponent(undefined);

@@ -22,7 +22,8 @@ export function createTelemetryUsageServer(source: TelemetryUsageSource): Teleme
 			}
 			if (url.pathname === "/api/refresh" && request.method === "POST") {
 				void source.refresh();
-				response.writeHead(202).end();
+				response.writeHead(202, { "Content-Type": "application/json; charset=utf-8" })
+					.end(JSON.stringify({ accepted: true }));
 				return true;
 			}
 			return false;

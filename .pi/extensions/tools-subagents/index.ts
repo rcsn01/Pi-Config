@@ -131,25 +131,45 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		name: "subagent",
 		label: "Subagent",
 		description:
-			"Delegate a task to an isolated subagent; include all needed context. Use only when the final handoff will be substantially smaller than the raw material inspected — handle simple lookups, known-symbol traces, and one-or-two-file reads locally with parallel tool calls instead. Use explorer for repository evidence across several files and researcher only when several external sources must be read and summarized; keep direct documentation lookups local. Do not delegate planning, architecture, task decomposition, or implementation decisions — the main agent owns synthesis and planning. Give each subagent a narrow question, explicit scope, and requested evidence; ask for compact findings, not a work log. After it returns, rely on its cited findings; do not repeat its searches or reread cited files unless the handoff identifies a gap or conflicting evidence. For multiple independent tasks, use parallel mode with the tasks[] array.",
+			"Delegate tasks to isolated subagents; include all needed context. Supply exactly one tasks[] entry for a single invocation or multiple entries for parallel invocation. Use only when the final handoff will be substantially smaller than the raw material inspected — handle simple lookups, known-symbol traces, and one-or-two-file reads locally with parallel tool calls instead. Use explorer for repository evidence across several files and researcher only when several external sources must be read and summarized; keep direct documentation lookups local. Do not delegate planning, architecture, task decomposition, or implementation decisions — the main agent owns synthesis and planning. Give each subagent a narrow question, explicit scope, and requested evidence; ask for compact findings, not a work log. After it returns, rely on its cited findings; do not repeat its searches or reread cited files unless the handoff identifies a gap or conflicting evidence.",
 		promptSnippet: "Delegate tasks",
 		parameters: Type.Object({
-			agent: Type.Optional(
-				Type.String({ description: "Name of the agent to invoke (SINGLE mode)" }),
+			tasks: Type.Array(
+				Type.Object({
+					agent: Type.String({ description: "Name of the agent to invoke" }),
+					task: Type.String({ description: "Task description" }),
+					cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+				}),
+				{
+					minItems: 1,
+					description: "One task for a single invocation, or multiple independent tasks for parallel invocation",
+				},
 			),
-			task: Type.Optional(Type.String({ description: "Task description (SINGLE mode)" })),
-			tasks: Type.Optional(
-				Type.Array(
-					Type.Object({
-						agent: Type.String({ description: "Name of the agent to invoke" }),
-						task: Type.String({ description: "Task description" }),
-						cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
-					}),
-					{ description: "PARALLEL mode: array of {agent, task} objects" },
-				),
-			),
-			cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 		}),
+		prepareArguments(args) {
+			if (!args || typeof args !== "object") {
+				return args as { tasks: Array<{ agent: string; task: string; cwd?: string }> };
+			}
+			const input = args as {
+				agent?: unknown;
+				task?: unknown;
+				tasks?: unknown;
+				cwd?: unknown;
+			};
+			if (Array.isArray(input.tasks) && input.tasks.length > 0) {
+				return { tasks: input.tasks };
+			}
+			if (typeof input.agent === "string" && input.agent && typeof input.task === "string" && input.task) {
+				return {
+					tasks: [{
+						agent: input.agent,
+						task: input.task,
+						...(typeof input.cwd === "string" && input.cwd ? { cwd: input.cwd } : {}),
+					}],
+				};
+			}
+			return args as { tasks: Array<{ agent: string; task: string; cwd?: string }> };
+		},
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			configStore.rememberMainModel(ctx.model);
