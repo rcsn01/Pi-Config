@@ -43,11 +43,12 @@ h2 { margin: 0 0 14px; font-size: 1.1rem; font-weight: 570; }
 .section-controls { display: flex; gap: 8px; margin: 10px 0 16px; }
 .section-controls button { padding: 6px 10px; background: var(--page-surface-raised); color: var(--page-text); border: 1px solid var(--page-line-strong); }
 .section-group { margin: 20px 0 8px; color: var(--page-text-soft); font-size: .92rem; font-weight: 600; }
-.analysis-section { margin: 6px 0; border-bottom: 1px solid var(--page-line); background: transparent; }
-.analysis-section > summary { position: relative; min-height: 34px; padding: 7px 0; background: transparent; cursor: pointer; list-style: none; }
-.analysis-section > summary::-webkit-details-marker { display: none; }
-.analysis-section > summary::before { display: inline-block; width: 16px; color: var(--page-accent); content: "▸"; }
-.analysis-section[open] > summary::before { content: "▾"; }
+.analysis-section, .tool-section-group { margin: 6px 0; border-bottom: 1px solid var(--page-line); background: transparent; }
+.analysis-section > summary, .tool-section-group > summary { position: relative; min-height: 34px; padding: 7px 0; background: transparent; cursor: pointer; list-style: none; }
+.analysis-section > summary::-webkit-details-marker, .tool-section-group > summary::-webkit-details-marker { display: none; }
+.analysis-section > summary::before, .tool-section-group > summary::before { display: inline-block; width: 16px; color: var(--page-accent); content: "▸"; }
+.analysis-section[open] > summary::before, .tool-section-group[open] > summary::before { content: "▾"; }
+.tool-section-group > .analysis-section { margin-left: 16px; }
 .section-bar { position: absolute; inset: 0 0 0 25px; display: flex; opacity: .42; pointer-events: none; }
 .section-bar .hit { background: var(--page-accent); }
 .section-bar .miss { background: #6A6A6A; }
