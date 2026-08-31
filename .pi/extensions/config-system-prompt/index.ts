@@ -10,8 +10,8 @@ import { buildGuidelines, insertGuidelines } from "./sections.ts";
  * The "Available tools" list is intentionally not restored: tool discovery
  * rides on the provider payload's function schemas. Guidelines are re-rendered
  * from systemPromptOptions every turn (the before_agent_start chain resets to
- * the base prompt each turn), so they stay truthful when tools change: advisor
- * toggles, profile switches, plan-mode tool swaps.
+ * the base prompt each turn), so they stay truthful across profile switches and
+ * plan-mode tool swaps.
  */
 export default function configSystemPromptExtensionFactory(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", (event) => {

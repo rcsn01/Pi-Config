@@ -12,8 +12,8 @@ prompt would duplicate them.
 `customPrompt` set, the prompt becomes: custom text → `APPEND_SYSTEM.md` →
 `<project_context>` → skills → `Current working directory:` — no guidelines.
 Guidelines are genuinely dynamic (per-tool bullets, tool-conditional rules),
-so they cannot be frozen into `SYSTEM.md` without going stale when tools
-change (advisor on/off, profiles, plan-mode swaps like `bash` → `plan_bash`).
+so they cannot be frozen into `SYSTEM.md` without going stale when active tools
+change through profiles or plan-mode swaps like `bash` → `plan_bash`.
 
 ## How
 
@@ -38,8 +38,8 @@ and policy together at schema-evaluation time (pi still supports
 section therefore carries pi's builtin-tool bullets, the tool-conditional
 file-operations bullet, and the always-on pair.
 
-## Coupling
+## Extension boundaries
 
-`../SYSTEM.md` must contain the advisor executor persona verbatim —
-`tools-advisor`'s `transformAdvisorPrompt` prepends its persona block to any
-prompt that does not contain it. `sections.test.ts` guards this contract.
+This extension only restores Pi's generic dynamic guidelines. `tools-advisor`
+activates its tool without rewriting the executor system prompt, so
+`../SYSTEM.md` does not depend on advisor configuration.
