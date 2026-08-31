@@ -101,7 +101,12 @@ describe("analysis page", () => {
 			...summary().records[0],
 			requestJson: JSON.stringify({
 				instructions: "Follow the system rules",
-				tools: [{ name: "read", description: "Read exact files", parameters: { type: "object" } }],
+				tools: [
+					{ name: "read", description: "Read exact files", parameters: { type: "object" } },
+					{ name: "bash", description: "Run a command", parameters: { type: "object" } },
+					{ name: "edit", description: "Edit a file", parameters: { type: "object" } },
+				],
+				afterTools: "keeps its position",
 				metadata: { "a/b~c": "decoded pointer value" },
 				model: "gpt-test",
 			}),
@@ -109,6 +114,9 @@ describe("analysis page", () => {
 			sections: [
 				{ kind: "instruction", label: "instructions", pointer: "/instructions", allocatedTokens: 4, cachedTokens: 4 },
 				{ kind: "tool", label: "tool: read", pointer: "/tools/0", allocatedTokens: 8, cachedTokens: 2 },
+				{ kind: "tool", label: "tool: bash", pointer: "/tools/1", allocatedTokens: 7, cachedTokens: 1 },
+				{ kind: "conversation", label: "after tools", pointer: "/afterTools", allocatedTokens: 3, cachedTokens: 0 },
+				{ kind: "tool", label: "tool: edit", pointer: "/tools/2", allocatedTokens: 6, cachedTokens: 0 },
 				{ kind: "option", label: "model", pointer: "/model" },
 				{ kind: "option", label: "escaped", pointer: "/metadata/a~1b~0c" },
 			],
@@ -128,11 +136,14 @@ describe("analysis page", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		const rows = Array.from(document.querySelectorAll<HTMLDetailsElement>("details.analysis-section"));
-		expect(rows).toHaveLength(4);
+		expect(rows).toHaveLength(7);
 		const toolGroup = document.querySelector<HTMLDetailsElement>("details.tool-section-group")!;
 		expect(toolGroup.open).toBe(false);
-		expect(toolGroup.querySelector(":scope > summary")?.textContent).toBe("Tool schemas (1)");
-		expect(toolGroup.querySelectorAll("details.analysis-section")).toHaveLength(1);
+		expect(toolGroup.querySelector(":scope > summary")?.textContent).toBe("Tool schemas (2)");
+		expect(toolGroup.querySelectorAll("details.analysis-section")).toHaveLength(2);
+		expect(Array.from(document.querySelectorAll<HTMLDetailsElement>(".sections > details"), (row) => row.dataset.pointer)).toEqual([
+			"/instructions", "__tool_schemas__/tools/0", "/afterTools", "/tools/2", "/model", "/metadata/a~1b~0c",
+		]);
 		const toolContent = document.querySelector('[data-pointer="/tools/0"] pre')?.textContent;
 		expect(toolContent).toContain("Read exact files");
 		expect(toolContent).toContain('"parameters"');
