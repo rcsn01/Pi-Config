@@ -1,41 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
-import { InMemoryCredentialStore, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import type { Usage } from "@earendil-works/pi-ai";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { deriveSubagentSessionId } from "../tools-subagents/cache-affinity.ts";
-import {
-	createAdvisorRunner,
-	deriveAdvisorSessionId,
-	type AdvisorRunInput,
-	type AdvisorSettings,
-} from "./runner.ts";
+import { createAdvisorRunner, type AdvisorRunInput } from "./runner.ts";
 
 const usage: Usage = {
-	input: 20,
-	output: 10,
-	cacheRead: 0,
-	cacheWrite: 0,
-	totalTokens: 30,
+	input: 20, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 30,
 	cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, total: 3 },
 };
 
 const advisorModel: any = {
-	provider: "anthropic",
-	id: "strong",
-	name: "Strong",
-	api: "anthropic-messages",
-	baseUrl: "https://example.invalid",
-	reasoning: true,
-	input: ["text"],
-	contextWindow: 100_000,
-	maxTokens: 4096,
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	provider: "anthropic", id: "strong", name: "Strong", api: "anthropic-messages",
+	baseUrl: "https://example.invalid", reasoning: true, input: ["text"], contextWindow: 100_000,
+	maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
 
-function assistantResponse(overrides: Record<string, unknown> = {}): any {
+function response(overrides: Record<string, unknown> = {}): any {
 	return {
 		role: "assistant",
-		content: [{ type: "text", text: "Use the narrow change and verify it." }],
+		content: [{ type: "text", text: "Use the narrow change." }],
 		api: advisorModel.api,
 		provider: advisorModel.provider,
 		model: advisorModel.id,
@@ -46,7 +27,7 @@ function assistantResponse(overrides: Record<string, unknown> = {}): any {
 	};
 }
 
-function currentEntries(): any[] {
+function entries(): any[] {
 	return [
 		{ type: "message", id: "user", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "Fix the parser", timestamp: 0 } },
 		{ type: "message", id: "assistant", parentId: "user", timestamp: "2026-01-01T00:00:00.000Z", message: {
@@ -61,25 +42,19 @@ function currentEntries(): any[] {
 }
 
 function context(overrides: Record<string, unknown> = {}): any {
-	const entries = currentEntries();
-	const complete = vi.fn(async (..._args: unknown[]) => assistantResponse());
-	const streamSimple = vi.fn((model: unknown, context: unknown, options: unknown) => ({ result: () => complete(model, context, options) }));
+	const branch = entries();
 	return {
 		cwd: "/workspace",
 		model: { provider: "executor", id: "cheap" },
+		scopedModels: [],
 		signal: undefined,
 		getSystemPrompt: () => "Executor instructions",
-		sessionManager: {
-			buildContextEntries: () => entries,
-			getBranch: () => entries,
-			getSessionId: () => "main-session",
-		},
+		sessionManager: { buildContextEntries: () => branch },
 		modelRegistry: {
 			find: vi.fn(() => advisorModel),
 			hasConfiguredAuth: vi.fn(() => true),
-			getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "test-key", headers: { "x-test": "yes" }, env: { TEST_ENV: "yes" } })),
-			getProvider: vi.fn(() => ({ streamSimple })),
-			complete,
+			getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "secret" })),
+			getProvider: vi.fn(),
 		},
 		...overrides,
 	};
@@ -88,342 +63,128 @@ function context(overrides: Record<string, unknown> = {}): any {
 function runInput(ctx: any, overrides: Partial<AdvisorRunInput> = {}): AdvisorRunInput {
 	return {
 		ctx,
-		settings: {
-			provider: "anthropic",
-			modelId: "strong",
-			strict: false,
-			nudgeTurn: 3,
-			maxUses: 3,
-			maxUsesPerSession: 20,
-			maxTokens: 2048,
-		},
+		settings: { enabled: true, model: "anthropic/strong", thinkingLevel: "high", maxTokens: 2048 },
 		callId: "advisor-call",
 		question: "Should I change the parser interface?",
 		activeToolNames: ["advisor", "read"],
-		allTools: [{
-			name: "advisor",
-			label: "Advisor",
-			description: "Advisor",
-			parameters: { type: "object", properties: {} },
-			sourceInfo: { source: "extension", path: "advisor", scope: "project", origin: "top-level" },
-		} as any],
+		allTools: [{ name: "read", description: "Read files", parameters: {}, sourceInfo: {} } as any],
 		...overrides,
 	};
 }
 
-describe("advisor cache affinity", () => {
-	it("is stable per main session and advisor model but isolated from executor/subagent IDs", () => {
-		const first = deriveAdvisorSessionId("main", "anthropic/strong");
-		expect(first).toMatch(/^advisor-[a-f0-9]{32}$/);
-		expect(deriveAdvisorSessionId("main", "anthropic/strong")).toBe(first);
-		expect(deriveAdvisorSessionId("main", "openai/strong")).not.toBe(first);
-		expect(deriveAdvisorSessionId("other", "anthropic/strong")).not.toBe(first);
-		expect(first).not.toBe("main");
-		expect(first).not.toBe(deriveSubagentSessionId("main", "anthropic/strong"));
-		expect(() => deriveAdvisorSessionId("", "anthropic/strong")).toThrow(/Main session ID/);
-		expect(() => deriveAdvisorSessionId("main", "")).toThrow(/Resolved advisor model/);
-	});
-});
-
 describe("advisor runner", () => {
-	it("makes one tool-free call with the complete projection, focus question, cap, and stable cache identity", async () => {
-		const ctx = context();
-		const runner = createAdvisorRunner();
-		const result = await runner.execute(runInput(ctx));
-		const complete = ctx.modelRegistry.complete;
-
+	it("passes a bounded transcript and model choices through one completion seam", async () => {
+		const complete = vi.fn(async (_input: any) => response());
+		const result = await createAdvisorRunner({ complete }).execute(runInput(context()));
 		expect(complete).toHaveBeenCalledOnce();
-		expect(complete.mock.calls[0][0]).toBe(advisorModel);
-		expect(complete.mock.calls[0][1]).toMatchObject({
-			systemPrompt: expect.stringContaining("read-only engineering advisor"),
-			tools: [],
-		});
-		expect(JSON.stringify(complete.mock.calls[0][1].messages)).toContain("Should I change the parser interface?");
-		expect(complete.mock.calls[0][2]).toMatchObject({
+		expect(complete.mock.calls[0][0]).toMatchObject({
+			model: { provider: "anthropic", id: "strong" },
+			thinkingLevel: "high",
 			maxTokens: 2048,
-			cacheRetention: "short",
-			sessionId: deriveAdvisorSessionId("main-session", "anthropic/strong"),
 		});
-		expect(result).toMatchObject({
-			disposition: "success",
-			code: "advisor_ok",
-			message: "Use the narrow change and verify it.",
+		const projected = JSON.stringify(complete.mock.calls[0][0].messages);
+		expect(projected).toContain("Executor instructions");
+		expect(projected).toContain("I inspected the parser.");
+		expect(projected).not.toContain("advisor-call");
+		expect(projected).toContain("Should I change the parser interface?");
+		expect(result).toEqual({
+			ok: true,
+			text: "Use the narrow change.",
 			model: "anthropic/strong",
-			consumesBudget: true,
 			truncated: false,
 			usage,
 		});
 	});
 
-	it("dispatches through the native provider with resolved credentials and semantic reasoning", async () => {
+	it("does not run when disabled, unavailable, unauthenticated, or outside scope", async () => {
+		const complete = vi.fn(async (_input: any) => response());
+		const runner = createAdvisorRunner({ complete });
+		let ctx = context();
+		expect(await runner.execute(runInput(ctx, { settings: { enabled: false, model: "anthropic/strong", maxTokens: 2048 } })))
+			.toMatchObject({ ok: false, message: expect.stringContaining("disabled") });
+		ctx = context();
+		ctx.modelRegistry.find.mockReturnValue(undefined);
+		expect(await runner.execute(runInput(ctx))).toMatchObject({ ok: false, message: expect.stringContaining("unavailable") });
+		ctx = context();
+		ctx.modelRegistry.hasConfiguredAuth.mockReturnValue(false);
+		expect(await runner.execute(runInput(ctx))).toMatchObject({ ok: false, message: expect.stringContaining("authentication") });
+		ctx = context({ scopedModels: [{ model: { provider: "anthropic", id: "other" } }] });
+		expect(await runner.execute(runInput(ctx))).toMatchObject({ ok: false, message: expect.stringContaining("unavailable") });
+		expect(complete).not.toHaveBeenCalled();
+	});
+
+	it("normalizes successful, truncated, empty, aborted, and failed responses", async () => {
+		const cases = [
+			[response(), { ok: true, truncated: false }],
+			[response({ stopReason: "length", content: [{ type: "text", text: "partial" }] }), { ok: true, truncated: true, text: expect.stringContaining("partial") }],
+			[response({ content: [] }), { ok: false, message: expect.stringContaining("no visible advice") }],
+			[response({ stopReason: "aborted", content: [], errorMessage: "cancelled" }), { ok: false, message: "cancelled" }],
+			[response({ stopReason: "error", content: [], errorMessage: "provider failed" }), { ok: false, message: expect.stringContaining("provider failed") }],
+		] as const;
+		for (const [assistant, expected] of cases) {
+			const runner = createAdvisorRunner({ complete: async () => assistant });
+			expect(await runner.execute(runInput(context()))).toMatchObject(expected);
+		}
+	});
+
+	it("reports projection and completion failures as simple failures", async () => {
+		const malformed = context({ sessionManager: { buildContextEntries: () => [] } });
+		const complete = vi.fn(async (_input: any) => response());
+		expect(await createAdvisorRunner({ complete }).execute(runInput(malformed)))
+			.toMatchObject({ ok: false, message: expect.stringContaining("not uniquely present") });
+		expect(complete).not.toHaveBeenCalled();
+
+		const failing = createAdvisorRunner({ complete: async () => { throw new Error("network down"); } });
+		expect(await failing.execute(runInput(context()))).toMatchObject({ ok: false, message: "network down" });
+	});
+
+	it("uses the active registry's provider and resolved request authentication", async () => {
+		const stream = { result: vi.fn(async () => response()) };
+		const streamSimple = vi.fn((_model: any, _context: any, _options: any) => stream);
 		const ctx = context();
-		const resultResponse = assistantResponse();
-		const streamSimple = vi.fn((..._args: unknown[]) => ({ result: vi.fn(async () => resultResponse) }));
 		ctx.modelRegistry.getApiKeyAndHeaders.mockResolvedValue({
 			ok: true,
-			apiKey: "resolved-key",
-			headers: { "x-auth": "yes" },
+			apiKey: "live-token",
+			baseUrl: "https://live.example",
+			headers: { authorization: "Bearer live", "X-Trace": "resolved" },
 			env: { REGION: "test" },
-			baseUrl: "https://authenticated.invalid",
 		});
 		ctx.modelRegistry.getProvider.mockReturnValue({ streamSimple });
-
-		await createAdvisorRunner().execute(runInput(ctx, {
-			settings: {
-				provider: "anthropic", modelId: "strong", thinkingLevel: "high", contextWindow: 90_000,
-				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
-			},
-		}));
-
-		expect(streamSimple).toHaveBeenCalledOnce();
-		const [requestModel, requestContext, options] = streamSimple.mock.calls[0];
-		expect(requestModel).toMatchObject({ provider: "anthropic", id: "strong", baseUrl: "https://authenticated.invalid", contextWindow: 90_000 });
-		expect(requestContext).toMatchObject({ systemPrompt: expect.any(String), messages: expect.any(Array), tools: [] });
-		expect(options).toMatchObject({ apiKey: "resolved-key", headers: { "x-auth": "yes" }, env: { REGION: "test" }, reasoning: "high", cacheRetention: "short", maxTokens: 2048, sessionId: expect.stringMatching(/^advisor-/) });
-		expect(ctx.modelRegistry.complete).not.toHaveBeenCalled();
-
-		const offStream = vi.fn((..._args: unknown[]) => ({ result: vi.fn(async () => resultResponse) }));
-		ctx.modelRegistry.getProvider.mockReturnValue({ streamSimple: offStream });
-		await createAdvisorRunner().execute(runInput(ctx, {
-			settings: {
-				provider: "anthropic", modelId: "strong", thinkingLevel: "off", contextWindow: 90_000,
-				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
-			},
-		}));
-		expect(offStream.mock.calls[0][2]).not.toHaveProperty("reasoning");
-	});
-
-	it("reports a saved context window above the normalized catalogue maximum", async () => {
-		const ctx = context();
-		const result = await createAdvisorRunner().execute(runInput(ctx, {
-			settings: {
-				provider: "anthropic", modelId: "strong", contextWindow: 100_001,
-				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
-			},
-		}));
-		expect(result).toMatchObject({ disposition: "failure", code: "advisor_context_window_invalid", consumesBudget: false });
-		expect(ctx.modelRegistry.getProvider).not.toHaveBeenCalled();
-	});
-
-	it("clamps a saved thinking level against the current family capabilities", async () => {
-		const deepseek = {
+		ctx.modelRegistry.find.mockReturnValue({
 			...advisorModel,
-			provider: "openai",
-			id: "deepseek-v4",
-			thinkingLevelMap: { off: "none", minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
-		};
-		const ctx = context();
-		ctx.modelRegistry.find.mockReturnValue(deepseek);
-		const streamSimple = vi.fn((..._args: unknown[]) => ({ result: vi.fn(async () => assistantResponse()) }));
-		ctx.modelRegistry.getProvider.mockReturnValue({ streamSimple });
-		await createAdvisorRunner().execute(runInput(ctx, {
-			settings: {
-				provider: "openai", modelId: "deepseek-v4", thinkingLevel: "medium",
-				strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
-			},
-		}));
-		expect(streamSimple.mock.calls[0][2]).toMatchObject({ reasoning: "high" });
-	});
+			headers: { Authorization: "stale", "X-Model": "kept" },
+		});
 
-	it("reports a configured model outside the session scope before auth or provider dispatch", async () => {
-		const ctx = context({ scopedModels: [{ model: { provider: "anthropic", id: "other" } }] });
 		const result = await createAdvisorRunner().execute(runInput(ctx));
 
-		expect(result).toMatchObject({ disposition: "failure", code: "advisor_model_unavailable", consumesBudget: false });
-		expect(ctx.modelRegistry.hasConfiguredAuth).not.toHaveBeenCalled();
-		expect(ctx.modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
-		expect(ctx.modelRegistry.getProvider).not.toHaveBeenCalled();
-		expect(ctx.modelRegistry.complete).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ ok: true });
+		expect(streamSimple).toHaveBeenCalledOnce();
+		const [requestModel, requestContext, options] = streamSimple.mock.calls[0];
+		expect(requestModel.baseUrl).toBe("https://live.example");
+		expect(requestContext.tools).toEqual([]);
+		expect(requestContext.systemPrompt).toEqual(expect.any(String));
+		expect(options).toMatchObject({
+			apiKey: "live-token",
+			headers: { authorization: "Bearer live", "X-Trace": "resolved", "X-Model": "kept" },
+			env: { REGION: "test" },
+			reasoning: "high",
+			maxTokens: 2048,
+		});
+		expect(options.headers).not.toHaveProperty("Authorization");
 	});
 
-	it("returns structured outcomes for empty, truncated, aborted, and provider-error responses", async () => {
-		for (const response of [
-			assistantResponse({ content: [], stopReason: "stop" }),
-			assistantResponse({ content: [{ type: "text", text: "partial" }], stopReason: "length" }),
-			assistantResponse({ content: [], stopReason: "aborted", errorMessage: "This operation was aborted" }),
-			assistantResponse({ content: [], stopReason: "error", errorMessage: "provider failed" }),
-		]) {
-			const ctx = context();
-			ctx.modelRegistry.complete.mockResolvedValue(response);
-			const result = await createAdvisorRunner().execute(runInput(ctx));
-			expect(result.message).toEqual(expect.any(String));
-			expect(result.consumesBudget).toBe(true);
-			if (response.stopReason === "length") {
-				expect(result).toMatchObject({ disposition: "warning", code: "advisor_truncated", truncated: true });
-			} else {
-				expect(result.disposition).toBe("failure");
-				expect(result.code).toMatch(/^advisor_/);
-			}
-		}
-	});
-
-	it("does not call the provider when explicitly disabled with a retained model", async () => {
-		const ctx = context();
-		const settings: AdvisorSettings = {
-			provider: "anthropic", modelId: "strong", enabled: false, strict: false,
-			nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
+	it("clamps thinking and output to model capabilities", async () => {
+		const limited = {
+			...advisorModel,
+			maxTokens: 512,
+			thinkingLevelMap: { off: "none", minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: null },
 		};
-		const result = await createAdvisorRunner().execute(runInput(ctx, { settings }));
-		expect(result).toMatchObject({ disposition: "failure", code: "advisor_off", consumesBudget: false });
-		expect(ctx.modelRegistry.complete).not.toHaveBeenCalled();
-	});
-
-	it("does not call the provider after the per-turn cap is exhausted", async () => {
-		const entries = [...currentEntries()];
-		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
-		const runner = createAdvisorRunner();
-		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048 };
-		await runner.execute(runInput(ctx, { settings }));
-		entries.push({
-			type: "message", id: "advisor-result", parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
-			message: {
-				role: "toolResult", toolCallId: "advisor-call", toolName: "advisor", isError: false,
-				content: [{ type: "text", text: "Use the narrow change and verify it." }],
-				details: { model: "anthropic/strong", consumesBudget: true, truncated: false }, timestamp: 0,
-			},
-		});
-		const second = await runner.execute(runInput(ctx, { settings }));
-		expect(ctx.modelRegistry.complete).toHaveBeenCalledOnce();
-		expect(second).toMatchObject({ disposition: "failure", code: "advisor_turn_budget_exhausted", consumesBudget: false });
-	});
-
-	it("resets the per-turn budget on a new user message", async () => {
-		const entries = [...currentEntries()];
-		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
-		const runner = createAdvisorRunner();
-		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048 };
-		await runner.execute(runInput(ctx, { settings }));
-		entries.push({
-			type: "message", id: "advisor-result", parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
-			message: {
-				role: "toolResult", toolCallId: "advisor-call", toolName: "advisor", isError: false,
-				content: [{ type: "text", text: "Advice" }],
-				details: { model: "anthropic/strong", consumesBudget: true, truncated: false }, timestamp: 0,
-			},
-		});
-		const second = await runner.execute(runInput(ctx, { settings }));
-		expect(second).toMatchObject({ disposition: "failure", code: "advisor_turn_budget_exhausted" });
-		entries.push({ type: "message", id: "next-user", parentId: "advisor-result", timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "Next turn", timestamp: 0 } });
-		const third = await runner.execute(runInput(ctx, { settings }));
-		expect(ctx.modelRegistry.complete).toHaveBeenCalledTimes(2);
-		expect(third).toMatchObject({ disposition: "success", consumesBudget: true });
-	});
-
-	it("enforces the session ceiling even when the per-turn budget resets", async () => {
-		const entries = [...currentEntries()];
-		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
-		const runner = createAdvisorRunner();
-		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 1, maxTokens: 2048 };
-		await runner.execute(runInput(ctx, { settings }));
-		entries.push({
-			type: "message", id: "advisor-result", parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
-			message: {
-				role: "toolResult", toolCallId: "advisor-call", toolName: "advisor", isError: false,
-				content: [{ type: "text", text: "Advice" }],
-				details: { model: "anthropic/strong", consumesBudget: true, truncated: false }, timestamp: 0,
-			},
-		});
-		entries.push({ type: "message", id: "next-user", parentId: "advisor-result", timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "Next turn", timestamp: 0 } });
-		const second = await runner.execute(runInput(ctx, { settings }));
-		expect(ctx.modelRegistry.complete).toHaveBeenCalledOnce();
-		expect(second).toMatchObject({ disposition: "failure", code: "advisor_budget_exhausted", consumesBudget: false });
-	});
-
-	it("treats a per-turn budget of 0 as unlimited", async () => {
-		const entries = [...currentEntries()];
-		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
-		const runner = createAdvisorRunner();
-		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 0, maxUsesPerSession: 20, maxTokens: 2048 };
-		for (let consultation = 0; consultation < 4; consultation++) {
-			const result = await runner.execute(runInput(ctx, { settings }));
-			expect(result).toMatchObject({
-				disposition: "success",
-				message: "Use the narrow change and verify it.",
-				consumesBudget: true,
-			});
-			entries.push({
-				type: "message", id: `advisor-result-${consultation}`, parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
-				message: {
-					role: "toolResult", toolCallId: "advisor-call", toolName: "advisor", isError: false,
-					content: [{ type: "text", text: "Advice" }],
-					details: { model: "anthropic/strong", consumesBudget: true, truncated: false }, timestamp: 0,
-				},
-			});
-		}
-		expect(ctx.modelRegistry.complete).toHaveBeenCalledTimes(4);
-	});
-
-	it("treats a session budget of 0 as unlimited", async () => {
-		const entries = [...currentEntries()];
-		const ctx = context({ sessionManager: { buildContextEntries: () => entries, getBranch: () => entries, getSessionId: () => "main-session" } });
-		const runner = createAdvisorRunner();
-		const settings: AdvisorSettings = { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 0, maxTokens: 2048 };
-		// Run past the finite default of 20 session uses to prove the 0 sentinel bypasses it.
-		for (let turn = 0; turn < 21; turn++) {
-			const result = await runner.execute(runInput(ctx, { settings }));
-			expect(result).toMatchObject({ disposition: "success", consumesBudget: true });
-			entries.push({
-				type: "message", id: `advisor-result-${turn}`, parentId: "assistant", timestamp: "2026-01-01T00:00:00.000Z",
-				message: {
-					role: "toolResult", toolCallId: "advisor-call", toolName: "advisor", isError: false,
-					content: [{ type: "text", text: "Advice" }],
-					details: { model: "anthropic/strong", consumesBudget: true, truncated: false }, timestamp: 0,
-				},
-			});
-			entries.push({ type: "message", id: `user-${turn}`, parentId: `advisor-result-${turn}`, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "Next turn", timestamp: 0 } });
-		}
-		expect(ctx.modelRegistry.complete).toHaveBeenCalledTimes(21);
-	});
-
-	it("reuses the advisor cache identity and exposes faux-provider cache-read usage on a compatible second consultation", async () => {
-		const faux = fauxProvider({ provider: "anthropic", models: [{ id: "strong", contextWindow: 100_000 }], tokensPerSecond: 100_000 });
-		faux.setResponses([fauxAssistantMessage("first advice"), fauxAssistantMessage("second advice")]);
-		const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
-		runtime.registerNativeProvider(faux.provider);
-		const model = faux.getModel("strong")!;
-		const ctx = context({
-			model: { provider: "anthropic", id: "executor" },
-			modelRegistry: {
-				find: vi.fn(() => model),
-				hasConfiguredAuth: vi.fn(() => true),
-				getApiKeyAndHeaders: vi.fn(async () => ({ ok: true })),
-				getProvider: runtime.getProvider.bind(runtime),
-			},
-		});
-		const runner = createAdvisorRunner();
-		const first = await runner.execute(runInput(ctx, { settings: { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048 } }));
-		const second = await runner.execute(runInput(ctx, { settings: { provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048 } }));
-		expect(first.usage?.cacheWrite).toBeGreaterThan(0);
-		expect(second.usage?.cacheRead).toBeGreaterThan(0);
-		expect(first.model).toBe(second.model);
-	});
-
-	it("reports missing model/auth and explicit zero-usage overflow without consuming budget", async () => {
-		const missingModel = context();
-		missingModel.modelRegistry.find.mockReturnValue(undefined);
-		let result = await createAdvisorRunner().execute(runInput(missingModel));
-		expect(result).toMatchObject({ disposition: "failure", code: "advisor_model_unavailable", consumesBudget: false });
-
-		const missingAuth = context();
-		missingAuth.modelRegistry.hasConfiguredAuth.mockReturnValue(false);
-		result = await createAdvisorRunner().execute(runInput(missingAuth));
-		expect(result).toMatchObject({ disposition: "failure", code: "advisor_auth_unavailable", consumesBudget: false });
-
-		const overflow = context();
-		overflow.modelRegistry.complete.mockResolvedValue(assistantResponse({
-			content: [], stopReason: "error", errorMessage: "context_length_exceeded",
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		const ctx = context();
+		ctx.modelRegistry.find.mockReturnValue(limited);
+		const complete = vi.fn(async (_input: any) => response());
+		await createAdvisorRunner({ complete }).execute(runInput(ctx, {
+			settings: { enabled: true, model: "anthropic/strong", thinkingLevel: "medium", maxTokens: 2048 },
 		}));
-		const overflowRunner = createAdvisorRunner();
-		result = await overflowRunner.execute(runInput(overflow));
-		expect(result).toMatchObject({ disposition: "failure", code: "advisor_context_too_large", consumesBudget: false });
-
-		const promptTooLong = context();
-		promptTooLong.modelRegistry.complete.mockResolvedValue(assistantResponse({
-			content: [], stopReason: "error", errorMessage: "prompt_too_long",
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-		}));
-		result = await createAdvisorRunner().execute(runInput(promptTooLong));
-		expect(result).toMatchObject({ disposition: "failure", code: "advisor_context_too_large", consumesBudget: false });
+		expect(complete.mock.calls[0][0]).toMatchObject({ thinkingLevel: "high", maxTokens: 512 });
 	});
 });

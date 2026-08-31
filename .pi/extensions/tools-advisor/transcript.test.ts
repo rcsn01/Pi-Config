@@ -1,242 +1,117 @@
 import { describe, expect, it } from "vitest";
-import { ADVISOR_SYSTEM_PROMPT } from "./prompt.ts";
-import {
-	DEFAULT_CONTEXT_BUDGET,
-	projectTranscript,
-	providerRejectsOversizedInput,
-	type TranscriptProjectionInput,
-} from "./transcript.ts";
+import { AdvisorProjectionError, projectAdvisorContext, type AdvisorProjectionInput } from "./transcript.ts";
 
 function entry(id: string, message: any): any {
 	return { type: "message", id, parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message };
 }
 
-function model(overrides: Record<string, unknown> = {}): any {
-	return {
-		provider: "anthropic",
-		id: "advisor",
-		contextWindow: 100_000,
-		maxTokens: 2048,
-		input: ["text", "image"],
-		...overrides,
-	};
-}
-
-function input(overrides: Partial<TranscriptProjectionInput> = {}): TranscriptProjectionInput {
+function input(overrides: Partial<AdvisorProjectionInput> = {}): AdvisorProjectionInput {
 	return {
 		entries: [],
 		systemPrompt: "Executor system prompt",
 		activeToolNames: ["read"],
 		allTools: [{
-			name: "read",
-			description: "Read a file",
-			parameters: { type: "object", properties: { path: { type: "string" } } },
+			name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } } },
 			sourceInfo: { source: "builtin", path: "<builtin:read>", scope: "temporary", origin: "top-level" },
-		}],
-		model: model(),
+		} as any],
+		model: { provider: "anthropic", id: "advisor", contextWindow: 100_000, input: ["text", "image"] },
 		maxTokens: 2048,
 		...overrides,
 	};
 }
 
-describe("advisor transcript projection", () => {
-	it("states the word limit only in the focus message, not the system prompt", () => {
-		expect(ADVISOR_SYSTEM_PROMPT).not.toMatch(/\d+\s*words/);
-	});
-
-	it("includes the executor context and every effective message in order", () => {
-		const projected = projectTranscript(input({
+describe("advisor context projection", () => {
+	it("quotes executor context and preserves conversation evidence without schemas or reasoning", () => {
+		const result = projectAdvisorContext(input({
 			entries: [
-				entry("user", { role: "user", content: "Inspect the parser" , timestamp: 1 }),
+				entry("user", { role: "user", content: "Inspect the parser", timestamp: 1 }),
 				entry("assistant", {
 					role: "assistant",
 					content: [
-						{ type: "text", text: "I found the parser." , textSignature: "opaque" },
-						{ type: "thinking", thinking: "The parser is central.", thinkingSignature: "opaque" },
-						{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "src/parser.ts" }, thoughtSignature: "opaque" },
+						{ type: "thinking", thinking: "secret reasoning", thinkingSignature: "secret" },
+						{ type: "text", text: "I found it.", textSignature: "secret" },
+						{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "src/parser.ts" } },
 					],
-					provider: "executor-provider", model: "executor-model", api: "executor-api",
-					usage: {}, stopReason: "toolUse", timestamp: 2,
+					provider: "x", model: "x", api: "x", usage: {}, stopReason: "toolUse", timestamp: 2,
 				}),
-				entry("tool", {
-					role: "toolResult", toolCallId: "read-1", toolName: "read", isError: false,
-					content: [{ type: "text", text: "export function parse() {}", textSignature: "opaque" }], timestamp: 3,
-				}),
-				{ type: "compaction", id: "compact", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", summary: "Earlier work summary", firstKeptEntryId: "user", tokensBefore: 100 },
-				{ type: "custom_message", id: "custom", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", customType: "note", content: "A durable note", display: true },
+				entry("result", { role: "toolResult", toolCallId: "read-1", toolName: "read", isError: false, content: [{ type: "text", text: "source" }], timestamp: 3 }),
 			],
-			advisorCallId: undefined,
-			question: "Should I change the parser interface?",
 		}));
-
-		expect(projected.systemPrompt).toBe(ADVISOR_SYSTEM_PROMPT);
-		expect(projected.messages[0]).toMatchObject({ role: "user", timestamp: 0 });
-		const rendered = JSON.stringify(projected.messages);
-		expect(rendered.indexOf("Executor system prompt")).toBeGreaterThanOrEqual(0);
-		expect(rendered.indexOf("Inspect the parser")).toBeGreaterThan(rendered.indexOf("Executor system prompt"));
-		expect(rendered).toContain("I found the parser.");
-		expect(rendered).toContain("The parser is central.");
-		expect(rendered).toContain("<tool_call>");
-		expect(rendered).toContain("src/parser.ts");
-		expect(rendered).toContain("<tool_result");
-		expect(rendered).toContain("export function parse() {}");
-		expect(rendered).toContain("Earlier work summary");
-		expect(rendered).toContain("A durable note");
-		expect(rendered).toContain("Should I change the parser interface?");
-		expect(rendered).toContain("keep your guidance under 120 words");
-		expect(rendered).not.toContain("opaque");
+		const text = JSON.stringify(result.messages);
+		expect(text).toContain("Executor system prompt");
+		expect(text).toContain("Read a file");
+		expect(text).not.toContain("properties");
+		expect(text).toContain("Inspect the parser");
+		expect(text).toContain("I found it.");
+		expect(text).toContain("src/parser.ts");
+		expect(text).toContain("source");
+		expect(text).toContain("reasoning omitted");
+		expect(text).not.toContain("secret reasoning");
+		expect(text).not.toContain("thinkingSignature");
 	});
 
-	it("removes only the current advisor call while retaining preceding prose and prior advice", () => {
-		const projected = projectTranscript(input({
-			entries: [
-				entry("old-assistant", {
-					role: "assistant", content: [{ type: "text", text: "Old advice request" }, { type: "toolCall", id: "old-advisor", name: "advisor", arguments: {} }],
-					provider: "x", model: "x", api: "x", usage: {}, stopReason: "toolUse", timestamp: 1,
-				}),
-				entry("old-result", { role: "toolResult", toolCallId: "old-advisor", toolName: "advisor", content: [{ type: "text", text: "Previous advice" }], isError: false, timestamp: 2 }),
-				entry("current-assistant", {
-					role: "assistant", content: [{ type: "text", text: "Current prose before asking." }, { type: "toolCall", id: "current-advisor", name: "advisor", arguments: { question: "focus" } }],
-					provider: "x", model: "x", api: "x", usage: {}, stopReason: "toolUse", timestamp: 3,
-				}),
-			],
-			advisorCallId: "current-advisor",
-		}));
-		const rendered = JSON.stringify(projected.messages);
-		expect(rendered).toContain("Current prose before asking.");
-		expect(rendered).toContain("Previous advice");
-		expect(rendered).not.toContain("current-advisor");
-		expect(rendered.match(/<tool_call>/g)).toHaveLength(1);
-	});
-
-	it("rejects an advisor call batched with another unresolved tool call", () => {
-		expect(() => projectTranscript(input({
+	it("removes the active advisor call and retains preceding prose", () => {
+		const result = projectAdvisorContext(input({
 			entries: [entry("assistant", {
-				role: "assistant", content: [
-					{ type: "text", text: "Before tools" },
-					{ type: "toolCall", id: "advisor", name: "advisor", arguments: {} },
-					{ type: "toolCall", id: "write", name: "write", arguments: { path: "x" } },
-				], provider: "x", model: "x", api: "x", usage: {}, stopReason: "toolUse", timestamp: 1,
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Current finding" },
+					{ type: "toolCall", id: "advisor-call", name: "advisor", arguments: {} },
+				],
+				provider: "x", model: "x", api: "x", usage: {}, stopReason: "toolUse", timestamp: 1,
 			})],
-			advisorCallId: "advisor",
-		}))).toThrow(/parallel_tool_calls/);
-	});
-
-	it("preserves supported images and marks error tool results without leaking signatures", () => {
-		const projected = projectTranscript(input({
-			entries: [
-				entry("user-image", { role: "user", content: [{ type: "text", text: "Screenshot" }, { type: "image", data: "base64-data", mimeType: "image/png" }], timestamp: 1 }),
-				entry("error-result", { role: "toolResult", toolCallId: "read-1", toolName: "read", content: [{ type: "text", text: "permission denied", textSignature: "secret" }], isError: true, timestamp: 2 }),
-			],
+			advisorCallId: "advisor-call",
 		}));
-		const messages = projected.messages.filter((message) => message.role !== "assistant");
-		expect(messages.some((message) => Array.isArray(message.content) && message.content.some((block) => block.type === "image" && block.data === "base64-data"))).toBe(true);
-		expect(JSON.stringify(projected.messages)).toContain("status=error");
-		expect(JSON.stringify(projected.messages)).toContain("permission denied");
-		expect(JSON.stringify(projected.messages)).not.toContain("secret");
+		const text = JSON.stringify(result.messages);
+		expect(text).toContain("Current finding");
+		expect(text).not.toContain("advisor-call");
 	});
 
-	it("replaces redacted thinking with a marker and strips all provider signatures", () => {
-		const projected = projectTranscript(input({
+	it("rejects unresolved sibling calls", () => {
+		expect(() => projectAdvisorContext(input({
 			entries: [entry("assistant", {
-				role: "assistant", content: [
-					{ type: "thinking", thinking: "", redacted: true, thinkingSignature: "secret" },
-					{ type: "text", text: "Visible", textSignature: "secret" },
-				], provider: "x", model: "x", api: "x", usage: {}, stopReason: "stop", timestamp: 1,
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "advisor-call", name: "advisor", arguments: {} },
+					{ type: "toolCall", id: "write-call", name: "write", arguments: {} },
+				],
+				provider: "x", model: "x", api: "x", usage: {}, stopReason: "toolUse", timestamp: 1,
 			})],
+			advisorCallId: "advisor-call",
+		}))).toThrow(AdvisorProjectionError);
+	});
+
+	it("keeps newest context within a fixed model-derived limit", () => {
+		const result = projectAdvisorContext(input({
+			entries: [
+				entry("old", { role: "user", content: `OLD-${"x".repeat(20_000)}`, timestamp: 1 }),
+				entry("new", { role: "user", content: "NEW-EVIDENCE", timestamp: 2 }),
+			],
+			model: { provider: "tiny", id: "tiny", contextWindow: 3000, input: ["text"] },
+			maxTokens: 1000,
 		}));
-		const rendered = JSON.stringify(projected.messages);
-		expect(rendered).toContain("thinking unavailable");
-		expect(rendered).toContain("Visible");
-		expect(rendered).not.toContain("secret");
+		const text = JSON.stringify(result.messages);
+		expect(result.truncated).toBe(true);
+		expect(text).toContain("NEW-EVIDENCE");
+		expect(text.length).toBeLessThan(7000);
 	});
 
-	it("compresses the older transcript while keeping the recent window verbatim", () => {
-		const big = "B".repeat(9_000);
-		const entries = [
-			entry("old-call", {
-				role: "assistant", content: [
-					{ type: "thinking", thinking: "OLD_REASONING" },
-					{ type: "toolCall", id: "c1", name: "read", arguments: { path: big } },
-				], provider: "x", model: "x", api: "x", usage: {}, stopReason: "stop", timestamp: 1,
-			}),
-			entry("old-result", { role: "toolResult", toolCallId: "c1", toolName: "read", isError: false, content: [{ type: "text", text: big }], timestamp: 2 }),
-			entry("recent-call", {
-				role: "assistant", content: [
-					{ type: "thinking", thinking: "RECENT_REASONING" },
-					{ type: "toolCall", id: "c2", name: "read", arguments: { path: "small.ts" } },
-				], provider: "x", model: "x", api: "x", usage: {}, stopReason: "stop", timestamp: 3,
-			}),
-			entry("recent-result", { role: "toolResult", toolCallId: "c2", toolName: "read", isError: false, content: [{ type: "text", text: "RECENT_OUTPUT" }], timestamp: 4 }),
-		];
-		const projected = projectTranscript(input({
-			entries,
-			model: model({ contextWindow: 1_000_000 }),
-			// Only the trailing two messages count as recent, so the first pair is compressed.
-			budget: { ...DEFAULT_CONTEXT_BUDGET, recentMessages: 2 },
-		}));
-		const rendered = JSON.stringify(projected.messages);
-
-		expect(rendered).toContain("RECENT_REASONING");
-		expect(rendered).toContain("RECENT_OUTPUT");
-		expect(rendered).not.toContain("OLD_REASONING");
-		expect(rendered).toContain("[assistant thinking omitted]");
-		expect(rendered).toContain("characters omitted");
-		expect(rendered).not.toContain(big);
-		// Clamping happens inside the arguments, so the projected call still parses.
-		const callText = projected.messages
-			.flatMap((message) => (Array.isArray(message.content) ? (message.content as any[]) : []))
-			.map((block) => block.text as string | undefined)
-			.find((text) => text?.startsWith("<tool_call>") && text.includes("characters omitted"));
-		expect(callText).toBeDefined();
-		const call = JSON.parse(callText!.slice("<tool_call>".length, -"</tool_call>".length));
-		expect(call.name).toBe("read");
-		expect(call.arguments.path).toContain("characters omitted");
-		expect(call.arguments.path.length).toBeLessThan(big.length);
+	it("includes the focus question inside the projection bound and caps long questions", () => {
+		const result = projectAdvisorContext(input({ question: `FOCUS-${"q".repeat(20_000)}` }));
+		const focus = result.messages.at(-1);
+		expect(focus?.role).toBe("user");
+		const text = JSON.stringify(focus);
+		expect(text).toContain("FOCUS-");
+		expect(text.length).toBeLessThan(4_500);
+		expect(text).not.toContain("q".repeat(4_001));
 	});
 
-	it("quotes tool schemas only when the budget asks for them", () => {
-		const withoutSchemas = projectTranscript(input());
-		expect(JSON.stringify(withoutSchemas.messages)).not.toContain("properties");
-
-		const withSchemas = projectTranscript(input({
-			budget: { ...DEFAULT_CONTEXT_BUDGET, toolSchemas: true },
-		}));
-		expect(JSON.stringify(withSchemas.messages)).toContain("properties");
-		expect(withSchemas.bounds.estimatedInputTokens).toBeGreaterThan(withoutSchemas.bounds.estimatedInputTokens);
-	});
-
-	it("is byte-stable and preserves the recent window without truncation", () => {
-		const value = input({
-			entries: [entry("user", { role: "user", content: "stable", timestamp: Date.now() })],
-			question: "same",
-		});
-		const first = projectTranscript(value);
-		const second = projectTranscript(value);
-		expect(JSON.stringify(first)).toBe(JSON.stringify(second));
-		expect(JSON.stringify(first)).toContain("stable");
-	});
-
-	it("fails visibly for unsupported images and definite or ambiguous overflow", () => {
-		const imageEntry = entry("image", { role: "user", content: [{ type: "image", data: "abc", mimeType: "image/png" }], timestamp: 1 });
-		expect(() => projectTranscript(input({ entries: [imageEntry], model: model({ input: ["text"] }) }))).toThrow(/unsupported_modality/);
-
-		const huge = entry("huge", { role: "user", content: "x".repeat(20_000), timestamp: 1 });
-		expect(() => projectTranscript(input({ entries: [huge], model: model({ contextWindow: 100 }) , maxTokens: 10 }))).toThrow(/context_too_large/);
-
-		const ambiguous = entry("ambiguous", { role: "user", content: "x".repeat(300), timestamp: 1 });
-		const unconstrained = projectTranscript(input({ entries: [ambiguous], model: model({ contextWindow: 1_000_000 }), maxTokens: 10 }));
-		const straddleWindow = Math.floor((unconstrained.bounds.totalLowerBound + unconstrained.bounds.totalUpperBound) / 2);
-		expect(() => projectTranscript(input({ entries: [ambiguous], model: model({ provider: "ollama", contextWindow: straddleWindow }), maxTokens: 10 }))).toThrow(/context_too_large/);
-		expect(projectTranscript(input({ entries: [ambiguous], model: model({ provider: "anthropic", contextWindow: straddleWindow }), maxTokens: 10 })).bounds.totalUpperBound).toBeGreaterThan(straddleWindow);
-	});
-
-	it("identifies only providers with explicit overflow rejection behavior as safe for ambiguity", () => {
-		expect(providerRejectsOversizedInput("anthropic")).toBe(true);
-		expect(providerRejectsOversizedInput("openai-codex")).toBe(true);
-		expect(providerRejectsOversizedInput("google-vertex")).toBe(true);
-		expect(providerRejectsOversizedInput("ollama")).toBe(false);
-		expect(providerRejectsOversizedInput("openrouter")).toBe(false);
-		expect(providerRejectsOversizedInput("custom-provider")).toBe(false);
+	it("preserves supported images and rejects unsupported ones", () => {
+		const image = entry("image", { role: "user", content: [{ type: "image", data: "abc", mimeType: "image/png" }], timestamp: 1 });
+		expect(JSON.stringify(projectAdvisorContext(input({ entries: [image] })).messages)).toContain("abc");
+		expect(() => projectAdvisorContext(input({
+			entries: [image],
+			model: { provider: "text", id: "only", contextWindow: 100_000, input: ["text"] },
+		}))).toThrow(/does not accept images/);
 	});
 });

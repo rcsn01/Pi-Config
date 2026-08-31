@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-	ADVISOR_NUDGE_MESSAGE,
 	ADVISOR_SYSTEM_PROMPT,
 	ADVISOR_TOOL_DESCRIPTION,
 	ADVISOR_WORD_LIMIT_INSTRUCTION,
@@ -8,14 +7,13 @@ import {
 } from "./prompt.ts";
 
 describe("advisor prompts", () => {
-	it("keeps advisor discovery and strict-mode guidance in advisor-owned text", () => {
+	it("describes a read-only consultation", () => {
 		expect(ADVISOR_TOOL_DESCRIPTION).toContain("stronger read-only model");
-		expect(ADVISOR_NUDGE_MESSAGE).toContain("call advisor now");
-		expect(ADVISOR_SYSTEM_PROMPT).toContain("read-only engineering advisor");
+		expect(ADVISOR_SYSTEM_PROMPT).toContain("cannot edit files");
 	});
 
-	it("builds a default or question-specific focus message with the word limit", () => {
-		expect(buildAdvisorFocusMessage()).toContain("Review the current task");
+	it("builds a default or question-specific focus message", () => {
+		expect(buildAdvisorFocusMessage()).toContain("most important next step");
 		expect(buildAdvisorFocusMessage("  Check the parser  ")).toBe(
 			`Check the parser\n\n${ADVISOR_WORD_LIMIT_INSTRUCTION}`,
 		);
