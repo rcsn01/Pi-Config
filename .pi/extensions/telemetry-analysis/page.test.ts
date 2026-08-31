@@ -11,6 +11,8 @@ describe("analysis page", () => {
 		expect(ANALYSIS_PAGE).toContain("textContent");
 		expect(ANALYSIS_PAGE).not.toContain("innerHTML");
 		expect(ANALYSIS_PAGE).not.toContain("OpenAI request analysis");
+		expect(ANALYSIS_PAGE).not.toContain("Pi provider request analysis");
+		expect(ANALYSIS_PAGE).not.toContain("Captured prompts and tool data may contain secrets.");
 		expect(ANALYSIS_PAGE).toContain("Section-level cache placement is estimated");
 		expect(ANALYSIS_PAGE).toContain("request parts");
 		expect(ANALYSIS_PAGE).toContain("Tool rows include each transmitted tool description and parameter schema");
@@ -42,6 +44,9 @@ describe("analysis page", () => {
 		vm.runInContext(script!, vm.createContext(window));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+		expect(document.querySelector("main")?.firstElementChild?.id).toBe("sourceTabs");
+		expect(document.getElementById("activation")?.classList.contains("hidden")).toBe(true);
+		expect(document.getElementById("activation")?.textContent).toBe("");
 		expect(tabs.map((tab) => tab.textContent)).toEqual(["Main (2)", "Subagents (2)", "Guardian (0)", "Compaction (1)"]);
 		expect(tabs.map((tab) => [tab.id, tab.getAttribute("aria-controls"), tab.getAttribute("tabindex")])).toEqual([
 			["tab-main", "sourcePanel", "0"], ["tab-subagent", "sourcePanel", "-1"],
