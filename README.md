@@ -85,12 +85,11 @@ When `policy-permissions` is enabled, acquisition counts as network access, remo
 
 The opt-in `tools-advisor` extension lets the executor consult one stronger, read-only model without giving that model tools or edit access.
 
-- `/advisor` opens a TUI picker for mode, model, thinking level, and context window.
-- `/advisor on` and `/advisor strict` reuse the saved complete selection, or open that picker when one is not configured.
-- Direct `/advisor <provider>/<model>` arguments are rejected. Use the full picker instead.
-- `/advisor off` disables future consultations while retaining the selected model, thinking level, and context window.
+- `/advisor` opens a TUI picker for the model and thinking level.
+- `/advisor on` reuses the saved selection, or opens the picker when no model is configured.
+- `/advisor off` disables consultations while retaining the selected model and thinking level.
 
-Enabling advisor adds the `advisor` tool without rewriting the executor's system prompt. The default budget is three consultations per user turn and twenty per session. The advisor receives the unchanged executor system prompt, active tool manifest, conversation, code, and tool output; selecting a different provider requires explicit confirmation. Advice is experimental and remains disabled until configured in the `advisor` namespace of the active settings profile.
+Enabling advisor adds the `advisor` tool without rewriting the executor's system prompt. Each consultation makes a separate model request with an empty tool list. It receives a bounded copy of the effective conversation, including recent tool calls and results. When the selected model has a smaller context window, the oldest copied context is omitted first. Advice is experimental and remains disabled until configured in the `advisor` namespace of the active settings profile.
 
 ## Settings profiles
 

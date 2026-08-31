@@ -23,9 +23,12 @@ export interface ModelPickerPreviousSelection {
 	contextWindow?: number;
 }
 
-export interface ModelPickerSelection {
+export interface ModelThinkingSelection {
 	model: Model<Api>;
 	thinkingLevel: ModelThinkingLevel;
+}
+
+export interface ModelPickerSelection extends ModelThinkingSelection {
 	contextWindow: number;
 }
 
@@ -256,6 +259,23 @@ async function selectContextWindow(
 	return ordered[choicesWithLabels.indexOf(selected)];
 }
 
+/** Select a model and reasoning level without overriding its catalogue context window. */
+export async function pickModelAndThinking(
+	ctx: ExtensionContext,
+	options: ModelPickerOptions = {},
+): Promise<ModelThinkingSelection | undefined> {
+	if (ctx.mode !== "tui" || isAborted(ctx)) return undefined;
+	const models = await getPickerModels(ctx);
+	if (isAborted(ctx)) return undefined;
+	if (models.length === 0) throw new Error("No authenticated models are available.");
+
+	const model = await selectModel(ctx, models, options.initialQuery?.trim() ?? "", options);
+	if (isAborted(ctx) || !model) return undefined;
+	const thinkingLevel = await selectThinkingLevel(ctx, model, options.previous, options);
+	if (isAborted(ctx) || thinkingLevel === undefined) return undefined;
+	return { model, thinkingLevel };
+}
+
 /**
  * Run the shared model, thinking, and context picker. It owns catalogue
  * refresh, model normalization, search, defaults, and cancellation. Callers
@@ -265,23 +285,16 @@ export async function pickModelConfiguration(
 	ctx: ExtensionContext,
 	options: ModelPickerOptions = {},
 ): Promise<ModelPickerSelection | undefined> {
-	if (ctx.mode !== "tui" || isAborted(ctx)) return undefined;
-	const models = await getPickerModels(ctx);
-	if (isAborted(ctx)) return undefined;
-	if (models.length === 0) throw new Error("No authenticated models are available.");
-
-	const selectedModel = await selectModel(ctx, models, options.initialQuery?.trim() ?? "", options);
-	if (isAborted(ctx) || !selectedModel) return undefined;
-	const thinkingLevel = await selectThinkingLevel(ctx, selectedModel, options.previous, options);
-	if (isAborted(ctx) || thinkingLevel === undefined) return undefined;
-	const contextWindow = await selectContextWindow(ctx, selectedModel, options.previous, options);
+	const selection = await pickModelAndThinking(ctx, options);
+	if (!selection) return undefined;
+	const contextWindow = await selectContextWindow(ctx, selection.model, options.previous, options);
 	if (isAborted(ctx) || contextWindow === undefined) return undefined;
 
 	return {
-		model: contextWindow === selectedModel.contextWindow
-			? selectedModel
-			: { ...selectedModel, contextWindow },
-		thinkingLevel,
+		model: contextWindow === selection.model.contextWindow
+			? selection.model
+			: { ...selection.model, contextWindow },
+		thinkingLevel: selection.thinkingLevel,
 		contextWindow,
 	};
 }

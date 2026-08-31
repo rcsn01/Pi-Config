@@ -2,32 +2,16 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-	fauxAssistantMessage,
-	fauxProvider,
-	fauxText,
-	fauxToolCall,
-	InMemoryCredentialStore,
-} from "@earendil-works/pi-ai";
-import {
-	createAgentSession,
-	DefaultResourceLoader,
-	ModelRuntime,
-	SessionManager,
-	SettingsManager,
-} from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import advisorExtension, {
 	createAdvisorExtension,
 	formatAdvisorStatus,
-	formatConfiguredAdvisorStatus,
 	loadAdvisorSettings,
 	parseAdvisorSettings,
 } from "./index.ts";
-import { createAdvisorRunner } from "./runner.ts";
-import { DEFAULT_CONTEXT_BUDGET } from "./transcript.ts";
 
 const roots: string[] = [];
-
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -36,15 +20,6 @@ const model: any = {
 	provider: "anthropic", id: "strong", name: "Strong", api: "anthropic-messages",
 	baseUrl: "https://example.invalid", reasoning: true, input: ["text"], contextWindow: 100_000,
 	maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-};
-
-const legacyDeepSeekModel: any = {
-	...model,
-	provider: "deepseek",
-	id: "deepseek-v4",
-	name: "DeepSeek V4",
-	api: "openai-completions",
-	contextWindow: 128_000,
 };
 
 function settingsFile(value: unknown): string {
@@ -59,7 +34,6 @@ function makePi(options: {
 	settingsPath: string;
 	activeTools?: string[];
 	model?: any;
-	confirm?: boolean;
 	availableModel?: any;
 	branchEntries?: any[];
 	customResults?: Array<string | undefined>;
@@ -68,10 +42,8 @@ function makePi(options: {
 	const commands = new Map<string, any>();
 	const tools = new Map<string, any>();
 	let activeTools = [...(options.activeTools ?? ["read"])] as string[];
-	const allTools: any[] = [{
-		name: "read", label: "Read", description: "Read files", parameters: { type: "object" },
-		sourceInfo: { source: "builtin", path: "<builtin:read>", scope: "temporary", origin: "top-level" },
-	}];
+	const allTools: any[] = [{ name: "read", description: "Read files", parameters: {}, sourceInfo: {} }];
+	const customResults = [...(options.customResults ?? [])];
 	const pi: any = {
 		on: vi.fn((event: string, handler: any) => handlers.set(event, handler)),
 		registerCommand: vi.fn((name: string, command: any) => commands.set(name, command)),
@@ -79,606 +51,198 @@ function makePi(options: {
 		getActiveTools: vi.fn(() => [...activeTools]),
 		setActiveTools: vi.fn((names: string[]) => { activeTools = [...names]; }),
 		getAllTools: vi.fn(() => [...allTools]),
-		sendMessage: vi.fn(),
 	};
-	const entries: any[] = options.branchEntries ?? [];
-	const customResults = [...(options.customResults ?? [])];
+	const entries = options.branchEntries ?? [];
 	const ctx: any = {
 		cwd: "/workspace",
 		mode: "tui",
 		hasUI: true,
-		model: options.model ?? { provider: "anthropic", id: "executor" },
+		model: options.model ?? { provider: "anthropic", id: "executor", contextWindow: 100_000 },
 		scopedModels: [],
 		signal: undefined,
 		ui: {
 			notify: vi.fn(),
-			confirm: vi.fn(async () => options.confirm ?? true),
 			select: vi.fn(async (_title: string, choices: string[]) => choices[0]),
 			custom: vi.fn(async () => customResults.shift()),
 			setStatus: vi.fn(),
 		},
-		sessionManager: {
-			getBranch: () => entries,
-			buildContextEntries: () => entries,
-			getSessionId: () => "main-session",
-		},
+		sessionManager: { getBranch: () => entries, buildContextEntries: () => entries },
 		getSystemPrompt: () => "Executor prompt",
 		modelRegistry: {
 			refresh: vi.fn(async () => ({ aborted: false, errors: new Map() })),
 			getAvailable: vi.fn(() => [options.availableModel ?? model]),
 			find: vi.fn(() => options.availableModel ?? model),
 			hasConfiguredAuth: vi.fn(() => true),
-			complete: vi.fn(async () => fauxAssistantMessage("Advice")),
+			getRegisteredNativeProvider: vi.fn(),
+			getRegisteredProviderConfig: vi.fn(),
 		},
 	};
 	return { pi, handlers, commands, tools, ctx, getActiveTools: () => activeTools };
 }
 
 describe("advisor settings", () => {
-	it("defaults missing advisor settings to disabled with the v1 budget", () => {
-		expect(parseAdvisorSettings({ compaction: {} })).toEqual({
-			strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048, contextBudget: DEFAULT_CONTEXT_BUDGET,
-		});
-		expect(parseAdvisorSettings({ advisor: { provider: "anthropic", modelId: "strong" } })).toEqual({
-			provider: "anthropic", modelId: "strong", strict: false, nudgeTurn: 3, maxUses: 3, maxUsesPerSession: 20, maxTokens: 2048,
-			contextBudget: DEFAULT_CONTEXT_BUDGET,
-		});
-		expect(parseAdvisorSettings({ advisor: { provider: "anthropic", modelId: "strong", enabled: false } })).toMatchObject({
-			provider: "anthropic", modelId: "strong", enabled: false,
+	it("has a small default configuration", () => {
+		expect(parseAdvisorSettings({})).toEqual({ enabled: false, maxTokens: 2048 });
+		expect(parseAdvisorSettings({ advisor: { model: "anthropic/strong" } })).toEqual({
+			enabled: true, model: "anthropic/strong", maxTokens: 2048,
 		});
 	});
 
-	it("merges a partial context budget over the defaults", () => {
-		expect(parseAdvisorSettings({ advisor: { contextBudget: { thinking: "none", recentMessages: 0 } } }).contextBudget)
-			.toEqual({ ...DEFAULT_CONTEXT_BUDGET, thinking: "none", recentMessages: 0 });
+	it("reads the old provider/modelId shape but ignores removed tuning fields", () => {
+		expect(parseAdvisorSettings({ advisor: {
+			provider: "anthropic", modelId: "strong", strict: true, maxUses: 10, contextWindow: 50_000,
+		} })).toEqual({ enabled: true, model: "anthropic/strong", maxTokens: 2048 });
 	});
 
-	it("accepts 0 as an unlimited use budget", () => {
-		expect(parseAdvisorSettings({ advisor: { maxUses: 0 } })).toMatchObject({ maxUses: 0 });
-		expect(parseAdvisorSettings({ advisor: { maxUsesPerSession: 0 } })).toMatchObject({ maxUsesPerSession: 0 });
-	});
-
-	it("fails closed for malformed advisor values", () => {
-		expect(() => parseAdvisorSettings({ advisor: [] })).toThrow(/advisor must be a JSON object/);
-		expect(() => parseAdvisorSettings({ advisor: { maxUses: -1 } })).toThrow(/maxUses/);
-		expect(() => parseAdvisorSettings({ advisor: { maxUses: 1.5 } })).toThrow(/maxUses/);
-		expect(() => parseAdvisorSettings({ advisor: { maxUsesPerSession: -1 } })).toThrow(/maxUsesPerSession/);
-		expect(() => parseAdvisorSettings({ advisor: { maxUsesPerSession: 1.5 } })).toThrow(/maxUsesPerSession/);
-		expect(() => parseAdvisorSettings({ advisor: { maxTokens: -1 } })).toThrow(/maxTokens/);
-		expect(() => parseAdvisorSettings({ advisor: { strict: "yes" } })).toThrow(/strict/);
+	it("rejects malformed retained fields", () => {
+		expect(() => parseAdvisorSettings({ advisor: [] })).toThrow(/JSON object/);
+		expect(() => parseAdvisorSettings({ advisor: { model: "" } })).toThrow(/model/);
 		expect(() => parseAdvisorSettings({ advisor: { enabled: "yes" } })).toThrow(/enabled/);
-		expect(() => parseAdvisorSettings({ advisor: { nudgeTurn: 0 } })).toThrow(/nudgeTurn/);
-		expect(() => parseAdvisorSettings({ advisor: { nudgeTurn: -1 } })).toThrow(/nudgeTurn/);
-		expect(() => parseAdvisorSettings({ advisor: { contextBudget: [] } })).toThrow(/contextBudget must be a JSON object/);
-		expect(() => parseAdvisorSettings({ advisor: { contextBudget: { thinking: "some" } } })).toThrow(/thinking/);
-		expect(() => parseAdvisorSettings({ advisor: { contextBudget: { recentMessages: -1 } } })).toThrow(/recentMessages/);
-		expect(() => parseAdvisorSettings({ advisor: { contextBudget: { toolSchemas: "yes" } } })).toThrow(/toolSchemas/);
 		expect(() => parseAdvisorSettings({ advisor: { thinkingLevel: "turbo" } })).toThrow(/thinkingLevel/);
-		expect(() => parseAdvisorSettings({ advisor: { contextWindow: 0 } })).toThrow(/contextWindow/);
-		expect(parseAdvisorSettings({ advisor: { thinkingLevel: "off", contextWindow: 128_000 } })).toMatchObject({ thinkingLevel: "off", contextWindow: 128_000 });
-	});
-});
-
-describe("advisor migration", () => {
-	it("fills legacy thinking and context in the active settings document", async () => {
-		const path = settingsFile({ advisor: { provider: "deepseek", modelId: "deepseek-v4", enabled: false } });
-		const harness = makePi({ settingsPath: path, availableModel: legacyDeepSeekModel });
-		createAdvisorExtension({ settingsPath: path })(harness.pi);
-		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
-
-		expect(loadAdvisorSettings(path)).toMatchObject({
-			provider: "deepseek",
-			modelId: "deepseek-v4",
-			enabled: false,
-			thinkingLevel: "high",
-			contextWindow: 256_000,
-		});
-	});
-
-	it("leaves an unavailable legacy model untouched", async () => {
-		const path = settingsFile({ advisor: { provider: "missing", modelId: "model" } });
-		const harness = makePi({ settingsPath: path });
-		harness.ctx.modelRegistry.find.mockReturnValue(undefined);
-		createAdvisorExtension({ settingsPath: path })(harness.pi);
-		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
-
-		expect(JSON.parse(readFileSync(path, "utf8")).advisor).toEqual({ provider: "missing", modelId: "model" });
-	});
-
-	it("migrates the profile selected by the session instead of the root settings document", async () => {
-		const root = mkdtempSync(join(tmpdir(), "advisor-migration-profile-"));
-		roots.push(root);
-		const settingsPath = join(root, "settings.json");
-		const profilesDirectory = join(root, "profiles");
-		mkdirSync(profilesDirectory);
-		writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
-		writeFileSync(join(profilesDirectory, "focused.json"), JSON.stringify({ advisor: { provider: "deepseek", modelId: "deepseek-v4" } }));
-		const harness = makePi({ settingsPath, availableModel: legacyDeepSeekModel });
-		createAdvisorExtension({ settingsPath })(harness.pi);
-		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
-
-		expect(JSON.parse(readFileSync(join(profilesDirectory, "focused.json"), "utf8")).advisor).toMatchObject({ thinkingLevel: "high", contextWindow: 256_000 });
-		expect(JSON.parse(readFileSync(settingsPath, "utf8")).advisor).toBeUndefined();
+		expect(() => parseAdvisorSettings({ advisor: { maxTokens: 0 } })).toThrow(/maxTokens/);
 	});
 });
 
 describe("advisor extension", () => {
-	it("shows the configured advisor model in the footer status while idle", async () => {
-		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
-		const harness = makePi({ settingsPath: path });
-		createAdvisorExtension({ settingsPath: path })(harness.pi);
-
-		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
-
-		expect(harness.ctx.ui.setStatus).toHaveBeenCalledWith("advisor", "advisor(a/strong)");
-	});
-
-	it("registers the opt-in advisor tool and activates it only for configured sessions", async () => {
-		const configuredPath = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
+	it("registers and activates the tool only when enabled with a model", async () => {
+		const configuredPath = settingsFile({ advisor: { enabled: true, model: "anthropic/strong" } });
 		const configured = makePi({ settingsPath: configuredPath });
 		createAdvisorExtension({ settingsPath: configuredPath })(configured.pi);
 		expect(advisorExtension).toEqual(expect.any(Function));
-		expect(configured.tools.get("advisor")).toMatchObject({
-		name: "advisor", label: "Advisor", executionMode: "sequential",
-		promptSnippet: expect.any(String),
-		parameters: expect.any(Object),
-		});
-		expect(configured.tools.get("advisor")).not.toHaveProperty("promptGuidelines");
-		expect(configured.tools.get("advisor").description).toContain("forwarded automatically");
+		expect(configured.tools.get("advisor")).toMatchObject({ name: "advisor", executionMode: "sequential" });
 		await configured.handlers.get("session_start")({ reason: "startup" }, configured.ctx);
 		expect(configured.getActiveTools()).toContain("advisor");
+		expect(configured.ctx.ui.setStatus).toHaveBeenCalledWith("advisor", "advisor(a/strong)");
 
-		const disabledPath = settingsFile({ compaction: { enabled: true } });
+		const disabledPath = settingsFile({ advisor: { enabled: false, model: "anthropic/strong" } });
 		const disabled = makePi({ settingsPath: disabledPath, activeTools: ["read", "advisor"] });
 		createAdvisorExtension({ settingsPath: disabledPath })(disabled.pi);
 		await disabled.handlers.get("session_start")({ reason: "startup" }, disabled.ctx);
 		expect(disabled.getActiveTools()).not.toContain("advisor");
 	});
 
-	it("does not register a system-prompt mutation hook", () => {
-		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
-		const harness = makePi({ settingsPath: path });
-		createAdvisorExtension({ settingsPath: path })(harness.pi);
-
-		expect(harness.handlers.has("before_agent_start")).toBe(false);
-		expect(harness.pi.on).not.toHaveBeenCalledWith("before_agent_start", expect.any(Function));
-	});
-
-	it("reads advisor tool settings from the session's profile file at session start", async () => {
+	it("uses the session profile settings", async () => {
 		const root = mkdtempSync(join(tmpdir(), "advisor-profile-"));
 		roots.push(root);
 		const settingsPath = join(root, "settings.json");
-		const profilesDirectory = join(root, "profiles");
-		mkdirSync(profilesDirectory);
+		mkdirSync(join(root, "profiles"));
 		writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
-		writeFileSync(join(profilesDirectory, "focused.json"), JSON.stringify({
-			advisor: { provider: "anthropic", modelId: "strong" },
-		}));
+		writeFileSync(join(root, "profiles", "focused.json"), JSON.stringify({ advisor: { model: "anthropic/strong", enabled: true } }));
 		const harness = makePi({ settingsPath });
 		createAdvisorExtension({ settingsPath })(harness.pi);
 		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
 		expect(harness.getActiveTools()).toContain("advisor");
 	});
 
-	it("ignores settings.json advisor values when the session has a profile", async () => {
-		const root = mkdtempSync(join(tmpdir(), "advisor-profile-"));
-		roots.push(root);
-		const settingsPath = join(root, "settings.json");
-		const profilesDirectory = join(root, "profiles");
-		mkdirSync(profilesDirectory);
-		writeFileSync(settingsPath, JSON.stringify({
-			configProfiles: { active: "focused" },
-			advisor: { provider: "anthropic", modelId: "strong" },
-		}));
-		writeFileSync(join(profilesDirectory, "focused.json"), JSON.stringify({ compaction: { enabled: true } }));
-		const harness = makePi({ settingsPath, activeTools: ["read", "advisor"] });
-		createAdvisorExtension({ settingsPath })(harness.pi);
-		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
-		expect(harness.getActiveTools()).not.toContain("advisor");
-	});
-
-	it("keeps the session's profile on reload even when the marker changed", async () => {
-		const root = mkdtempSync(join(tmpdir(), "advisor-profile-"));
-		roots.push(root);
-		const settingsPath = join(root, "settings.json");
-		const profilesDirectory = join(root, "profiles");
-		mkdirSync(profilesDirectory);
-		// Another session switched the marker to "focused" (no advisor), but this
-		// session's remembered entry still names "default" (with advisor).
-		writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
-		writeFileSync(join(profilesDirectory, "focused.json"), JSON.stringify({ compaction: { enabled: true } }));
-		writeFileSync(join(profilesDirectory, "default.json"), JSON.stringify({
-			advisor: { provider: "anthropic", modelId: "strong" },
-		}));
-		const harness = makePi({
-			settingsPath,
-			branchEntries: [{ type: "custom", customType: "configProfiles", data: { active: "default" } }],
-		});
-		createAdvisorExtension({ settingsPath })(harness.pi);
-		await harness.handlers.get("session_start")({ reason: "reload" }, harness.ctx);
-		expect(harness.getActiveTools()).toContain("advisor");
-	});
-
-	it("uses the full picker without cross-provider consent and writes atomically without losing settings", async () => {
-		const path = settingsFile({ compaction: { threshold: 0.1 }, other: { keep: true }, advisor: { maxUses: 2, maxTokens: 1000, strict: true } });
-		const harness = makePi({
-			settingsPath: path,
-			model: { provider: "openai", id: "executor" },
-			customResults: ["on", "anthropic/strong"],
-		});
+	it("picks only model and thinking, then writes the compact settings shape", async () => {
+		const path = settingsFile({ other: { keep: true }, advisor: { strict: true, contextBudget: {}, maxUses: 3 } });
+		const harness = makePi({ settingsPath: path, customResults: ["anthropic/strong"] });
 		createAdvisorExtension({ settingsPath: path })(harness.pi);
 		await harness.commands.get("advisor").handler("", harness.ctx);
 		const saved = JSON.parse(readFileSync(path, "utf8"));
-		expect(saved).toMatchObject({
-			compaction: { threshold: 0.1 }, other: { keep: true },
-			advisor: { provider: "anthropic", modelId: "strong", maxUses: 2, maxTokens: 1000, strict: false, thinkingLevel: "medium", contextWindow: 100_000 },
-		});
-		expect(harness.ctx.ui.confirm).not.toHaveBeenCalled();
-		expect(harness.getActiveTools()).toContain("advisor");
-
-		await harness.commands.get("advisor").handler("off", harness.ctx);
-		const afterOff = JSON.parse(readFileSync(path, "utf8"));
-		expect(afterOff).toMatchObject({ compaction: { threshold: 0.1 }, other: { keep: true } });
-		expect(afterOff.advisor).toMatchObject({
-			provider: "anthropic", modelId: "strong", enabled: false,
-			maxUses: 2, maxTokens: 1000, strict: false,
-			thinkingLevel: "medium", contextWindow: 100_000,
-		});
-		expect(harness.getActiveTools()).toContain("advisor");
-
-		const reloaded = makePi({ settingsPath: path, activeTools: ["read", "advisor"] });
-		createAdvisorExtension({ settingsPath: path })(reloaded.pi);
-		await reloaded.handlers.get("session_start")({ reason: "reload" }, reloaded.ctx);
-		expect(reloaded.getActiveTools()).not.toContain("advisor");
-		await reloaded.commands.get("advisor").handler("strict", reloaded.ctx);
-		expect(loadAdvisorSettings(path)).toMatchObject({
-			provider: "anthropic", modelId: "strong", enabled: true, strict: true,
-		});
-		expect(reloaded.ctx.ui.select).not.toHaveBeenCalled();
-
-		const malformedPath = settingsFile({ other: { keep: true }, advisor: [] });
-		const malformed = makePi({ settingsPath: malformedPath, activeTools: ["advisor"] });
-		createAdvisorExtension({ settingsPath: malformedPath })(malformed.pi);
-		await malformed.commands.get("advisor").handler("off", malformed.ctx);
-		expect(loadAdvisorSettings(malformedPath).provider).toBeUndefined();
-		expect(JSON.parse(readFileSync(malformedPath, "utf8"))).toMatchObject({ other: { keep: true }, advisor: { enabled: false, strict: false } });
-
-		const malformedStrictPath = settingsFile({ other: { keep: true }, advisor: { provider: "anthropic", modelId: "strong", strict: "yes", contextBudget: [] } });
-		const malformedStrict = makePi({ settingsPath: malformedStrictPath, activeTools: ["advisor"] });
-		createAdvisorExtension({ settingsPath: malformedStrictPath })(malformedStrict.pi);
-		await malformedStrict.commands.get("advisor").handler("off", malformedStrict.ctx);
-		expect(JSON.parse(readFileSync(malformedStrictPath, "utf8"))).toMatchObject({
-			advisor: { provider: "anthropic", modelId: "strong", enabled: false, strict: false },
-		});
+		expect(saved.other).toEqual({ keep: true });
+		expect(saved.advisor).toEqual({ enabled: true, model: "anthropic/strong", thinkingLevel: "medium", maxTokens: 2048 });
+		expect(harness.ctx.ui.custom).toHaveBeenCalledOnce();
+		expect(harness.ctx.ui.select).toHaveBeenCalledOnce();
 	});
 
-	it("requires TUI mode for the bare full picker", async () => {
+	it("turns an existing selection on and off without opening the picker", async () => {
+		const path = settingsFile({ advisor: { enabled: false, model: "anthropic/strong", thinkingLevel: "high", maxTokens: 1000 } });
+		const harness = makePi({ settingsPath: path, activeTools: ["read"] });
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.commands.get("advisor").handler("on", harness.ctx);
+		expect(loadAdvisorSettings(path)).toEqual({ enabled: true, model: "anthropic/strong", thinkingLevel: "high", maxTokens: 1000 });
+		expect(harness.getActiveTools()).toContain("advisor");
+		expect(harness.ctx.ui.custom).not.toHaveBeenCalled();
+
+		await harness.commands.get("advisor").handler("off", harness.ctx);
+		expect(loadAdvisorSettings(path).enabled).toBe(false);
+		expect(harness.getActiveTools()).not.toContain("advisor");
+	});
+
+	it("keeps the off command usable when old settings are malformed", async () => {
+		const path = settingsFile({ other: { keep: true }, advisor: { provider: "anthropic", modelId: "strong", thinkingLevel: "turbo" } });
+		const harness = makePi({ settingsPath: path, activeTools: ["advisor"] });
+		createAdvisorExtension({ settingsPath: path })(harness.pi);
+		await harness.commands.get("advisor").handler("off", harness.ctx);
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+			other: { keep: true },
+			advisor: { enabled: false, model: "anthropic/strong", maxTokens: 2048 },
+		});
+		expect(harness.getActiveTools()).not.toContain("advisor");
+	});
+
+	it("supports only the simplified command forms", async () => {
 		const path = settingsFile({});
 		const harness = makePi({ settingsPath: path });
-		harness.ctx.mode = "print";
 		createAdvisorExtension({ settingsPath: path })(harness.pi);
 		expect(harness.commands.get("advisor").getArgumentCompletions("")).toEqual([
-			{ value: "on", label: "on" },
-			{ value: "strict", label: "strict" },
-			{ value: "off", label: "off" },
+			{ value: "on", label: "on" }, { value: "off", label: "off" },
 		]);
-		await harness.commands.get("advisor").handler("", harness.ctx);
-		expect(harness.ctx.ui.select).not.toHaveBeenCalled();
-		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("TUI mode"), "error");
-	});
-
-	it("reports shared-picker refresh and catalogue failures instead of rejecting the command", async () => {
-		const path = settingsFile({});
-		const harness = makePi({ settingsPath: path, customResults: ["on"] });
-		harness.ctx.modelRegistry.getAvailable.mockReturnValue([]);
-		createAdvisorExtension({ settingsPath: path })(harness.pi);
-		await harness.commands.get("advisor").handler("", harness.ctx);
-		expect(harness.ctx.ui.notify).toHaveBeenCalledWith("No authenticated models are available.", "error");
-	});
-
-	it("uses the shared TUI selectors for mode and model selection", async () => {
-		const path = settingsFile({});
-		const harness = makePi({
-			settingsPath: path,
-			customResults: ["strict", "anthropic/strong"],
-		});
-		createAdvisorExtension({ settingsPath: path })(harness.pi);
-		await harness.commands.get("advisor").handler("", harness.ctx);
-		expect(harness.ctx.ui.custom).toHaveBeenCalledTimes(2);
-		expect(loadAdvisorSettings(path)).toMatchObject({
-			provider: "anthropic",
-			modelId: "strong",
-			strict: true,
-			thinkingLevel: "medium",
-			contextWindow: 100_000,
-		});
-	});
-
-	it("flips strict mode without reopening the model picker when explicitly requested", async () => {
-		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong", thinkingLevel: "medium", contextWindow: 100_000 } });
-		const harness = makePi({ settingsPath: path });
-		createAdvisorExtension({ settingsPath: path })(harness.pi);
 		await harness.commands.get("advisor").handler("strict", harness.ctx);
-		expect(loadAdvisorSettings(path).strict).toBe(true);
-		expect(harness.ctx.ui.select).not.toHaveBeenCalled();
-		await harness.commands.get("advisor").handler("on", harness.ctx);
-		expect(loadAdvisorSettings(path).strict).toBe(false);
+		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Accepted forms"), "error");
+		expect(harness.handlers.has("turn_end")).toBe(false);
 	});
 
-	it("formats advisor statuses by mode and hides inactive consultations", () => {
-		expect(formatAdvisorStatus(true, false, "anthropic/strong")).toBe("advisor(a/strong)");
-		expect(formatAdvisorStatus(true, true, "anthropic/strong")).toBe("advisor.s(a/strong)");
-		expect(formatAdvisorStatus(false, true, "anthropic/strong")).toBeUndefined();
-		expect(formatConfiguredAdvisorStatus({ provider: "anthropic", modelId: "strong", strict: false })).toBe("advisor(a/strong)");
-		expect(formatConfiguredAdvisorStatus({ provider: "anthropic", modelId: "strong", strict: true, enabled: false })).toBeUndefined();
+	it("renders simple success, warning, and failure results", async () => {
+		const path = settingsFile({ advisor: { model: "anthropic/strong" } });
+		for (const result of [
+			{ ok: true, text: "Advice", model: "anthropic/strong", truncated: false },
+			{ ok: true, text: "Partial", model: "anthropic/strong", truncated: true },
+			{ ok: false, message: "Unavailable", model: "anthropic/strong" },
+		]) {
+			const harness = makePi({ settingsPath: path });
+			createAdvisorExtension({ settingsPath: path, runner: { execute: vi.fn(async () => result as any) } })(harness.pi);
+			const tool = harness.tools.get("advisor");
+			const toolResult = await tool.execute("call", {}, undefined, undefined, harness.ctx);
+			expect(Boolean(toolResult.isError)).toBe(!result.ok);
+			const rendered = tool.renderResult(toolResult, { expanded: false, isPartial: false }, { fg: (_color: string, text: string) => text } as any, { isError: Boolean(toolResult.isError) } as any);
+			expect(rendered.render(80).join("\n")).toContain(result.ok ? (result.truncated ? "Advice may be incomplete" : "Advice available") : "Unavailable");
+		}
 	});
+});
 
-	it("marks advisor failures for the native tool shell and renders semantic states", async () => {
-		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
-		const runner: any = {
-			execute: vi.fn(async () => ({
-				disposition: "failure",
-				code: "advisor_provider_error",
-				message: "unavailable",
-				model: "anthropic/strong",
-				consumesBudget: false,
-				truncated: false,
-			})),
-		};
-		const harness = makePi({ settingsPath: path });
-		createAdvisorExtension({ settingsPath: path, runner })(harness.pi);
-		const result = await harness.tools.get("advisor").execute("call", {}, undefined, undefined, harness.ctx);
-		expect(result).toMatchObject({ isError: true });
-		const rendered = harness.tools.get("advisor").renderResult(
-			result,
-			{ expanded: false, isPartial: false },
-			{ fg: (_color: string, text: string) => text } as any,
-			{ isError: true } as any,
-		);
-		expect(rendered.render(80).join("\\n")).toContain("✗ advisor_provider_error");
-	});
-
-	it("keeps truncated advisor output as a warning rather than a tool error", async () => {
-		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong" } });
-		const runner: any = {
-			execute: vi.fn(async () => ({
-				disposition: "warning",
-				code: "advisor_truncated",
-				message: "Advice so far",
-				model: "anthropic/strong",
-				consumesBudget: true,
-				truncated: true,
-			})),
-		};
-		const harness = makePi({ settingsPath: path });
-		createAdvisorExtension({ settingsPath: path, runner })(harness.pi);
-		const result = await harness.tools.get("advisor").execute("call", {}, undefined, undefined, harness.ctx);
-		expect(result).not.toHaveProperty("isError");
-		const rendered = harness.tools.get("advisor").renderResult(
-			result,
-			{ expanded: false, isPartial: false },
-			{ fg: (_color: string, text: string) => text } as any,
-			{ isError: false } as any,
-		);
-		expect(rendered.render(80).join("\\n")).toContain("! Advice may be incomplete");
-	});
-
-	it("includes strict mode in the active advisor status", async () => {
-		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong", strict: true } });
-		const runner: any = {
-			execute: vi.fn(async (input: any) => {
-				input.onStatus?.(true, "anthropic/strong");
-				input.onStatus?.(false, "anthropic/strong");
-				return {
-					disposition: "success",
-					code: "advisor_ok",
-					message: "Advice",
-					model: "anthropic/strong",
-					consumesBudget: true,
-					truncated: false,
-				};
-			}),
-		};
-		const harness = makePi({ settingsPath: path });
-		createAdvisorExtension({ settingsPath: path, runner })(harness.pi);
-		await harness.tools.get("advisor").execute("call", {}, undefined, undefined, harness.ctx);
-		expect(harness.ctx.ui.setStatus).toHaveBeenNthCalledWith(1, "advisor", "advisor.s(a/strong)");
-		expect(harness.ctx.ui.setStatus).toHaveBeenNthCalledWith(2, "advisor", "advisor.s(a/strong)");
-	});
-
-	it("rejects direct advisor model arguments and points to the full picker", async () => {
-		const path = settingsFile({});
-		const harness = makePi({ settingsPath: path });
-		createAdvisorExtension({ settingsPath: path })(harness.pi);
-		await harness.commands.get("advisor").handler("anthropic/strong", harness.ctx);
-		expect(loadAdvisorSettings(path).provider).toBeUndefined();
-		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(
-			"Direct advisor model arguments are not supported. Use /advisor to open the full picker.",
-			"error",
-		);
-	});
-
-	it("reports generic unknown advisor arguments with the accepted forms", async () => {
-		const path = settingsFile({});
-		const harness = makePi({ settingsPath: path });
-		createAdvisorExtension({ settingsPath: path })(harness.pi);
-		await harness.commands.get("advisor").handler("bogus", harness.ctx);
-
-		expect(loadAdvisorSettings(path).provider).toBeUndefined();
-		expect(harness.ctx.ui.notify).toHaveBeenCalledWith(
-			"Unknown /advisor argument. Accepted forms are /advisor, /advisor on, /advisor strict, and /advisor off.",
-			"error",
-		);
-	});
-
-	it("keeps the advertised tool after /advisor off", async () => {
-		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong", maxUses: 1 } });
-		const harness = makePi({ settingsPath: path });
-		createAdvisorExtension({ settingsPath: path })(harness.pi);
-		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
-		await harness.commands.get("advisor").handler("off", harness.ctx);
-		expect(harness.getActiveTools()).toContain("advisor");
-	});
-
-	it("still nudges in strict mode when both advisor budgets are unlimited", async () => {
-		const path = settingsFile({ advisor: { provider: "anthropic", modelId: "strong", strict: true, nudgeTurn: 3, maxUses: 0, maxUsesPerSession: 0 } });
-		const harness = makePi({
-			settingsPath: path,
-			branchEntries: [
-				{ type: "message", message: { role: "user", content: "Design the storage layer" } },
-				{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "one" }] } },
-				{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "two" }] } },
-			],
-		});
-		createAdvisorExtension({ settingsPath: path })(harness.pi);
-		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
-
-		harness.handlers.get("turn_end")({ message: { role: "assistant" } }, harness.ctx);
-
-		expect(harness.pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ customType: "advisor-nudge" }),
-			expect.objectContaining({ deliverAs: "steer" }),
-		);
-	});
-
-	it("proves current-turn assistant prose is visible while the advisor tool executes", async () => {
+describe("advisor runtime integration", () => {
+	it("makes a no-tools request with current-turn evidence", async () => {
 		const root = mkdtempSync(join(tmpdir(), "advisor-runtime-"));
 		roots.push(root);
 		const path = join(root, "settings.json");
-		writeFileSync(path, JSON.stringify({ advisor: { provider: "contract", modelId: "advisor" } }));
+		writeFileSync(path, JSON.stringify({ advisor: { enabled: true, model: "contract/advisor", maxTokens: 256 } }));
 		const faux = fauxProvider({
 			provider: "contract",
-			models: [
-				{ id: "executor", contextWindow: 100_000 },
-				{ id: "advisor", contextWindow: 100_000 },
-			],
+			models: [{ id: "executor", contextWindow: 100_000 }, { id: "advisor", contextWindow: 100_000 }],
 			tokensPerSecond: 100_000,
 		});
 		let captured: any;
 		faux.setResponses([
-			fauxAssistantMessage([
-				fauxText("Prose before the consultation."),
-				fauxToolCall("advisor", { question: "review" }, { id: "advisor-call" }),
-			], { stopReason: "toolUse" }),
-			(context, _options, _state, requestModel) => {
-				if (requestModel.id === "advisor") captured = context;
-				return fauxAssistantMessage("Advice from the faux advisor");
-			},
+			fauxAssistantMessage([fauxText("Prose before consultation."), fauxToolCall("advisor", { question: "review" }, { id: "advisor-call" })], { stopReason: "toolUse" }),
+			(context) => { captured = context; return fauxAssistantMessage("Advice from isolated session"); },
 			fauxAssistantMessage("Executor continued."),
-		]);
-		const runtime = await ModelRuntime.create({
-			credentials: new InMemoryCredentialStore(),
-			modelsPath: null,
-			refreshOnCreate: false,
-		});
-		runtime.registerNativeProvider(faux.provider);
-		const settings = SettingsManager.inMemory({ compaction: { enabled: false } });
-		const loader = new DefaultResourceLoader({
-			cwd: root,
-			agentDir: root,
-			settingsManager: settings,
-			systemPromptOverride: () => "Executor system prompt",
-			extensionFactories: [createAdvisorExtension({ settingsPath: path })],
-		});
-		await loader.reload();
-		const session = await createAgentSession({
-			cwd: root,
-			agentDir: root,
-			modelRuntime: runtime,
-			model: faux.getModel("executor"),
-			resourceLoader: loader,
-			sessionManager: SessionManager.inMemory(root),
-			settingsManager: settings,
-			tools: ["advisor"],
-		});
-		try {
-			await session.session.bindExtensions({});
-			await session.session.prompt("Start the task");
-			const capturedContext = captured?.messages?.[0]?.content?.[0]?.text ?? "";
-			const quotedContext = capturedContext.match(/<executor_context>\n(.*)\n<\/executor_context>/)?.[1];
-			expect(JSON.parse(quotedContext ?? "{}").systemPrompt).toBe(
-				`Executor system prompt\nCurrent working directory: ${root}`,
-			);
-			expect(JSON.stringify(captured?.messages ?? [])).toContain("Prose before the consultation.");
-			expect(JSON.stringify(captured?.messages ?? [])).not.toContain("advisor-call");
-		} finally {
-			session.session.dispose();
-		}
-	});
-
-	it("persists a budget marker when an in-flight consultation is aborted and refuses further consultations after reopening", async () => {
-		const root = mkdtempSync(join(tmpdir(), "advisor-abort-runtime-"));
-		roots.push(root);
-		const path = join(root, "settings.json");
-		writeFileSync(path, JSON.stringify({ advisor: { provider: "contract", modelId: "advisor", maxUses: 1 } }));
-		const faux = fauxProvider({
-			provider: "contract",
-			models: [{ id: "executor", contextWindow: 100_000 }, { id: "advisor", contextWindow: 100_000 }],
-			tokensPerSecond: 5,
-			tokenSize: { min: 1, max: 1 },
-		});
-		faux.setResponses([
-			fauxAssistantMessage([fauxToolCall("advisor", {}, { id: "advisor-call" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage("This deliberately long advisor answer is streamed slowly so Esc can interrupt it before it finishes. ".repeat(30)),
 		]);
 		const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
 		runtime.registerNativeProvider(faux.provider);
 		const settings = SettingsManager.inMemory({ compaction: { enabled: false } });
 		const loader = new DefaultResourceLoader({
-			cwd: root,
-			agentDir: root,
-			settingsManager: settings,
+			cwd: root, agentDir: root, settingsManager: settings,
+			systemPromptOverride: () => "Executor system prompt",
 			extensionFactories: [createAdvisorExtension({ settingsPath: path })],
 		});
 		await loader.reload();
-		const sessionManager = SessionManager.create(root, join(root, "sessions"));
-		const created = await createAgentSession({
-			cwd: root,
-			agentDir: root,
-			modelRuntime: runtime,
-			model: faux.getModel("executor"),
-			resourceLoader: loader,
-			sessionManager,
-			settingsManager: settings,
+		const { session } = await createAgentSession({
+			cwd: root, agentDir: root, modelRuntime: runtime, model: faux.getModel("executor"),
+			resourceLoader: loader, sessionManager: SessionManager.inMemory(root), settingsManager: settings,
 			tools: ["advisor"],
 		});
 		try {
-			const prompt = created.session.prompt("Start");
-			const deadline = Date.now() + 2_000;
-			while (faux.state.callCount < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-			expect(faux.state.callCount).toBeGreaterThanOrEqual(2);
-			await new Promise((resolve) => setTimeout(resolve, 50));
-			await created.session.abort();
-			await prompt;
-			const result = sessionManager.getBranch().find((entry: any) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "advisor") as any;
-			expect(result?.message.details).toMatchObject({ model: "contract/advisor", consumesBudget: true, truncated: false });
-			const reopened = SessionManager.open(sessionManager.getSessionFile()!);
-			const runner = createAdvisorRunner();
-			const second = await runner.execute({
-				ctx: {
-					cwd: root,
-					model: { provider: "contract", id: "executor" },
-					signal: undefined,
-					getSystemPrompt: () => "Executor system prompt",
-					sessionManager: reopened,
-					modelRegistry: {
-						find: () => faux.getModel("advisor"),
-						hasConfiguredAuth: () => true,
-						complete: async () => { throw new Error("provider must not be called after the budget is exhausted"); },
-					},
-				} as any,
-				settings: { provider: "contract", modelId: "advisor", strict: false, nudgeTurn: 3, maxUses: 1, maxUsesPerSession: 20, maxTokens: 2048 },
-				callId: "advisor-call-2",
-				activeToolNames: ["advisor"],
-				allTools: [],
-			});
-			expect(second).toMatchObject({
-				disposition: "failure",
-				code: "advisor_turn_budget_exhausted",
-				consumesBudget: false,
-			});
+			await session.bindExtensions({});
+			await session.prompt("Start the task");
+			const serialized = JSON.stringify(captured?.messages ?? []);
+			expect(serialized).toContain("Executor system prompt");
+			expect(serialized).toContain("Prose before consultation.");
+			expect(serialized).not.toContain("advisor-call");
+			expect(captured?.tools).toEqual([]);
 		} finally {
-			created.session.dispose();
+			session.dispose();
 		}
 	});
 });
