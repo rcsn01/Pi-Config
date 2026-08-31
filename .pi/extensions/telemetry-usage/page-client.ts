@@ -13,6 +13,11 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		{ key: "weekly", label: "Weekly" },
 		{ key: "cumulative", label: "Cumulative" },
 	];
+	const tabs = [
+		{ key: "overview", label: "Overview" },
+		...MODES,
+		{ key: "sessions", label: "Sessions" },
+	];
 	const requests = createDashboardRequestLifecycle();
 	const fatal = document.getElementById("fatal");
 	const content = document.getElementById("content");
@@ -20,38 +25,31 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 	const refreshButton = document.getElementById("refresh");
 	const cards = document.getElementById("cards");
 	const panel = document.getElementById("panel");
-	const tabs = Array.from(document.querySelectorAll("[role=tab]"));
 	let activeTab = "overview";
 	let activeActivityView = "daily";
 	let selectedSessionId;
 	let sessionQuery = "";
 	let currentData;
 	let pollTimer;
-
-	function element(tag, className, text) {
-		const node = document.createElement(tag);
-		if (className) node.className = className;
-		if (text !== undefined) node.textContent = String(text);
-		return node;
-	}
-
-	function formatInteger(value) {
-		return Number(value || 0).toLocaleString();
-	}
-
-	function formatCompactInteger(value) {
-		const number = Number(value || 0);
-		if (!Number.isFinite(number)) return "0";
-		const absolute = Math.abs(number);
-		const format = (divisor, suffix) => {
-			const scaled = number / divisor;
-			return scaled.toFixed(scaled >= 100 ? 0 : 1).replace(/\.0$/, "") + suffix;
-		};
-		if (absolute >= 1e9) return format(1e9, "bn");
-		if (absolute >= 1e6) return format(1e6, "m");
-		if (absolute >= 1e3) return format(1e3, "k");
-		return formatInteger(number);
-	}
+	let activityHost;
+	let activityTablist;
+	const element = dashElement;
+	const formatInteger = dashFormatInteger;
+	const formatCompactInteger = dashFormatCompact;
+	const tablist = dashCreateTablist({
+		host: document.querySelector(".tabs"),
+		tabs,
+		initialKey: activeTab,
+		buttonClass: "tab",
+		ariaLabel: "Usage views",
+		controls: "panel",
+		countOf: (key) => key === "sessions" && currentData ? " (" + currentData.sessionCount + ")" : "",
+		onActivate(tab, { focused }) {
+			activeTab = tab.key;
+			renderPanel();
+			if (focused) tablist.focus(tab.key);
+		},
+	});
 
 	function formatPercent(value) {
 		const number = Number(value || 0);
@@ -364,41 +362,27 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		);
 	}
 
-	function selectActivityView(key, focus) {
+	function selectActivityView(key, focused) {
 		activeActivityView = key;
 		renderOverview();
-		if (focus) document.querySelector('[data-activity="' + key + '"]')?.focus();
+		if (focused) activityTablist.focus(key);
 	}
 
 	function activityControls() {
-		const controls = element("div", "activity-controls");
-		controls.setAttribute("role", "tablist");
-		controls.setAttribute("aria-label", "Token activity views");
-		for (const view of ACTIVITY_VIEWS) {
-			const button = element("button", "activity-tab", view.label);
-			button.type = "button";
-			button.setAttribute("role", "tab");
-			button.setAttribute("data-activity", view.key);
-			button.setAttribute("aria-controls", "activity-view");
-			const selected = activeActivityView === view.key;
-			button.setAttribute("aria-selected", String(selected));
-			button.tabIndex = selected ? 0 : -1;
-			button.addEventListener("click", () => selectActivityView(view.key, true));
-			button.addEventListener("keydown", (event) => {
-				const buttons = Array.from(controls.querySelectorAll("[role=tab]"));
-				const index = buttons.indexOf(button);
-				let next = index;
-				if (event.key === "ArrowRight") next = (index + 1) % buttons.length;
-				else if (event.key === "ArrowLeft") next = (index - 1 + buttons.length) % buttons.length;
-				else if (event.key === "Home") next = 0;
-				else if (event.key === "End") next = buttons.length - 1;
-				else return;
-				event.preventDefault();
-				selectActivityView(buttons[next].getAttribute("data-activity"), true);
-			});
-			controls.append(button);
-		}
-		return controls;
+		if (activityTablist) return activityHost;
+		activityHost = element("div", "activity-controls");
+		activityTablist = dashCreateTablist({
+			host: activityHost,
+			tabs: ACTIVITY_VIEWS,
+			initialKey: activeActivityView,
+			buttonClass: "activity-tab",
+			ariaLabel: "Token activity views",
+			controls: "activity-view",
+			onActivate(view, { focused }) {
+				selectActivityView(view.key, focused);
+			},
+		});
+		return activityHost;
 	}
 
 	function renderActivityView() {
@@ -547,7 +531,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		list.setAttribute("role", "listbox");
 		list.setAttribute("aria-label", "Sessions");
 		for (const session of sessions) {
-			const button = element("button", "session-row");
+			const button = element("button", "session-row dash-row");
 			button.type = "button";
 			button.setAttribute("role", "option");
 			button.setAttribute("aria-selected", String(session.id === selectedSessionId));
@@ -594,16 +578,6 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		else renderMode(MODES.find((mode) => mode.key === activeTab));
 	}
 
-	function selectTab(name, focus) {
-		activeTab = name;
-		for (const tab of tabs) {
-			const selected = tab.getAttribute("data-tab") === name;
-			tab.setAttribute("aria-selected", String(selected));
-			tab.tabIndex = selected ? 0 : -1;
-			if (selected && focus) tab.focus();
-		}
-		renderPanel();
-	}
 
 	function renderState(next) {
 		status.setAttribute("data-phase", next.phase);
@@ -625,8 +599,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		if (next.data) {
 			currentData = next.data;
 			content.hidden = false;
-			const sessionTab = tabs.find((tab) => tab.getAttribute("data-tab") === "sessions");
-			if (sessionTab) sessionTab.textContent = "Sessions (" + currentData.sessionCount + ")";
+			tablist.update();
 			renderPanel();
 		} else {
 			content.hidden = true;
@@ -670,28 +643,15 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		}
 	}
 
-	for (const tab of tabs) {
-		tab.addEventListener("click", () => selectTab(tab.getAttribute("data-tab"), false));
-		tab.addEventListener("keydown", (event) => {
-			const index = tabs.indexOf(tab);
-			let next = index;
-			if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
-			else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
-			else if (event.key === "Home") next = 0;
-			else if (event.key === "End") next = tabs.length - 1;
-			else return;
-			event.preventDefault();
-			selectTab(tabs[next].getAttribute("data-tab"), true);
-		});
-	}
 	refreshButton.addEventListener("click", requestRefresh);
 
-	if (!requests) {
+	if (!dashboardRequiresLifecycle(requests, {
+		fatal,
+		content,
+		message: "This dashboard URL is missing its capability token. Run /global-usage again and use the complete URL.",
+		disable: ["refresh"],
+	})) {
 		status.hidden = true;
-		fatal.hidden = false;
-		fatal.textContent = "This dashboard URL is missing its capability token. Run /global-usage again and use the complete URL.";
-		content.hidden = true;
-		refreshButton.disabled = true;
 		return;
 	}
 	loadState();

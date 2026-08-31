@@ -1,3 +1,4 @@
+import { DASHBOARD_CLIENT_HELPERS } from "../_shared/dashboard-client.ts";
 import { DASHBOARD_REQUEST_LIFECYCLE_CLIENT } from "../_shared/dashboard-request-lifecycle.ts";
 import { TELEMETRY_USAGE_PAGE_CLIENT } from "./page-client.ts";
 import { TELEMETRY_USAGE_PAGE_STYLES } from "./page-styles.ts";
@@ -16,21 +17,13 @@ export const TELEMETRY_USAGE_PAGE = String.raw`<!doctype html>
 		<div id="fatal" class="fatal" role="alert" hidden></div>
 		<main id="content" hidden>
 			<div class="topbar">
-				<nav class="tabs" role="tablist" aria-label="Usage views">
-					<button class="tab" type="button" role="tab" data-tab="overview" aria-selected="true" aria-controls="panel" tabindex="0">Overview</button>
-					<button class="tab" type="button" role="tab" data-tab="main" aria-selected="false" aria-controls="panel" tabindex="-1">Main</button>
-					<button class="tab" type="button" role="tab" data-tab="plan" aria-selected="false" aria-controls="panel" tabindex="-1">Plan mode</button>
-					<button class="tab" type="button" role="tab" data-tab="subagent" aria-selected="false" aria-controls="panel" tabindex="-1">Subagent</button>
-					<button class="tab" type="button" role="tab" data-tab="advisor" aria-selected="false" aria-controls="panel" tabindex="-1">Advisor</button>
-					<button class="tab" type="button" role="tab" data-tab="guardian" aria-selected="false" aria-controls="panel" tabindex="-1">Guardian</button>
-					<button class="tab" type="button" role="tab" data-tab="sessions" aria-selected="false" aria-controls="panel" tabindex="-1">Sessions</button>
-				</nav>
+				<nav class="tabs" role="tablist" aria-label="Usage views"></nav>
 				<button id="refresh" type="button">Refresh</button>
 			</div>
 			<section id="cards" class="cards" aria-label="Usage summary"></section>
 			<section id="panel" class="panel" role="tabpanel" aria-live="polite"></section>
 		</main>
 	</div>
-	<script>${DASHBOARD_REQUEST_LIFECYCLE_CLIENT}${TELEMETRY_USAGE_PAGE_CLIENT}</script>
+	<script>${DASHBOARD_REQUEST_LIFECYCLE_CLIENT}${DASHBOARD_CLIENT_HELPERS}${TELEMETRY_USAGE_PAGE_CLIENT}</script>
 </body>
 </html>`;

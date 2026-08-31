@@ -38,3 +38,15 @@ button:disabled { cursor: wait; opacity: .58; }
 	header { display: block; }
 }
 `;
+
+/** Shared browser styles for dashboard tabs and list/detail rows. */
+export const DASHBOARD_CLIENT_STYLES = String.raw`
+[role="tablist"] { display: flex; gap: 18px; overflow-x: auto; }
+[role="tab"] { padding: 8px 0 6px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--page-text-muted); white-space: nowrap; }
+[role="tab"]:hover:not(:disabled) { border-bottom-color: var(--page-line-strong); background: transparent; }
+[role="tab"][aria-selected="true"] { border-bottom-color: var(--page-accent); background: transparent; color: var(--page-text); }
+.dash-row { width: 100%; padding: 11px 12px; border: 0; border-bottom: 1px solid var(--page-surface-hover); border-radius: 0; background: transparent; color: var(--page-text); font-weight: 400; text-align: left; }
+.dash-row:last-child { border-bottom: 0; }
+.dash-row:hover:not(:disabled) { background: var(--page-surface-hover); }
+.dash-row > strong, .dash-row > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+`;

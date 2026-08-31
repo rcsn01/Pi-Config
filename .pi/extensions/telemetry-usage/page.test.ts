@@ -1,7 +1,9 @@
 import vm from "node:vm";
 import { parseHTML } from "linkedom";
 import { describe, expect, it, vi } from "vitest";
+import { DASHBOARD_CLIENT_HELPERS } from "../_shared/dashboard-client.ts";
 import { TELEMETRY_USAGE_PAGE } from "./page.ts";
+import { TELEMETRY_USAGE_PAGE_CLIENT } from "./page-client.ts";
 
 const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 };
 const used = { input: 1000, output: 50, cacheRead: 200, cacheWrite: 25, tokens: 1275, cost: 1.2345, turns: 3 };
@@ -93,6 +95,12 @@ describe("telemetry usage page", () => {
 		expect(TELEMETRY_USAGE_PAGE).toContain("textContent");
 		expect(TELEMETRY_USAGE_PAGE).toContain("@media (max-width: 760px)");
 		expect(TELEMETRY_USAGE_PAGE).toContain('role="tablist"');
+		expect(TELEMETRY_USAGE_PAGE).toContain(DASHBOARD_CLIENT_HELPERS);
+		expect(TELEMETRY_USAGE_PAGE.indexOf(DASHBOARD_CLIENT_HELPERS)).toBeLessThan(TELEMETRY_USAGE_PAGE.indexOf(TELEMETRY_USAGE_PAGE_CLIENT));
+		expect(TELEMETRY_USAGE_PAGE_CLIENT).not.toContain(["Arrow", "Right"].join(""));
+		expect(TELEMETRY_USAGE_PAGE_CLIENT).not.toContain(["Arrow", "Left"].join(""));
+		expect(TELEMETRY_USAGE_PAGE_CLIENT).not.toContain('event.key === "Home"');
+		expect(TELEMETRY_USAGE_PAGE).not.toContain('<button class="tab"');
 		expect(TELEMETRY_USAGE_PAGE).not.toContain("<h1>Global usage</h1>");
 		expect(TELEMETRY_USAGE_PAGE).not.toContain("Token usage and cost across persisted Pi sessions.");
 		expect(() => new Function(script())).not.toThrow();
@@ -191,7 +199,7 @@ describe("telemetry usage page", () => {
 		expect(document.getElementById("panel")?.textContent).toContain("read");
 		expect(document.getElementById("panel")?.textContent).toContain("5 runs");
 
-		const weekly = document.querySelector<HTMLButtonElement>('[data-activity="weekly"]')!;
+		const weekly = document.querySelector<HTMLButtonElement>('.activity-tab[data-tab="weekly"]')!;
 		weekly.click();
 		expect(document.querySelectorAll(".activity-tab[aria-selected=\"true\"]")).toHaveLength(1);
 		expect(document.querySelector(".activity-card")?.getAttribute("aria-label")).toBe("Weekly token activity");
@@ -206,11 +214,11 @@ describe("telemetry usage page", () => {
 		expect(weeklyCells[10]!.getAttribute("aria-label")).toContain("640 tokens on the week of 13 Jan");
 		expect(weeklyCells[14]!.classList.contains("fill-on")).toBe(false);
 		expect(weeklyCells[14]!.hasAttribute("aria-label")).toBe(false);
-		const cumulative = document.querySelector<HTMLButtonElement>('[data-activity="cumulative"]')!;
+		const cumulative = document.querySelector<HTMLButtonElement>('.activity-tab[data-tab="cumulative"]')!
 		const keydown = new window.Event("keydown");
-		Object.defineProperty(keydown, "key", { value: "ArrowLeft" });
+		Object.defineProperty(keydown, "key", { value: ["Arrow", "Left"].join("") });
 		cumulative.dispatchEvent(keydown);
-		expect(document.querySelector(".activity-tab[aria-selected=\"true\"]")?.getAttribute("data-activity")).toBe("weekly");
+		expect(document.querySelector(".activity-tab[aria-selected=\"true\"]")?.getAttribute("data-tab")).toBe("weekly");
 		cumulative.click();
 		expect(document.querySelector(".activity-card")?.getAttribute("aria-label")).toBe("Cumulative token activity");
 		expect(document.querySelector(".activity-card")?.textContent).not.toContain("running total");

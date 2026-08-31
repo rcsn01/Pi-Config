@@ -1,3 +1,4 @@
+import { DASHBOARD_CLIENT_HELPERS } from "../_shared/dashboard-client.ts";
 import { DASHBOARD_REQUEST_LIFECYCLE_CLIENT } from "../_shared/dashboard-request-lifecycle.ts";
 import { ANALYSIS_PAGE_CLIENT } from "./page-client.ts";
 import { ANALYSIS_PAGE_STYLES } from "./page-styles.ts";
@@ -26,6 +27,6 @@ export const ANALYSIS_PAGE = String.raw`<!doctype html>
 			</div>
 		</main>
 	</div>
-	<script>${DASHBOARD_REQUEST_LIFECYCLE_CLIENT}${ANALYSIS_PAGE_CLIENT}</script>
+	<script>${DASHBOARD_REQUEST_LIFECYCLE_CLIENT}${DASHBOARD_CLIENT_HELPERS}${ANALYSIS_PAGE_CLIENT}</script>
 </body>
 </html>`;

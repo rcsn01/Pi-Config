@@ -1,6 +1,6 @@
-import { DASHBOARD_BASE_STYLES } from "../_shared/dashboard-styles.ts";
+import { DASHBOARD_BASE_STYLES, DASHBOARD_CLIENT_STYLES } from "../_shared/dashboard-styles.ts";
 
-export const TELEMETRY_USAGE_PAGE_STYLES = String.raw`${DASHBOARD_BASE_STYLES}
+export const TELEMETRY_USAGE_PAGE_STYLES = String.raw`${DASHBOARD_BASE_STYLES}${DASHBOARD_CLIENT_STYLES}
 .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 30px; }
 #refresh { flex: 0 0 auto; padding: 9px 14px; white-space: nowrap; }
 .status { min-height: 0; padding: 0; border: 0; background: transparent; }
@@ -14,19 +14,15 @@ export const TELEMETRY_USAGE_PAGE_STYLES = String.raw`${DASHBOARD_BASE_STYLES}
 .card-value { display: block; overflow: hidden; color: var(--page-text); font-size: 1.45rem; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
 .overview-card .card-value { font-size: clamp(1.2rem, 2.2vw, 1.65rem); }
 .card-detail { display: block; margin-top: 3px; overflow: hidden; color: var(--page-text-soft); font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }
-.tabs { display: flex; gap: 18px; overflow-x: auto; }
-.tab { padding: 8px 0 6px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--page-text-muted); white-space: nowrap; }
-.tab:hover:not(:disabled) { border-bottom-color: var(--page-line-strong); background: transparent; }
-.tab[aria-selected="true"] { border-bottom-color: var(--page-accent); background: transparent; color: var(--page-text); }
 .panel { min-height: 280px; padding: 16px 0; background: transparent; }
 .panel h2, .panel h3 { margin: 0; }
 .panel h2 { margin-bottom: 14px; font-size: 1.1rem; font-weight: 570; }
 .panel h3 { margin-bottom: 9px; font-size: .92rem; color: var(--page-text-soft); }
 .section-heading { margin-top: 22px !important; }
-.activity-controls { display: flex; justify-content: flex-end; gap: 18px; margin: -42px 0 16px; }
+.activity-controls { justify-content: flex-end; margin: -42px 0 16px; }
 .activity-tab { padding: 3px 0; border: 0; border-radius: 0; background: transparent; color: var(--page-text-muted); }
 .activity-tab:hover:not(:disabled) { background: transparent; color: var(--page-text-soft); }
-.activity-tab[aria-selected="true"] { color: var(--page-accent); }
+.activity-tab.dash-tab-selected { color: var(--page-accent); }
 .activity-card { min-width: 0; margin: 0; }
 .chart-card figcaption { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .chart-card figcaption span { color: var(--page-text-muted); font-size: .8rem; }
@@ -34,7 +30,7 @@ export const TELEMETRY_USAGE_PAGE_STYLES = String.raw`${DASHBOARD_BASE_STYLES}
 .heatmap-months { display: grid; grid-template-columns: repeat(var(--weeks), 12px); column-gap: 3px; min-width: max-content; height: 20px; }
 .heatmap-months span { color: var(--page-text-muted); font-size: .72rem; }
 .heatmap-grid { display: grid; grid-template-columns: repeat(var(--weeks), 12px); grid-template-rows: repeat(7, 12px); gap: 3px; min-width: max-content; }
-.heatmap-cell { display: block; width: 12px; height: 12px; border-radius: 3px; background: #4A4A4A; }
+.heatmap-cell { display: block; width: 12px; height: 12px; border-radius: 3px; background: var(--page-line); }
 .heatmap-cell:hover { outline: 1px solid var(--page-accent); outline-offset: 1px; }
 .heatmap-tip { position: fixed; z-index: 20; padding: 6px 9px; border: 1px solid var(--page-line-strong); border-radius: 7px; background: var(--page-surface-deep); color: var(--page-text); font-size: .78rem; white-space: nowrap; pointer-events: none; opacity: 0; transform: translate(-50%, calc(-100% - 6px)); transition: opacity .08s linear; }
 .heatmap-tip.visible { opacity: 1; }
@@ -65,7 +61,7 @@ export const TELEMETRY_USAGE_PAGE_STYLES = String.raw`${DASHBOARD_BASE_STYLES}
 .tool-runs { color: var(--page-text-muted); white-space: nowrap; }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-th, td { padding: 9px 10px; border-bottom: 1px solid #424242; text-align: right; white-space: nowrap; }
+th, td { padding: 9px 10px; border-bottom: 1px solid var(--page-surface-hover); text-align: right; white-space: nowrap; }
 th { color: var(--page-text-muted); background: transparent; font-size: .75rem; text-transform: uppercase; letter-spacing: .055em; }
 th:first-child, td:first-child { text-align: left; }
 tbody tr:last-child td { border-bottom: 0; }
@@ -76,11 +72,9 @@ tbody tr:hover td { background: var(--page-surface-raised); }
 .sessions-toolbar input { width: min(430px, 100%); padding: 9px 11px; border: 1px solid var(--page-line-strong); border-radius: 8px; background: var(--page-surface-deep); color: var(--page-text); }
 .sessions-layout { display: grid; grid-template-columns: minmax(280px, .78fr) minmax(420px, 1.22fr); gap: 12px; min-height: 440px; }
 .session-list { overflow: auto; max-height: 68vh; background: transparent; }
-.session-row { width: 100%; padding: 11px 12px; border: 0; border-bottom: 1px solid #424242; border-radius: 0; background: transparent; text-align: left; }
-.session-row:last-child { border-bottom: 0; }
 .session-row[aria-selected="true"] { background: var(--page-surface-hover); box-shadow: inset 3px 0 var(--page-accent); }
-.session-title { display: block; overflow: hidden; color: var(--page-text-soft); font-weight: 630; text-overflow: ellipsis; white-space: nowrap; }
-.session-project, .session-metrics { display: block; margin-top: 4px; overflow: hidden; color: var(--page-text-muted); font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
+.session-title { color: var(--page-text-soft); font-weight: 630; }
+.session-project, .session-metrics { margin-top: 4px; color: var(--page-text-muted); font-size: .78rem; }
 .session-detail { min-width: 0; padding: 14px 0; background: transparent; }
 .metadata { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 12px; margin: 0 0 16px; font-size: .84rem; }
 .metadata dt { color: var(--page-text-muted); }
