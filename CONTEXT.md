@@ -108,9 +108,10 @@ extension.
   State, transitions, Profile rollback, tool projection, proposed-plan state,
   and ordering across Plan Runtime and Plan Review.
 - **Model-selection lifecycle** — the deep in-process module in
-  `ui-model-selector/` that owns session initialization decisions, interactive
-  selection ordering, Profile persistence outcomes, and context-reduction and
-  compaction policy. Pi adaptation and Session profile binding stay outside.
+  `ui-model-selector/` that owns one Session's operation admission, disposal
+  draining, initialization decisions, interactive selection ordering, Profile
+  persistence outcomes, and context-reduction and compaction policy. Pi
+  adaptation and Session profile binding stay outside.
 - **Model-selection persistence** — fixed-path, Profile-aware storage of one
   mode's model selection, constructed from an immutable Session profile binding;
   it preserves other modes and unrelated Settings document fields.
@@ -145,6 +146,12 @@ extension.
 
 ## Subagent tooling
 
+- **Subagent child execution module** — the deep process-lifetime module for one
+  resolved Subagent launch. It owns private prompt and task files, child
+  observation setup, process spawning and termination, JSON event meaning,
+  progress and usage state, partial output, truncation, terminal results, and
+  cleanup on every exit path. Agent and model resolution stay in the runner;
+  Pi result rendering stays in the invocation adapter.
 - **Subagent invocation adapter** — the Pi-facing deep module for one `subagent`
   tool call: selects single or parallel mode, publishes immutable live snapshots,
   formats final text and details, and applies one failure rule. Child execution

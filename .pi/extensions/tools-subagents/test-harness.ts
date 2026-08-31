@@ -11,7 +11,7 @@ import {
 	type ExtensionConfig,
 	type SubagentConfigStore,
 } from "./config.ts";
-import type { SpawnSubagentProcess } from "./subagent-runner.ts";
+import type { SpawnSubagentProcess } from "./child-execution.ts";
 
 export function agent(overrides: Partial<AgentConfig> = {}): AgentConfig {
 	return {

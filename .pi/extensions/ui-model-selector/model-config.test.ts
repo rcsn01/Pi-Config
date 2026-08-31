@@ -342,6 +342,19 @@ describe("Pi model-selection adapter", () => {
 		expect(harness.persistenceInstances[1].save).not.toHaveBeenCalled();
 	});
 
+	it("silently rejects a captured handler after its Session is replaced", async () => {
+		const harness = createAdapterHarness({ cancel: true });
+		await harness.emitStart();
+		const oldHandler = getModelCommandHandler()!;
+		const oldLoad = harness.persistenceInstances[0].load;
+		await harness.emitStart("reload");
+		const loadCount = oldLoad.mock.calls.length;
+
+		await expect(oldHandler("")).resolves.toBeUndefined();
+		expect(oldLoad).toHaveBeenCalledTimes(loadCount);
+		expect(harness.notify).not.toHaveBeenCalledWith("Model-selection Session is no longer active.", "error");
+	});
+
 	it("removes command ownership and editor installation on shutdown", async () => {
 		const harness = createAdapterHarness({ cancel: true });
 		await harness.emitStart();

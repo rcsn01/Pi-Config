@@ -11,8 +11,10 @@ import {
 import type { ModelPickerSelection } from "../_shared/model-picker.ts";
 import {
 	createModelSelectionLifecycle,
+	ModelSelectionSessionClosedError,
 	type ModelSelectionLifecycleAdapter,
 	type ModelSelectionLifecycleNotice,
+	type ModelSelectionLifecycleOutcome,
 	type ModelSelectionRuntimeState,
 } from "./model-selection-lifecycle.ts";
 
@@ -56,6 +58,7 @@ function createHarness(options: {
 } = {}) {
 	const calls: string[] = [];
 	const notices: ModelSelectionLifecycleNotice[] = [];
+	const outcomes: ModelSelectionLifecycleOutcome[] = [];
 	const loadResults = [...(options.loadResults ?? [])];
 	const adapter: ModelSelectionLifecycleAdapter = {
 		loadSelection: vi.fn(async (mode: ModelSelectionMode) => {
@@ -97,13 +100,25 @@ function createHarness(options: {
 		isIdle: vi.fn(() => options.idle ?? true),
 		requestCompaction: vi.fn(() => calls.push("compact")),
 		reportNotice: vi.fn((notice) => notices.push(notice)),
+		reportOutcome: vi.fn((outcome) => outcomes.push(outcome)),
 	};
 	return {
 		adapter,
 		calls,
 		notices,
+		outcomes,
 		lifecycle: createModelSelectionLifecycle(adapter),
 	};
+}
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, resolve, reject };
 }
 
 async function initialize(
@@ -359,5 +374,86 @@ describe("ModelSelectionLifecycle interactive selection", () => {
 		});
 		await expect(harness.lifecycle.selectInteractively({ initialQuery: "", mode: "normal" })).rejects.toBe(failure);
 		expect(harness.adapter.requestCompaction).not.toHaveBeenCalled();
+	});
+});
+
+describe("ModelSelectionLifecycle Session operation ownership", () => {
+	it("stops admitting selections while disposal drains a preference read", async () => {
+		const loading = deferred<StoredModelSelectionSettings | undefined>();
+		const harness = createHarness({ picked: undefined });
+		harness.adapter.loadSelection = vi.fn(() => loading.promise);
+		const selection = harness.lifecycle.selectInteractively({ initialQuery: "", mode: "normal" });
+		await vi.waitFor(() => expect(harness.adapter.loadSelection).toHaveBeenCalledOnce());
+
+		let disposed = false;
+		const firstDisposal = harness.lifecycle.dispose();
+		expect(harness.lifecycle.dispose()).toBe(firstDisposal);
+		const disposal = firstDisposal.then(() => { disposed = true; });
+		await expect(harness.lifecycle.selectInteractively({ initialQuery: "again", mode: "normal" }))
+			.rejects.toBeInstanceOf(ModelSelectionSessionClosedError);
+		expect(disposed).toBe(false);
+
+		loading.resolve(undefined);
+		await expect(selection).resolves.toEqual({ kind: "unchanged", reason: "picker-cancelled" });
+		await disposal;
+		expect(disposed).toBe(true);
+		expect(harness.outcomes).toEqual([{ kind: "unchanged", reason: "picker-cancelled" }]);
+	});
+
+	it("waits for a pending picker before disposal completes", async () => {
+		const picking = deferred<ModelPickerSelection | undefined>();
+		const harness = createHarness();
+		harness.adapter.pick = vi.fn(() => picking.promise);
+		const selection = harness.lifecycle.selectInteractively({ initialQuery: "", mode: "normal" });
+		await vi.waitFor(() => expect(harness.adapter.pick).toHaveBeenCalledOnce());
+		let disposed = false;
+		const disposal = harness.lifecycle.dispose().then(() => { disposed = true; });
+		expect(disposed).toBe(false);
+		picking.resolve(undefined);
+		await selection;
+		await disposal;
+		expect(disposed).toBe(true);
+	});
+
+	it("waits for pending application and persistence before disposal completes", async () => {
+		const applying = deferred<ModelSelectionSettings>();
+		const harness = createHarness();
+		harness.adapter.applyPickedSelection = vi.fn(() => applying.promise);
+		const selection = harness.lifecycle.selectInteractively({ initialQuery: "", mode: "normal" });
+		await vi.waitFor(() => expect(harness.adapter.applyPickedSelection).toHaveBeenCalledOnce());
+		let disposed = false;
+		const disposal = harness.lifecycle.dispose().then(() => { disposed = true; });
+		expect(disposed).toBe(false);
+		applying.resolve(applied);
+		await expect(selection).resolves.toEqual(expect.objectContaining({ kind: "interactive-applied" }));
+		await disposal;
+		expect(disposed).toBe(true);
+	});
+
+	it("waits for context-reduction confirmation before disposal completes", async () => {
+		const confirmation = deferred<boolean>();
+		const harness = createHarness({ runtime: { model: currentModel, usageTokens: 400_000 } });
+		harness.adapter.confirmContextReduction = vi.fn(() => confirmation.promise);
+		const selection = harness.lifecycle.selectInteractively({ initialQuery: "", mode: "normal" });
+		await vi.waitFor(() => expect(harness.adapter.confirmContextReduction).toHaveBeenCalledOnce());
+		let disposed = false;
+		const disposal = harness.lifecycle.dispose().then(() => { disposed = true; });
+		expect(disposed).toBe(false);
+		confirmation.resolve(false);
+		await expect(selection).resolves.toEqual({ kind: "unchanged", reason: "context-reduction-declined" });
+		await disposal;
+		expect(disposed).toBe(true);
+		expect(harness.adapter.applyPickedSelection).not.toHaveBeenCalled();
+	});
+
+	it("permanently suppresses adapter calls after disposal", async () => {
+		const harness = createHarness();
+		await harness.lifecycle.dispose();
+		await expect(initialize(harness)).rejects.toBeInstanceOf(ModelSelectionSessionClosedError);
+		await expect(harness.lifecycle.selectInteractively({ initialQuery: "", mode: "normal" }))
+			.rejects.toBeInstanceOf(ModelSelectionSessionClosedError);
+		expect(harness.adapter.loadSelection).not.toHaveBeenCalled();
+		expect(harness.adapter.pick).not.toHaveBeenCalled();
+		expect(harness.outcomes).toEqual([]);
 	});
 });
