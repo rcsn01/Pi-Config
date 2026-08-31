@@ -197,32 +197,46 @@ function sectionView(detail, openPointers) {
 
 	try {
 		const root = JSON.parse(detail.requestJson);
-		const promptSections = detail.sections.filter((section) => section.kind !== 'option' && section.kind !== 'tool');
-		const toolSections = detail.sections.filter((section) => section.kind === 'tool');
+		const requestSections = detail.sections.filter((section) => section.kind !== 'option');
 		const optionSections = detail.sections.filter((section) => section.kind === 'option');
 
-		if (promptSections.length) {
-			box.append(div('section-group', 'Prompt and conversation'));
-			promptSections.forEach((section) => {
-				const row = sectionDetails(section, root);
-				if (openPointers.has(section.pointer)) row.open = true;
-				box.append(row);
-			});
-		}
-		if (toolSections.length) {
-			const tools = document.createElement('details');
-			tools.className = 'tool-section-group';
-			tools.dataset.pointer = '__tool_schemas__';
-			tools.open = openPointers.has(tools.dataset.pointer);
-			const summary = document.createElement('summary');
-			text(summary, 'Tool schemas (' + toolSections.length + ')');
-			tools.append(summary);
-			toolSections.forEach((section) => {
-				const row = sectionDetails(section, root);
-				if (openPointers.has(section.pointer)) row.open = true;
-				tools.append(row);
-			});
-			box.append(tools);
+		if (requestSections.length) {
+			box.append(div('section-group', 'Prompt, tools, and conversation'));
+			for (let index = 0; index < requestSections.length;) {
+				const section = requestSections[index];
+				if (section.kind !== 'tool') {
+					const row = sectionDetails(section, root);
+					if (openPointers.has(section.pointer)) row.open = true;
+					box.append(row);
+					index++;
+					continue;
+				}
+
+				const toolSections = [];
+				while (index < requestSections.length && requestSections[index].kind === 'tool') {
+					toolSections.push(requestSections[index]);
+					index++;
+				}
+				if (toolSections.length === 1) {
+					const row = sectionDetails(toolSections[0], root);
+					if (openPointers.has(toolSections[0].pointer)) row.open = true;
+					box.append(row);
+					continue;
+				}
+				const tools = document.createElement('details');
+				tools.className = 'tool-section-group';
+				tools.dataset.pointer = '__tool_schemas__' + toolSections[0].pointer;
+				tools.open = openPointers.has(tools.dataset.pointer);
+				const summary = document.createElement('summary');
+				text(summary, 'Tool schemas (' + toolSections.length + ')');
+				tools.append(summary);
+				toolSections.forEach((toolSection) => {
+					const row = sectionDetails(toolSection, root);
+					if (openPointers.has(toolSection.pointer)) row.open = true;
+					tools.append(row);
+				});
+				box.append(tools);
+			}
 		}
 		if (optionSections.length) {
 			box.append(div('section-group', 'Request options'));
