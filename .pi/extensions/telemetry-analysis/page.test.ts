@@ -129,6 +129,10 @@ describe("analysis page", () => {
 
 		const rows = Array.from(document.querySelectorAll<HTMLDetailsElement>("details.analysis-section"));
 		expect(rows).toHaveLength(4);
+		const toolGroup = document.querySelector<HTMLDetailsElement>("details.tool-section-group")!;
+		expect(toolGroup.open).toBe(false);
+		expect(toolGroup.querySelector(":scope > summary")?.textContent).toBe("Tool schemas (1)");
+		expect(toolGroup.querySelectorAll("details.analysis-section")).toHaveLength(1);
 		const toolContent = document.querySelector('[data-pointer="/tools/0"] pre')?.textContent;
 		expect(toolContent).toContain("Read exact files");
 		expect(toolContent).toContain('"parameters"');
@@ -138,16 +142,20 @@ describe("analysis page", () => {
 		const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".section-controls button"));
 		buttons[0]!.click();
 		expect(rows.every((row) => row.open)).toBe(true);
+		expect(toolGroup.open).toBe(true);
 		buttons[1]!.click();
 		expect(rows.every((row) => !row.open)).toBe(true);
+		expect(toolGroup.open).toBe(false);
 
 		const toolRow = document.querySelector<HTMLDetailsElement>('[data-pointer="/tools/0"]')!;
+		toolGroup.setAttribute("open", "");
 		toolRow.setAttribute("open", "");
 		bytes++;
 		refreshInterval();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const updatedToolRow = document.querySelector<HTMLDetailsElement>('[data-pointer="/tools/0"]');
 		expect(updatedToolRow).not.toBe(toolRow);
+		expect(document.querySelector<HTMLDetailsElement>("details.tool-section-group")?.open).toBe(true);
 		expect(updatedToolRow?.open).toBe(true);
 	});
 });

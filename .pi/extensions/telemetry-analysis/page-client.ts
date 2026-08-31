@@ -183,12 +183,12 @@ function sectionView(detail, openPointers) {
 	text(expand, 'Expand all');
 	text(collapse, 'Collapse all');
 	expand.addEventListener('click', () => {
-		box.querySelectorAll('details.analysis-section').forEach((row) => {
+		box.querySelectorAll('details.analysis-section, details.tool-section-group').forEach((row) => {
 			row.open = true;
 		});
 	});
 	collapse.addEventListener('click', () => {
-		box.querySelectorAll('details.analysis-section').forEach((row) => {
+		box.querySelectorAll('details.analysis-section, details.tool-section-group').forEach((row) => {
 			row.open = false;
 		});
 	});
@@ -197,19 +197,41 @@ function sectionView(detail, openPointers) {
 
 	try {
 		const root = JSON.parse(detail.requestJson);
-		const groups = [
-			['Prompt, tools, and conversation', detail.sections.filter((section) => section.kind !== 'option')],
-			['Request options', detail.sections.filter((section) => section.kind === 'option')],
-		];
-		groups.forEach(([label, sections]) => {
-			if (!sections.length) return;
-			box.append(div('section-group', label));
-			sections.forEach((section) => {
+		const promptSections = detail.sections.filter((section) => section.kind !== 'option' && section.kind !== 'tool');
+		const toolSections = detail.sections.filter((section) => section.kind === 'tool');
+		const optionSections = detail.sections.filter((section) => section.kind === 'option');
+
+		if (promptSections.length) {
+			box.append(div('section-group', 'Prompt and conversation'));
+			promptSections.forEach((section) => {
 				const row = sectionDetails(section, root);
 				if (openPointers.has(section.pointer)) row.open = true;
 				box.append(row);
 			});
-		});
+		}
+		if (toolSections.length) {
+			const tools = document.createElement('details');
+			tools.className = 'tool-section-group';
+			tools.dataset.pointer = '__tool_schemas__';
+			tools.open = openPointers.has(tools.dataset.pointer);
+			const summary = document.createElement('summary');
+			text(summary, 'Tool schemas (' + toolSections.length + ')');
+			tools.append(summary);
+			toolSections.forEach((section) => {
+				const row = sectionDetails(section, root);
+				if (openPointers.has(section.pointer)) row.open = true;
+				tools.append(row);
+			});
+			box.append(tools);
+		}
+		if (optionSections.length) {
+			box.append(div('section-group', 'Request options'));
+			optionSections.forEach((section) => {
+				const row = sectionDetails(section, root);
+				if (openPointers.has(section.pointer)) row.open = true;
+				box.append(row);
+			});
+		}
 	} catch (caught) {
 		box.append(div('alert', 'Could not parse the captured request JSON: ' + caught.message));
 	}
@@ -218,7 +240,7 @@ function sectionView(detail, openPointers) {
 
 function expandedPointers() {
 	return new Set(Array.from(
-		detailPane.querySelectorAll('details.analysis-section[open]'),
+		detailPane.querySelectorAll('details.analysis-section[open], details.tool-section-group[open]'),
 		(row) => row.dataset.pointer,
 	));
 }
