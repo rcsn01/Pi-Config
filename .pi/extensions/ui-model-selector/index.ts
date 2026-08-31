@@ -20,8 +20,8 @@ import {
 	currentSelectionMode,
 } from "../_shared/model-selection.ts";
 import {
-	createProjectSettingsStore,
-	type ProjectSettingsStore,
+	createModelSelectionStore,
+	type ModelSelectionStore,
 } from "../_shared/model-selection-store.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { formatTokenCount, pickModelConfiguration } from "../_shared/model-picker.ts";
@@ -84,10 +84,10 @@ function renderModelSelectionLifecycleOutcome(
 function createPiModelSelectionLifecycleAdapter(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-	settingsStore: ProjectSettingsStore,
+	modelSelectionStore: ModelSelectionStore,
 ): ModelSelectionLifecycleAdapter {
 	return {
-		loadPreferences: () => settingsStore.load(),
+		loadSelection: (mode) => modelSelectionStore.load(mode),
 		getRuntimeState: () => ({
 			model: ctx.model,
 			thinkingLevel: typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() : undefined,
@@ -99,7 +99,7 @@ function createPiModelSelectionLifecycleAdapter(
 		applyPickedSelection: (selection, mode) =>
 			applyPickedModelSelection(pi, ctx, selection.model, selection.thinkingLevel, {
 				mode,
-				persistence: settingsStore,
+				persistence: modelSelectionStore,
 			}),
 		setModel: (model) => pi.setModel(model),
 		confirmContextReduction: (reduction: ContextReduction) => ctx.ui.confirm(
@@ -121,7 +121,7 @@ function createPiModelSelectionLifecycleAdapter(
 
 export interface ModelSelectorExtensionDependencies {
 	settingsPath?: string;
-	settingsStore?: ProjectSettingsStore;
+	modelSelectionStore?: ModelSelectionStore;
 }
 
 export function createModelSelectorExtension(
@@ -129,21 +129,21 @@ export function createModelSelectorExtension(
 ) {
 	const settingsPath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
 	return function modelSelectorExtension(pi: ExtensionAPI) {
-		const settingsStore = dependencies.settingsStore ?? createProjectSettingsStore(settingsPath);
+		const modelSelectionStore = dependencies.modelSelectionStore ?? createModelSelectionStore(settingsPath);
 		let uninstallModelCommandHandler: (() => void) | undefined;
 
 		const profileInitialization = registerSessionProfileBinding(
 			{ settingsPath },
 			{
 				name: "ui-model-selector",
-				applyPath: (binding) => settingsStore.setPath(binding.settingsPath),
+				applyPath: (binding) => modelSelectionStore.setPath(binding.settingsPath),
 				initialize: async (_binding, event, ctx) => {
 					uninstallModelCommandHandler?.();
 					uninstallModelCommandHandler = undefined;
 					if (ctx.mode !== "tui") return;
 
 					const lifecycle = createModelSelectionLifecycle(
-						createPiModelSelectionLifecycleAdapter(pi, ctx, settingsStore),
+						createPiModelSelectionLifecycleAdapter(pi, ctx, modelSelectionStore),
 					);
 					const handler = async (args: string): Promise<void> => {
 						try {

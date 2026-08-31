@@ -74,7 +74,7 @@ function createAdapterHarness(options: {
 	const save = vi.fn(async () => {
 		if (options.saveError) throw options.saveError;
 	});
-	const load = vi.fn(async () => ({ profiles: options.profiles ?? {}, contextWindows: {} }));
+	const load = vi.fn(async (mode: "normal" | "plan") => options.profiles?.[mode]);
 	const setPath = vi.fn();
 	const ctx = {
 		mode: options.mode ?? "tui",
@@ -115,7 +115,7 @@ function createAdapterHarness(options: {
 			thinkingLevel = options.effectiveThinkingLevel ?? level;
 		}),
 	} as unknown as ExtensionAPI;
-	createModelSelectorExtension({ settingsStore: { load, save, setPath } })(pi);
+	createModelSelectorExtension({ modelSelectionStore: { load, save, setPath } })(pi);
 
 	return {
 		ctx,
@@ -165,11 +165,12 @@ describe("model command routing", () => {
 });
 
 describe("Pi model-selection adapter", () => {
-	it("applies the Session profile path before the first preference read", async () => {
+	it("applies the Session Profile path before the first selection read", async () => {
 		const harness = createAdapterHarness({ cancel: true });
 		await harness.emitStart();
 		expect(harness.setPath).toHaveBeenCalledOnce();
 		expect(harness.setPath.mock.invocationCallOrder[0]).toBeLessThan(harness.load.mock.invocationCallOrder[0]);
+		expect(harness.load).toHaveBeenCalledWith("normal");
 	});
 
 	it.each(["print", "json", "rpc"] as const)("does not install selector UI in %s mode", async (mode) => {
@@ -191,6 +192,12 @@ describe("Pi model-selection adapter", () => {
 	it("renders the exact successful selection notification", async () => {
 		const harness = createAdapterHarness();
 		await harness.emitStart();
+		expect(harness.save).toHaveBeenCalledWith("normal", expect.objectContaining({
+			provider: "anthropic",
+			modelId: "claude-sonnet-4.6",
+			thinkingLevel: "high",
+			contextWindow: 1_000_000,
+		}));
 		expect(harness.notify).toHaveBeenCalledWith(
 			"anthropic/claude-sonnet-4.6 · thinking high · context 1M",
 			"info",

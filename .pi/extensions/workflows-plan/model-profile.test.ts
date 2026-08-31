@@ -1,11 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import {
 	createNormalDefaultsStore,
-	createPlanModeProfileStore,
 	type StoredModelSelectionSettings,
 } from "./model-profile.ts";
 import {
@@ -59,7 +58,8 @@ describe("Plan Mode model and thinking profiles", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("plan").handler("", harness.ctx);
 
-		expect(stores.save).toHaveBeenCalledWith(profileFor(normalModel, "medium"));
+		expect(stores.load).toHaveBeenCalledWith("plan");
+		expect(stores.save).toHaveBeenCalledWith("plan", profileFor(normalModel, "medium"));
 		expect(harness.setModel).not.toHaveBeenCalled();
 		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({
 			mode: "plan",
@@ -112,7 +112,10 @@ describe("Plan Mode model and thinking profiles", () => {
 			contextWindow: "default",
 		};
 		const profileStore = {
-			load: vi.fn(async () => stored),
+			load: vi.fn(async (mode: "normal" | "plan") => {
+				if (mode !== "plan") throw new Error(`Unexpected model-selection mode: ${mode}`);
+				return stored;
+			}),
 			save: vi.fn(),
 			setPath: vi.fn(),
 		};
@@ -197,13 +200,13 @@ describe("Plan Mode model and thinking profiles", () => {
 		await harness.emit("model_select", {
 			type: "model_select", model: normalModel, previousModel: planModel, source: "cycle",
 		});
-		expect(stores.save).toHaveBeenLastCalledWith(profileFor(normalModel, "high"));
+		expect(stores.save).toHaveBeenLastCalledWith("plan", profileFor(normalModel, "high"));
 
 		harness.setCurrentThinkingLevel("xhigh");
 		await harness.emit("thinking_level_select", {
 			type: "thinking_level_select", level: "xhigh", previousLevel: "high",
 		});
-		expect(stores.save).toHaveBeenLastCalledWith(profileFor(normalModel, "xhigh"));
+		expect(stores.save).toHaveBeenLastCalledWith("plan", profileFor(normalModel, "xhigh"));
 		expect(stores.restore).toHaveBeenCalled();
 
 		await harness.commands.get("plan").handler("exit", harness.ctx);
@@ -384,93 +387,4 @@ describe("Plan Mode profile schema", () => {
 		}
 	});
 
-	it("round-trips the Plan profile through the project settings file without replacing other settings", async () => {
-		const directory = mkdtempSync(join(tmpdir(), "pi-plan-profile-"));
-		const path = join(directory, "settings.json");
-		const initialSettings = {
-			compaction: { enabled: true, threshold: 0.1 },
-			uiModelSelector: {
-				label: "preserved",
-				profiles: { normal: profileFor(normalModel, "medium") },
-			},
-		};
-		writeFileSync(path, `${JSON.stringify(initialSettings, null, 2)}\n`, "utf-8");
-		try {
-			const store = createPlanModeProfileStore(path);
-			expect(await store.load()).toBeUndefined();
-			await store.save(profileFor(planModel, "high"));
-			expect(await store.load()).toEqual(profileFor(planModel, "high"));
-			expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
-				...initialSettings,
-				uiModelSelector: {
-					...initialSettings.uiModelSelector,
-					profiles: {
-						...initialSettings.uiModelSelector.profiles,
-						plan: profileFor(planModel, "high"),
-					},
-				},
-			});
-			expect(readdirSync(directory)).toEqual(["settings.json"]);
-		} finally {
-			rmSync(directory, { recursive: true, force: true });
-		}
-	});
-
-	it("strips legacy defaultProvider/defaultModel/defaultThinkingLevel keys on save", async () => {
-		const directory = mkdtempSync(join(tmpdir(), "pi-plan-profile-"));
-		const path = join(directory, "settings.json");
-		const initialSettings = {
-			defaultProvider: normalModel.provider,
-			defaultModel: normalModel.id,
-			defaultThinkingLevel: "medium",
-			compaction: { enabled: true, threshold: 0.1 },
-			uiModelSelector: {
-				label: "preserved",
-				profiles: { normal: profileFor(normalModel, "medium") },
-			},
-		};
-		writeFileSync(path, `${JSON.stringify(initialSettings, null, 2)}\n`, "utf-8");
-		try {
-			const store = createPlanModeProfileStore(path);
-			await store.save(profileFor(planModel, "high"));
-			expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
-				compaction: { enabled: true, threshold: 0.1 },
-				uiModelSelector: {
-					label: "preserved",
-					profiles: {
-						normal: profileFor(normalModel, "medium"),
-						plan: profileFor(planModel, "high"),
-					},
-				},
-			});
-		} finally {
-			rmSync(directory, { recursive: true, force: true });
-		}
-	});
-
-	it("repoints the store at the session's profile with setPath", async () => {
-		const directory = mkdtempSync(join(tmpdir(), "pi-plan-profile-"));
-		const settingsPath = join(directory, "settings.json");
-		const profilePath = join(directory, "profiles", "focused.json");
-		mkdirSync(join(directory, "profiles"));
-		writeFileSync(settingsPath, JSON.stringify({
-			uiModelSelector: { profiles: { plan: profileFor(planModel, "low") } },
-		}), "utf-8");
-		writeFileSync(profilePath, JSON.stringify({ uiModelSelector: { profiles: {} } }), "utf-8");
-		try {
-			const store = createPlanModeProfileStore(settingsPath);
-			expect(await store.load()).toEqual(profileFor(planModel, "low"));
-
-			store.setPath(profilePath);
-			expect(await store.load()).toBeUndefined();
-			await store.save(profileFor(planModel, "high"));
-			expect(await store.load()).toEqual(profileFor(planModel, "high"));
-			// The original settings.json document is untouched.
-			expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
-				uiModelSelector: { profiles: { plan: profileFor(planModel, "low") } },
-			});
-		} finally {
-			rmSync(directory, { recursive: true, force: true });
-		}
-	});
 });

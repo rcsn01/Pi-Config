@@ -21,6 +21,10 @@ import type {
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
+import {
+	createModelSelectionStore,
+	type ModelSelectionStore,
+} from "../_shared/model-selection-store.ts";
 import type { SessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
 	sessionProfileTransfer,
@@ -43,10 +47,8 @@ import {
 } from "./plan-content.ts";
 import {
 	createNormalDefaultsStore,
-	createPlanModeProfileStore,
 	type ModeModelProfile,
 	type NormalDefaultsStore,
-	type PlanModeProfileStore,
 	preserveNormalGlobalDefaults,
 	profileFromCurrentSession,
 	profileLabel,
@@ -81,7 +83,7 @@ import {
 
 export interface PlanModeDependencies {
 	settingsPath?: string;
-	profileStore?: PlanModeProfileStore;
+	profileStore?: ModelSelectionStore;
 	sessionProfileTransfer?: SessionProfileTransfer;
 	nativeDefaults?: PiNativeDefaults;
 	normalDefaultsStore?: NormalDefaultsStore;
@@ -322,7 +324,7 @@ export function createPlanLifecycle(
 
 	const workspaceFactory = dependencies.createWorkspace ?? createPlanWorkspace;
 	const sandboxFactory = dependencies.createSandbox ?? createPlanSandboxController;
-	const profileStore = dependencies.profileStore ?? createPlanModeProfileStore(
+	const profileStore = dependencies.profileStore ?? createModelSelectionStore(
 		dependencies.settingsPath ?? PROJECT_SETTINGS_PATH,
 	);
 	const normalDefaultsStore = dependencies.normalDefaultsStore ?? createNormalDefaultsStore();
@@ -498,10 +500,10 @@ export function createPlanLifecycle(
 		const normalTools = pi.getActiveTools().filter((name) => name !== "plan_bash");
 		try {
 			normalGlobalDefaults = await normalDefaultsStore.capture(ctx.cwd, normalProfile);
-			const storedProfile = await profileStore.load();
+			const storedProfile = await profileStore.load("plan");
 			planState = { ...planState, normalProfile, normalTools };
 			if (!storedProfile) {
-				await profileStore.save(normalProfile);
+				await profileStore.save("plan", normalProfile);
 				activePlanProfile = normalProfile;
 				clearPlanForEntry();
 				commitPlanState(ctx, "plan", prompt, normalTools);
@@ -516,7 +518,7 @@ export function createPlanLifecycle(
 					nativeDefaults: dependencies.nativeDefaults,
 				});
 				switchedSessionProfile = true;
-				if (!usesDefaultSentinel(storedProfile)) await profileStore.save(activePlanProfile);
+				if (!usesDefaultSentinel(storedProfile)) await profileStore.save("plan", activePlanProfile);
 				await preserveDefaults(ctx);
 			} finally {
 				profileTransitionDepth--;
@@ -677,7 +679,7 @@ export function createPlanLifecycle(
 		activePlanProfile = profile;
 		let persistenceError: unknown;
 		try {
-			await profileStore.save(profile);
+			await profileStore.save("plan", profile);
 		} catch (error) {
 			persistenceError = error;
 		}

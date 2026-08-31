@@ -1,13 +1,14 @@
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { BashOperations, ContextUsage, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { vi } from "vitest";
+import type { ModelSelectionStore } from "../_shared/model-selection-store.ts";
 import {
 	createPlanModeExtension,
 	type PlanModeDependencies,
 	PLAN_REVIEW_ACTIONS,
 	reviewActionLabels,
 } from "./index.ts";
-import type { ModeModelProfile, PlanModeProfileStore } from "./model-profile.ts";
+import type { ModeModelProfile } from "./model-profile.ts";
 
 type EventHandler = (event: any, ctx: ExtensionContext) => unknown;
 
@@ -339,14 +340,18 @@ export function profileFor(model: typeof normalModel, thinkingLevel: ModelThinki
 
 export function createProfileDependencies(initial?: ModeModelProfile) {
 	let stored = initial;
-	const load = vi.fn(async () => stored);
-	const save = vi.fn(async (profile: ModeModelProfile) => {
+	const load = vi.fn(async (mode: "normal" | "plan") => {
+		if (mode !== "plan") throw new Error(`Unexpected model-selection mode: ${mode}`);
+		return stored;
+	});
+	const save = vi.fn(async (mode: "normal" | "plan", profile: ModeModelProfile) => {
+		if (mode !== "plan") throw new Error(`Unexpected model-selection mode: ${mode}`);
 		stored = profile;
 	});
 	const capture = vi.fn(async (_cwd: string, fallback: ModeModelProfile) => fallback);
 	const restore = vi.fn(async () => {});
 	const setPath = vi.fn();
-	const profileStore = { load, save, setPath } satisfies PlanModeProfileStore;
+	const profileStore = { load, save, setPath } satisfies ModelSelectionStore;
 	return {
 		dependencies: {
 			profileStore,

@@ -6,7 +6,7 @@ import {
 	ModelSelectionPersistenceError,
 	type ModelSelectionMode,
 	type ModelSelectionSettings,
-	type ProjectModelPreferences,
+	type StoredModelSelectionSettings,
 } from "../_shared/model-selection.ts";
 import type { ModelPickerSelection } from "../_shared/model-picker.ts";
 import {
@@ -42,16 +42,10 @@ const applied: ModelSelectionSettings = {
 	contextWindow: pickedModel.contextWindow,
 };
 
-function preferences(
-	profiles: ProjectModelPreferences["profiles"] = {},
-): ProjectModelPreferences {
-	return { profiles, contextWindows: {} };
-}
-
 function createHarness(options: {
 	runtime?: ModelSelectionRuntimeState;
-	preferences?: ProjectModelPreferences;
-	loadResults?: Array<ProjectModelPreferences | Error>;
+	selections?: Partial<Record<ModelSelectionMode, StoredModelSelectionSettings>>;
+	loadResults?: Array<StoredModelSelectionSettings | undefined | Error>;
 	picked?: ModelPickerSelection | undefined;
 	applyStoredError?: unknown;
 	applyPickedError?: unknown;
@@ -64,11 +58,14 @@ function createHarness(options: {
 	const notices: ModelSelectionLifecycleNotice[] = [];
 	const loadResults = [...(options.loadResults ?? [])];
 	const adapter: ModelSelectionLifecycleAdapter = {
-		loadPreferences: vi.fn(async () => {
-			calls.push("load");
-			const result = loadResults.shift();
-			if (result instanceof Error) throw result;
-			return result ?? options.preferences ?? preferences();
+		loadSelection: vi.fn(async (mode: ModelSelectionMode) => {
+			calls.push(`load:${mode}`);
+			if (loadResults.length > 0) {
+				const result = loadResults.shift();
+				if (result instanceof Error) throw result;
+				return result;
+			}
+			return options.selections?.[mode];
 		}),
 		getRuntimeState: vi.fn(() => {
 			calls.push("runtime");
@@ -140,7 +137,7 @@ describe("ModelSelectionLifecycle session initialization", () => {
 	])("bypasses fresh selection for explicit model arguments", async (...argv) => {
 		const harness = createHarness();
 		expect(await initialize(harness, { argv })).toEqual({ kind: "unchanged", reason: "startup-bypassed" });
-		expect(harness.adapter.loadPreferences).not.toHaveBeenCalled();
+		expect(harness.adapter.loadSelection).not.toHaveBeenCalled();
 	});
 
 	it("does not treat unrelated --model text as an override", async () => {
@@ -160,7 +157,8 @@ describe("ModelSelectionLifecycle session initialization", () => {
 			kind: "unchanged",
 			reason: "context-current",
 		});
-		expect(harness.adapter.loadPreferences).toHaveBeenCalledOnce();
+		expect(harness.adapter.loadSelection).toHaveBeenCalledOnce();
+		expect(harness.adapter.loadSelection).toHaveBeenCalledWith("normal");
 		expect(harness.adapter.pick).not.toHaveBeenCalled();
 		expect(harness.adapter.applyPickedSelection).not.toHaveBeenCalled();
 	});
@@ -168,24 +166,25 @@ describe("ModelSelectionLifecycle session initialization", () => {
 	it("applies the normal Profile silently, even when Plan Mode is active", async () => {
 		const normal = { provider: "normal", modelId: "model", thinkingLevel: "xhigh" as const, contextWindow: 256_000 };
 		const plan = { provider: "plan", modelId: "model", thinkingLevel: "low" as const, contextWindow: 128_000 };
-		const harness = createHarness({ preferences: preferences({ normal, plan }) });
+		const harness = createHarness({ selections: { normal, plan } });
 		const outcome = await initialize(harness, { mode: "plan" });
 		expect(outcome.kind).toBe("startup-profile-applied");
+		expect(harness.adapter.loadSelection).toHaveBeenCalledWith("normal");
 		expect(harness.adapter.applyStoredSelection).toHaveBeenCalledWith(normal, "Normal profile");
 		expect(harness.adapter.pick).not.toHaveBeenCalled();
 	});
 
-	it("falls back to the picker when the normal Profile is missing", async () => {
+	it("falls back to a second mode-specific read when the normal Profile is missing", async () => {
 		const harness = createHarness({ picked: undefined });
-		await initialize(harness);
-		expect(harness.calls).toEqual(["load", "runtime", "load", "pick"]);
+		await initialize(harness, { mode: "plan" });
+		expect(harness.calls).toEqual(["load:normal", "runtime", "load:plan", "pick"]);
 	});
 
 	it("reports a failed startup Profile and then falls back to the picker", async () => {
 		const profile = { provider: "normal", modelId: "model", thinkingLevel: "high" as const, contextWindow: 256_000 };
 		const failure = new Error("invalid profile");
 		const harness = createHarness({
-			preferences: preferences({ normal: profile }),
+			selections: { normal: profile },
 			applyStoredError: failure,
 			picked: undefined,
 		});
@@ -203,7 +202,7 @@ describe("ModelSelectionLifecycle session initialization", () => {
 			{ kind: "startup-profile-apply-failed", cause: first },
 			{ kind: "saved-selection-read-failed", cause: second },
 		]);
-		expect(harness.adapter.loadPreferences).toHaveBeenCalledTimes(2);
+		expect(harness.adapter.loadSelection).toHaveBeenCalledTimes(2);
 	});
 
 	it("synchronizes matching Profile context through context normalization", async () => {
@@ -214,16 +213,17 @@ describe("ModelSelectionLifecycle session initialization", () => {
 			thinkingLevel: "medium" as const,
 			contextWindow: 128_000,
 		};
-		const harness = createHarness({ runtime: { model: sentinelCurrent }, preferences: preferences({ plan: profile }) });
+		const harness = createHarness({ runtime: { model: sentinelCurrent }, selections: { plan: profile } });
 		const outcome = await initialize(harness, { reason: "reload", mode: "plan" });
 		expect(outcome.kind).toBe("context-synchronized");
+		expect(harness.adapter.loadSelection).toHaveBeenCalledWith("plan");
 		expect(harness.adapter.setModel).toHaveBeenCalledWith(expect.objectContaining({ contextWindow: 256_000 }));
 		expect(harness.adapter.pick).not.toHaveBeenCalled();
 	});
 
 	it("ignores mismatched Profile context and keeps a current normalized model unchanged", async () => {
 		const mismatch = { provider: "other", modelId: "model", thinkingLevel: "medium" as const, contextWindow: 256_000 };
-		const harness = createHarness({ preferences: preferences({ normal: mismatch }) });
+		const harness = createHarness({ selections: { normal: mismatch } });
 		expect(await initialize(harness, { reason: "reload" })).toEqual({ kind: "unchanged", reason: "context-current" });
 		expect(harness.adapter.setModel).not.toHaveBeenCalled();
 	});
@@ -231,12 +231,12 @@ describe("ModelSelectionLifecycle session initialization", () => {
 	it("returns no-current-model without loading preferences", async () => {
 		const harness = createHarness({ runtime: {} });
 		expect(await initialize(harness, { reason: "resume" })).toEqual({ kind: "unchanged", reason: "no-current-model" });
-		expect(harness.adapter.loadPreferences).not.toHaveBeenCalled();
+		expect(harness.adapter.loadSelection).not.toHaveBeenCalled();
 	});
 
 	it("rejects failed synchronized authentication with the established message", async () => {
 		const profile = { provider: currentModel.provider, modelId: currentModel.id, thinkingLevel: "medium" as const, contextWindow: 500_000 };
-		const harness = createHarness({ preferences: preferences({ normal: profile }), setModelResult: false });
+		const harness = createHarness({ selections: { normal: profile }, setModelResult: false });
 		await expect(initialize(harness, { reason: "reload" })).rejects.toThrow(
 			"No configured authentication for current-provider/current-model",
 		);
@@ -247,8 +247,9 @@ describe("ModelSelectionLifecycle interactive selection", () => {
 	it("uses saved defaults for the active mode and resolves saved context", async () => {
 		const normal = { provider: "normal", modelId: "model", thinkingLevel: "low" as const, contextWindow: 300_000 };
 		const plan = { provider: "plan", modelId: "model", thinkingLevel: "xhigh" as const, contextWindow: 128_000 };
-		const harness = createHarness({ preferences: preferences({ normal, plan }), picked: undefined });
+		const harness = createHarness({ selections: { normal, plan }, picked: undefined });
 		await harness.lifecycle.selectInteractively({ initialQuery: "  query  ", mode: "plan" });
+		expect(harness.adapter.loadSelection).toHaveBeenCalledWith("plan");
 		expect(harness.adapter.pick).toHaveBeenCalledWith(expect.objectContaining({
 			initialQuery: "query",
 			previous: { provider: "plan", modelId: "model", thinkingLevel: "xhigh", contextWindow: 256_000 },
@@ -257,7 +258,7 @@ describe("ModelSelectionLifecycle interactive selection", () => {
 
 	it("does not seed concrete defaults from a default-sentinel Profile", async () => {
 		const profile = { provider: DEFAULT_SENTINEL, modelId: DEFAULT_SENTINEL, thinkingLevel: DEFAULT_SENTINEL, contextWindow: DEFAULT_SENTINEL };
-		const harness = createHarness({ preferences: preferences({ normal: profile }), picked: undefined });
+		const harness = createHarness({ selections: { normal: profile }, picked: undefined });
 		await harness.lifecycle.selectInteractively({ initialQuery: "", mode: "normal" });
 		expect(harness.adapter.pick).toHaveBeenCalledWith(expect.objectContaining({
 			previous: { provider: currentModel.provider, modelId: currentModel.id, thinkingLevel: "medium" },
@@ -285,7 +286,7 @@ describe("ModelSelectionLifecycle interactive selection", () => {
 	it("confirms at exactly 80% and applies, persists, then compacts", async () => {
 		const harness = createHarness({ runtime: { model: currentModel, usageTokens: 400_000 } });
 		const outcome = await harness.lifecycle.selectInteractively({ initialQuery: "", mode: "plan" });
-		expect(harness.calls).toEqual(["runtime", "load", "pick", "confirm", "apply-live", "persist", "compact"]);
+		expect(harness.calls).toEqual(["runtime", "load:plan", "pick", "confirm", "apply-live", "persist", "compact"]);
 		expect(harness.adapter.applyPickedSelection).toHaveBeenCalledWith(picked, "plan");
 		expect(harness.adapter.requestCompaction).toHaveBeenCalledWith(SEMANTIC_COMPACTION_FOCUS);
 		expect(outcome).toEqual(expect.objectContaining({ kind: "interactive-applied", compaction: "started" }));
