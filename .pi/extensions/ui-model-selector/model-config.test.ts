@@ -38,8 +38,17 @@ const models = [
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((resolvePromise) => {
+		resolve = resolvePromise;
+	});
+	return { promise, resolve };
+}
+
 function createAdapterHarness(options: {
 	cancel?: boolean;
+	modelSelectionPromise?: Promise<string | undefined>;
 	mode?: "tui" | "print" | "json" | "rpc";
 	requestedThinkingLevel?: ThinkingLevel;
 	effectiveThinkingLevel?: ThinkingLevel;
@@ -48,7 +57,9 @@ function createAdapterHarness(options: {
 	idle?: boolean;
 	setModelResult?: boolean;
 	saveError?: Error;
+	savePromise?: Promise<void>;
 	refreshError?: Error;
+	persistenceFactoryError?: Error;
 	profiles?: Record<string, {
 		provider: string;
 		modelId: string;
@@ -58,7 +69,11 @@ function createAdapterHarness(options: {
 } = {}) {
 	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => unknown>();
 	let thinkingLevel: ThinkingLevel = "medium";
-	const custom = vi.fn(async () => options.cancel ? undefined : "anthropic/claude-sonnet-4.6");
+	const custom = vi.fn(async () => options.cancel
+		? undefined
+		: options.modelSelectionPromise
+			? await options.modelSelectionPromise
+			: "anthropic/claude-sonnet-4.6");
 	const select = vi.fn(async (title: string, choices: string[]) => {
 		if (title.startsWith("Thinking ·")) {
 			const requested = options.requestedThinkingLevel ?? "high";
@@ -71,11 +86,29 @@ function createAdapterHarness(options: {
 	const setEditorComponent = vi.fn();
 	const compact = vi.fn();
 	const setModel = vi.fn(async () => options.setModelResult ?? true);
-	const save = vi.fn(async () => {
+	const save = vi.fn(async (_mode: "normal" | "plan", _selection: unknown) => {
 		if (options.saveError) throw options.saveError;
+		if (options.savePromise) await options.savePromise;
 	});
 	const load = vi.fn(async (mode: "normal" | "plan") => options.profiles?.[mode]);
-	const setPath = vi.fn();
+	const persistenceInstances: Array<{
+		load: ReturnType<typeof vi.fn>;
+		save: ReturnType<typeof vi.fn>;
+	}> = [];
+	const savedByInstance: number[] = [];
+	const createModelSelectionPersistence = vi.fn((_settingsPath: string) => {
+		if (options.persistenceFactoryError) throw options.persistenceFactoryError;
+		const instanceIndex = persistenceInstances.length;
+		const persistence = {
+			load: vi.fn((mode: "normal" | "plan") => load(mode)),
+			save: vi.fn(async (mode: "normal" | "plan", selection: unknown) => {
+				savedByInstance.push(instanceIndex);
+				await save(mode, selection);
+			}),
+		};
+		persistenceInstances.push(persistence);
+		return persistence;
+	});
 	const ctx = {
 		mode: options.mode ?? "tui",
 		model: models[0],
@@ -115,7 +148,7 @@ function createAdapterHarness(options: {
 			thinkingLevel = options.effectiveThinkingLevel ?? level;
 		}),
 	} as unknown as ExtensionAPI;
-	createModelSelectorExtension({ modelSelectionStore: { load, save, setPath } })(pi);
+	createModelSelectorExtension({ createModelSelectionPersistence })(pi);
 
 	return {
 		ctx,
@@ -127,7 +160,9 @@ function createAdapterHarness(options: {
 		setModel,
 		load,
 		save,
-		setPath,
+		createModelSelectionPersistence,
+		persistenceInstances,
+		savedByInstance,
 		emitStart: async (reason: "startup" | "reload" | "new" | "resume" | "fork" = "startup") => {
 			await handlers.get("session_start")?.({ type: "session_start", reason }, ctx);
 		},
@@ -165,21 +200,28 @@ describe("model command routing", () => {
 });
 
 describe("Pi model-selection adapter", () => {
-	it("applies the Session Profile path before the first selection read", async () => {
+	it("constructs Session persistence before the first selection read", async () => {
 		const harness = createAdapterHarness({ cancel: true });
 		await harness.emitStart();
-		expect(harness.setPath).toHaveBeenCalledOnce();
-		expect(harness.setPath.mock.invocationCallOrder[0]).toBeLessThan(harness.load.mock.invocationCallOrder[0]);
+		expect(harness.createModelSelectionPersistence).toHaveBeenCalledOnce();
+		expect(harness.createModelSelectionPersistence.mock.invocationCallOrder[0]).toBeLessThan(harness.load.mock.invocationCallOrder[0]);
 		expect(harness.load).toHaveBeenCalledWith("normal");
 	});
 
 	it.each(["print", "json", "rpc"] as const)("does not install selector UI in %s mode", async (mode) => {
 		const harness = createAdapterHarness({ mode });
 		await harness.emitStart();
-		expect(harness.setPath).toHaveBeenCalledOnce();
+		expect(harness.createModelSelectionPersistence).toHaveBeenCalledOnce();
 		expect(harness.load).not.toHaveBeenCalled();
 		expect(harness.setEditorComponent).not.toHaveBeenCalled();
 		expect(getModelCommandHandler()).toBeUndefined();
+	});
+
+	it("fails Session initialization instead of falling back when persistence construction fails", async () => {
+		const harness = createAdapterHarness({ persistenceFactoryError: new Error("cannot bind Profile") });
+		await expect(harness.emitStart()).rejects.toThrow("cannot bind Profile");
+		expect(harness.load).not.toHaveBeenCalled();
+		expect(harness.setEditorComponent).not.toHaveBeenCalled();
 	});
 
 	it("installs the command handler and routing editor", async () => {
@@ -269,13 +311,35 @@ describe("Pi model-selection adapter", () => {
 		expect(harness.notify).toHaveBeenCalledWith("Compaction failed: summary failed", "error");
 	});
 
-	it("replaces command ownership when the session initializes again", async () => {
+	it("replaces command ownership and persistence when the session initializes again", async () => {
 		const harness = createAdapterHarness({ cancel: true });
 		await harness.emitStart();
 		const first = getModelCommandHandler();
+		const firstPersistence = harness.persistenceInstances[0];
 		await harness.emitStart("reload");
 		expect(getModelCommandHandler()).toBeTypeOf("function");
 		expect(getModelCommandHandler()).not.toBe(first);
+		expect(harness.persistenceInstances).toHaveLength(2);
+		expect(harness.persistenceInstances[1]).not.toBe(firstPersistence);
+	});
+
+	it("finishes an in-flight save before constructing the next Session persistence", async () => {
+		const save = deferred<void>();
+		const harness = createAdapterHarness({ savePromise: save.promise });
+		await harness.emitStart("resume");
+		const firstHandler = getModelCommandHandler()!;
+		const oldSelection = firstHandler("");
+		await vi.waitFor(() => expect(harness.persistenceInstances[0].save).toHaveBeenCalledOnce());
+
+		const reload = harness.emitStart("reload");
+		await Promise.resolve();
+		expect(harness.persistenceInstances).toHaveLength(1);
+		save.resolve();
+		await Promise.all([oldSelection, reload]);
+
+		expect(harness.persistenceInstances).toHaveLength(2);
+		expect(harness.savedByInstance).toEqual([0]);
+		expect(harness.persistenceInstances[1].save).not.toHaveBeenCalled();
 	});
 
 	it("removes command ownership and editor installation on shutdown", async () => {

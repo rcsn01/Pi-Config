@@ -117,7 +117,6 @@ describe("Plan Mode model and thinking profiles", () => {
 				return stored;
 			}),
 			save: vi.fn(),
-			setPath: vi.fn(),
 		};
 		const harness = createHarness({
 			branch: [],
@@ -125,7 +124,7 @@ describe("Plan Mode model and thinking profiles", () => {
 			thinkingLevel: "medium",
 			availableModels: [normalModel, nativeModel],
 			dependencies: {
-				profileStore,
+				createModelSelectionPersistence: () => profileStore,
 				nativeDefaults: { provider: nativeModel.provider, modelId: nativeModel.id, thinkingLevel: "max" },
 				normalDefaultsStore: {
 					capture: vi.fn(async (_cwd, fallback) => fallback),
@@ -284,11 +283,10 @@ describe("Plan Mode model and thinking profiles", () => {
 			branch: [], model: normalModel, availableModels: [normalModel],
 			dependencies: {
 				...missing.dependencies,
-				profileStore: {
+				createModelSelectionPersistence: () => ({
 					load: vi.fn(async () => { throw new Error("malformed profile"); }),
 					save: vi.fn(),
-					setPath: vi.fn(),
-				},
+				}),
 			},
 		});
 		await malformedHarness.emit("session_start", { type: "session_start", reason: "startup" });

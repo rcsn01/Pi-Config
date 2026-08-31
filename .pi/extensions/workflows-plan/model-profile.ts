@@ -1,7 +1,7 @@
 /**
  * Plan Mode model labels, current-session capture, and Pi native global-default
  * capture and restoration. Model-selection persistence lives in
- * `../_shared/model-selection-store.ts`.
+ * `../_shared/model-selection-persistence.ts`.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";

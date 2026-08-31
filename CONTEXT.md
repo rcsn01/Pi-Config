@@ -38,10 +38,20 @@ extension.
   correlation, record retention, payload analysis, byte accounting, pause state,
   and diagnostics behind one synchronous interface. Analysis dashboard lifecycle
   and Pi event adaptation stay outside.
+- **Child observation module** — the shared best-effort module that carries
+  Observability events from a child Pi process into the parent process. It owns
+  conditional child-extension loading, pipe setup, private framing, size limits,
+  parsing, source attribution, and publication; observed work never fails because
+  observation failed.
 - **Persistent dashboard runtime** — the deep lifetime and server lifecycle
   module in `_shared/dashboard-runtime.ts` both dashboards sit on: one runtime
   per symbol key; lazy server adapters, coalesced start/close, close/start
   ordering, claim/release, orphan grace, and close-on-quit hide behind it.
+- **Dashboard request lifecycle** — the shared inline-browser module in
+  `_shared/dashboard-request-lifecycle.ts`: consumes and removes the capability
+  token, owns authenticated JSON requests and structured failures, supersedes
+  reads per named stream, supports explicit cancellation, and coalesces named
+  mutations. Analysis and Usage remain separate dashboard adapters.
 
 ## Subscriptions & quotas
 
@@ -101,8 +111,9 @@ extension.
   `ui-model-selector/` that owns session initialization decisions, interactive
   selection ordering, Profile persistence outcomes, and context-reduction and
   compaction policy. Pi adaptation and Session profile binding stay outside.
-- **Model-selection persistence** — Profile-aware storage of one mode's model
-  selection; it preserves other modes and unrelated Settings document fields.
+- **Model-selection persistence** — fixed-path, Profile-aware storage of one
+  mode's model selection, constructed from an immutable Session profile binding;
+  it preserves other modes and unrelated Settings document fields.
 
 ## Advisor tooling
 

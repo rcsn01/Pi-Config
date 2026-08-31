@@ -1,3 +1,4 @@
+import { DASHBOARD_REQUEST_LIFECYCLE_CLIENT } from "../_shared/dashboard-request-lifecycle.ts";
 import { TELEMETRY_USAGE_PAGE_CLIENT } from "./page-client.ts";
 import { TELEMETRY_USAGE_PAGE_STYLES } from "./page-styles.ts";
 
@@ -30,6 +31,6 @@ export const TELEMETRY_USAGE_PAGE = String.raw`<!doctype html>
 			<section id="panel" class="panel" role="tabpanel" aria-live="polite"></section>
 		</main>
 	</div>
-	<script>${TELEMETRY_USAGE_PAGE_CLIENT}</script>
+	<script>${DASHBOARD_REQUEST_LIFECYCLE_CLIENT}${TELEMETRY_USAGE_PAGE_CLIENT}</script>
 </body>
 </html>`;

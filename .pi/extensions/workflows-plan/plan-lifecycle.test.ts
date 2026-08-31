@@ -54,7 +54,7 @@ describe("Plan Mode tool policy integration", () => {
 		);
 	});
 
-	it("passes the resolved Session profile path before Plan Mode reconstruction", async () => {
+	it("constructs persistence from the resolved Session profile before reconstruction", async () => {
 		const stores = createProfileDependencies();
 		const harness = createHarness({
 			branch: [
@@ -68,8 +68,105 @@ describe("Plan Mode tool policy integration", () => {
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 
-		expect(stores.setPath).toHaveBeenCalledWith(expect.stringContaining("/profiles/focused.json"));
-		expect(stores.setPath.mock.invocationCallOrder[0]).toBeLessThan(stores.capture.mock.invocationCallOrder[0]);
+		expect(stores.createModelSelectionPersistence).toHaveBeenCalledWith(expect.stringContaining("/profiles/focused.json"));
+		expect(stores.createModelSelectionPersistence.mock.invocationCallOrder[0]).toBeLessThan(stores.capture.mock.invocationCallOrder[0]);
+	});
+
+	it("rejects persistence-required events before Session initialization", async () => {
+		const harness = createHarness({ branch: [], model: normalModel, availableModels: [normalModel] });
+		await expect(harness.shortcuts.get("shift+tab").handler(harness.ctx))
+			.rejects.toThrow("Plan Mode lifecycle is not initialized for this Session.");
+	});
+
+	it("finishes an old save on its original Profile before constructing the next Session persistence", async () => {
+		const pendingSave = deferred<void>();
+		const saves: Array<{ path: string; profile: ModeModelProfile }> = [];
+		const persistences: Array<{ path: string; save: ReturnType<typeof vi.fn> }> = [];
+		const createModelSelectionPersistence = vi.fn((path: string) => {
+			const save = vi.fn(async (_mode: "normal" | "plan", profile: ModeModelProfile) => {
+				saves.push({ path, profile });
+				if (persistences.length === 1) await pendingSave.promise;
+			});
+			const persistence = { path, save };
+			persistences.push(persistence);
+			return { load: vi.fn(async () => undefined), save };
+		});
+		const harness = createHarness({
+			branch: [activePlanningEntry()],
+			model: normalModel,
+			thinkingLevel: "medium",
+			availableModels: [normalModel],
+			dependencies: {
+				createModelSelectionPersistence,
+				normalDefaultsStore: {
+					capture: vi.fn(async (_cwd, fallback) => fallback),
+					restore: vi.fn(async () => {}),
+				},
+				waitForNativePersistence: async () => {},
+			},
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		const oldSave = harness.emit("model_select", {
+			type: "model_select",
+			model: normalModel,
+			previousModel: normalModel,
+			source: "cycle",
+		});
+		await vi.waitFor(() => expect(saves).toHaveLength(1));
+
+		harness.setBranch([
+			activePlanningEntry(),
+			{ type: "custom", customType: "configProfiles", data: { active: "focused" } },
+		]);
+		harness.setSessionId("next-session");
+		const nextStart = harness.emit("session_start", { type: "session_start", reason: "new" });
+		await Promise.resolve();
+		expect(createModelSelectionPersistence).toHaveBeenCalledOnce();
+
+		pendingSave.resolve();
+		await Promise.all([oldSave, nextStart]);
+		expect(createModelSelectionPersistence).toHaveBeenCalledTimes(2);
+		expect(persistences[0].path).not.toBe(persistences[1].path);
+		expect(saves).toEqual([{ path: persistences[0].path, profile: profileFor(normalModel, "medium") }]);
+		expect(persistences[1].save).not.toHaveBeenCalled();
+	});
+
+	it("finishes an old Plan exit before reconstructing the new Session", async () => {
+		const pendingRestore = deferred<void>();
+		const stores = createProfileDependencies(profileFor(normalModel, "medium"));
+		stores.restore.mockImplementation(() => pendingRestore.promise);
+		const harness = createHarness({
+			branch: [{
+				type: "custom",
+				customType: "plan-mode-state",
+				data: {
+					active: true,
+					phase: "planning",
+					setAt: 1,
+					normalProfile: profileFor(normalModel, "medium"),
+				},
+			}],
+			model: normalModel,
+			availableModels: [normalModel],
+			dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		harness.appendedEntries.splice(0);
+
+		const oldExit = harness.commands.get("plan").handler("exit", harness.ctx);
+		await vi.waitFor(() => expect(stores.restore).toHaveBeenCalledOnce());
+		harness.setSessionId("next-session");
+		harness.setBranch([activePlanningEntry()]);
+		const nextStart = harness.emit("session_start", { type: "session_start", reason: "new" });
+		await Promise.resolve();
+		expect(stores.createModelSelectionPersistence).toHaveBeenCalledOnce();
+		pendingRestore.resolve();
+		await Promise.all([oldExit, nextStart]);
+
+		expect(stores.createModelSelectionPersistence).toHaveBeenCalledTimes(2);
+		const [prompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		expect(prompt.systemPrompt).toContain("You are in **Plan Mode**");
 	});
 
 	it("uses one monotonic runtime marker across repeated mode switches", async () => {
@@ -394,7 +491,7 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 			availableModels: [normalModel],
 			dependencies: {
 				...stores.dependencies,
-				profileStore: { load, save: stores.save, setPath: vi.fn() },
+				createModelSelectionPersistence: () => ({ load, save: stores.save }),
 			},
 		});
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });

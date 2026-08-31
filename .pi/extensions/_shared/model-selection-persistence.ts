@@ -11,14 +11,14 @@ import {
 	type StoredModelSelectionSettings,
 } from "./model-selection.ts";
 
-export interface ModelSelectionStore {
+export interface ModelSelectionPersistence {
 	load(mode: ModelSelectionMode): Promise<StoredModelSelectionSettings | undefined>;
 	save(mode: ModelSelectionMode, selection: ConcreteModelSelection): Promise<void>;
-	/** Repoint the store at the session's Profile file. */
-	setPath(path: string): void;
 }
 
-export class ModelSelectionStoreError extends Error {
+export type CreateModelSelectionPersistence = (settingsPath: string) => ModelSelectionPersistence;
+
+export class ModelSelectionPersistenceError extends Error {
 	readonly operation: "load" | "save";
 	readonly mode: ModelSelectionMode;
 	readonly path: string;
@@ -35,7 +35,7 @@ export class ModelSelectionStoreError extends Error {
 			`Cannot ${operation} ${mode} model selection ${preposition} ${path}: ${cause instanceof Error ? cause.message : String(cause)}`,
 			{ cause },
 		);
-		this.name = "ModelSelectionStoreError";
+		this.name = "ModelSelectionPersistenceError";
 		this.operation = operation;
 		this.mode = mode;
 		this.path = path;
@@ -48,41 +48,33 @@ export class ModelSelectionStoreError extends Error {
  * the complete namespace before returning one mode. Writes preserve the other
  * mode, compaction settings, and unrelated Settings document fields.
  */
-export function createModelSelectionStore(path: string): ModelSelectionStore {
-	let currentPath = path;
-
+export function createModelSelectionPersistence(path: string): ModelSelectionPersistence {
 	return {
 		async load(mode) {
-			const operationPath = currentPath;
 			try {
-				const preferences = parseProjectModelPreferences(readSettingsDocument(operationPath));
+				const preferences = parseProjectModelPreferences(readSettingsDocument(path));
 				return preferences.profiles[mode];
 			} catch (cause) {
-				throw new ModelSelectionStoreError("load", mode, operationPath, cause);
+				throw new ModelSelectionPersistenceError("load", mode, path, cause);
 			}
 		},
 
 		async save(mode, selection) {
-			const operationPath = currentPath;
 			try {
 				const validated = validateConcreteModelSelection(selection);
 				const contextWindow = validated.contextWindow;
 				if (contextWindow === undefined) {
 					throw new Error("Model selection contextWindow must be a positive integer.");
 				}
-				await mutateSettingsDocument(operationPath, (document) =>
+				await mutateSettingsDocument(path, (document) =>
 					mergeProjectModelSelection(document, mode, {
 						...validated,
 						contextWindow,
 					})
 				);
 			} catch (cause) {
-				throw new ModelSelectionStoreError("save", mode, operationPath, cause);
+				throw new ModelSelectionPersistenceError("save", mode, path, cause);
 			}
-		},
-
-		setPath(nextPath) {
-			currentPath = nextPath;
 		},
 	};
 }

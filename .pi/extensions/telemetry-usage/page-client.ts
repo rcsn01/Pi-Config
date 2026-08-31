@@ -13,8 +13,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		{ key: "weekly", label: "Weekly" },
 		{ key: "cumulative", label: "Cumulative" },
 	];
-	const params = new URLSearchParams(location.hash.slice(1));
-	const token = params.get("token") || "";
+	const requests = createDashboardRequestLifecycle();
 	const fatal = document.getElementById("fatal");
 	const content = document.getElementById("content");
 	const status = document.getElementById("status");
@@ -27,7 +26,6 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 	let selectedSessionId;
 	let sessionQuery = "";
 	let currentData;
-	let requestGeneration = 0;
 	let pollTimer;
 
 	function element(tag, className, text) {
@@ -635,47 +633,36 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		}
 	}
 
-	async function api(path, options) {
-		const response = await fetch(path, {
-			...(options || {}),
-			headers: { Authorization: "Bearer " + token },
-		});
-		if (!response.ok) throw new Error("HTTP " + response.status + " " + response.statusText);
-		return response;
-	}
-
 	function schedulePoll() {
 		clearTimeout(pollTimer);
 		pollTimer = setTimeout(loadState, 300);
 	}
 
-	async function loadState() {
-		const generation = ++requestGeneration;
-		try {
-			const response = await api("/api/usage");
-			const next = await response.json();
-			if (generation !== requestGeneration) return;
-			renderState(next);
-			if (next.phase === "scanning") schedulePoll();
-		} catch (error) {
-			if (generation !== requestGeneration) return;
-			status.hidden = false;
-			status.setAttribute("data-phase", "error");
-			status.textContent = "Could not load usage: " + (error && error.message ? error.message : String(error));
-			refreshButton.disabled = false;
-		}
+	function loadState() {
+		requests.read("usage", "/api/usage", {
+			success(next) {
+				renderState(next);
+				if (next.phase === "scanning") schedulePoll();
+			},
+			failure(error) {
+				status.hidden = false;
+				status.setAttribute("data-phase", "error");
+				status.textContent = "Could not load usage: " + (error && error.message ? error.message : String(error));
+				refreshButton.disabled = false;
+			},
+		});
 	}
 
 	async function requestRefresh() {
 		clearTimeout(pollTimer);
-		requestGeneration++;
+		requests.cancel("usage");
 		refreshButton.disabled = true;
 		status.hidden = false;
 		status.setAttribute("data-phase", "scanning");
 		status.textContent = "Starting scan...";
 		try {
-			await api("/api/refresh", { method: "POST" });
-			await loadState();
+			await requests.mutate("refresh", "/api/refresh", { method: "POST" });
+			loadState();
 		} catch (error) {
 			status.setAttribute("data-phase", "error");
 			status.textContent = "Could not refresh usage: " + (error && error.message ? error.message : String(error));
@@ -699,7 +686,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 	}
 	refreshButton.addEventListener("click", requestRefresh);
 
-	if (!token) {
+	if (!requests) {
 		status.hidden = true;
 		fatal.hidden = false;
 		fatal.textContent = "This dashboard URL is missing its capability token. Run /global-usage again and use the complete URL.";
@@ -707,7 +694,6 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		refreshButton.disabled = true;
 		return;
 	}
-	history.replaceState(null, "", location.pathname + location.search);
 	loadState();
 })();
 `;

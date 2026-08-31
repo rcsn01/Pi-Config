@@ -9,7 +9,8 @@ function output(component: any, width = 100): string {
 
 describe("subagent progress rendering", () => {
 	it("renders single, parallel, and empty calls", () => {
-		expect(output(renderSubagentCall({ agent: "worker", task: "Inspect\nfiles" }, theme()))).toContain("subagent worker Inspect files");
+		expect(output(renderSubagentCall({ tasks: [{ agent: "worker", task: "Inspect\nfiles" }] }, theme())))
+			.toContain("subagent worker Inspect files");
 		expect(output(renderSubagentCall({ tasks: [{ agent: "worker" }, { agent: "explorer" }] }, theme())))
 			.toContain("subagent parallel (2 tasks: worker, explorer)");
 		expect(output(renderSubagentCall({}, theme()))).toContain("subagent");

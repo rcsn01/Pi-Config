@@ -1,7 +1,7 @@
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { BashOperations, ContextUsage, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { vi } from "vitest";
-import type { ModelSelectionStore } from "../_shared/model-selection-store.ts";
+import type { ModelSelectionPersistence } from "../_shared/model-selection-persistence.ts";
 import {
 	createPlanModeExtension,
 	type PlanModeDependencies,
@@ -83,6 +83,7 @@ export function createHarness(options: HarnessOptions = {}) {
 	let activeTools = [...(options.activeTools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"] )];
 	let currentModel = options.model;
 	let thinkingLevel = options.thinkingLevel ?? "medium";
+	let sessionId = "test-session";
 	let idle = options.idle ?? true;
 	const appendedEntries: Array<{ customType: string; data: any }> = [];
 	const registrations: string[] = [];
@@ -162,7 +163,7 @@ export function createHarness(options: HarnessOptions = {}) {
 		sessionManager: {
 			getBranch: () => branch,
 			getSessionFile: () => undefined,
-			getSessionId: () => "test-session",
+			getSessionId: () => sessionId,
 		},
 		isIdle: () => idle,
 		hasPendingMessages: () => false,
@@ -309,6 +310,9 @@ export function createHarness(options: HarnessOptions = {}) {
 		setCurrentThinkingLevel: (level: ModelThinkingLevel) => {
 			thinkingLevel = level;
 		},
+		setSessionId: (nextSessionId: string) => {
+			sessionId = nextSessionId;
+		},
 	};
 }
 
@@ -350,17 +354,22 @@ export function createProfileDependencies(initial?: ModeModelProfile) {
 	});
 	const capture = vi.fn(async (_cwd: string, fallback: ModeModelProfile) => fallback);
 	const restore = vi.fn(async () => {});
-	const setPath = vi.fn();
-	const profileStore = { load, save, setPath } satisfies ModelSelectionStore;
+	const persistenceInstances: ModelSelectionPersistence[] = [];
+	const createModelSelectionPersistence = vi.fn((_settingsPath: string) => {
+		const persistence = { load, save } satisfies ModelSelectionPersistence;
+		persistenceInstances.push(persistence);
+		return persistence;
+	});
 	return {
 		dependencies: {
-			profileStore,
+			createModelSelectionPersistence,
 			normalDefaultsStore: { capture, restore },
 			waitForNativePersistence: async () => {},
 		} satisfies PlanModeDependencies,
 		load,
 		save,
-		setPath,
+		createModelSelectionPersistence,
+		persistenceInstances,
 		capture,
 		restore,
 		getStored: () => stored,

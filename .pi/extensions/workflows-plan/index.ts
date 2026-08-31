@@ -34,7 +34,6 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 		{ settingsPath },
 		{
 			name: "workflows-plan",
-			applyPath: (binding) => lifecycle.setProfilePath(binding.settingsPath),
 			initialize: (binding, _event, ctx) => lifecycle.dispatch({ type: "sessionStarted", binding, ctx }),
 			dispose: (binding, ctx) => lifecycle.dispatch({ type: "sessionStopping", binding, ctx }),
 		},
@@ -80,8 +79,8 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	}));
 	pi.on("input", async (event, ctx) => lifecycle.dispatch({ type: "reviewInput", event, ctx }));
 	pi.on("turn_end", async (_event, ctx) => lifecycle.dispatch({ type: "turnEnded", ctx }));
-	pi.on("before_agent_start", async (event) => lifecycle.dispatch({ type: "agentPromptConstruction", event }));
-	pi.on("message_end", async (event) => lifecycle.dispatch({ type: "assistantMessageCompleted", event }));
+	pi.on("before_agent_start", async (event, ctx) => lifecycle.dispatch({ type: "agentPromptConstruction", event, ctx }));
+	pi.on("message_end", async (event, ctx) => lifecycle.dispatch({ type: "assistantMessageCompleted", event, ctx }));
 	pi.on("agent_settled", async (_event, ctx) => lifecycle.dispatch({ type: "agentSettled", ctx }));
 	pi.on("tool_call", async (event) => lifecycle.dispatch({ type: "toolCall", event }));
 

@@ -15,7 +15,7 @@ describe("Subagent invocation adapter", () => {
 		const adapter = createSubagentInvocationAdapter({ batch: { runBatch } });
 
 		const result = await adapter.execute(
-			{ agent: "worker", task: "Inspect code", cwd: "/task" },
+			{ tasks: [{ agent: "worker", task: "Inspect code", cwd: "/task" }] },
 			{ cwd: "/workspace", cacheAffinitySeed: "session-123" },
 		);
 
@@ -50,7 +50,7 @@ describe("Subagent invocation adapter", () => {
 		const updates: SubagentInvocationResult[] = [];
 
 		await adapter.execute(
-			{ agent: "worker", task: "Inspect code" },
+			{ tasks: [{ agent: "worker", task: "Inspect code" }] },
 			{ cwd: "/workspace", onUpdate: (update) => updates.push(update) },
 		);
 
@@ -99,7 +99,7 @@ describe("Subagent invocation adapter", () => {
 		});
 
 		const result = await adapter.execute(
-			{ agent: "worker", task: "Inspect code" },
+			{ tasks: [{ agent: "worker", task: "Inspect code" }] },
 			{ cwd: "/workspace" },
 		);
 
@@ -129,7 +129,10 @@ describe("Subagent invocation adapter", () => {
 		const updates: SubagentInvocationResult[] = [];
 
 		await adapter.execute(
-			{ tasks: [{ agent: "worker", task: "Inspect code" }] },
+			{ tasks: [
+				{ agent: "worker", task: "Inspect code" },
+				{ agent: "explorer", task: "Inspect tests" },
+			] },
 			{ cwd: "/workspace", onUpdate: (update) => updates.push(update) },
 		);
 		await vi.runAllTimersAsync();
@@ -139,7 +142,7 @@ describe("Subagent invocation adapter", () => {
 			"first",
 			completed.progress.lastMessage,
 		]);
-		expect(updates.every((update) => update.content[0].text === "Running 1 tasks...")).toBe(true);
+		expect(updates.every((update) => update.content[0].text === "Running 2 tasks...")).toBe(true);
 	});
 
 	it("cancels throttled progress when the batch rejects", async () => {
@@ -161,7 +164,10 @@ describe("Subagent invocation adapter", () => {
 		const updates: SubagentInvocationResult[] = [];
 
 		await expect(adapter.execute(
-			{ tasks: [{ agent: "worker", task: "Inspect code" }] },
+			{ tasks: [
+				{ agent: "worker", task: "Inspect code" },
+				{ agent: "explorer", task: "Inspect tests" },
+			] },
 			{ cwd: "/workspace", onUpdate: (update) => updates.push(update) },
 		)).rejects.toThrow("batch failed");
 		publishLateSnapshot?.({ results: [stale], changedIndex: 0, phase: "started" });
@@ -172,20 +178,12 @@ describe("Subagent invocation adapter", () => {
 		expect(vi.getTimerCount()).toBe(0);
 	});
 
-	it.each([
-		["missing mode", {}],
-		["incomplete single mode", { agent: "worker" }],
-		["empty parallel mode", { tasks: [] }],
-		["ambiguous complete single mode", { agent: "worker", task: "one", tasks: [{ agent: "explorer", task: "two" }] }],
-		["parallel mode with an agent field", { agent: "worker", tasks: [{ agent: "explorer", task: "two" }] }],
-		["parallel mode with a task field", { task: "one", tasks: [{ agent: "explorer", task: "two" }] }],
-		["parallel mode with top-level cwd", { cwd: "/single", tasks: [{ agent: "explorer", task: "two" }] }],
-	] as const)("rejects %s", async (_label, parameters) => {
+	it("rejects an empty task list", async () => {
 		const runBatch = vi.fn();
 		const adapter = createSubagentInvocationAdapter({ batch: { runBatch } });
 
-		await expect(adapter.execute(parameters, { cwd: "/workspace" }))
-			.rejects.toThrow("Provide exactly one invocation mode");
+		await expect(adapter.execute({ tasks: [] }, { cwd: "/workspace" }))
+			.rejects.toThrow("Provide at least one subagent task");
 		expect(runBatch).not.toHaveBeenCalled();
 	});
 });

@@ -144,19 +144,20 @@ export function renderAgentProgress(
 }
 
 export function renderSubagentCall(args: any, theme: Theme): Text {
-	if (args.tasks && args.tasks.length > 0) {
-		const agentNames = args.tasks.map((task: any) => task.agent).join(", ");
+	if (args.tasks?.length === 1) {
+		const [task] = args.tasks;
+		const taskPreview = task.task
+			? truncateToolLine(String(task.task).replace(/\n/g, " "), 60)
+			: "";
 		return new Text(
-			`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", "parallel")} ${theme.fg("dim", `(${args.tasks.length} tasks: ${agentNames})`)}`,
+			`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", task.agent)} ${theme.fg("dim", taskPreview)}`,
 			0, 0,
 		);
 	}
-	if (args.agent) {
-		const taskPreview = args.task
-			? truncateToolLine(String(args.task).replace(/\n/g, " "), 60)
-			: "";
+	if (args.tasks?.length > 1) {
+		const agentNames = args.tasks.map((task: any) => task.agent).join(", ");
 		return new Text(
-			`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", args.agent)} ${theme.fg("dim", taskPreview)}`,
+			`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", "parallel")} ${theme.fg("dim", `(${args.tasks.length} tasks: ${agentNames})`)}`,
 			0, 0,
 		);
 	}

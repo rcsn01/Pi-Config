@@ -49,7 +49,9 @@ describe("telemetry usage loopback server", () => {
 		const usage = await fetch(base + "/api/usage", { headers });
 		expect(usage.status).toBe(200);
 		expect(await usage.json()).toMatchObject({ phase: "ready", data: { scannedAt: 1 } });
-		expect((await fetch(base + "/api/refresh", { method: "POST", headers })).status).toBe(202);
+		const refresh = await fetch(base + "/api/refresh", { method: "POST", headers });
+		expect(refresh.status).toBe(202);
+		expect(await refresh.json()).toEqual({ accepted: true });
 		expect(source.refresh).toHaveBeenCalledOnce();
 		expect((await fetch(base + "/api/usage", { method: "POST", headers })).status).toBe(405);
 		expect((await fetch(base + "/missing", { headers })).status).toBe(405);

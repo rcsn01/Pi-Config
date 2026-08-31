@@ -14,13 +14,17 @@ The researcher uses the local `ddg_search` and `ddg_fetch` extensions. The worke
 
 ## Usage
 
-**Single mode:**
+**Single invocation:**
 
 ```json
-{ "agent": "explorer", "task": "Find all auth-related files in src/" }
+{
+  "tasks": [
+    { "agent": "explorer", "task": "Find all auth-related files in src/" }
+  ]
+}
 ```
 
-**Parallel mode:**
+**Parallel invocation:**
 
 ```json
 {
@@ -30,6 +34,8 @@ The researcher uses the local `ddg_search` and `ddg_fetch` extensions. The worke
   ]
 }
 ```
+
+The tool always accepts one non-empty `tasks` array. One entry runs as a single invocation; multiple entries run in parallel. Legacy `{ "agent", "task", "cwd" }` calls are normalized before validation so stored sessions remain compatible.
 
 Each subagent receives only its task and agent system prompt; it does not inherit the main conversation. Parallel execution defaults to four child processes.
 
