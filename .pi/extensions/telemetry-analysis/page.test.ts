@@ -1,7 +1,9 @@
 import vm from "node:vm";
 import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
+import { DASHBOARD_CLIENT_HELPERS } from "../_shared/dashboard-client.ts";
 import { ANALYSIS_PAGE } from "./page.ts";
+import { ANALYSIS_PAGE_CLIENT } from "./page-client.ts";
 
 describe("analysis page", () => {
 	it("is dependency-free and inserts captured values with textContent", () => {
@@ -10,6 +12,11 @@ describe("analysis page", () => {
 		expect(ANALYSIS_PAGE).not.toMatch(/https?:\/\//i);
 		expect(ANALYSIS_PAGE).toContain("textContent");
 		expect(ANALYSIS_PAGE).not.toContain("innerHTML");
+		expect(ANALYSIS_PAGE).toContain(DASHBOARD_CLIENT_HELPERS);
+		expect(ANALYSIS_PAGE.indexOf(DASHBOARD_CLIENT_HELPERS)).toBeLessThan(ANALYSIS_PAGE.indexOf(ANALYSIS_PAGE_CLIENT));
+		expect(ANALYSIS_PAGE_CLIENT).not.toContain(["Arrow", "Right"].join(""));
+		expect(ANALYSIS_PAGE_CLIENT).not.toContain(["Arrow", "Left"].join(""));
+		expect(ANALYSIS_PAGE_CLIENT).not.toContain("event.key === 'Home'");
 		expect(ANALYSIS_PAGE).not.toContain("OpenAI request analysis");
 		expect(ANALYSIS_PAGE).not.toContain("Pi provider request analysis");
 		expect(ANALYSIS_PAGE).not.toContain("Captured prompts and tool data may contain secrets.");

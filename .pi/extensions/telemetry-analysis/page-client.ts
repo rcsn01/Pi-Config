@@ -10,10 +10,10 @@ const activation = document.getElementById('activation');
 const error = document.getElementById('error');
 
 const tabs = [
-	{ channel: 'main', label: 'Main' },
-	{ channel: 'subagent', label: 'Subagents' },
-	{ channel: 'guardian', label: 'Guardian' },
-	{ channel: 'compaction', label: 'Compaction' },
+	{ key: 'main', label: 'Main' },
+	{ key: 'subagent', label: 'Subagents' },
+	{ key: 'guardian', label: 'Guardian' },
+	{ key: 'compaction', label: 'Compaction' },
 ];
 let summaries = [];
 let activeChannel = 'main';
@@ -21,29 +21,17 @@ let selectedSequence = null;
 const selections = new Map();
 let renderedFingerprint = null;
 
-function text(element, value) {
-	element.textContent = value == null ? '' : String(value);
-}
-
-function div(className, value) {
-	const element = document.createElement('div');
-	if (className) element.className = className;
-	text(element, value);
-	return element;
-}
-
-function fmt(number) {
-	return Number(number || 0).toLocaleString();
-}
+const element = dashElement;
+const fmt = dashFormatInteger;
 
 function metric(label, value) {
-	const element = div('metric');
-	element.append(div('muted', label), div('', value));
-	return element;
+	const box = element('div', 'metric');
+	box.append(element('div', 'muted', label), element('div', '', value));
+	return box;
 }
 
 function usageBar(usage, className = '') {
-	const bar = div('bar' + (className ? ' ' + className : ''));
+	const bar = element('div', 'bar' + (className ? ' ' + className : ''));
 	bar.setAttribute('role', 'img');
 	if (!usage) {
 		bar.classList.add('usage-unavailable');
@@ -75,8 +63,8 @@ function usageBar(usage, className = '') {
 }
 
 function usageView(usage) {
-	const box = div('');
-	const grid = div('grid');
+	const box = element('div', '');
+	const grid = element('div', 'grid');
 	grid.append(
 		metric('Uncached input', fmt(usage.input)),
 		metric('Cache hit', fmt(usage.cacheRead)),
@@ -96,8 +84,8 @@ function rawDetails(title, json) {
 	const details = document.createElement('details');
 	const summary = document.createElement('summary');
 	const content = document.createElement('pre');
-	text(summary, title);
-	text(content, json);
+	summary.textContent = title == null ? '' : String(title);
+	content.textContent = json == null ? '' : String(json);
 	details.append(summary, content);
 	return details;
 }
@@ -150,9 +138,9 @@ function sectionDetails(section, root) {
 	if (section.kind !== 'option' && section.allocatedTokens != null) {
 		const allocated = section.allocatedTokens;
 		const cached = section.cachedTokens || 0;
-		const bar = div('section-bar');
-		const hit = div('hit');
-		const miss = div('miss');
+		const bar = element('div', 'section-bar');
+		const hit = element('div', 'hit');
+		const miss = element('div', 'miss');
 		hit.style.width = (allocated ? 100 * cached / allocated : 0) + '%';
 		miss.style.width = (allocated ? 100 * (allocated - cached) / allocated : 100) + '%';
 		bar.append(hit, miss);
@@ -166,34 +154,34 @@ function sectionDetails(section, root) {
 		: section.allocatedTokens == null
 			? section.estimatedTokens + ' locally estimated tokens'
 			: section.allocatedTokens + ' estimated tokens';
-	text(label, section.label + ' · ' + tokenText + ' · ' + (section.pointer || '/'));
+	label.textContent = section.label + ' · ' + tokenText + ' · ' + (section.pointer || '/');
 	summary.append(label);
 
 	const content = document.createElement('pre');
 	content.className = 'section-content';
-	text(content, displayValue(pointerValue(root, section.pointer), section.kind));
+	content.textContent = displayValue(pointerValue(root, section.pointer), section.kind);
 	details.append(summary, content);
 	return details;
 }
 
 function sectionView(detail, openPointers) {
-	const box = div('sections');
+	const box = element('div', 'sections');
 	const title = document.createElement('h2');
-	text(title, detail.apiLabel + ' request parts');
+	title.textContent = detail.apiLabel + ' request parts';
 	let explanation = 'Expand a row to inspect the exact value sent in the provider payload. '
 		+ 'Tool rows include each transmitted tool description and parameter schema.';
 	if (detail.cachePlacement === 'estimated') {
 		explanation += ' Section-level cache placement is estimated from aggregate provider usage and payload order.';
 	}
-	box.append(title, div('muted', explanation));
+	box.append(title, element('div', 'muted', explanation));
 
-	const controls = div('section-controls');
+	const controls = element('div', 'section-controls');
 	const expand = document.createElement('button');
 	const collapse = document.createElement('button');
 	expand.type = 'button';
 	collapse.type = 'button';
-	text(expand, 'Expand all');
-	text(collapse, 'Collapse all');
+	expand.textContent = 'Expand all';
+	collapse.textContent = 'Collapse all';
 	expand.addEventListener('click', () => {
 		box.querySelectorAll('details.analysis-section, details.tool-section-group').forEach((row) => {
 			row.open = true;
@@ -213,7 +201,7 @@ function sectionView(detail, openPointers) {
 		const optionSections = detail.sections.filter((section) => section.kind === 'option');
 
 		if (requestSections.length) {
-			box.append(div('section-group', 'Prompt, tools, and conversation'));
+			box.append(element('div', 'section-group', 'Prompt, tools, and conversation'));
 			for (let index = 0; index < requestSections.length;) {
 				const section = requestSections[index];
 				if (section.kind !== 'tool') {
@@ -240,7 +228,7 @@ function sectionView(detail, openPointers) {
 				tools.dataset.pointer = '__tool_schemas__' + toolSections[0].pointer;
 				tools.open = openPointers.has(tools.dataset.pointer);
 				const summary = document.createElement('summary');
-				text(summary, 'Tool schemas (' + toolSections.length + ')');
+				summary.textContent = 'Tool schemas (' + toolSections.length + ')';
 				tools.append(summary);
 				toolSections.forEach((toolSection) => {
 					const row = sectionDetails(toolSection, root);
@@ -251,7 +239,7 @@ function sectionView(detail, openPointers) {
 			}
 		}
 		if (optionSections.length) {
-			box.append(div('section-group', 'Request options'));
+			box.append(element('div', 'section-group', 'Request options'));
 			optionSections.forEach((section) => {
 				const row = sectionDetails(section, root);
 				if (openPointers.has(section.pointer)) row.open = true;
@@ -259,7 +247,7 @@ function sectionView(detail, openPointers) {
 			});
 		}
 	} catch (caught) {
-		box.append(div('alert', 'Could not parse the captured request JSON: ' + caught.message));
+		box.append(element('div', 'alert', 'Could not parse the captured request JSON: ' + caught.message));
 	}
 	return box;
 }
@@ -283,71 +271,55 @@ function visibleSummaries() {
 	return summaries.filter((item) => channelOf(item) === activeChannel);
 }
 
-function renderTabs() {
-	sourceTabs.replaceChildren();
-	tabs.forEach((tab, index) => {
-		const button = document.createElement('button');
-		button.type = 'button';
-		button.className = 'source-tab';
-		button.setAttribute('role', 'tab');
-		button.id = 'tab-' + tab.channel;
-		button.setAttribute('aria-controls', 'sourcePanel');
-		button.setAttribute('aria-selected', tab.channel === activeChannel ? 'true' : 'false');
-		button.setAttribute('tabindex', tab.channel === activeChannel ? '0' : '-1');
-		button.dataset.channel = tab.channel;
-		text(button, tab.label + ' (' + summaries.filter((item) => channelOf(item) === tab.channel).length + ')');
-		button.addEventListener('click', () => {
-			if (activeChannel === tab.channel) return;
-			if (selectedSequence != null) selections.set(activeChannel, selectedSequence);
-			activeChannel = tab.channel;
-			sourcePanel.setAttribute('aria-labelledby', button.id);
-			const visible = visibleSummaries();
-			const saved = selections.get(activeChannel);
-			selectedSequence = visible.some((item) => item.sequence === saved) ? saved : (visible[0]?.sequence ?? null);
-			renderedFingerprint = null;
-			renderTabs();
-			renderRequestList();
-			const selected = visible.find((item) => item.sequence === selectedSequence);
-			if (selected) renderDetail(selected);
-			else {
-				requests?.cancel('detail');
-				detailPane.removeAttribute('data-sequence');
-				detailPane.replaceChildren(div('empty-state', 'No captured requests for ' + tab.label + '.'));
-			}
-		});
-		button.addEventListener('keydown', (event) => {
-			let targetIndex;
-			if (event.key === 'ArrowRight') targetIndex = (index + 1) % tabs.length;
-			else if (event.key === 'ArrowLeft') targetIndex = (index - 1 + tabs.length) % tabs.length;
-			else if (event.key === 'Home') targetIndex = 0;
-			else if (event.key === 'End') targetIndex = tabs.length - 1;
-			else return;
-			event.preventDefault();
-			const channel = tabs[targetIndex].channel;
-			sourceTabs.querySelector('[data-channel="' + channel + '"]').click();
-			sourceTabs.querySelector('[data-channel="' + channel + '"]').focus();
-		});
-		sourceTabs.append(button);
-	});
-}
+const sourceTablist = dashCreateTablist({
+	host: sourceTabs,
+	tabs,
+	initialKey: activeChannel,
+	buttonClass: 'source-tab',
+	ariaLabel: 'Request sources',
+	controls: 'sourcePanel',
+	countOf: (channel) => ' (' + summaries.filter((item) => channelOf(item) === channel).length + ')',
+	onActivate(tab, { focused }) {
+		if (activeChannel === tab.key) {
+			if (focused) sourceTablist.focus(tab.key);
+			return;
+		}
+		if (selectedSequence != null) selections.set(activeChannel, selectedSequence);
+		activeChannel = tab.key;
+		sourcePanel.setAttribute('aria-labelledby', 'tab-' + tab.key);
+		const visible = visibleSummaries();
+		const saved = selections.get(activeChannel);
+		selectedSequence = visible.some((item) => item.sequence === saved) ? saved : (visible[0]?.sequence ?? null);
+		renderedFingerprint = null;
+		renderRequestList();
+		const selected = visible.find((item) => item.sequence === selectedSequence);
+		if (selected) renderDetail(selected);
+		else {
+			requests?.cancel('detail');
+			detailPane.removeAttribute('data-sequence');
+			detailPane.replaceChildren(element('div', 'empty-state', 'No captured requests for ' + tab.label + '.'));
+		}
+		if (focused) sourceTablist.focus(tab.key);
+	},
+});
 
 function renderRequestList() {
 	requestList.replaceChildren();
 	const visible = visibleSummaries();
 	if (!visible.length) {
-		requestList.append(div('empty-state', 'No requests captured in this tab.'));
+		requestList.append(element('div', 'empty-state', 'No requests captured in this tab.'));
 		return;
 	}
 	visible.forEach((item) => {
 		const button = document.createElement('button');
 		button.type = 'button';
-		button.className = 'request-row' + (item.sequence === selectedSequence ? ' selected' : '');
+		button.className = 'request-row dash-row' + (item.sequence === selectedSequence ? ' selected' : '');
 		button.setAttribute('aria-pressed', item.sequence === selectedSequence ? 'true' : 'false');
 
 		const title = document.createElement('strong');
-		text(title, '#' + item.sequence + ' ' + (item.source?.displayLabel || item.provider) + ' · ' + item.provider + '/' + item.model);
+		title.textContent = '#' + item.sequence + ' ' + (item.source?.displayLabel || item.provider) + ' · ' + item.provider + '/' + item.model;
 		const meta = document.createElement('span');
-		text(meta, item.apiLabel + ' · ' + item.state + ' · ' + new Date(item.requestedAt).toLocaleTimeString());
+		meta.textContent = item.apiLabel + ' · ' + item.state + ' · ' + new Date(item.requestedAt).toLocaleTimeString();
 		button.append(title, meta, usageBar(item.usage, 'request-usage-bar'));
 		button.addEventListener('click', () => {
 			selectedSequence = item.sequence;
@@ -367,15 +339,15 @@ function renderDetail(item) {
 		: new Set();
 	detailPane.dataset.sequence = String(item.sequence);
 	renderedFingerprint = fingerprint;
-	detailPane.replaceChildren(div('status', 'Loading request #' + item.sequence + '...'));
+	detailPane.replaceChildren(element('div', 'status', 'Loading request #' + item.sequence + '...'));
 
 	requests.read('detail', '/api/records/' + item.sequence, {
 		success(detail) {
 			if (selectedSequence !== item.sequence) return;
 
 			const heading = document.createElement('h2');
-			text(heading, (detail.source?.channel === 'compaction' ? 'Compaction #' : 'Request #') + item.sequence + ' · ' + detail.provider + '/' + detail.model);
-			const grid = div('grid');
+			heading.textContent = (detail.source?.channel === 'compaction' ? 'Compaction #' : 'Request #') + item.sequence + ' · ' + detail.provider + '/' + detail.model;
+			const grid = element('div', 'grid');
 			grid.append(
 				metric('Source', (detail.source?.displayLabel || 'Main agent') + ' · ' + (detail.source?.invocationId || 'legacy')),
 				metric('Run / turn', detail.run + ' / ' + detail.turn),
@@ -391,10 +363,10 @@ function renderDetail(item) {
 			);
 			detailPane.replaceChildren(heading, grid);
 
-			if (detail.diagnostic) detailPane.append(div('alert', detail.diagnostic));
+			if (detail.diagnostic) detailPane.append(element('div', 'alert', detail.diagnostic));
 			if (detail.usage) {
 				const usageHeading = document.createElement('h2');
-				text(usageHeading, 'Exact provider-reported usage');
+				usageHeading.textContent = 'Exact provider-reported usage';
 				detailPane.append(usageHeading, usageView(detail.usage));
 			}
 			detailPane.append(
@@ -407,7 +379,7 @@ function renderDetail(item) {
 		},
 		failure(caught) {
 			renderedFingerprint = null;
-			detailPane.replaceChildren(div('alert', caught.message));
+			detailPane.replaceChildren(element('div', 'alert', caught.message));
 		},
 	});
 }
@@ -417,10 +389,10 @@ function refresh() {
 		success(data) {
 			error.classList.add('hidden');
 			activation.classList.toggle('hidden', Boolean(data.activatedAt));
-			text(activation, data.activatedAt ? '' : 'Capture is not active.');
+			activation.textContent = data.activatedAt ? '' : 'Capture is not active.';
 			const paused = document.getElementById('paused');
 			paused.classList.toggle('hidden', !data.paused);
-			text(document.getElementById('pausedText'), data.diagnostic || 'Capture paused.');
+			document.getElementById('pausedText').textContent = data.diagnostic || 'Capture paused.';
 
 			summaries = data.records.slice().reverse();
 			const visible = visibleSummaries();
@@ -429,16 +401,16 @@ function refresh() {
 				selectedSequence = visible.some((item) => item.sequence === saved) ? saved : (visible[0]?.sequence ?? null);
 			}
 			if (selectedSequence != null) selections.set(activeChannel, selectedSequence);
-			renderTabs();
+			sourceTablist.update();
 			renderRequestList();
 
 			const selected = visible.find((item) => item.sequence === selectedSequence);
 			if (!selected) {
 				requests.cancel('detail');
 				renderedFingerprint = null;
-				const label = tabs.find((tab) => tab.channel === activeChannel)?.label || activeChannel;
+				const label = tabs.find((tab) => tab.key === activeChannel)?.label || activeChannel;
 				detailPane.removeAttribute('data-sequence');
-				detailPane.replaceChildren(div('empty-state', 'No captured requests for ' + label + '.'));
+				detailPane.replaceChildren(element('div', 'empty-state', 'No captured requests for ' + label + '.'));
 			} else if (renderedFingerprint !== itemFingerprint(selected)) {
 				renderDetail(selected);
 			}
@@ -446,21 +418,23 @@ function refresh() {
 		failure(caught) {
 			activation.classList.add('hidden');
 			error.classList.remove('hidden');
-			text(error, caught.message);
+			error.textContent = caught.message;
 		},
 	});
 }
 
 document.getElementById('clear').addEventListener('click', async () => {
-	if (!requests) return;
 	await requests.mutate('clear', '/api/clear', { method: 'POST' });
 	refresh();
 });
 
-if (!requests) {
+if (!dashboardRequiresLifecycle(requests, {
+	fatal: error,
+	content: sourcePanel,
+	message: 'The capability token is missing from the URL fragment.',
+	disable: ['clear'],
+})) {
 	activation.classList.add('hidden');
-	error.classList.remove('hidden');
-	text(error, 'The capability token is missing from the URL fragment.');
 } else {
 	refresh();
 	setInterval(refresh, 1500);
