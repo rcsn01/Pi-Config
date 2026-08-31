@@ -89,11 +89,20 @@ export interface ModelSelectionLifecycleAdapter {
 	isIdle(): boolean;
 	requestCompaction(customInstructions: string): void;
 	reportNotice(notice: ModelSelectionLifecycleNotice): void;
+	reportOutcome(outcome: ModelSelectionLifecycleOutcome): void;
+}
+
+export class ModelSelectionSessionClosedError extends Error {
+	constructor() {
+		super("Model-selection Session is no longer active.");
+		this.name = "ModelSelectionSessionClosedError";
+	}
 }
 
 export interface ModelSelectionLifecycle {
 	initializeSession(input: ModelSelectionSessionInput): Promise<ModelSelectionLifecycleOutcome>;
 	selectInteractively(input: InteractiveModelSelectionInput): Promise<ModelSelectionLifecycleOutcome>;
+	dispose(): Promise<void>;
 }
 
 function hasExplicitModelArgument(argv: readonly string[]): boolean {
@@ -126,6 +135,35 @@ function pickerPreviousSelection(
 export function createModelSelectionLifecycle(
 	adapter: ModelSelectionLifecycleAdapter,
 ): ModelSelectionLifecycle {
+	let phase: "active" | "disposing" | "disposed" = "active";
+	const operations = new Set<Promise<unknown>>();
+	let disposal: Promise<void> | undefined;
+
+	function runOperation(
+		operation: () => Promise<ModelSelectionLifecycleOutcome>,
+	): Promise<ModelSelectionLifecycleOutcome> {
+		if (phase !== "active") return Promise.reject(new ModelSelectionSessionClosedError());
+		const running = operation().then((outcome) => {
+			adapter.reportOutcome(outcome);
+			return outcome;
+		});
+		operations.add(running);
+		void running.then(
+			() => operations.delete(running),
+			() => operations.delete(running),
+		);
+		return running;
+	}
+
+	function dispose(): Promise<void> {
+		if (disposal) return disposal;
+		phase = "disposing";
+		disposal = Promise.allSettled([...operations]).then(() => {
+			phase = "disposed";
+		});
+		return disposal;
+	}
+
 	function compactAfterReduction(required: boolean): ModelSelectionCompaction {
 		if (!required) return "none";
 		if (!adapter.isIdle()) return "deferred";
@@ -133,7 +171,7 @@ export function createModelSelectionLifecycle(
 		return "started";
 	}
 
-	async function selectInteractively(
+	async function selectInteractivelyCore(
 		input: InteractiveModelSelectionInput,
 	): Promise<ModelSelectionLifecycleOutcome> {
 		const runtime = adapter.getRuntimeState();
@@ -224,7 +262,7 @@ export function createModelSelectionLifecycle(
 			} catch (cause) {
 				adapter.reportNotice({ kind: "startup-profile-apply-failed", cause });
 			}
-			return selectInteractively({ initialQuery: "", mode: input.mode });
+			return selectInteractivelyCore({ initialQuery: "", mode: input.mode });
 		}
 
 		const shouldSynchronize = input.hasConversationHistory ||
@@ -233,5 +271,9 @@ export function createModelSelectionLifecycle(
 		return { kind: "unchanged", reason: "startup-bypassed" };
 	}
 
-	return { initializeSession, selectInteractively };
+	return {
+		initializeSession: (input) => runOperation(() => initializeSession(input)),
+		selectInteractively: (input) => runOperation(() => selectInteractivelyCore(input)),
+		dispose,
+	};
 }
