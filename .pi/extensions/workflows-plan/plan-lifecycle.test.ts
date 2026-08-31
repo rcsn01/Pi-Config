@@ -401,6 +401,7 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 
 		const first = harness.shortcuts.get("shift+tab").handler(harness.ctx);
 		await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+		expect(load).toHaveBeenCalledWith("plan");
 		const second = harness.shortcuts.get("shift+tab").handler(harness.ctx);
 		await Promise.resolve();
 		expect(load).toHaveBeenCalledOnce();

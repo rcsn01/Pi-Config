@@ -7,7 +7,6 @@ import {
 	resolveModelContext,
 	type ModelSelectionMode,
 	type ModelSelectionSettings,
-	type ProjectModelPreferences,
 	type StoredModelSelectionSettings,
 } from "../_shared/model-selection.ts";
 import {
@@ -74,7 +73,7 @@ export type ModelSelectionLifecycleOutcome =
 	};
 
 export interface ModelSelectionLifecycleAdapter {
-	loadPreferences(): Promise<ProjectModelPreferences>;
+	loadSelection(mode: ModelSelectionMode): Promise<StoredModelSelectionSettings | undefined>;
 	getRuntimeState(): ModelSelectionRuntimeState;
 	pick(options: ModelPickerOptions): Promise<ModelPickerSelection | undefined>;
 	applyStoredSelection(
@@ -108,11 +107,9 @@ function shouldOpenStartupModelSelector(input: ModelSelectionSessionInput): bool
 }
 
 function pickerPreviousSelection(
-	preferences: ProjectModelPreferences,
-	mode: ModelSelectionMode,
+	profile: StoredModelSelectionSettings | undefined,
 	thinkingLevel: ModelThinkingLevel | undefined,
 ): ModelPickerPreviousSelection | undefined {
-	const profile = preferences.profiles[mode];
 	if (!profile || profile.provider === DEFAULT_SENTINEL || profile.modelId === DEFAULT_SENTINEL) {
 		return undefined;
 	}
@@ -142,7 +139,7 @@ export function createModelSelectionLifecycle(
 		const runtime = adapter.getRuntimeState();
 		let previous: ModelPickerPreviousSelection | undefined;
 		try {
-			previous = pickerPreviousSelection(await adapter.loadPreferences(), input.mode, runtime.thinkingLevel);
+			previous = pickerPreviousSelection(await adapter.loadSelection(input.mode), runtime.thinkingLevel);
 		} catch (cause) {
 			adapter.reportNotice({ kind: "saved-selection-read-failed", cause });
 		}
@@ -198,8 +195,7 @@ export function createModelSelectionLifecycle(
 		if (!currentModel) return { kind: "unchanged", reason: "no-current-model" };
 
 		const restoredModel = resolveModelContext(currentModel);
-		const preferences = await adapter.loadPreferences();
-		const profile = preferences.profiles[input.mode];
+		const profile = await adapter.loadSelection(input.mode);
 		const profileContext = profile && profile.contextWindow !== DEFAULT_SENTINEL &&
 			profile.contextWindow !== undefined &&
 			currentModel.provider === profile.provider && currentModel.id === profile.modelId
@@ -220,7 +216,7 @@ export function createModelSelectionLifecycle(
 	): Promise<ModelSelectionLifecycleOutcome> {
 		if (shouldOpenStartupModelSelector(input)) {
 			try {
-				const normalProfile = (await adapter.loadPreferences()).profiles.normal;
+				const normalProfile = await adapter.loadSelection("normal");
 				if (normalProfile) {
 					const selection = await adapter.applyStoredSelection(normalProfile, "Normal profile");
 					return { kind: "startup-profile-applied", selection };
