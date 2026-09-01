@@ -21,6 +21,7 @@ import {
 	type PiNativeDefaults,
 } from "./pi-defaults.ts";
 import { matchFamily } from "./model-families.ts";
+import { MODEL_THINKING_LEVELS, type SupportedModelThinkingLevel } from "./model-thinking.ts";
 import { PLAN_STATE_ENTRY_TYPE } from "./session-entries.ts";
 
 export interface ModelChoiceLike {
@@ -32,17 +33,7 @@ export interface ModelChoiceLike {
 	thinkingLevelMap?: ThinkingLevelMap;
 }
 
-const MODEL_THINKING_LEVELS = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-] as const;
-
-type StoredThinkingLevel = typeof MODEL_THINKING_LEVELS[number];
+type StoredThinkingLevel = SupportedModelThinkingLevel;
 type StoredProfileValue = typeof DEFAULT_SENTINEL;
 
 export type ModelSelectionMode = "normal" | "plan";

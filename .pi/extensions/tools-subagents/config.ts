@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { MODEL_THINKING_LEVELS } from "../_shared/model-thinking.ts";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import type { AgentConfig } from "../_shared/subagent-service.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
@@ -12,7 +13,9 @@ import {
 
 export const MAIN_MODEL_SETTING = "main";
 export const LEGACY_MAIN_MODEL_SETTING = "default";
-export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export const THINKING_LEVELS = MODEL_THINKING_LEVELS;
+
+const THINKING_SUFFIX_PATTERN = new RegExp(`^(.*):(${THINKING_LEVELS.join("|")})$`, "i");
 
 export type SubagentThinkingLevel = (typeof THINKING_LEVELS)[number];
 
@@ -126,7 +129,7 @@ function parseConfiguredContextWindow(value: unknown, label: string): number | u
 /** Split Pi's optional provider/model:thinking shorthand into independent settings. */
 export function splitModelThinkingSetting(value: unknown): { model: string; thinkingLevel?: SubagentThinkingLevel } {
 	const setting = normalizeModelSetting(value);
-	const match = setting.match(/^(.*):(off|minimal|low|medium|high|xhigh|max)$/i);
+	const match = setting.match(THINKING_SUFFIX_PATTERN);
 	if (!match) return { model: setting };
 	return {
 		model: normalizeModelSetting(match[1], "model without thinking suffix"),

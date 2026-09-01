@@ -9,6 +9,7 @@ import {
 } from "../_shared/settings-document.ts";
 import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { modelKey, pickModelAndThinking } from "../_shared/model-picker.ts";
+import { MODEL_THINKING_LEVELS } from "../_shared/model-thinking.ts";
 import { resolveModelContext } from "../_shared/model-selection.ts";
 import { registerToolErrorHandler, renderToolMarkdown, renderToolSummary } from "../_shared/tool-result-ui.ts";
 import {
@@ -45,8 +46,7 @@ function optionalBoolean(value: unknown): boolean | undefined {
 
 function optionalThinkingLevel(value: unknown): ModelThinkingLevel | undefined {
 	if (value === undefined) return undefined;
-	const levels: ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-	if (typeof value !== "string" || !levels.includes(value as ModelThinkingLevel)) {
+	if (typeof value !== "string" || !MODEL_THINKING_LEVELS.includes(value as ModelThinkingLevel)) {
 		throw new Error("advisor.thinkingLevel must be one of off, minimal, low, medium, high, xhigh, or max.");
 	}
 	return value as ModelThinkingLevel;

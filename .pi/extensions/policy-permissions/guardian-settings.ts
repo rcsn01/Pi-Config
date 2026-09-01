@@ -1,19 +1,10 @@
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { MODEL_THINKING_LEVELS } from "../_shared/model-thinking.ts";
 import {
 	mutateSettingsDocument,
 	readSettingsDocument,
 } from "../_shared/settings-document.ts";
 import type { ModelPickerSelection } from "../_shared/model-picker.ts";
-
-const THINKING_LEVELS: readonly ModelThinkingLevel[] = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-];
 
 export interface GuardianSettings {
 	provider: string;
@@ -41,7 +32,7 @@ export function parseGuardianSettings(document: unknown): GuardianSettings | und
 
 	const raw = document.guardian;
 	const thinkingLevel = raw.thinkingLevel;
-	if (typeof thinkingLevel !== "string" || !THINKING_LEVELS.includes(thinkingLevel as ModelThinkingLevel)) {
+	if (typeof thinkingLevel !== "string" || !MODEL_THINKING_LEVELS.includes(thinkingLevel as ModelThinkingLevel)) {
 		throw new Error("guardian.thinkingLevel must be one of off, minimal, low, medium, high, xhigh, or max.");
 	}
 	if (!Number.isInteger(raw.contextWindow) || (raw.contextWindow as number) <= 0) {
