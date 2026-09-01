@@ -12,7 +12,7 @@ import {
 	filterModels,
 	findExactModel,
 	formatTokenCount,
-} from "./model-config.ts";
+} from "../_shared/model-picker.ts";
 
 afterEach(() => {
 	const clearActiveHandler = installModelCommandHandler(async () => {});

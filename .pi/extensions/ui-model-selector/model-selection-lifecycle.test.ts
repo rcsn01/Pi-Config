@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import {
-	ModelSelectionPersistenceError,
+	ModelSelectionNotSavedError,
 	type ModelSelectionMode,
 	type ModelSelectionSettings,
 	type StoredModelSelectionSettings,
@@ -344,7 +344,7 @@ describe("ModelSelectionLifecycle interactive selection", () => {
 
 	it("turns only persistence failures into partial-success outcomes and still compacts", async () => {
 		const cause = new Error("disk read-only");
-		const failure = new ModelSelectionPersistenceError(applied, cause);
+		const failure = new ModelSelectionNotSavedError(applied, cause);
 		const harness = createHarness({
 			runtime: { model: currentModel, usageTokens: 400_000 },
 			applyPickedError: failure,
