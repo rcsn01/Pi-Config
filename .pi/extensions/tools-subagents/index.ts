@@ -16,7 +16,7 @@ import {
 	type SubagentProgressEvent,
 	type SubagentService,
 } from "../_shared/subagent-service.ts";
-import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
+import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import {
 	agentRegistry,
@@ -113,16 +113,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		);
 		registry.initialize();
 
-		pi.on("session_start", async (event, ctx) => {
-			await profileInitialization.start(event, ctx);
-		});
-		pi.on("session_shutdown", async (event, ctx) => {
-			try {
-				await profileInitialization.stop(event, ctx);
-			} finally {
-				profileInitialization.unregister();
-			}
-		});
+		wireSessionProfileBinding(pi, profileInitialization);
 		pi.on("model_select", (event) => configStore.rememberMainModel(event.model));
 
 		pi.registerCommand("subagents", createSubagentsCommand({ registry, config: configStore }));

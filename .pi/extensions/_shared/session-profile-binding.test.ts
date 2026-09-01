@@ -1,4 +1,5 @@
 import type {
+	ExtensionAPI,
 	ExtensionContext,
 	SessionShutdownEvent,
 	SessionStartEvent,
@@ -15,6 +16,7 @@ import {
 	type SessionProfileAdapterName,
 	type SessionProfileBinding,
 	type SessionProfileBindingRegistration,
+	wireSessionProfileBinding,
 } from "./session-profile-binding.ts";
 import { createSessionProfileTransfer } from "./session-profile-transfer.ts";
 
@@ -376,5 +378,170 @@ describe("Session profile binding", () => {
 			"dispose:policy-permissions",
 			"dispose:config-profiles",
 		]);
+	});
+});
+
+describe("Session profile binding wiring", () => {
+	function wiring() {
+		const handlers = new Map<string, (event: object, ctx: ExtensionContext) => Promise<void>>();
+		const pi = {
+			on: (type: string, handler: (event: object, ctx: ExtensionContext) => Promise<void>) => {
+				handlers.set(type, handler);
+			},
+		} as unknown as ExtensionAPI;
+		const emit = (type: "session_start" | "session_shutdown", event: object, ctx: ExtensionContext) => {
+			const handler = handlers.get(type);
+			if (!handler) throw new Error(`no ${type} handler registered`);
+			return handler(event, ctx);
+		};
+		return { pi, emit };
+	}
+
+	it("delegates both session boundaries to the registration", async () => {
+		const harness = wiring();
+		const start = vi.fn(async () => {});
+		const stop = vi.fn(async () => {});
+		const unregister = vi.fn();
+		wireSessionProfileBinding(harness.pi, { start, stop, unregister });
+
+		const startBoundary = lifecycle();
+		const stopEvent = shutdown();
+		await harness.emit("session_start", startBoundary.event, startBoundary.ctx);
+		await harness.emit("session_shutdown", stopEvent, startBoundary.ctx);
+
+		expect(start).toHaveBeenCalledWith(startBoundary.event, startBoundary.ctx);
+		expect(stop).toHaveBeenCalledWith(stopEvent, startBoundary.ctx);
+		expect(unregister).toHaveBeenCalledOnce();
+	});
+
+	it("awaits the registration start before session_start settles", async () => {
+		const harness = wiring();
+		let releaseStart!: () => void;
+		const startPending = new Promise<void>((resolve) => { releaseStart = resolve; });
+		wireSessionProfileBinding(harness.pi, {
+			start: () => startPending,
+			stop: async () => {},
+			unregister: () => {},
+		});
+		const boundary = lifecycle();
+
+		const emitted = harness.emit("session_start", boundary.event, boundary.ctx);
+		const firstToSettle = await Promise.race([
+			emitted.then(() => "settled", () => "settled"),
+			Promise.resolve("pending"),
+		]);
+		expect(firstToSettle).toBe("pending");
+
+		releaseStart();
+		await emitted;
+	});
+
+	it("awaits the registration stop before afterStop and unregister run", async () => {
+		const harness = wiring();
+		const events: string[] = [];
+		let releaseStop!: () => void;
+		const stopPending = new Promise<void>((resolve) => { releaseStop = resolve; });
+		wireSessionProfileBinding(harness.pi, {
+			start: async () => {},
+			stop: () => stopPending,
+			unregister: () => { events.push("unregister"); },
+		}, {
+			afterStop: () => { events.push("afterStop"); },
+		});
+
+		const emitted = harness.emit("session_shutdown", shutdown(), {} as ExtensionContext);
+		const firstToSettle = await Promise.race([
+			emitted.then(() => "settled", () => "settled"),
+			Promise.resolve("pending"),
+		]);
+		expect(firstToSettle).toBe("pending");
+		expect(events).toEqual([]);
+
+		releaseStop();
+		await emitted;
+		expect(events).toEqual(["afterStop", "unregister"]);
+	});
+
+	it("awaits afterStop before unregister", async () => {
+		const harness = wiring();
+		const events: string[] = [];
+		wireSessionProfileBinding(harness.pi, {
+			start: async () => {},
+			stop: async () => { events.push("stop"); },
+			unregister: () => { events.push("unregister"); },
+		}, {
+			afterStop: async () => {
+				events.push("afterStop:start");
+				await Promise.resolve();
+				events.push("afterStop:end");
+			},
+		});
+
+		await harness.emit("session_shutdown", shutdown(), {} as ExtensionContext);
+
+		expect(events).toEqual(["stop", "afterStop:start", "afterStop:end", "unregister"]);
+	});
+
+	it("runs afterStop and unregister even when stop fails", async () => {
+		const harness = wiring();
+		const events: string[] = [];
+		const stopFailure = new Error("stop failed");
+		wireSessionProfileBinding(harness.pi, {
+			start: async () => {},
+			stop: async () => { events.push("stop"); throw stopFailure; },
+			unregister: () => { events.push("unregister"); },
+		}, {
+			afterStop: () => { events.push("afterStop"); },
+		});
+
+		await expect(harness.emit("session_shutdown", shutdown(), {} as ExtensionContext)).rejects.toBe(stopFailure);
+		expect(events).toEqual(["stop", "afterStop", "unregister"]);
+	});
+
+	it("unregisters when stop fails without an afterStop callback", async () => {
+		const harness = wiring();
+		const events: string[] = [];
+		const stopFailure = new Error("stop failed");
+		wireSessionProfileBinding(harness.pi, {
+			start: async () => {},
+			stop: async () => { events.push("stop"); throw stopFailure; },
+			unregister: () => { events.push("unregister"); },
+		});
+
+		await expect(harness.emit("session_shutdown", shutdown(), {} as ExtensionContext)).rejects.toBe(stopFailure);
+		expect(events).toEqual(["stop", "unregister"]);
+	});
+
+	it("unregisters even when afterStop fails, and propagates its failure", async () => {
+		const harness = wiring();
+		const events: string[] = [];
+		const afterStopFailure = new Error("afterStop failed");
+		wireSessionProfileBinding(harness.pi, {
+			start: async () => {},
+			stop: async () => { events.push("stop"); },
+			unregister: () => { events.push("unregister"); },
+		}, {
+			afterStop: () => { events.push("afterStop"); throw afterStopFailure; },
+		});
+
+		await expect(harness.emit("session_shutdown", shutdown(), {} as ExtensionContext)).rejects.toBe(afterStopFailure);
+		expect(events).toEqual(["stop", "afterStop", "unregister"]);
+	});
+
+	it("propagates the afterStop failure when stop also fails", async () => {
+		const harness = wiring();
+		const events: string[] = [];
+		const stopFailure = new Error("stop failed");
+		const afterStopFailure = new Error("afterStop failed");
+		wireSessionProfileBinding(harness.pi, {
+			start: async () => {},
+			stop: async () => { events.push("stop"); throw stopFailure; },
+			unregister: () => { events.push("unregister"); },
+		}, {
+			afterStop: () => { events.push("afterStop"); throw afterStopFailure; },
+		});
+
+		await expect(harness.emit("session_shutdown", shutdown(), {} as ExtensionContext)).rejects.toBe(afterStopFailure);
+		expect(events).toEqual(["stop", "afterStop", "unregister"]);
 	});
 });

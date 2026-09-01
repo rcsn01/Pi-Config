@@ -6,6 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	registerSessionProfileBinding,
 	type SessionProfileBinding,
+	wireSessionProfileBinding,
 } from "../_shared/session-profile-binding.ts";
 import {
 	sessionProfileTransfer,
@@ -74,16 +75,7 @@ export function createClearExtension(dependencies: ClearExtensionDependencies = 
 			},
 		});
 
-		pi.on("session_start", async (event, ctx) => {
-			await profileInitialization.start(event, ctx);
-		});
-		pi.on("session_shutdown", async (event, ctx) => {
-			try {
-				await profileInitialization.stop(event, ctx);
-			} finally {
-				profileInitialization.unregister();
-			}
-		});
+		wireSessionProfileBinding(pi, profileInitialization);
 	};
 }
 
