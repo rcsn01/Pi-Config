@@ -62,12 +62,12 @@ export interface ModelSelectionSettings {
 }
 
 /** Narrow seam for persisting one mode's effective model selection. */
-export interface ModelSelectionPersistence {
+interface ModelSelectionSaver {
 	save(mode: ModelSelectionMode, selection: ModelSelectionSettings): Promise<void>;
 }
 
 /** A picked selection was applied live, but its effective settings did not fully persist. */
-export class ModelSelectionPersistenceError extends Error {
+export class ModelSelectionNotSavedError extends Error {
 	readonly appliedSelection: ModelSelectionSettings;
 
 	constructor(appliedSelection: ModelSelectionSettings, cause: unknown) {
@@ -75,7 +75,7 @@ export class ModelSelectionPersistenceError extends Error {
 		`Model selection was applied, but settings were not fully saved: ${cause instanceof Error ? cause.message : String(cause)}`,
 		{ cause },
 		);
-		this.name = "ModelSelectionPersistenceError";
+		this.name = "ModelSelectionNotSavedError";
 		this.appliedSelection = appliedSelection;
 	}
 }
@@ -464,14 +464,14 @@ export async function applyPickedModelSelection(
 	thinkingLevel: StoredThinkingLevel,
 	options: {
 		mode: ModelSelectionMode;
-		persistence: ModelSelectionPersistence;
+		persistence: ModelSelectionSaver;
 	},
 ): Promise<ModelSelectionSettings> {
 	const selection = await applyResolvedModelSelection(pi, ctx, model, thinkingLevel);
 	try {
 		await options.persistence.save(options.mode, selection);
 	} catch (cause) {
-		throw new ModelSelectionPersistenceError(selection, cause);
+		throw new ModelSelectionNotSavedError(selection, cause);
 	}
 	return selection;
 }

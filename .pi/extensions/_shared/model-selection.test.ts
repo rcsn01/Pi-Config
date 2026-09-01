@@ -5,7 +5,7 @@ import {
 	applySelectionFromDocument,
 	DEFAULT_CONTEXT_WINDOW,
 	mergeProjectModelSelection,
-	ModelSelectionPersistenceError,
+	ModelSelectionNotSavedError,
 	parseProjectModelPreferences,
 	PI_DEFAULT_CONTEXT_WINDOW,
 	resolveContextWindow,
@@ -525,8 +525,8 @@ describe("applyPickedModelSelection", () => {
 			caught = error;
 		}
 
-		expect(caught).toBeInstanceOf(ModelSelectionPersistenceError);
-		if (!(caught instanceof ModelSelectionPersistenceError)) throw caught;
+		expect(caught).toBeInstanceOf(ModelSelectionNotSavedError);
+		if (!(caught instanceof ModelSelectionNotSavedError)) throw caught;
 		expect(caught.appliedSelection).toEqual({
 			provider: "anthropic",
 			modelId: "claude-sonnet-4.6",
@@ -549,7 +549,7 @@ describe("applyPickedModelSelection", () => {
 		});
 
 		await expect(promise).rejects.toMatchObject({
-			name: "ModelSelectionPersistenceError",
+			name: "ModelSelectionNotSavedError",
 			appliedSelection: {
 				provider: "anthropic",
 				modelId: "claude-sonnet-4.6",

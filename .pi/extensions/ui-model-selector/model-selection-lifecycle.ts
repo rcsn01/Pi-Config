@@ -2,7 +2,7 @@ import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import { COMPACT_THRESHOLD, SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
 import {
-	ModelSelectionPersistenceError,
+	ModelSelectionNotSavedError,
 	resolveContextWindow,
 	resolveModelContext,
 	type ModelSelectionMode,
@@ -215,7 +215,7 @@ export function createModelSelectionLifecycle(
 				compaction: compactAfterReduction(needsCompaction),
 			};
 		} catch (error) {
-			if (!(error instanceof ModelSelectionPersistenceError)) throw error;
+			if (!(error instanceof ModelSelectionNotSavedError)) throw error;
 			return {
 				kind: "interactive-applied-not-saved",
 				selection: error.appliedSelection,
