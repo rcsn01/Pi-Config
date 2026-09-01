@@ -2,19 +2,10 @@ import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { pickSelectScreen, type SelectScreenItem } from "./select-screen.ts";
+import { THINKING_DESCRIPTIONS } from "./model-thinking.ts";
 import { resolveModelContext, type ModelChoiceLike } from "./model-selection.ts";
 
 const MIN_CONTEXT_WINDOW = 128_000;
-
-export const THINKING_DESCRIPTIONS: Record<ModelThinkingLevel, string> = {
-	off: "No extended thinking",
-	minimal: "Fastest reasoning",
-	low: "Light reasoning",
-	medium: "Balanced reasoning",
-	high: "Deep reasoning",
-	xhigh: "Extra-high reasoning",
-	max: "Maximum reasoning",
-};
 
 export interface ModelPickerPreviousSelection {
 	provider?: string;
@@ -125,8 +116,8 @@ function refreshErrorText(errors: ReadonlyMap<string, Error>): string {
 		.join("; ");
 }
 
-/** Refresh and return the authenticated, normalized model catalogue for a session. */
-export async function getPickerModels(ctx: ExtensionContext): Promise<Model<Api>[]> {
+/** Refresh and return the authenticated, normalized models selectable for a session. */
+export async function listSelectableModels(ctx: ExtensionContext): Promise<Model<Api>[]> {
 	if (isAborted(ctx)) return [];
 	let refresh;
 	try {
@@ -265,7 +256,7 @@ export async function pickModelAndThinking(
 	options: ModelPickerOptions = {},
 ): Promise<ModelThinkingSelection | undefined> {
 	if (ctx.mode !== "tui" || isAborted(ctx)) return undefined;
-	const models = await getPickerModels(ctx);
+	const models = await listSelectableModels(ctx);
 	if (isAborted(ctx)) return undefined;
 	if (models.length === 0) throw new Error("No authenticated models are available.");
 

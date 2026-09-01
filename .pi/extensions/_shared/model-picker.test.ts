@@ -2,7 +2,10 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	contextWindowChoices,
-	getPickerModels,
+	findExactModel,
+	filterModels,
+	formatTokenCount,
+	listSelectableModels,
 	pickModelConfiguration,
 } from "./model-picker.ts";
 
@@ -31,6 +34,23 @@ const sonnet = {
 	maxTokens: 4096,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
+
+const choiceModels = [
+	{
+		provider: "github-copilot",
+		id: "gpt-5.6-sol",
+		name: "GPT 5.6 Sol",
+		contextWindow: 1_050_000,
+		reasoning: true,
+	},
+	{
+		provider: "anthropic",
+		id: "claude-sonnet-4.6",
+		name: "Claude Sonnet 4.6",
+		contextWindow: 1_000_000,
+		reasoning: true,
+	},
+];
 
 function makeContext(options: {
 	models?: any[];
@@ -89,7 +109,7 @@ describe("shared model picker", () => {
 			scopedModels: [{ model: qwen }, { model: sonnet }],
 			authenticated: new Set(["ollama/qwen3.8:27b", "anthropic/claude-sonnet"]),
 		});
-		const models = await getPickerModels(context.ctx);
+		const models = await listSelectableModels(context.ctx);
 
 		expect(context.ctx.modelRegistry.refresh).toHaveBeenCalledWith(expect.objectContaining({ allowNetwork: false }));
 		expect(models.map((model: any) => `${model.provider}/${model.id}`)).toEqual([
@@ -190,6 +210,23 @@ describe("shared model picker", () => {
 describe("shared context presets", () => {
 	it("keeps catalogue-first descending presets and the 128K floor", () => {
 		expect(contextWindowChoices(1_048_576)).toEqual([1_048_576, 524_288, 393_216, 262_144]);
+		expect(contextWindowChoices(1_000_000)).toEqual([1_000_000, 500_000, 375_000, 250_000]);
+		expect(contextWindowChoices(512_000)).toEqual([512_000, 256_000, 192_000, 128_000]);
 		expect(contextWindowChoices(500_000)).toEqual([500_000, 250_000, 187_500]);
+		expect(contextWindowChoices(128_000)).toEqual([128_000]);
+		expect(contextWindowChoices(2)).toEqual([]);
+	});
+
+	it("formats token counts", () => {
+		expect(formatTokenCount(999)).toBe("999");
+		expect(formatTokenCount(128_000)).toBe("128K");
+		expect(formatTokenCount(1_050_000)).toBe("1.05M");
+	});
+});
+
+describe("model selection helpers", () => {
+	it("finds canonical references and filters by model name", () => {
+		expect(findExactModel(choiceModels, "github-copilot/gpt-5.6-sol")).toBe(choiceModels[0]);
+		expect(filterModels(choiceModels, "sonnet")).toEqual([choiceModels[1]]);
 	});
 });

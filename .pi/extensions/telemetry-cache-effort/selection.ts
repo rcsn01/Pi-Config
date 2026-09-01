@@ -2,7 +2,7 @@ import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { pickSelectScreen, type SelectScreenItem } from "../_shared/select-screen.ts";
-import { THINKING_DESCRIPTIONS } from "../_shared/model-picker.ts";
+import { THINKING_DESCRIPTIONS } from "../_shared/model-thinking.ts";
 import {
 	plannedCallCount,
 	type ExperimentConfig,

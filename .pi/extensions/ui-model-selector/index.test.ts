@@ -7,12 +7,7 @@ import {
 	parseModelCommand,
 } from "../_shared/model-command-routing.ts";
 import { createModelSelectorExtension } from "./index.ts";
-import {
-	contextWindowChoices,
-	filterModels,
-	findExactModel,
-	formatTokenCount,
-} from "../_shared/model-picker.ts";
+import { formatTokenCount } from "../_shared/model-picker.ts";
 
 afterEach(() => {
 	const clearActiveHandler = installModelCommandHandler(async () => {});
@@ -362,29 +357,5 @@ describe("Pi model-selection adapter", () => {
 		await harness.emitShutdown();
 		expect(getModelCommandHandler()).toBeUndefined();
 		expect(harness.setEditorComponent).toHaveBeenLastCalledWith(undefined);
-	});
-});
-
-describe("context window step", () => {
-	it("derives rounded presets and omits windows below 128K", () => {
-		expect(contextWindowChoices(1_048_576)).toEqual([1_048_576, 524_288, 393_216, 262_144]);
-		expect(contextWindowChoices(1_000_000)).toEqual([1_000_000, 500_000, 375_000, 250_000]);
-		expect(contextWindowChoices(512_000)).toEqual([512_000, 256_000, 192_000, 128_000]);
-		expect(contextWindowChoices(500_000)).toEqual([500_000, 250_000, 187_500]);
-		expect(contextWindowChoices(128_000)).toEqual([128_000]);
-		expect(contextWindowChoices(2)).toEqual([]);
-	});
-
-	it("formats token counts", () => {
-		expect(formatTokenCount(999)).toBe("999");
-		expect(formatTokenCount(128_000)).toBe("128K");
-		expect(formatTokenCount(1_050_000)).toBe("1.05M");
-	});
-});
-
-describe("model selection helpers", () => {
-	it("finds canonical references and filters by model name", () => {
-		expect(findExactModel(models, "github-copilot/gpt-5.6-sol")).toBe(models[0]);
-		expect(filterModels(models, "sonnet")).toEqual([models[1]]);
 	});
 });

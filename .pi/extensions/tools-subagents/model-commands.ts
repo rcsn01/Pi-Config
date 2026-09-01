@@ -3,10 +3,10 @@ import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-work
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	findExactModel,
-	getPickerModels,
+	listSelectableModels,
 	modelKey,
-	THINKING_DESCRIPTIONS,
 } from "../_shared/model-picker.ts";
+import { THINKING_DESCRIPTIONS } from "../_shared/model-thinking.ts";
 import { pickSelectScreen, type SelectScreenItem } from "../_shared/select-screen.ts";
 import type { AgentConfig } from "../_shared/subagent-service.ts";
 import { agentRegistry, type AgentRegistry } from "./agent-registry.ts";
@@ -161,7 +161,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		if (setting === "main") return true;
 		let models: Model<Api>[];
 		try {
-			models = await getPickerModels(ctx);
+			models = await listSelectableModels(ctx);
 		} catch (error) {
 			ctx.ui.notify(`Could not refresh Pi's model catalogue: ${error instanceof Error ? error.message : String(error)}`, "error");
 			return false;
@@ -529,7 +529,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		}
 		let models: Model<Api>[];
 		try {
-			models = await getPickerModels(ctx);
+			models = await listSelectableModels(ctx);
 		} catch (error) {
 			ctx.ui.notify(`Could not refresh Pi's model catalogue: ${error instanceof Error ? error.message : String(error)}`, "error");
 			return;
