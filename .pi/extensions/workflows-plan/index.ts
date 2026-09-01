@@ -8,7 +8,7 @@
 
 import { createBashTool } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
+import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { registerPlanRenderers } from "./plan-renderer.ts";
 import { createPlanLifecycle } from "./plan-lifecycle.ts";
@@ -55,17 +55,8 @@ function registerPlanModeExtension(pi: ExtensionAPI, dependencies: PlanModeDepen
 	});
 	registerPlanRenderers(pi);
 
-	pi.on("session_start", async (event, ctx) => {
-		await profileInitialization.start(event, ctx);
-	});
+	wireSessionProfileBinding(pi, profileInitialization);
 	pi.on("session_tree", async (_event, ctx) => lifecycle.dispatch({ type: "branchChanged", ctx }));
-	pi.on("session_shutdown", async (event, ctx) => {
-		try {
-			await profileInitialization.stop(event, ctx);
-		} finally {
-			profileInitialization.unregister();
-		}
-	});
 	pi.on("model_select", async (event, ctx) => lifecycle.dispatch({
 		type: "modelChanged",
 		model: event.model,

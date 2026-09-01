@@ -1,4 +1,5 @@
 import type {
+	ExtensionAPI,
 	ExtensionContext,
 	SessionShutdownEvent,
 	SessionStartEvent,
@@ -69,6 +70,38 @@ export interface SessionProfileBindingRegistration {
 	start(event: SessionStartEvent, ctx: ExtensionContext): Promise<void>;
 	stop(event: SessionShutdownEvent, ctx: ExtensionContext): Promise<void>;
 	unregister(): void;
+}
+
+/** Connects one Session profile binding registration to Pi session boundaries. */
+export interface SessionProfileWiringOptions {
+	/** Runs after `stop` settles and before `unregister`, on every shutdown. */
+	readonly afterStop?: (ctx: ExtensionContext) => void | Promise<void>;
+}
+
+/**
+ * Register the Pi session handlers that drive one Session profile binding.
+ * `session_shutdown` awaits `stop`, then runs `afterStop`, then always
+ * unregisters; failures propagate without swallowing or aggregation.
+ */
+export function wireSessionProfileBinding(
+	pi: ExtensionAPI,
+	registration: SessionProfileBindingRegistration,
+	options: SessionProfileWiringOptions = {},
+): void {
+	pi.on("session_start", async (event, ctx) => {
+		await registration.start(event, ctx);
+	});
+	pi.on("session_shutdown", async (event, ctx) => {
+		try {
+			await registration.stop(event, ctx);
+		} finally {
+			try {
+				await options.afterStop?.(ctx);
+			} finally {
+				registration.unregister();
+			}
+		}
+	});
 }
 
 interface SessionProfileSlot {

@@ -106,9 +106,11 @@ extension.
   `session_start`, owns entry/handoff/marker/reload precedence and validated
   Profile persistence, supplies the concrete Settings document path, applies
   Profile-aware adapter paths before stable initialization, isolates adapter
-  failures, and performs reverse cleanup. Registration accepts the required
-  Settings document path plus an optional custom Profiles directory; when the
-  latter is omitted, it is derived next to the Settings document.
+  failures, performs reverse cleanup, and owns the `session_start`/`session_shutdown`
+  Pi event wiring that connects every registration to Session boundaries.
+  Registration accepts the required Settings document path plus an optional
+  custom Profiles directory; when the latter is omitted, it is derived next to
+  the Settings document.
 - **Session profile transfer** — explicit retention of the resolved Profile when
   one fresh Session replaces another; cancellation leaves the original Session
   and its Profile unchanged.

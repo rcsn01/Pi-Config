@@ -9,7 +9,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { reapplyThinkingBorder } from "../_shared/editor-border.ts";
-import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
+import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
 	installModelCommandHandler,
 	ModelCommandRoutingEditor,
@@ -201,16 +201,7 @@ export function createModelSelectorExtension(
 			},
 		);
 
-		pi.on("session_start", async (event, ctx) => {
-			await profileInitialization.start(event, ctx);
-		});
-		pi.on("session_shutdown", async (event, ctx) => {
-			try {
-				await profileInitialization.stop(event, ctx);
-			} finally {
-				profileInitialization.unregister();
-			}
-		});
+		wireSessionProfileBinding(pi, profileInitialization);
 	};
 }
 

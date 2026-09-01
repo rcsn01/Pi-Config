@@ -7,7 +7,7 @@ import {
 	PROJECT_SETTINGS_PATH,
 	readSettingsDocument,
 } from "../_shared/settings-document.ts";
-import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
+import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { modelKey, pickModelAndThinking } from "../_shared/model-picker.ts";
 import { resolveModelContext } from "../_shared/model-selection.ts";
 import { registerToolErrorHandler, renderToolMarkdown, renderToolSummary } from "../_shared/tool-result-ui.ts";
@@ -298,11 +298,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			},
 		});
 
-		pi.on("session_start", async (event, ctx) => { await profileInitialization.start(event, ctx); });
-		pi.on("session_shutdown", async (event, ctx) => {
-			try { await profileInitialization.stop(event, ctx); }
-			finally { profileInitialization.unregister(); }
-		});
+		wireSessionProfileBinding(pi, profileInitialization);
 	};
 }
 

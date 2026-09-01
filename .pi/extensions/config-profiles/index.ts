@@ -7,7 +7,7 @@ import {
 	sessionProfileName,
 } from "../_shared/profile-document.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
-import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
+import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
 import {
@@ -209,25 +209,18 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 			}
 		};
 
-		pi.on("session_start", async (event, ctx) => {
-			await profileInitialization.start(event, ctx);
+		wireSessionProfileBinding(pi, profileInitialization, {
+			afterStop: (ctx) => {
+				if (!profileInitializationStarted && !profileInitializationDisposed) {
+					sessionProfile = undefined;
+					updateStatus(ctx, undefined);
+				}
+			},
 		});
 
 		pi.on("session_tree", async (_event, ctx) => {
 			sessionProfile = sessionProfileName(ctx.sessionManager.getBranch());
 			updateStatus(ctx, sessionProfile);
-		});
-
-		pi.on("session_shutdown", async (event, ctx) => {
-			try {
-				await profileInitialization.stop(event, ctx);
-			} finally {
-				if (!profileInitializationStarted && !profileInitializationDisposed) {
-					sessionProfile = undefined;
-					updateStatus(ctx, undefined);
-				}
-				profileInitialization.unregister();
-			}
 		});
 
 		pi.registerCommand("profile", {

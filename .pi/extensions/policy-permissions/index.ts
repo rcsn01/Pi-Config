@@ -17,7 +17,7 @@
  * lifecycle interface.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
+import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { formatTokenCount, modelKey, pickModelConfiguration } from "../_shared/model-picker.ts";
 import { resolveModelContext } from "../_shared/model-selection.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
@@ -144,21 +144,12 @@ function installSafetyPermissions(
 
 	// ── Events ──────────────────────────────────────────────────────────
 
-	pi.on("session_start", async (event, ctx) => {
-		await profileInitialization.start(event, ctx);
-	});
+	wireSessionProfileBinding(pi, profileInitialization);
 	pi.on("session_tree", async (_event, ctx) => {
 		enforcement.synchronizeSession({ cwd: ctx.cwd, resetTransientApprovals: false });
 		updateStatus(ctx);
 	});
 	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx));
-	pi.on("session_shutdown", async (event, ctx) => {
-		try {
-			await profileInitialization.stop(event, ctx);
-		} finally {
-			profileInitialization.unregister();
-		}
-	});
 
 	// Track the most recent assistant message text so the guardian can see the agent's
 	// preceding turn (e.g. a proposal/options the user is replying to).
