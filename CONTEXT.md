@@ -12,7 +12,8 @@ extension.
   `branch_summary`, …). Carries `id`/`parentId` for the branch tree.
 - **Usage classifier** — the single walker (`classifySessionEntries` in
   `_shared/usage.ts`) that turns session entries into classified usage
-  entries. One rule, two consumers.
+  entries. One rule; ui-footer, ui-context, and the telemetry-usage store
+  and payload consume it.
 - **Classified usage entry** — one usage-bearing record: `{id, mode, model,
   input, output, cacheRead, cacheWrite, cost, turns}`.
 - **Mode** — the exclusive bucket a record belongs to: `main`, `plan`,
@@ -113,7 +114,19 @@ extension.
   and its Profile unchanged.
 - **Plan Mode lifecycle** — the deep orchestration module that owns live Plan
   State, transitions, Profile rollback, tool projection, proposed-plan state,
-  and ordering across Plan Runtime and Plan Review.
+  and ordering across Plan Runtime and Plan Review. Its events carry a
+  Plan lifecycle host instead of the raw ExtensionContext, and every effect
+  runs guarded by Plan session currency.
+- **Plan lifecycle host** — the narrow adapter the Plan Mode lifecycle's
+  events carry instead of the raw ExtensionContext: notify and status, the
+  review editor and select helpers, Session identity and idleness, tool-set
+  get/set, transcript entries, and model access including the fields
+  applyModelSelection reads.
+- **Plan session currency** — the staleness guard inside the Plan Mode
+  lifecycle. Each enqueued effect snapshots the live Plan Session and the
+  lifecycle generation; guarded primitives (Plan State writes, tool
+  projection, transcript entries, profile persistence, notifies) abandon
+  silently across awaits once either moves on.
 - **Model-selection lifecycle** — the deep in-process module in
   `ui-model-selector/` that owns one Session's operation admission, disposal
   draining, initialization decisions, interactive selection ordering, Profile

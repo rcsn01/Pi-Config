@@ -10,6 +10,7 @@ import {
 	createProfileDependencies,
 	deferred,
 	normalModel,
+	planModel,
 	profileFor,
 } from "./test-harness.ts";
 
@@ -643,6 +644,247 @@ describe("mode-change note", () => {
 		expect(exited.systemPrompt).toContain(
 			"<mode_change_note>Plan Mode was exited since the previous turn.</mode_change_note>",
 		);
+	});
+});
+
+describe("stale work across branch changes", () => {
+	function createHarnessWithDeferredProfileLoad(): {
+		harness: ReturnType<typeof createHarness>;
+		load: ReturnType<typeof vi.fn>;
+		pendingProfile: ReturnType<typeof deferred<ModeModelProfile | undefined>>;
+	} {
+		const pendingProfile = deferred<ModeModelProfile | undefined>();
+		const load = vi.fn(() => pendingProfile.promise);
+		const stores = createProfileDependencies();
+		const harness = createHarness({
+			branch: [],
+			model: normalModel,
+			thinkingLevel: "medium",
+			availableModels: [normalModel],
+			dependencies: {
+				...stores.dependencies,
+				createModelSelectionPersistence: () => ({ load, save: stores.save }),
+			},
+		});
+		return { harness, load, pendingProfile };
+	}
+
+	it("drops an entry invalidated by a branch change without committing, notifying, or blocking later toggles", async () => {
+		const { harness, load, pendingProfile } = createHarnessWithDeferredProfileLoad();
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		harness.appendedEntries.splice(0);
+
+		const entry = harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+		const reconstruction = harness.emit("session_tree", { type: "session_tree" });
+		pendingProfile.resolve(undefined);
+		await Promise.all([entry, reconstruction]);
+
+		expect(harness.appendedEntries).toHaveLength(0);
+		expect(harness.notify).not.toHaveBeenCalledWith(expect.stringContaining("Plan mode active"), "info");
+		expect(harness.getActiveToolNames()).toContain("bash");
+		expect(harness.getActiveToolNames()).not.toContain("plan_bash");
+		expect(harness.setStatus).toHaveBeenCalledWith("plan", undefined);
+
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		expect(harness.getActiveToolNames()).toContain("plan_bash");
+		expect(harness.notify).toHaveBeenCalledWith(expect.stringContaining("Plan mode active"), "info");
+	});
+
+	it("drops an exit invalidated by a branch change without committing, notifying, or blocking later toggles", async () => {
+		const pendingRestore = deferred<void>();
+		const stores = createProfileDependencies(profileFor(normalModel, "medium"));
+		stores.restore.mockImplementation(() => pendingRestore.promise);
+		const harness = createHarness({
+			branch: [{
+				type: "custom",
+				customType: "plan-mode-state",
+				data: {
+					active: true,
+					phase: "planning",
+					setAt: 1,
+					normalProfile: profileFor(normalModel, "medium"),
+				},
+			}],
+			model: normalModel,
+			availableModels: [normalModel],
+			dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		harness.appendedEntries.splice(0);
+
+		const exit = harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		await vi.waitFor(() => expect(stores.restore).toHaveBeenCalledOnce());
+		harness.setBranch([]);
+		const reconstruction = harness.emit("session_tree", { type: "session_tree" });
+		pendingRestore.resolve();
+		await Promise.all([exit, reconstruction]);
+
+		expect(harness.appendedEntries).toHaveLength(0);
+		expect(harness.notify).not.toHaveBeenCalledWith("Plan mode exited.", "info");
+		expect(harness.getActiveToolNames()).not.toContain("plan_bash");
+		expect(harness.setStatus).toHaveBeenCalledWith("plan", undefined);
+
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		expect(harness.getActiveToolNames()).toContain("plan_bash");
+		expect(harness.notify).not.toHaveBeenCalledWith("Plan Mode is already exiting.", "info");
+	});
+
+	function createRefreshHarness(): {
+		harness: ReturnType<typeof createHarness>;
+		createWorkspace: ReturnType<typeof vi.fn>;
+		pendingWorkspace: ReturnType<typeof deferred<any>>;
+	} {
+		const pendingWorkspace = deferred<any>();
+		const createWorkspace = vi.fn(async (hostRoot: string) => {
+			if (createWorkspace.mock.calls.length === 1) {
+				return {
+					root: "/tmp/plan-1",
+					hostRoot,
+					sandboxRoot: "/tmp/plan-1/project",
+					tempRoot: "/tmp/plan-1/tmp",
+					dispose: vi.fn(async () => {}),
+				};
+			}
+			return pendingWorkspace.promise;
+		});
+		const harness = createHarness({
+			model: normalModel,
+			availableModels: [normalModel],
+			dependencies: { createWorkspace },
+		});
+		return { harness, createWorkspace, pendingWorkspace };
+	}
+
+	it("suppresses a stale refresh success notification when the branch changes mid-refresh", async () => {
+		const { harness, createWorkspace, pendingWorkspace } = createRefreshHarness();
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.tools.get("plan_bash").execute(
+			"tool-1", { command: "pwd" }, undefined, undefined, harness.ctx,
+		);
+
+		const refresh = harness.commands.get("plan").handler("refresh", harness.ctx);
+		await vi.waitFor(() => expect(createWorkspace).toHaveBeenCalledTimes(2));
+		const reconstruction = harness.emit("session_tree", { type: "session_tree" });
+		pendingWorkspace.resolve({
+			root: "/tmp/plan-2",
+			hostRoot: "/test/project",
+			sandboxRoot: "/tmp/plan-2/project",
+			tempRoot: "/tmp/plan-2/tmp",
+			dispose: vi.fn(async () => {}),
+		});
+		await Promise.all([refresh, reconstruction]);
+
+		expect(harness.notify).not.toHaveBeenCalledWith(
+			"Plan Bash disposable workspace refreshed from the host.",
+			"info",
+		);
+	});
+
+	it("suppresses a stale refresh failure notification when the branch changes mid-refresh", async () => {
+		const { harness, createWorkspace, pendingWorkspace } = createRefreshHarness();
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.tools.get("plan_bash").execute(
+			"tool-1", { command: "pwd" }, undefined, undefined, harness.ctx,
+		);
+
+		const refresh = harness.commands.get("plan").handler("refresh", harness.ctx);
+		await vi.waitFor(() => expect(createWorkspace).toHaveBeenCalledTimes(2));
+		const reconstruction = harness.emit("session_tree", { type: "session_tree" });
+		pendingWorkspace.reject(new Error("workspace copy failed"));
+		await Promise.all([refresh, reconstruction]);
+
+		expect(harness.notify).not.toHaveBeenCalledWith(
+			expect.stringContaining("Could not refresh Plan Bash"),
+			"error",
+		);
+	});
+
+	it("silences a stale profile persistence failure after a branch change", async () => {
+		const pendingSave = deferred<void>();
+		const save = vi.fn(() => pendingSave.promise);
+		const stores = createProfileDependencies();
+		const harness = createHarness({
+			model: normalModel,
+			thinkingLevel: "medium",
+			availableModels: [normalModel],
+			dependencies: {
+				...stores.dependencies,
+				createModelSelectionPersistence: () => ({ load: stores.load, save }),
+			},
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		const modelChange = harness.emit("model_select", {
+			type: "model_select",
+			model: planModel,
+			previousModel: normalModel,
+			source: "cycle",
+		});
+		await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+		await harness.emit("session_tree", { type: "session_tree" });
+		harness.setStatus.mockClear();
+
+		pendingSave.reject(new Error("profile store unwritable"));
+		await modelChange;
+
+		expect(harness.notify).not.toHaveBeenCalledWith(
+			expect.stringContaining("Could not save the Plan Mode profile"),
+			"error",
+		);
+		expect(harness.notify).not.toHaveBeenCalledWith(
+			expect.stringContaining("Could not preserve Pi's normal defaults"),
+			"error",
+		);
+		expect(stores.restore).not.toHaveBeenCalled();
+		expect(harness.setStatus).not.toHaveBeenCalledWith("plan", expect.anything());
+	});
+
+	it("silences a stale normal-defaults failure after a branch change", async () => {
+		const pendingRestore = deferred<void>();
+		const stores = createProfileDependencies();
+		stores.restore.mockImplementation(() => pendingRestore.promise);
+		const harness = createHarness({
+			model: normalModel,
+			thinkingLevel: "medium",
+			availableModels: [normalModel],
+			dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		const modelChange = harness.emit("model_select", {
+			type: "model_select",
+			model: planModel,
+			previousModel: normalModel,
+			source: "cycle",
+		});
+		await vi.waitFor(() => expect(stores.restore).toHaveBeenCalledOnce());
+		await harness.emit("session_tree", { type: "session_tree" });
+		harness.setStatus.mockClear();
+
+		pendingRestore.reject(new Error("defaults store unwritable"));
+		await modelChange;
+
+		expect(harness.notify).not.toHaveBeenCalledWith(
+			expect.stringContaining("Could not preserve Pi's normal defaults"),
+			"error",
+		);
+		expect(harness.setStatus).not.toHaveBeenCalledWith("plan", expect.anything());
+	});
+
+	it("returns the original system prompt when branch reconstruction invalidates the awaited transition", async () => {
+		const { harness, load, pendingProfile } = createHarnessWithDeferredProfileLoad();
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		const entry = harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+		const promptConstruction = harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		const reconstruction = harness.emit("session_tree", { type: "session_tree" });
+		pendingProfile.resolve(undefined);
+
+		const [promptResult] = await promptConstruction;
+		expect(promptResult.systemPrompt).toBe("BASE");
+		await Promise.all([entry, reconstruction]);
 	});
 });
 
