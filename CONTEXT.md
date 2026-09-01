@@ -116,14 +116,13 @@ extension.
   and its Profile unchanged.
 - **Plan Mode lifecycle** — the deep orchestration module that owns live Plan
   State, transitions, Profile rollback, tool projection, proposed-plan state,
-  and ordering across Plan Runtime and Plan Review. Its events carry a
-  Plan lifecycle host instead of the raw ExtensionContext, and every effect
-  runs guarded by Plan session currency.
-- **Plan lifecycle host** — the narrow adapter the Plan Mode lifecycle's
-  events carry instead of the raw ExtensionContext: notify and status, the
-  review editor and select helpers, Session identity and idleness, tool-set
-  get/set, transcript entries, and model access including the fields
-  applyModelSelection reads.
+  and ordering across Plan Runtime and Plan Review. Its events carry the raw
+  ExtensionContext, and every effect runs guarded by Plan session currency.
+- **Plan Review host** — the narrow dependency interface the Plan Review
+  controller receives instead of the whole lifecycle: plan snapshot access,
+  session-profile binding lookup, Plan Mode enter/exit, prompted-plan
+  marking, reviewed-plan restore, transcript entries, and user messages.
+  The Plan Mode lifecycle constructs the implementation inline.
 - **Plan session currency** — the staleness guard inside the Plan Mode
   lifecycle. Each enqueued effect snapshots the live Plan Session and the
   lifecycle generation; guarded primitives (Plan State writes, tool
@@ -152,6 +151,13 @@ extension.
   parsing, and working-tree diff collection. One executor, N callers. The
   Repository store's bounded remote fetch and tools-worktree's host-exec
   adapter sit deliberately outside it.
+- **Managed worktree policies** — the two deliberately different creation
+  policies for `.pi/worktrees/`: the public `tools-worktree` tool strictly
+  validates caller-supplied ids and refuses existing paths and branches,
+  while the workflow runner normalizes ids (generated or user-supplied),
+  reuses an existing path for replay, and attaches preservation metadata.
+  Both are pinned by characterization tests; do not merge them behind one
+  shared store without new evidence.
 
 ## Repository snapshots
 
@@ -184,6 +190,15 @@ extension.
 - **Repo query batch** — the read-only batched evidence tool (`repo_query`) behind
   the subagent runner: one `executeRepoQuery` interface; validation, path safety,
   dedupe, truncation, and formatting hide inside.
+
+## Goal tracking
+
+- **Goal state module** — the pure module in `workflows-goal/goal-state.ts`
+  that owns the persisted Goal state shape, session-entry reconstruction
+  (including the cleared tombstone), and every
+  set/pause/resume/edit/checkpoint/complete/clear transition as immutable
+  operations with injected timestamps. Command parsing, confirmation,
+  notifications, rendering, and persistence stay in the extension adapter.
 
 ## Safety
 

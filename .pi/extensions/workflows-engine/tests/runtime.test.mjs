@@ -416,3 +416,67 @@ test('editing agents collect tracked and untracked worktree changes into an appl
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test('workflow worktrees normalize ids, reuse existing paths, and carry preservation metadata', async () => {
+  const cwd = await tempProject();
+  await gitHelper.runGit(cwd, ['init', '-b', 'main']);
+  await gitHelper.runGit(cwd, ['config', 'user.email', 'test@example.com']);
+  await gitHelper.runGit(cwd, ['config', 'user.name', 'Test User']);
+  await writeFile(path.join(cwd, 'base.txt'), 'base\n');
+  await gitHelper.runGit(cwd, ['add', 'base.txt']);
+  await gitHelper.runGit(cwd, ['commit', '-m', 'initial']);
+  // A pre-existing real worktree: the runner must reuse it instead of re-creating.
+  const preexisting = path.join(cwd, '.pi', 'worktrees', 'pre-existing');
+  await gitHelper.runGit(cwd, ['worktree', 'add', '-b', 'fleet/pre-existing', preexisting, 'HEAD']);
+  const agentCwds = [];
+  const fake = registerFakeSubagents(async ({ cwd: agentCwd }) => {
+    agentCwds.push(agentCwd);
+    return 'ok';
+  });
+  try {
+    const workflow = definition.defineWorkflow({
+      name: 'worktree-policy',
+      description: 'worktree policy coverage',
+      canEditFiles: true,
+      budget: { maxAgents: 5, maxConcurrent: 2, maxTokens: 100000, estimatedCost: 'quick' },
+      async run(ctx) {
+        const generated = await ctx.agent({ key: 'gen', agent: 'worker', prompt: 'generated id', worktree: true });
+        const messy = await ctx.agent({
+          key: 'messy',
+          agent: 'worker',
+          prompt: 'user-supplied messy id',
+          worktree: { branchId: 'My Feature!!', preserve: false, fileOwnership: ['docs.md'] },
+        });
+        const reused = await ctx.agent({ key: 'reuse', agent: 'worker', prompt: 'reuse path', worktree: { branchId: 'pre-existing' } });
+        return { generated, messy, reused };
+      },
+    });
+    // runId with a space and uppercase: the generated id is normalized to safe form.
+    const run = await runBundledWorkflow(cwd, 'Run Mix', workflow);
+
+    // Generated id: workflow-<runId>-<key>, normalized.
+    assert.equal(run.result.generated.worktree.branchId, 'workflow-run-mix-gen');
+    assert.equal(run.result.generated.worktree.branch, 'fleet/workflow-run-mix-gen');
+    assert.equal(
+      await readFile(path.join(cwd, '.pi', 'worktrees', 'workflow-run-mix-gen', 'base.txt'), 'utf8'),
+      'base\n',
+    );
+
+    // User-supplied id: normalized, not rejected; preservation metadata survives.
+    assert.equal(run.result.messy.worktree.branchId, 'my-feature');
+    assert.equal(run.result.messy.worktree.branch, 'fleet/my-feature');
+    assert.equal(run.result.messy.worktree.preserve, false);
+    assert.deepEqual(run.result.messy.worktree.fileOwnership, ['docs.md']);
+
+    // Existing path: reused without re-creating the branch or worktree.
+    assert.equal(run.result.reused.worktree.branchId, 'pre-existing');
+    assert.ok(agentCwds.includes(preexisting));
+    const branches = await gitHelper.runGit(cwd, ['show-ref', '--verify', '--quiet', 'refs/heads/fleet/pre-existing']);
+    assert.equal(branches.exitCode, 0);
+    const worktreeList = await gitHelper.runGit(cwd, ['worktree', 'list', '--porcelain']);
+    assert.equal(worktreeList.stdout.split('worktree ').length - 1, 4);
+  } finally {
+    fake.unregister();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

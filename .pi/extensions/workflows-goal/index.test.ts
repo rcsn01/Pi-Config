@@ -14,21 +14,32 @@ function theme() {
 
 function harness(branch: any[] = []) {
 	const handlers = new Map<string, any>();
+	const commands = new Map<string, any>();
 	let tool: any;
 	const pi = {
 		on: (event: string, handler: any) => handlers.set(event, handler),
 		registerTool: (definition: any) => { tool = definition; },
-		registerCommand: vi.fn(),
+		registerCommand: vi.fn((name: string, command: any) => commands.set(name, command)),
 		appendEntry: vi.fn(),
 		sendUserMessage: vi.fn(),
 	};
 	const ctx: any = {
 		sessionManager: { getBranch: () => branch },
-		ui: { notify: vi.fn(), setWidget: vi.fn() },
+		ui: { notify: vi.fn(), setWidget: vi.fn(), confirm: vi.fn(async () => true) },
 		hasUI: true,
 	};
 	goalExtension(pi as any);
-	return { handlers, tool, ctx };
+	const runCommand = async (args: string, context = ctx) =>
+		commands.get("goal")?.handler(args, context);
+	return { handlers, commands, tool, ctx, runCommand, appendEntry: pi.appendEntry, sendUserMessage: pi.sendUserMessage };
+}
+
+function activeGoalEntry(objective = "Ship the release", status = "active") {
+	return {
+		type: "custom",
+		customType: "goal-state",
+		data: { action: "set", state: { objective, status, createdAt: 1, updatedAt: 1 } },
+	};
 }
 
 describe("goal tool rendering and failure states", () => {
@@ -104,5 +115,118 @@ describe("goal status widget", () => {
 
 		await handlers.get("session_start")({}, ctx);
 		expect(ctx.ui.setWidget).toHaveBeenCalledWith("goal-status", undefined);
+	});
+});
+
+describe("goal command surface", () => {
+	it("sets a goal, persists it, and kicks off work", async () => {
+		const { runCommand, ctx, appendEntry, sendUserMessage } = harness();
+		await runCommand("Write the docs");
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith('Goal set: "Write the docs"', "info");
+		expect(ctx.ui.setWidget).toHaveBeenCalledWith("goal-status", expect.any(Function));
+		expect(appendEntry).toHaveBeenCalledWith("goal-state", {
+			action: "set",
+			state: expect.objectContaining({ objective: "Write the docs", status: "active" }),
+		});
+		expect(sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("Goal: Write the docs"));
+	});
+
+	it("views, pauses, resumes, edits, checkpoints, and clears with the documented messages", async () => {
+		const { handlers, ctx, runCommand } = harness([activeGoalEntry()]);
+		await handlers.get("session_start")({}, ctx);
+
+		await runCommand("");
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Goal: Ship the release"),
+			"info",
+		);
+
+		await runCommand("pause");
+		expect(ctx.ui.notify).toHaveBeenCalledWith('Goal paused: "Ship the release"', "info");
+		await runCommand("pause");
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Goal is already paused.", "warning");
+
+		await runCommand("resume");
+		expect(ctx.ui.notify).toHaveBeenCalledWith('Goal resumed: "Ship the release"', "info");
+		await runCommand("resume");
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Goal is already active.", "warning");
+
+		await runCommand("edit New objective");
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Goal updated: New objective", "info");
+
+		await runCommand("checkpoint Tests pass");
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Checkpoint saved: Tests pass", "info");
+
+		await runCommand("clear");
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Goal cleared.", "info");
+		await runCommand("clear");
+		expect(ctx.ui.notify).toHaveBeenCalledWith("No goal to clear.", "warning");
+	});
+
+	it("rejects transitions from dead goals with the documented messages", async () => {
+		const completed = harness([activeGoalEntry("Done", "completed")]);
+		await completed.handlers.get("session_start")({}, completed.ctx);
+		await completed.runCommand("pause");
+		await completed.runCommand("resume");
+		expect(completed.ctx.ui.notify).toHaveBeenCalledWith(
+			"Goal is already completed. Use /goal <objective> to set a new one.",
+			"warning",
+		);
+		await completed.runCommand("checkpoint Anything");
+		expect(completed.ctx.ui.notify).toHaveBeenCalledWith("No active goal to checkpoint.", "warning");
+		await completed.runCommand("clear");
+		expect(completed.ctx.ui.notify).toHaveBeenCalledWith("Completed goal cleared.", "info");
+
+		const empty = harness();
+		await empty.handlers.get("session_start")({}, empty.ctx);
+		await empty.runCommand("");
+		await empty.runCommand("pause");
+		await empty.runCommand("resume");
+		await empty.runCommand("edit Next");
+		await empty.runCommand("checkpoint Thing");
+		const messages = empty.ctx.ui.notify.mock.calls.map((call: any[]) => call[0]);
+		expect(messages).toEqual([
+			"No active goal. Use /goal <objective> to set one.",
+			"No active goal to pause.",
+			"No goal to resume.",
+			"No active goal to edit.",
+			"No active goal to checkpoint.",
+		]);
+	});
+
+	it("confirms replacement of an active goal and persists each transition", async () => {
+		const { handlers, ctx, runCommand, appendEntry } = harness([activeGoalEntry("Original")]);
+		await handlers.get("session_start")({}, ctx);
+
+		ctx.ui.confirm.mockResolvedValueOnce(false);
+		await runCommand("Replacement goal");
+		expect(ctx.ui.confirm).toHaveBeenCalledWith(
+			"Replace goal?",
+			expect.stringContaining('An active goal already exists: "Original"'),
+		);
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith('Goal set: "Replacement goal"', "info");
+		expect(appendEntry).not.toHaveBeenCalled();
+
+		ctx.ui.confirm.mockResolvedValueOnce(true);
+		await runCommand("Replacement goal");
+		expect(ctx.ui.notify).toHaveBeenCalledWith('Goal set: "Replacement goal"', "info");
+		expect(appendEntry).toHaveBeenCalledWith("goal-state", {
+			action: "set",
+			state: expect.objectContaining({ objective: "Replacement goal", status: "active" }),
+		});
+	});
+
+	it("rejects oversized objectives before any confirmation", async () => {
+		const { handlers, ctx, runCommand } = harness([activeGoalEntry()]);
+		await handlers.get("session_start")({}, ctx);
+
+		await runCommand("x".repeat(4001));
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Goal objective too long (max 4000 characters). Put details in a file and reference it.",
+			"error",
+		);
+		expect(ctx.ui.confirm).not.toHaveBeenCalled();
 	});
 });

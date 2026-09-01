@@ -69,6 +69,24 @@ export interface RunAutoReviewerOptions {
 		native?: ReturnType<ModelRegistry["getRegisteredNativeProvider"]>;
 		config?: ReturnType<ModelRegistry["getRegisteredProviderConfig"]>;
 	};
+	/**
+	 * Test seam: build the prompt session directly instead of constructing the
+	 * isolated in-process AgentSession. Production callers leave it unset.
+	 */
+	sessionFactory?: (definition: GuardianDefinition, options: RunAutoReviewerOptions) => Promise<GuardianPromptSession>;
+	/** Time budget override for a single review; defaults to GUARDIAN_TIMEOUT_MS. */
+	timeoutMs?: number;
+}
+
+/**
+ * Minimal prompt-session surface a review needs. The production AgentSession
+ * satisfies it structurally; tests supply lightweight fakes.
+ */
+export interface GuardianPromptSession {
+	prompt(task: string): Promise<unknown>;
+	abort(): Promise<void>;
+	readonly messages: readonly GuardianMessage[];
+	readonly model?: { provider: string; id: string };
 }
 
 type GuardianMessage = AgentSession["messages"][number];
@@ -253,7 +271,8 @@ function guardianSessionKey(definition: GuardianDefinition, settings?: GuardianS
 async function getGuardianSession(
 	definition: GuardianDefinition,
 	options: RunAutoReviewerOptions,
-): Promise<AgentSession> {
+): Promise<GuardianPromptSession> {
+	if (options.sessionFactory) return options.sessionFactory(definition, options);
 	const key = guardianSessionKey(definition, options.settings);
 	// This runs under the review lock. The cache keeps the previous working
 	// session until its replacement is ready, then swaps and disposes it.
@@ -324,7 +343,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 /** Text of the newest assistant message added since `startCount` messages. */
-function lastAssistantTextSince(session: AgentSession, startCount: number): string {
+function lastAssistantTextSince(session: GuardianPromptSession, startCount: number): string {
 	const messages = session.messages.slice(startCount);
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
@@ -374,7 +393,8 @@ ${message}`;
 	}
 
 	return withGuardianReviewLock(async () => {
-	let session: AgentSession | undefined;
+	const timeoutMs = options.timeoutMs ?? GUARDIAN_TIMEOUT_MS;
+	let session: GuardianPromptSession | undefined;
 	let startCount = 0;
 	let sessionModel: string | undefined;
 	const requestUsage = (): Usage | undefined => session ? collectGuardianUsage(session.messages, startCount) : undefined;
@@ -396,7 +416,7 @@ ${message}`;
 		const observationSource: ObservabilitySource | undefined = observability.isActive()
 			? { channel: "guardian", invocationId: randomUUID(), displayLabel: "Guardian" }
 			: undefined;
-		await runWithGuardianObservation(observationSource, () => withTimeout(session!.prompt(task), GUARDIAN_TIMEOUT_MS));
+		await runWithGuardianObservation(observationSource, () => withTimeout(session!.prompt(task), timeoutMs));
 		const content = lastAssistantTextSince(session, startCount);
 
 		if (!content.trim()) {
@@ -416,7 +436,7 @@ ${message}`;
 			} catch {}
 			return withRequestUsage({
 				allowed: false,
-				reason: `Guardian timed out after ${GUARDIAN_TIMEOUT_MS / 1000}s; blocked for safety.`,
+				reason: `Guardian timed out after ${timeoutMs / 1000}s; blocked for safety.`,
 			});
 		}
 		return withRequestUsage({ allowed: false, reason: `Guardian error: ${err.message || String(err)}` });
