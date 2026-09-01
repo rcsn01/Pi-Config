@@ -148,13 +148,6 @@
 			"requires": [],
 			"conflicts": []
 		},
-		"system-feature-flags": {
-			"displayName": "Feature Flags",
-			"pack": "core",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
 		"telemetry-analysis": {
 			"displayName": "Provider Request Analysis",
 			"pack": "observability",

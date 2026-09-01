@@ -18,6 +18,9 @@
  *   /goal checkpoint <txt> - Add a manual checkpoint
  *
  * LLM Tool: `goal` - Let the agent check status, report progress, mark done
+ *
+ * State transitions live in goal-state.ts; this adapter owns command parsing,
+ * confirmation, notifications, persistence, and rendering.
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -26,26 +29,21 @@ import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { registerToolErrorHandler, renderToolSummary } from "../_shared/tool-result-ui.ts";
 import { UI_GLYPHS } from "../_shared/ui-style.ts";
-
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-interface GoalState {
-	objective: string;
-	status: "active" | "paused" | "completed" | "cleared";
-	createdAt: number;
-	updatedAt: number;
-	/** Checkpoint progress reported by the agent */
-	checkpointProgress?: string;
-	/** Summary of what was accomplished (set when completed) */
-	completionSummary?: string;
-}
-
-interface GoalEntryData {
-	action: "set" | "pause" | "resume" | "clear" | "complete" | "checkpoint";
-	state: GoalState;
-}
-
-const GOAL_CUSTOM_TYPE = "goal-state";
+import {
+	checkpointGoal,
+	clearGoal,
+	completeGoal,
+	editGoal,
+	GOAL_CUSTOM_TYPE,
+	MAX_OBJECTIVE_LENGTH,
+	pauseGoal,
+	reconstructGoalState,
+	resumeGoal,
+	setGoal,
+	type AppliedGoalTransition,
+	type GoalEntryData,
+	type GoalState,
+} from "./goal-state.ts";
 
 // ─── Parameters ──────────────────────────────────────────────────────────────
 
@@ -56,6 +54,10 @@ const GoalToolParams = Type.Object({
 	/** For checkpoint: what remains to be done */
 	remaining: Type.Optional(Type.String({ description: "What remains to be done (for checkpoint)" })),
 });
+
+/** Tool result text that marks a failed goal transition (shared by the error handler and rendering). */
+const isGoalFailureText = (text: string): boolean =>
+	/^(Cannot checkpoint|Goal is already|Unknown action)/.test(text);
 
 // ─── UI: Goal Status Widget ──────────────────────────────────────────────────
 
@@ -158,7 +160,7 @@ export default function (pi: ExtensionAPI) {
 	registerToolErrorHandler(pi, ["goal"], (event) => {
 		const details = event.details as { error?: string } | undefined;
 		const text = event.content.find((content) => content.type === "text")?.text ?? "";
-		return Boolean(details?.error) || /^(Cannot checkpoint|Goal is already|Unknown action)/.test(text);
+		return Boolean(details?.error) || isGoalFailureText(text);
 	});
 
 	let goal: GoalState | null = null;
@@ -186,26 +188,15 @@ export default function (pi: ExtensionAPI) {
 	// ── State Reconstruction ────────────────────────────────────────────
 
 	const reconstructState = (ctx: ExtensionContext) => {
-		goal = null;
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type === "custom" && entry.customType === GOAL_CUSTOM_TYPE) {
-				const data = entry.data as GoalEntryData | undefined;
-				if (data && data.state) {
-					goal = data.state;
-				}
-			}
-		}
+		goal = reconstructGoalState(ctx.sessionManager.getBranch());
 	};
 
-	// Persist goal state as a session entry
-	const persistGoal = (action: GoalEntryData["action"]) => {
-		if (!goal) return;
-		const updated: GoalState = { ...goal, updatedAt: Date.now() };
-		goal = updated;
-
+	// Apply a successful transition: swap the in-memory goal and persist the entry.
+	const applyTransition = (outcome: AppliedGoalTransition) => {
+		goal = outcome.goal;
 		pi.appendEntry(GOAL_CUSTOM_TYPE, {
-			action,
-			state: updated,
+			action: outcome.action,
+			state: outcome.state,
 		} as GoalEntryData);
 	};
 
@@ -290,16 +281,15 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				case "checkpoint": {
-					if (goal.status !== "active") {
+					const outcome = checkpointGoal(goal, params.summary || "Progress reported", Date.now());
+					if (!outcome.ok) {
 						return {
 							content: [{ type: "text", text: `Cannot checkpoint: goal is ${goal.status}.` }],
 							details: { action: "checkpoint", state: { ...goal } },
 							isError: true,
 						};
 					}
-
-					goal.checkpointProgress = params.summary || "Progress reported";
-					persistGoal("checkpoint");
+					applyTransition(outcome);
 
 					const msg = params.remaining
 						? `Checkpoint: ${params.summary}\nRemaining: ${params.remaining}`
@@ -307,31 +297,29 @@ export default function (pi: ExtensionAPI) {
 
 					return {
 						content: [{ type: "text", text: msg }],
-						details: { action: "checkpoint", state: { ...goal } },
+						details: { action: "checkpoint", state: { ...outcome.state } },
 					};
 				}
 
 				case "complete": {
-					if (goal.status !== "active") {
+					const outcome = completeGoal(goal, params.summary || "Goal completed", Date.now());
+					if (!outcome.ok) {
 						return {
 							content: [{ type: "text", text: `Goal is already ${goal.status}.` }],
 							details: { action: "complete", state: { ...goal } },
 							isError: true,
 						};
 					}
-
-					goal.status = "completed";
-					goal.completionSummary = params.summary || "Goal completed";
-					persistGoal("complete");
+					applyTransition(outcome);
 
 					return {
 						content: [
 							{
 								type: "text",
-								text: `✓ Goal completed: ${goal.completionSummary}`,
+								text: `✓ Goal completed: ${outcome.state.completionSummary}`,
 							},
 						],
-						details: { action: "complete", state: { ...goal } },
+						details: { action: "complete", state: { ...outcome.state } },
 					};
 				}
 
@@ -358,7 +346,7 @@ export default function (pi: ExtensionAPI) {
 			const msg = text?.type === "text" ? text.text : "";
 			const details = result.details as { action?: string; error?: string } | undefined;
 			const isComplete = msg.startsWith("✓");
-			const isFailure = context.isError || Boolean(details?.error) || /^(Cannot checkpoint|Goal is already|Unknown action)/.test(msg);
+			const isFailure = context.isError || Boolean(details?.error) || isGoalFailureText(msg);
 			if (options.isPartial) return renderToolSummary(theme, "running", "Updating goal…");
 			if (isFailure) return renderToolSummary(theme, "error", msg || "Goal update failed.");
 			if (!options.expanded) {
@@ -396,61 +384,55 @@ export default function (pi: ExtensionAPI) {
 
 			// /goal pause
 			if (trimmedArgs === "pause") {
-				if (!goal || goal.status === "cleared") {
-					ctx.ui.notify("No active goal to pause.", "warning");
+				const outcome = pauseGoal(goal, Date.now());
+				if (!outcome.ok) {
+					if (outcome.reason === "already-paused") {
+						ctx.ui.notify("Goal is already paused.", "warning");
+					} else if (outcome.reason === "completed") {
+						ctx.ui.notify("Goal is already completed. Use /goal <objective> to set a new one.", "warning");
+					} else {
+						ctx.ui.notify("No active goal to pause.", "warning");
+					}
 					return;
 				}
-				if (goal.status === "paused") {
-					ctx.ui.notify("Goal is already paused.", "warning");
-					return;
-				}
-				if (goal.status === "completed") {
-					ctx.ui.notify("Goal is already completed. Use /goal <objective> to set a new one.", "warning");
-					return;
-				}
-
-				goal.status = "paused";
-				persistGoal("pause");
-				ctx.ui.notify(`Goal paused: "${goal.objective}"`, "info");
+				applyTransition(outcome);
+				ctx.ui.notify(`Goal paused: "${outcome.state.objective}"`, "info");
 				updateGoalWidget(ctx);
 				return;
 			}
 
 			// /goal resume
 			if (trimmedArgs === "resume") {
-				if (!goal || goal.status === "cleared") {
-					ctx.ui.notify("No goal to resume.", "warning");
+				const outcome = resumeGoal(goal, Date.now());
+				if (!outcome.ok) {
+					if (outcome.reason === "already-active") {
+						ctx.ui.notify("Goal is already active.", "warning");
+					} else if (outcome.reason === "completed") {
+						ctx.ui.notify("Goal is already completed. Use /goal <objective> to set a new one.", "warning");
+					} else {
+						ctx.ui.notify("No goal to resume.", "warning");
+					}
 					return;
 				}
-				if (goal.status === "active") {
-					ctx.ui.notify("Goal is already active.", "warning");
-					return;
-				}
-				if (goal.status === "completed") {
-					ctx.ui.notify("Goal is already completed. Use /goal <objective> to set a new one.", "warning");
-					return;
-				}
-
-				goal.status = "active";
-				persistGoal("resume");
-				ctx.ui.notify(`Goal resumed: "${goal.objective}"`, "info");
+				applyTransition(outcome);
+				ctx.ui.notify(`Goal resumed: "${outcome.state.objective}"`, "info");
 				updateGoalWidget(ctx);
 				return;
 			}
 
 			// /goal edit <objective>
 			if (trimmedArgs.startsWith("edit ")) {
-				if (!goal || goal.status === "cleared") {
-					ctx.ui.notify("No active goal to edit.", "warning");
-					return;
-				}
 				const nextObjective = trimmedArgs.slice(5).trim();
-				if (!nextObjective) {
-					ctx.ui.notify("Usage: /goal edit <new objective>", "warning");
+				const outcome = editGoal(goal, nextObjective, Date.now());
+				if (!outcome.ok) {
+					if (outcome.reason === "empty-objective") {
+						ctx.ui.notify("Usage: /goal edit <new objective>", "warning");
+					} else {
+						ctx.ui.notify("No active goal to edit.", "warning");
+					}
 					return;
 				}
-				goal.objective = nextObjective;
-				persistGoal("set");
+				applyTransition(outcome);
 				ctx.ui.notify(`Goal updated: ${nextObjective}`, "info");
 				updateGoalWidget(ctx);
 				return;
@@ -458,37 +440,27 @@ export default function (pi: ExtensionAPI) {
 
 			// /goal checkpoint <summary>
 			if (trimmedArgs.startsWith("checkpoint ")) {
-				if (!goal || goal.status !== "active") {
+				const summary = trimmedArgs.slice("checkpoint ".length).trim();
+				const outcome = checkpointGoal(goal, summary, Date.now());
+				if (!outcome.ok) {
 					ctx.ui.notify("No active goal to checkpoint.", "warning");
 					return;
 				}
-				goal.checkpointProgress = trimmedArgs.slice("checkpoint ".length).trim();
-				persistGoal("checkpoint");
-				ctx.ui.notify(`Checkpoint saved: ${goal.checkpointProgress}`, "info");
+				applyTransition(outcome);
+				ctx.ui.notify(`Checkpoint saved: ${outcome.state.checkpointProgress}`, "info");
 				updateGoalWidget(ctx);
 				return;
 			}
 
 			// /goal clear
 			if (trimmedArgs === "clear") {
-				if (!goal || goal.status === "cleared") {
+				const wasCompleted = goal?.status === "completed";
+				const outcome = clearGoal(goal, Date.now());
+				if (!outcome.ok) {
 					ctx.ui.notify("No goal to clear.", "warning");
 					return;
 				}
-
-				const wasCompleted = goal.status === "completed";
-				goal = null;
-				// Persist a cleared entry so state is properly cleared
-				pi.appendEntry(GOAL_CUSTOM_TYPE, {
-					action: "clear",
-					state: {
-						objective: "",
-						status: "cleared" as const,
-						createdAt: 0,
-						updatedAt: Date.now(),
-					},
-				} as GoalEntryData);
-
+				applyTransition(outcome);
 				ctx.ui.notify(
 					wasCompleted ? "Completed goal cleared." : "Goal cleared.",
 					"info",
@@ -498,8 +470,11 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// /goal <objective> - set a new goal and start working immediately
-			if (trimmedArgs.length > 4000) {
-				ctx.ui.notify("Goal objective too long (max 4000 characters). Put details in a file and reference it.", "error");
+			if (trimmedArgs.length > MAX_OBJECTIVE_LENGTH) {
+				ctx.ui.notify(
+					`Goal objective too long (max ${MAX_OBJECTIVE_LENGTH} characters). Put details in a file and reference it.`,
+					"error",
+				);
 				return;
 			}
 
@@ -514,13 +489,9 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
-			goal = {
-				objective: trimmedArgs,
-				status: "active",
-				createdAt: Date.now(),
-				updatedAt: Date.now(),
-			};
-			persistGoal("set");
+			const outcome = setGoal(trimmedArgs, Date.now());
+			if (!outcome.ok) return;
+			applyTransition(outcome);
 
 			ctx.ui.notify(`Goal set: "${trimmedArgs}"`, "info");
 			updateGoalWidget(ctx);

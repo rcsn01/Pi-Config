@@ -1,7 +1,13 @@
 import * as fs from "node:fs";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { pickSelectScreen } from "../_shared/select-screen.ts";
+import {
+	findExactModel,
+	getPickerModels,
+	modelKey,
+	THINKING_DESCRIPTIONS,
+} from "../_shared/model-picker.ts";
+import { pickSelectScreen, type SelectScreenItem } from "../_shared/select-screen.ts";
 import type { AgentConfig } from "../_shared/subagent-service.ts";
 import { agentRegistry, type AgentRegistry } from "./agent-registry.ts";
 import {
@@ -153,15 +159,17 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 
 	async function validateAvailableModel(setting: string, ctx: ExtensionContext): Promise<boolean> {
 		if (setting === "main") return true;
+		let models: Model<Api>[];
 		try {
-			await ctx.modelRegistry.refresh({ allowNetwork: false });
+			models = await getPickerModels(ctx);
 		} catch (error) {
 			ctx.ui.notify(`Could not refresh Pi's model catalogue: ${error instanceof Error ? error.message : String(error)}`, "error");
 			return false;
 		}
+		// An aborted refresh yields an empty catalogue; reject quietly.
+		if (ctx.signal?.aborted) return false;
 		const reference = catalogueModelReference(setting);
-		const available = ctx.modelRegistry.getAvailable();
-		if (available.some((model) => `${model.provider}/${model.id}` === reference)) return true;
+		if (findExactModel(models, reference)) return true;
 		ctx.ui.notify(
 			`Unavailable or unauthenticated model: ${reference}\n\n${SUBAGENT_MODEL_USAGE}`,
 			"error",
@@ -302,20 +310,6 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		);
 	}
 
-	function modelKey(model: Pick<Model<Api>, "provider" | "id">): string {
-		return `${model.provider}/${model.id}`;
-	}
-
-	function availableModelCatalogue(ctx: ExtensionContext): Model<Api>[] {
-		const models = ctx.scopedModels.length > 0
-			? ctx.scopedModels.map((entry) =>
-				ctx.modelRegistry.find(entry.model.provider, entry.model.id) ?? entry.model)
-			: ctx.modelRegistry.getAvailable();
-		const unique = new Map<string, Model<Api>>();
-		for (const model of models) unique.set(modelKey(model), model);
-		return [...unique.values()].sort((left, right) => modelKey(left).localeCompare(modelKey(right)));
-	}
-
 	async function selectSubagentTarget(
 		availableAgents: AgentConfig[],
 		ctx: ExtensionContext,
@@ -353,22 +347,6 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		});
 	}
 
-	interface ModelPickerChoice {
-		value: string;
-		label: string;
-		description: string;
-		searchText: string;
-	}
-
-	function filterModelChoices(choices: readonly ModelPickerChoice[], query: string): ModelPickerChoice[] {
-		const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-		if (terms.length === 0) return [...choices];
-		return choices.filter((choice) => {
-			const searchable = `${choice.label} ${choice.description} ${choice.searchText}`.toLowerCase();
-			return terms.every((term) => searchable.includes(term));
-		});
-	}
-
 	async function selectSubagentModel(
 		target: string,
 		availableAgents: AgentConfig[],
@@ -389,7 +367,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			? currentValue
 			: splitModelThinkingSetting(currentValue).model;
 		const mainModel = canonicalMainModel(configStore.getMainModel());
-		const choices: ModelPickerChoice[] = [];
+		const choices: SelectScreenItem[] = [];
 
 		if (agent) {
 			const inheritedAgentModels = { ...config.agentModels };
@@ -429,24 +407,12 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			items: choices,
 			currentValue: currentModelValue,
 			showCurrentMarker: true,
-			search: {
-				filter: (_items, query) => filterModelChoices(choices, query),
-			},
+			search: {},
 			columns: { minPrimaryColumnWidth: 30, maxPrimaryColumnWidth: 52 },
 			confirmVerb: "next",
 			cancelVerb: "back",
 		});
 	}
-
-	const THINKING_DESCRIPTIONS: Record<SubagentThinkingLevel, string> = {
-		off: "No extended thinking",
-		minimal: "Fastest reasoning",
-		low: "Light reasoning",
-		medium: "Balanced reasoning",
-		high: "Deep reasoning",
-		xhigh: "Extra-high reasoning",
-		max: "Maximum reasoning",
-	};
 
 	function modelSettingAfterChoice(
 		target: string,
@@ -561,13 +527,15 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			ctx.ui.notify(`Interactive subagent model configuration requires TUI mode.\n\n${SUBAGENT_MODEL_USAGE}`, "error");
 			return;
 		}
+		let models: Model<Api>[];
 		try {
-			await ctx.modelRegistry.refresh({ allowNetwork: false });
+			models = await getPickerModels(ctx);
 		} catch (error) {
 			ctx.ui.notify(`Could not refresh Pi's model catalogue: ${error instanceof Error ? error.message : String(error)}`, "error");
 			return;
 		}
-		const models = availableModelCatalogue(ctx);
+		// An aborted refresh yields an empty catalogue; exit without notifying.
+		if (ctx.signal?.aborted) return;
 
 		while (true) {
 			const target = await selectSubagentTarget(availableAgents, ctx);

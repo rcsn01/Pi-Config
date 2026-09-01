@@ -8,7 +8,7 @@
  * Disabling moves it to .pi/extensions-disabled/.
  * Run /reload after toggling for changes to take effect.
  *
- * Protected extensions (_shared, system-feature-flags) cannot be disabled.
+ * Protected extensions (_shared, config-feature-flag) cannot be disabled.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -26,7 +26,7 @@ const EXTENSIONS_DIR = ".pi/extensions";
 const DISABLED_DIR = ".pi/extensions-disabled";
 
 /** Extensions that cannot be disabled (infrastructure). */
-const PROTECTED = new Set(["_shared", "system-feature-flags"]);
+const PROTECTED = new Set(["_shared", "config-feature-flag"]);
 
 interface ExtensionInfo {
 	name: string;
