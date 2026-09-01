@@ -687,10 +687,14 @@ export function createPlanLifecycle(
 		try {
 			return await transition;
 		} finally {
-			if (isCurrentPlanSession(session) && modeTransitionPromise === transition) {
+			// Clear the transition bookkeeping even when invalidated by branch
+			// reconstruction: nothing else frees it for this Session, and a stuck
+			// marker would block every later toggle. Only the status write is
+			// session-scoped; the new branch's reconstruction refreshes it.
+			if (modeTransitionPromise === transition) {
 				modeTransition = undefined;
 				modeTransitionPromise = undefined;
-				updatePlanStatus(ctx, planState);
+				if (isCurrentPlanSession(session)) updatePlanStatus(ctx, planState);
 			}
 		}
 	}
@@ -710,10 +714,11 @@ export function createPlanLifecycle(
 		try {
 			return await transition;
 		} finally {
-			if (isCurrentPlanSession(session) && modeTransitionPromise === transition) {
+			// See enterPlanMode: free the transition marker even when stale.
+			if (modeTransitionPromise === transition) {
 				modeTransition = undefined;
 				modeTransitionPromise = undefined;
-				updatePlanStatus(ctx, planState);
+				if (isCurrentPlanSession(session)) updatePlanStatus(ctx, planState);
 			}
 		}
 	}
