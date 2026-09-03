@@ -24,7 +24,6 @@ import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import {
 	createModelSelectionPersistence,
 	type CreateModelSelectionPersistence,
-	type ModelSelectionPersistence,
 } from "../_shared/model-selection-persistence.ts";
 import type { SessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
@@ -53,6 +52,7 @@ import {
 	profileFromCurrentSession,
 	profileLabel,
 } from "./model-profile.ts";
+import { createPlanCurrency, type PlanSession } from "./plan-currency.ts";
 import { buildPlanModeSystemPrompt } from "./plan-prompt.ts";
 import { updatePlanStatus } from "./plan-renderer.ts";
 import {
@@ -285,7 +285,6 @@ export function createPlanLifecycle(
 	let profileTransitionDepth = 0;
 	let profileEventQueue = Promise.resolve();
 	let lifecycleQueue = Promise.resolve();
-	let lifecycleGeneration = 0;
 	let latestProposedPlan: string | undefined;
 	let latestProposedPlanKey: string | undefined;
 	let modeTransition: "entering" | "exiting" | undefined;
@@ -293,13 +292,6 @@ export function createPlanLifecycle(
 	let pendingModeRequest: { target: AgentMode; prompt?: string; task?: string } | undefined;
 	let lastPromptedMode: AgentMode | undefined;
 	let runtimeContext: ExtensionContext | undefined;
-	interface PlanSession {
-		readonly binding: SessionProfileBinding;
-		readonly sessionId: string;
-		readonly persistence: ModelSelectionPersistence;
-		readonly generation: number;
-	}
-	let currentPlanSession: PlanSession | undefined;
 	let requestModeRevision: number | undefined;
 	let requestPlanSession: PlanSession | undefined;
 	let modeRevisionCounter = planState.revision;
@@ -336,6 +328,8 @@ export function createPlanLifecycle(
 	const normalDefaultsStore = dependencies.normalDefaultsStore ?? createNormalDefaultsStore();
 	const waitForNativePersistence = dependencies.waitForNativePersistence ??
 		(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+
+	const currency = createPlanCurrency({ createPersistence: persistenceFactory });
 
 	const planRuntime = createPlanRuntimeCoordinator({
 		createWorkspace: (hostRoot, options) => workspaceFactory(hostRoot, options),
@@ -386,7 +380,7 @@ export function createPlanLifecycle(
 
 	async function refreshPlanRuntime(ctx: ExtensionContext, session: PlanSession): Promise<void> {
 		await enqueueLifecycle(async () => {
-			if (!isCurrentPlanSession(session)) return;
+			if (!currency.isCurrent(session)) return;
 			runtimeContext = ctx;
 			await planRuntime.refresh(ctx.cwd);
 		});
@@ -400,14 +394,14 @@ export function createPlanLifecycle(
 		try {
 			await planRuntime.dispose();
 		} catch (error) {
-			if (isCurrentPlanSession(session)) {
+			if (currency.isCurrent(session)) {
 				ctx.ui.notify(
 					`Could not clean up the previous Plan Bash sandbox: ${error instanceof Error ? error.message : String(error)}`,
 					"warning",
 				);
 			}
 		}
-		if (!isCurrentPlanSession(session)) return;
+		if (!currency.isCurrent(session)) return;
 
 		const reconstructed = reconstructPlanState({
 			entries: ctx.sessionManager.getBranch(),
@@ -434,46 +428,28 @@ export function createPlanLifecycle(
 			if (fallback) {
 				try {
 					const defaults = await normalDefaultsStore.capture(ctx.cwd, fallback);
-					if (!isCurrentPlanSession(session)) return;
+					if (!currency.isCurrent(session)) return;
 					normalGlobalDefaults = defaults;
 				} catch (error) {
-					if (!isCurrentPlanSession(session)) return;
+					if (!currency.isCurrent(session)) return;
 					ctx.ui.notify(
 						`Could not read Pi's normal defaults: ${error instanceof Error ? error.message : String(error)}`,
 						"error",
 					);
 				}
 			}
-			if (!isCurrentPlanSession(session)) return;
+			if (!currency.isCurrent(session)) return;
 			warmPlanRuntime(ctx);
 		} else {
 			ctx.ui.setStatus("plan-runtime", undefined);
 			pi.setActiveTools(previousNormalTools ?? toolsAtStart.filter((name) => name !== "plan_bash"));
 		}
-		if (isCurrentPlanSession(session) && !modeTransition) updatePlanStatus(ctx, planState);
+		if (currency.isCurrent(session) && !modeTransition) updatePlanStatus(ctx, planState);
 	};
 
-	function planSessionFor(ctx: ExtensionContext): PlanSession | undefined {
-		const session = currentPlanSession;
-		return session?.sessionId === ctx.sessionManager.getSessionId() ? session : undefined;
-	}
-
-	function requirePlanSession(ctx: ExtensionContext): PlanSession {
-		const session = planSessionFor(ctx);
-		if (!session) {
-			throw new Error("Plan Mode lifecycle is not initialized for this Session.");
-		}
-		return session;
-	}
-
-	function isCurrentPlanSession(session: PlanSession): boolean {
-		return currentPlanSession === session && lifecycleGeneration === session.generation;
-	}
-
 	const reconstruct = (ctx: ExtensionContext): Promise<void> => {
-		const session = requirePlanSession(ctx);
-		const nextSession = { ...session, generation: ++lifecycleGeneration };
-		currentPlanSession = nextSession;
+		const session = currency.require(ctx);
+		const nextSession = currency.advance(session);
 		return enqueueLifecycle(() => reconstructState(ctx, nextSession));
 	};
 
@@ -540,12 +516,12 @@ export function createPlanLifecycle(
 		const normalTools = pi.getActiveTools().filter((name) => name !== "plan_bash");
 		try {
 			capturedDefaults = await normalDefaultsStore.capture(ctx.cwd, normalProfile);
-			if (!isCurrentPlanSession(session)) return false;
+			if (!currency.isCurrent(session)) return false;
 			const storedProfile = await session.persistence.load("plan");
-			if (!isCurrentPlanSession(session)) return false;
+			if (!currency.isCurrent(session)) return false;
 			if (!storedProfile) {
 				await session.persistence.save("plan", normalProfile);
-				if (!isCurrentPlanSession(session)) return false;
+				if (!currency.isCurrent(session)) return false;
 				normalGlobalDefaults = capturedDefaults;
 				planState = { ...planState, normalProfile, normalTools };
 				activePlanProfile = normalProfile;
@@ -561,13 +537,13 @@ export function createPlanLifecycle(
 					nativeDefaults: dependencies.nativeDefaults,
 				});
 				switchedSessionProfile = true;
-				if (!isCurrentPlanSession(session)) return profile;
+				if (!currency.isCurrent(session)) return profile;
 				if (!usesDefaultSentinel(storedProfile)) await session.persistence.save("plan", profile);
-				if (!isCurrentPlanSession(session)) return profile;
+				if (!currency.isCurrent(session)) return profile;
 				await preserveDefaults(ctx, capturedDefaults);
 				return profile;
 			});
-			if (!isCurrentPlanSession(session)) return false;
+			if (!currency.isCurrent(session)) return false;
 			normalGlobalDefaults = capturedDefaults;
 			planState = { ...planState, normalProfile, normalTools };
 			activePlanProfile = appliedProfile;
@@ -576,7 +552,7 @@ export function createPlanLifecycle(
 			warmPlanRuntime(ctx);
 			return true;
 		} catch (error) {
-			if (!isCurrentPlanSession(session)) return false;
+			if (!currency.isCurrent(session)) return false;
 			let rollbackError: unknown;
 			if (switchedSessionProfile) {
 				try {
@@ -585,14 +561,14 @@ export function createPlanLifecycle(
 							label: "Normal profile",
 							nativeDefaults: dependencies.nativeDefaults,
 						});
-						if (!isCurrentPlanSession(session)) return;
+						if (!currency.isCurrent(session)) return;
 						await preserveDefaults(ctx, capturedDefaults);
 					});
 				} catch (failure) {
 					rollbackError = failure;
 				}
 			}
-			if (!isCurrentPlanSession(session)) return false;
+			if (!currency.isCurrent(session)) return false;
 			pi.setActiveTools(normalTools);
 			activePlanProfile = undefined;
 			normalGlobalDefaults = undefined;
@@ -614,9 +590,9 @@ export function createPlanLifecycle(
 		runtimeContext = ctx;
 		try {
 			await planRuntime.dispose();
-			if (!isCurrentPlanSession(session)) return false;
+			if (!currency.isCurrent(session)) return false;
 		} catch (error) {
-			if (!isCurrentPlanSession(session)) return false;
+			if (!currency.isCurrent(session)) return false;
 			ctx.ui.notify(
 				`Could not exit Plan Mode because the Plan Bash sandbox could not be cleaned up: ${error instanceof Error ? error.message : String(error)}`,
 				"error",
@@ -633,12 +609,12 @@ export function createPlanLifecycle(
 						label: "Normal profile",
 						nativeDefaults: dependencies.nativeDefaults,
 					});
-					if (!isCurrentPlanSession(session)) return false;
+					if (!currency.isCurrent(session)) return false;
 					restoredSessionProfile = true;
 					await preserveDefaults(ctx);
-					if (!isCurrentPlanSession(session)) return false;
+					if (!currency.isCurrent(session)) return false;
 				} catch (error) {
-					if (!isCurrentPlanSession(session)) return false;
+					if (!currency.isCurrent(session)) return false;
 					let rollbackError: unknown;
 					if (restoredSessionProfile && activePlanProfile) {
 						try {
@@ -646,13 +622,13 @@ export function createPlanLifecycle(
 								label: "Plan Mode profile",
 								nativeDefaults: dependencies.nativeDefaults,
 							});
-							if (!isCurrentPlanSession(session)) return false;
+							if (!currency.isCurrent(session)) return false;
 							await preserveDefaults(ctx);
 						} catch (failure) {
 							rollbackError = failure;
 						}
 					}
-					if (!isCurrentPlanSession(session)) return false;
+					if (!currency.isCurrent(session)) return false;
 					const rollbackNote = rollbackError
 						? ` Rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
 						: "";
@@ -667,7 +643,7 @@ export function createPlanLifecycle(
 			});
 			if (!restored) return false;
 		}
-		if (!isCurrentPlanSession(session)) return false;
+		if (!currency.isCurrent(session)) return false;
 		commitPlanState(ctx, "default", undefined, normalTools);
 		return true;
 	}
@@ -679,7 +655,7 @@ export function createPlanLifecycle(
 	}
 
 	async function enterPlanMode(ctx: ExtensionContext, prompt?: string): Promise<boolean> {
-		const session = requirePlanSession(ctx);
+		const session = currency.require(ctx);
 		if (isPlanMode(planState)) return true;
 		if (modeTransition) {
 			ctx.ui.notify(`Plan Mode is already ${modeTransition}.`, "info");
@@ -700,13 +676,13 @@ export function createPlanLifecycle(
 			if (modeTransitionPromise === transition) {
 				modeTransition = undefined;
 				modeTransitionPromise = undefined;
-				if (isCurrentPlanSession(session)) updatePlanStatus(ctx, planState);
+				if (currency.isCurrent(session)) updatePlanStatus(ctx, planState);
 			}
 		}
 	}
 
 	async function exitPlanMode(ctx: ExtensionContext): Promise<boolean> {
-		const session = requirePlanSession(ctx);
+		const session = currency.require(ctx);
 		if (!isPlanMode(planState)) return true;
 		if (modeTransition) {
 			ctx.ui.notify(`Plan Mode is already ${modeTransition}.`, "info");
@@ -724,7 +700,7 @@ export function createPlanLifecycle(
 			if (modeTransitionPromise === transition) {
 				modeTransition = undefined;
 				modeTransitionPromise = undefined;
-				if (isCurrentPlanSession(session)) updatePlanStatus(ctx, planState);
+				if (currency.isCurrent(session)) updatePlanStatus(ctx, planState);
 			}
 		}
 	}
@@ -753,7 +729,7 @@ export function createPlanLifecycle(
 			if (!activePlanProfile) return Promise.resolve();
 			profile = { ...activePlanProfile, thinkingLevel: event.level };
 		}
-		const session = requirePlanSession(event.ctx);
+		const session = currency.require(event.ctx);
 		const defaults = normalGlobalDefaults;
 		return enqueueProfileEvent(() => rememberActivePlanProfile(event.ctx, session, profile, defaults));
 	}
@@ -764,7 +740,7 @@ export function createPlanLifecycle(
 		profile: ModeModelProfile,
 		defaults: ModeModelProfile | undefined,
 	): Promise<void> {
-		if (!isCurrentPlanSession(session) || !isPlanMode(planState)) return;
+		if (!currency.isCurrent(session) || !isPlanMode(planState)) return;
 		activePlanProfile = profile;
 		let persistenceError: unknown;
 		try {
@@ -772,17 +748,17 @@ export function createPlanLifecycle(
 		} catch (error) {
 			persistenceError = error;
 		}
-		if (!isCurrentPlanSession(session) || !isPlanMode(planState)) return;
+		if (!currency.isCurrent(session) || !isPlanMode(planState)) return;
 		try {
 			await preserveDefaults(ctx, defaults);
 		} catch (error) {
-			if (!isCurrentPlanSession(session) || !isPlanMode(planState)) return;
+			if (!currency.isCurrent(session) || !isPlanMode(planState)) return;
 			ctx.ui.notify(
 				`Could not preserve Pi's normal defaults: ${error instanceof Error ? error.message : String(error)}`,
 				"error",
 			);
 		}
-		if (!isCurrentPlanSession(session) || !isPlanMode(planState)) return;
+		if (!currency.isCurrent(session) || !isPlanMode(planState)) return;
 		if (persistenceError) {
 			ctx.ui.notify(
 				`Could not save the Plan Mode profile: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}`,
@@ -794,20 +770,15 @@ export function createPlanLifecycle(
 
 	reviewController = createPlanReviewController({
 		getSnapshot: () => {
-			const session = currentPlanSession;
-			const generation = lifecycleGeneration;
+			const snapshot = currency.snapshot();
 			return {
 				state: planState,
 				latestPlan: latestProposedPlan,
 				latestPlanKey: latestProposedPlanKey,
-				isCurrent: () =>
-					currentPlanSession === session && lifecycleGeneration === generation,
+				isCurrent: snapshot.isCurrent,
 			};
 		},
-		getSessionProfileBinding: (ctx) =>
-			currentPlanSession?.sessionId === ctx.sessionManager.getSessionId()
-				? currentPlanSession.binding
-				: undefined,
+		getSessionProfileBinding: (ctx) => currency.resolve(ctx)?.binding,
 		exitPlanMode,
 		enterPlanMode,
 		markPlanPrompted(signature) {
@@ -897,7 +868,7 @@ export function createPlanLifecycle(
 	}
 
 	async function togglePlanMode(ctx: ExtensionContext, source: PlanLifecycleModeToggled["source"]): Promise<void> {
-		requirePlanSession(ctx);
+		currency.require(ctx);
 		if (!ctx.isIdle()) {
 			const effectiveTarget = pendingModeRequest?.target ?? planState.mode;
 			const target = effectiveTarget === "plan" ? "default" : "plan";
@@ -921,7 +892,7 @@ export function createPlanLifecycle(
 	}
 
 	async function startTask(ctx: ExtensionContext, task: string): Promise<void> {
-		requirePlanSession(ctx);
+		currency.require(ctx);
 		if (!ctx.isIdle()) {
 			queuePendingMode(ctx, "plan", { task });
 			return;
@@ -937,10 +908,10 @@ export function createPlanLifecycle(
 		}
 		try {
 			await refreshPlanRuntime(ctx, session);
-			if (!isCurrentPlanSession(session)) return;
+			if (!currency.isCurrent(session)) return;
 			ctx.ui.notify("Plan Bash disposable workspace refreshed from the host.", "info");
 		} catch (error) {
-			if (!isCurrentPlanSession(session)) return;
+			if (!currency.isCurrent(session)) return;
 			ctx.ui.notify(
 				`Could not refresh Plan Bash; isolated command execution is unavailable: ${error instanceof Error ? error.message : String(error)}`,
 				"error",
@@ -965,16 +936,7 @@ export function createPlanLifecycle(
 			case "sessionStarted":
 				await profileEventQueue;
 				await enqueueLifecycle(async () => {
-					const generation = ++lifecycleGeneration;
-					currentPlanSession = undefined;
-					const persistence = persistenceFactory(event.binding.settingsPath);
-					const session: PlanSession = {
-						binding: event.binding,
-						sessionId: event.ctx.sessionManager.getSessionId(),
-						persistence,
-						generation,
-					};
-					currentPlanSession = session;
+					const session = currency.begin(event.binding, event.ctx);
 					modeTransition = undefined;
 					modeTransitionPromise = undefined;
 					clearPendingMode(event.ctx);
@@ -988,19 +950,14 @@ export function createPlanLifecycle(
 				return undefined as PlanLifecycleResult<E>;
 			case "sessionStopping":
 				{
-					const stoppingSession = currentPlanSession;
-					if (
-						stoppingSession?.binding !== event.binding ||
-						stoppingSession.sessionId !== event.ctx.sessionManager.getSessionId()
-					) return undefined as PlanLifecycleResult<E>;
+					const stoppingSession = currency.resolve(event.ctx);
+					if (stoppingSession?.binding !== event.binding) return undefined as PlanLifecycleResult<E>;
 					await profileEventQueue;
 					await enqueueLifecycle(async () => {
-						if (currentPlanSession !== stoppingSession) return;
-						currentPlanSession = undefined;
+						if (!currency.end(stoppingSession)) return;
 						modeTransition = undefined;
 						modeTransitionPromise = undefined;
 						clearPendingMode(event.ctx);
-						lifecycleGeneration++;
 						runtimeContext = event.ctx;
 						try {
 							await planRuntime.dispose();
@@ -1034,11 +991,11 @@ export function createPlanLifecycle(
 				return undefined as PlanLifecycleResult<E>;
 			case "agentPromptConstruction":
 				{
-					const session = planSessionFor(event.ctx);
+					const session = currency.resolve(event.ctx);
 					if (!session) return { systemPrompt: event.event.systemPrompt } as PlanLifecycleResult<E>;
 					const pendingTransition = modeTransitionPromise;
 					if (pendingTransition) await pendingTransition;
-					if (!isCurrentPlanSession(session)) {
+					if (!currency.isCurrent(session)) {
 						return { systemPrompt: event.event.systemPrompt } as PlanLifecycleResult<E>;
 					}
 					const snapshot: AgentModeState = {
@@ -1065,7 +1022,7 @@ export function createPlanLifecycle(
 					return undefined as PlanLifecycleResult<E>;
 				}
 				{
-					const session = planSessionFor(event.ctx);
+					const session = currency.resolve(event.ctx);
 					if (!session || (requestPlanSession !== undefined && requestPlanSession !== session)) {
 						return { message: discardAssistantMessage(event.event.message) } as PlanLifecycleResult<E>;
 					}
@@ -1094,10 +1051,10 @@ export function createPlanLifecycle(
 					return { message: replaceAssistantText(event.event.message, visibleText) } as PlanLifecycleResult<E>;
 				}
 			case "reviewInput":
-				if (!planSessionFor(event.ctx)) return { action: "continue" } as PlanLifecycleResult<E>;
+				if (!currency.resolve(event.ctx)) return { action: "continue" } as PlanLifecycleResult<E>;
 				return await reviewController.handleInput(event.event, event.ctx) as PlanLifecycleResult<E>;
 			case "agentSettled":
-				if (!planSessionFor(event.ctx)) return undefined as PlanLifecycleResult<E>;
+				if (!currency.resolve(event.ctx)) return undefined as PlanLifecycleResult<E>;
 				if (await applyPendingMode(event.ctx)) return undefined as PlanLifecycleResult<E>;
 				await reviewController.handleAgentSettled(event.ctx);
 				return undefined as PlanLifecycleResult<E>;
@@ -1106,24 +1063,24 @@ export function createPlanLifecycle(
 				return undefined as PlanLifecycleResult<E>;
 			case "implementCurrent":
 				{
-					if (!planSessionFor(event.ctx)) return undefined as PlanLifecycleResult<E>;
+					if (!currency.resolve(event.ctx)) return undefined as PlanLifecycleResult<E>;
 					const plan = reviewController.requireLatestPlan(event.ctx);
 					if (plan) await reviewController.implementCurrent(event.ctx, plan);
 				}
 				return undefined as PlanLifecycleResult<E>;
 			case "implementFresh":
 				{
-					if (!planSessionFor(event.ctx)) return undefined as PlanLifecycleResult<E>;
+					if (!currency.resolve(event.ctx)) return undefined as PlanLifecycleResult<E>;
 					const plan = reviewController.requireLatestPlan(event.ctx);
 					if (plan) await reviewController.implementFresh(event.ctx, plan);
 				}
 				return undefined as PlanLifecycleResult<E>;
 			case "implementDeferredFresh":
-				if (!planSessionFor(event.ctx)) return undefined as PlanLifecycleResult<E>;
+				if (!currency.resolve(event.ctx)) return undefined as PlanLifecycleResult<E>;
 				await reviewController.implementDeferredFresh(event.ctx);
 				return undefined as PlanLifecycleResult<E>;
 			case "reviseRequested":
-				if (!planSessionFor(event.ctx)) return undefined as PlanLifecycleResult<E>;
+				if (!currency.resolve(event.ctx)) return undefined as PlanLifecycleResult<E>;
 				await reviewController.revise(event.ctx, event.feedback);
 				return undefined as PlanLifecycleResult<E>;
 			case "showRequested":
@@ -1133,7 +1090,7 @@ export function createPlanLifecycle(
 				statusRequested(event.ctx);
 				return undefined as PlanLifecycleResult<E>;
 			case "refreshRequested":
-				await refreshRequested(event.ctx, requirePlanSession(event.ctx));
+				await refreshRequested(event.ctx, currency.require(event.ctx));
 				return undefined as PlanLifecycleResult<E>;
 			case "toolCall":
 				if (!isPlanMode(planState)) return undefined as PlanLifecycleResult<E>;
