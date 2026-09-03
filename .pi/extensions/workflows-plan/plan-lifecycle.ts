@@ -370,6 +370,15 @@ export function createPlanLifecycle(
 		return result;
 	}
 
+	async function withProfileTransition<T>(operation: () => Promise<T>): Promise<T> {
+		profileTransitionDepth++;
+		try {
+			return await operation();
+		} finally {
+			profileTransitionDepth--;
+		}
+	}
+
 	function warmPlanRuntime(ctx: ExtensionContext): void {
 		runtimeContext = ctx;
 		planRuntime.warm(ctx.cwd);
@@ -546,22 +555,19 @@ export function createPlanLifecycle(
 				return true;
 			}
 
-			profileTransitionDepth++;
-			let appliedProfile: ModeModelProfile;
-			try {
-				appliedProfile = await applyModelSelection(pi, ctx, storedProfile, {
+			const appliedProfile = await withProfileTransition(async () => {
+				const profile = await applyModelSelection(pi, ctx, storedProfile, {
 					label: "Plan Mode profile",
 					nativeDefaults: dependencies.nativeDefaults,
 				});
 				switchedSessionProfile = true;
-				if (!isCurrentPlanSession(session)) return false;
-				if (!usesDefaultSentinel(storedProfile)) await session.persistence.save("plan", appliedProfile);
-				if (!isCurrentPlanSession(session)) return false;
+				if (!isCurrentPlanSession(session)) return profile;
+				if (!usesDefaultSentinel(storedProfile)) await session.persistence.save("plan", profile);
+				if (!isCurrentPlanSession(session)) return profile;
 				await preserveDefaults(ctx, capturedDefaults);
-				if (!isCurrentPlanSession(session)) return false;
-			} finally {
-				profileTransitionDepth--;
-			}
+				return profile;
+			});
+			if (!isCurrentPlanSession(session)) return false;
 			normalGlobalDefaults = capturedDefaults;
 			planState = { ...planState, normalProfile, normalTools };
 			activePlanProfile = appliedProfile;
@@ -574,17 +580,16 @@ export function createPlanLifecycle(
 			let rollbackError: unknown;
 			if (switchedSessionProfile) {
 				try {
-					profileTransitionDepth++;
-					await applyModelSelection(pi, ctx, normalProfile, {
-						label: "Normal profile",
-						nativeDefaults: dependencies.nativeDefaults,
+					await withProfileTransition(async () => {
+						await applyModelSelection(pi, ctx, normalProfile, {
+							label: "Normal profile",
+							nativeDefaults: dependencies.nativeDefaults,
+						});
+						if (!isCurrentPlanSession(session)) return;
+						await preserveDefaults(ctx, capturedDefaults);
 					});
-					if (!isCurrentPlanSession(session)) return false;
-					await preserveDefaults(ctx, capturedDefaults);
 				} catch (failure) {
 					rollbackError = failure;
-				} finally {
-					profileTransitionDepth--;
 				}
 			}
 			if (!isCurrentPlanSession(session)) return false;
@@ -621,45 +626,46 @@ export function createPlanLifecycle(
 
 		const normalProfile = planState.normalProfile;
 		if (normalProfile) {
-			let restoredSessionProfile = false;
-			try {
-				profileTransitionDepth++;
-				await applyModelSelection(pi, ctx, normalProfile, {
-					label: "Normal profile",
-					nativeDefaults: dependencies.nativeDefaults,
-				});
-				if (!isCurrentPlanSession(session)) return false;
-				restoredSessionProfile = true;
-				await preserveDefaults(ctx);
-				if (!isCurrentPlanSession(session)) return false;
-			} catch (error) {
-				if (!isCurrentPlanSession(session)) return false;
-				let rollbackError: unknown;
-				if (restoredSessionProfile && activePlanProfile) {
-					try {
-						await applyModelSelection(pi, ctx, activePlanProfile, {
-							label: "Plan Mode profile",
-							nativeDefaults: dependencies.nativeDefaults,
-						});
-						if (!isCurrentPlanSession(session)) return false;
-						await preserveDefaults(ctx);
-					} catch (failure) {
-						rollbackError = failure;
+			const restored = await withProfileTransition(async () => {
+				let restoredSessionProfile = false;
+				try {
+					await applyModelSelection(pi, ctx, normalProfile, {
+						label: "Normal profile",
+						nativeDefaults: dependencies.nativeDefaults,
+					});
+					if (!isCurrentPlanSession(session)) return false;
+					restoredSessionProfile = true;
+					await preserveDefaults(ctx);
+					if (!isCurrentPlanSession(session)) return false;
+				} catch (error) {
+					if (!isCurrentPlanSession(session)) return false;
+					let rollbackError: unknown;
+					if (restoredSessionProfile && activePlanProfile) {
+						try {
+							await applyModelSelection(pi, ctx, activePlanProfile, {
+								label: "Plan Mode profile",
+								nativeDefaults: dependencies.nativeDefaults,
+							});
+							if (!isCurrentPlanSession(session)) return false;
+							await preserveDefaults(ctx);
+						} catch (failure) {
+							rollbackError = failure;
+						}
 					}
+					if (!isCurrentPlanSession(session)) return false;
+					const rollbackNote = rollbackError
+						? ` Rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+						: "";
+					ctx.ui.notify(
+						`Could not exit Plan Mode: ${error instanceof Error ? error.message : String(error)}${rollbackNote}`,
+						"error",
+					);
+					warmPlanRuntime(ctx);
+					return false;
 				}
-				if (!isCurrentPlanSession(session)) return false;
-				const rollbackNote = rollbackError
-					? ` Rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
-					: "";
-				ctx.ui.notify(
-					`Could not exit Plan Mode: ${error instanceof Error ? error.message : String(error)}${rollbackNote}`,
-					"error",
-				);
-				warmPlanRuntime(ctx);
-				return false;
-			} finally {
-				profileTransitionDepth--;
-			}
+				return true;
+			});
+			if (!restored) return false;
 		}
 		if (!isCurrentPlanSession(session)) return false;
 		commitPlanState(ctx, "default", undefined, normalTools);
@@ -727,6 +733,29 @@ export function createPlanLifecycle(
 		const result = profileEventQueue.then(task, task);
 		profileEventQueue = result.catch(() => {});
 		return result;
+	}
+
+	function observePlanSelection(
+		event: PlanLifecycleModelChanged | PlanLifecycleThinkingLevelChanged,
+	): Promise<void> {
+		if (!isPlanMode(planState) || profileTransitionDepth > 0) return Promise.resolve();
+		if (event.type === "modelChanged" && event.source === "restore") return Promise.resolve();
+
+		let profile: ModeModelProfile;
+		if (event.type === "modelChanged") {
+			profile = {
+				provider: event.model.provider,
+				modelId: event.model.id,
+				thinkingLevel: pi.getThinkingLevel() as ModelThinkingLevel,
+				contextWindow: event.model.contextWindow,
+			};
+		} else {
+			if (!activePlanProfile) return Promise.resolve();
+			profile = { ...activePlanProfile, thinkingLevel: event.level };
+		}
+		const session = requirePlanSession(event.ctx);
+		const defaults = normalGlobalDefaults;
+		return enqueueProfileEvent(() => rememberActivePlanProfile(event.ctx, session, profile, defaults));
 	}
 
 	async function rememberActivePlanProfile(
@@ -994,31 +1023,8 @@ export function createPlanLifecycle(
 				await startTask(event.ctx, event.task);
 				return undefined as PlanLifecycleResult<E>;
 			case "modelChanged":
-				if (!isPlanMode(planState) || profileTransitionDepth > 0 || event.source === "restore") {
-					return undefined as PlanLifecycleResult<E>;
-				}
-				{
-					const session = requirePlanSession(event.ctx);
-					const profile: ModeModelProfile = {
-						provider: event.model.provider,
-						modelId: event.model.id,
-						thinkingLevel: pi.getThinkingLevel() as ModelThinkingLevel,
-						contextWindow: event.model.contextWindow,
-					};
-					const defaults = normalGlobalDefaults;
-					await enqueueProfileEvent(() => rememberActivePlanProfile(event.ctx, session, profile, defaults));
-				}
-				return undefined as PlanLifecycleResult<E>;
 			case "thinkingLevelChanged":
-				if (!isPlanMode(planState) || profileTransitionDepth > 0 || !activePlanProfile) {
-					return undefined as PlanLifecycleResult<E>;
-				}
-				{
-					const session = requirePlanSession(event.ctx);
-					const profile = { ...activePlanProfile, thinkingLevel: event.level as ModelThinkingLevel };
-					const defaults = normalGlobalDefaults;
-					await enqueueProfileEvent(() => rememberActivePlanProfile(event.ctx, session, profile, defaults));
-				}
+				await observePlanSelection(event);
 				return undefined as PlanLifecycleResult<E>;
 			case "agentPromptConstruction":
 				{

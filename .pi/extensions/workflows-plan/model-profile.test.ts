@@ -10,6 +10,7 @@ import {
 import {
 	createHarness,
 	createProfileDependencies,
+	deferred,
 	initializeAndExtract,
 	normalModel,
 	planModel,
@@ -29,6 +30,85 @@ describe("Plan Mode model and thinking profiles", () => {
 		expect((harness.ctx as any).modelRegistry.refresh).not.toHaveBeenCalled();
 		expect(harness.setModel).not.toHaveBeenCalled();
 		expect(harness.setThinkingLevel).toHaveBeenCalledWith("xhigh");
+	});
+
+	it("ignores thinking feedback during stored Profile entry, then persists a user change", async () => {
+		const stores = createProfileDependencies(profileFor(planModel, "high"));
+		const harness = createHarness({
+			branch: [], model: normalModel, thinkingLevel: "medium",
+			availableModels: [normalModel, planModel], dependencies: stores.dependencies,
+			emitThinkingLevelFeedback: true,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		stores.save.mockClear();
+
+		await harness.commands.get("plan").handler("", harness.ctx);
+		await harness.drainSelectionFeedback();
+		expect(stores.save).toHaveBeenCalledOnce();
+		expect(stores.save).toHaveBeenLastCalledWith("plan", profileFor(planModel, "high"));
+
+		harness.setThinkingLevel("xhigh");
+		await harness.drainSelectionFeedback();
+		expect(stores.save).toHaveBeenCalledTimes(2);
+		expect(stores.save).toHaveBeenLastCalledWith("plan", profileFor(planModel, "xhigh"));
+	});
+
+	it("ignores thinking feedback during normal Profile restoration on exit", async () => {
+		const stores = createProfileDependencies(profileFor(planModel, "high"));
+		const branch = [{
+			type: "custom",
+			customType: "plan-mode-state",
+			data: {
+				active: true,
+				phase: "planning",
+				setAt: 1,
+				normalProfile: profileFor(normalModel, "medium"),
+			},
+		}];
+		const harness = createHarness({
+			branch, model: planModel, thinkingLevel: "high",
+			availableModels: [normalModel, planModel], dependencies: stores.dependencies,
+			emitThinkingLevelFeedback: true,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "resume" });
+		stores.save.mockClear();
+
+		await harness.commands.get("plan").handler("exit", harness.ctx);
+		await harness.drainSelectionFeedback();
+
+		expect(stores.save).not.toHaveBeenCalled();
+	});
+
+	it("preserves model and thinking observation order while the first save is pending", async () => {
+		const pendingSave = deferred<void>();
+		const stores = createProfileDependencies(profileFor(planModel, "high"));
+		const harness = createHarness({
+			model: planModel, thinkingLevel: "high",
+			availableModels: [normalModel, planModel], dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "resume" });
+		stores.save.mockClear();
+		stores.save.mockImplementationOnce(() => pendingSave.promise);
+
+		harness.setCurrentModel(normalModel);
+		const modelChange = harness.emit("model_select", {
+			type: "model_select", model: normalModel, previousModel: planModel, source: "cycle",
+		});
+		await vi.waitFor(() => expect(stores.save).toHaveBeenCalledOnce());
+		expect(stores.save).toHaveBeenNthCalledWith(1, "plan", profileFor(normalModel, "high"));
+
+		harness.setCurrentThinkingLevel("xhigh");
+		const thinkingChange = harness.emit("thinking_level_select", {
+			type: "thinking_level_select", level: "xhigh", previousLevel: "high",
+		});
+		await Promise.resolve();
+		expect(stores.save).toHaveBeenCalledOnce();
+
+		pendingSave.resolve();
+		await Promise.all([modelChange, thinkingChange]);
+		expect(stores.save).toHaveBeenCalledTimes(2);
+		expect(stores.save).toHaveBeenNthCalledWith(2, "plan", profileFor(normalModel, "xhigh"));
+		expect(stores.getStored()).toEqual(profileFor(normalModel, "xhigh"));
 	});
 
 	it("reuses the current model definition when only its context changes", async () => {
