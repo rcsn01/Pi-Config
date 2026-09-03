@@ -392,7 +392,7 @@ export function createPlanLifecycle(
 		});
 	}
 
-	const reconstructState = async (ctx: ExtensionContext, generation: number) => {
+	const reconstructState = async (ctx: ExtensionContext, session: PlanSession) => {
 		const toolsAtStart = pi.getActiveTools();
 		const previousState = planState;
 		const previousNormalTools = previousState.normalTools;
@@ -400,14 +400,14 @@ export function createPlanLifecycle(
 		try {
 			await planRuntime.dispose();
 		} catch (error) {
-			if (generation === lifecycleGeneration) {
+			if (isCurrentPlanSession(session)) {
 				ctx.ui.notify(
 					`Could not clean up the previous Plan Bash sandbox: ${error instanceof Error ? error.message : String(error)}`,
 					"warning",
 				);
 			}
 		}
-		if (generation !== lifecycleGeneration) return;
+		if (!isCurrentPlanSession(session)) return;
 
 		const reconstructed = reconstructPlanState({
 			entries: ctx.sessionManager.getBranch(),
@@ -434,23 +434,23 @@ export function createPlanLifecycle(
 			if (fallback) {
 				try {
 					const defaults = await normalDefaultsStore.capture(ctx.cwd, fallback);
-					if (generation !== lifecycleGeneration) return;
+					if (!isCurrentPlanSession(session)) return;
 					normalGlobalDefaults = defaults;
 				} catch (error) {
-					if (generation !== lifecycleGeneration) return;
+					if (!isCurrentPlanSession(session)) return;
 					ctx.ui.notify(
 						`Could not read Pi's normal defaults: ${error instanceof Error ? error.message : String(error)}`,
 						"error",
 					);
 				}
 			}
-			if (generation !== lifecycleGeneration) return;
+			if (!isCurrentPlanSession(session)) return;
 			warmPlanRuntime(ctx);
 		} else {
 			ctx.ui.setStatus("plan-runtime", undefined);
 			pi.setActiveTools(previousNormalTools ?? toolsAtStart.filter((name) => name !== "plan_bash"));
 		}
-		if (generation === lifecycleGeneration && !modeTransition) updatePlanStatus(ctx, planState);
+		if (isCurrentPlanSession(session) && !modeTransition) updatePlanStatus(ctx, planState);
 	};
 
 	function planSessionFor(ctx: ExtensionContext): PlanSession | undefined {
@@ -472,9 +472,9 @@ export function createPlanLifecycle(
 
 	const reconstruct = (ctx: ExtensionContext): Promise<void> => {
 		const session = requirePlanSession(ctx);
-		const generation = ++lifecycleGeneration;
-		currentPlanSession = { ...session, generation };
-		return enqueueLifecycle(() => reconstructState(ctx, generation));
+		const nextSession = { ...session, generation: ++lifecycleGeneration };
+		currentPlanSession = nextSession;
+		return enqueueLifecycle(() => reconstructState(ctx, nextSession));
 	};
 
 	const persist = () => persistPlanState(
@@ -793,12 +793,17 @@ export function createPlanLifecycle(
 	}
 
 	reviewController = createPlanReviewController({
-		getSnapshot: () => ({
-			state: planState,
-			latestPlan: latestProposedPlan,
-			latestPlanKey: latestProposedPlanKey,
-			lifecycleGeneration,
-		}),
+		getSnapshot: () => {
+			const session = currentPlanSession;
+			const generation = lifecycleGeneration;
+			return {
+				state: planState,
+				latestPlan: latestProposedPlan,
+				latestPlanKey: latestProposedPlanKey,
+				isCurrent: () =>
+					currentPlanSession === session && lifecycleGeneration === generation,
+			};
+		},
 		getSessionProfileBinding: (ctx) =>
 			currentPlanSession?.sessionId === ctx.sessionManager.getSessionId()
 				? currentPlanSession.binding
@@ -963,17 +968,18 @@ export function createPlanLifecycle(
 					const generation = ++lifecycleGeneration;
 					currentPlanSession = undefined;
 					const persistence = persistenceFactory(event.binding.settingsPath);
-					currentPlanSession = {
+					const session: PlanSession = {
 						binding: event.binding,
 						sessionId: event.ctx.sessionManager.getSessionId(),
 						persistence,
 						generation,
 					};
+					currentPlanSession = session;
 					modeTransition = undefined;
 					modeTransitionPromise = undefined;
 					clearPendingMode(event.ctx);
 					lastPromptedMode = undefined;
-					await reconstructState(event.ctx, generation);
+					await reconstructState(event.ctx, session);
 				});
 				return undefined as PlanLifecycleResult<E>;
 			case "branchChanged":
