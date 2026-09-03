@@ -42,7 +42,7 @@ import {
 	createSubagentInvocationAdapter,
 	isFailedSubagentResult,
 } from "./subagent-invocation.ts";
-import { createSubagentRunner, runSubagent } from "./subagent-runner.ts";
+import { createSubagentRunner } from "./subagent-runner.ts";
 
 export type {
 	AgentConfig,
