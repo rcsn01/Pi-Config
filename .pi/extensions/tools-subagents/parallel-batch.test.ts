@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import * as config from "./config.ts";
+import { deriveSubagentSessionId } from "./cache-affinity.ts";
 import { createParallelSubagentBatch } from "./parallel-batch.ts";
 import { agent, agentResult, memoryConfigStore, memoryRegistry } from "./test-harness.ts";
 
@@ -26,34 +27,34 @@ describe("parallel subagent batch", () => {
 		const snapshots: any[] = [];
 		let active = 0;
 		let peak = 0;
-		const runSingle = vi.fn(async (options: any) => {
-			calls.push(options);
+		const execute = vi.fn(async (request: any) => {
+			calls.push(request);
 			active++;
 			peak = Math.max(peak, active);
 			const progress = {
-				...agentResult({ agent: options.agent.name, task: options.task }).progress,
+				...agentResult({ agent: request.agent.name, task: request.task }).progress,
 				status: "running",
-				lastMessage: `running ${options.agent.name}`,
+				lastMessage: `running ${request.agent.name}`,
 			};
-			await options.onProgress?.({
+			await request.onProgress?.({
 				type: "message",
-				agent: options.agent.name,
+				agent: request.agent.name,
 				message: progress.lastMessage,
 				tokens: progress.tokens,
 			}, progress);
-			options.onUpdate?.(progress);
-			await gates[options.agent.name as "slow" | "fast"].promise;
+			request.onUpdate?.(progress);
+			await gates[request.agent.name as "slow" | "fast"].promise;
 			active--;
-			const result = options.agent.name === "slow"
-				? agentResult({ agent: "slow", task: options.task, output: "slow result" })
-				: agentResult({ agent: "fast", task: options.task, output: "fast result" });
-			await options.onProgress?.({ type: "completed", agent: options.agent.name, result }, result.progress);
+			const result = request.agent.name === "slow"
+				? agentResult({ agent: "slow", task: request.task, output: "slow result" })
+				: agentResult({ agent: "fast", task: request.task, output: "fast result" });
+			await request.onProgress?.({ type: "completed", agent: request.agent.name, result }, result.progress);
 			return result;
 		});
 		const batch = createParallelSubagentBatch({
 			registry,
 			config: memoryConfigStore({ maxConcurrency: 1 }),
-			runSingle,
+			childExecution: { execute },
 		});
 
 		const promise = batch.runBatch([
@@ -72,6 +73,10 @@ describe("parallel subagent batch", () => {
 		const firstSnapshot = snapshots[0];
 		expect(firstSnapshot).toMatchObject({ changedIndex: 0, phase: "started" });
 		expect(firstSnapshot.results.map((result: any) => result.progress.status)).toEqual(["running", "pending"]);
+		expect(firstSnapshot.results[0]).toMatchObject({
+			model: calls[0].launch.model,
+			thinkingLevel: calls[0].launch.thinkingLevel,
+		});
 		gates.fast.resolve();
 		gates.slow.resolve();
 
@@ -81,8 +86,21 @@ describe("parallel subagent batch", () => {
 			["fast", "fast result"],
 		]);
 		expect(calls).toEqual([
-			expect.objectContaining({ task: "first", cwd: "/one", timeoutMs: 50, maxOutputBytes: 100, model: "openai/one", thinkingLevel: "high", cacheAffinitySeed: "main-session-123" }),
-			expect.objectContaining({ task: "second", cwd: "/root", timeoutMs: 50, maxOutputBytes: 100, cacheAffinitySeed: "main-session-123" }),
+			expect.objectContaining({
+				task: "first",
+				cwd: "/one",
+				timeoutMs: 50,
+				maxOutputBytes: 100,
+				launch: { model: "openai/one", thinkingLevel: "high" },
+				cacheSessionId: deriveSubagentSessionId("main-session-123", "openai/one"),
+			}),
+			expect.objectContaining({
+				task: "second",
+				cwd: "/root",
+				timeoutMs: 50,
+				maxOutputBytes: 100,
+				cacheSessionId: deriveSubagentSessionId("main-session-123", "openai/test-model"),
+			}),
 		]);
 		expect(snapshots.map((snapshot) => snapshot.phase)).toEqual(expect.arrayContaining(["started", "progress", "completed"]));
 		expect(snapshots.find((snapshot) => snapshot.phase === "progress")?.event?.type).toBe("message");
@@ -91,18 +109,37 @@ describe("parallel subagent batch", () => {
 	});
 
 	it("validates the whole batch before starting a child", async () => {
-		const runSingle = vi.fn();
+		const execute = vi.fn();
 		const batch = createParallelSubagentBatch({
 			registry: memoryRegistry(),
 			config: memoryConfigStore(),
-			runSingle,
+			childExecution: { execute },
 		});
 
 		await expect(batch.runBatch([
 			{ agent: "worker", task: "valid" },
 			{ agent: "missing", task: "invalid" },
 		], { cwd: "/root" })).rejects.toThrow("Unknown agent: missing. Available agents: worker");
-		expect(runSingle).not.toHaveBeenCalled();
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("resolves the whole batch before starting a child", async () => {
+		const configStore = memoryConfigStore();
+		vi.spyOn(configStore, "resolveLaunch")
+			.mockReturnValueOnce({ model: "openai/first" })
+			.mockImplementationOnce(() => { throw new Error("bad launch"); });
+		const execute = vi.fn();
+		const batch = createParallelSubagentBatch({
+			registry: memoryRegistry(),
+			config: configStore,
+			childExecution: { execute },
+		});
+
+		await expect(batch.runBatch([
+			{ agent: "worker", task: "one" },
+			{ agent: "worker", task: "two" },
+		], { cwd: "/root" })).rejects.toThrow("bad launch");
+		expect(execute).not.toHaveBeenCalled();
 	});
 
 	it("uses configured concurrency when the caller does not override it", async () => {
@@ -112,12 +149,14 @@ describe("parallel subagent batch", () => {
 		const batch = createParallelSubagentBatch({
 			registry: memoryRegistry(),
 			config: memoryConfigStore({ maxConcurrency: 2 }),
-			runSingle: async (options) => {
-				active++;
-				peak = Math.max(peak, active);
-				await release.promise;
-				active--;
-				return agentResult({ task: options.task });
+			childExecution: {
+				execute: async (request) => {
+					active++;
+					peak = Math.max(peak, active);
+					await release.promise;
+					active--;
+					return agentResult({ task: request.task });
+				},
 			},
 		});
 		const promise = batch.runBatch([
@@ -138,12 +177,14 @@ describe("parallel subagent batch", () => {
 		const batch = createParallelSubagentBatch({
 			registry: memoryRegistry(),
 			config: memoryConfigStore(),
-			runSingle: async (options) => {
-				await options.onProgress?.(
-					{ type: "message", agent: "worker", message: "working", tokens: 1 },
-					agentResult().progress,
-				);
-				return agentResult({ task: options.task });
+			childExecution: {
+				execute: async (request) => {
+					await request.onProgress?.(
+						{ type: "message", agent: "worker", message: "working", tokens: 1 },
+						agentResult().progress,
+					);
+					return agentResult({ task: request.task });
+				},
 			},
 		});
 
