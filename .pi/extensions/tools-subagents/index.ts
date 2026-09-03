@@ -36,10 +36,7 @@ import {
 	type SubagentConfigStore,
 } from "./config.ts";
 import { createSubagentsCommand } from "./model-commands.ts";
-import {
-	createParallelSubagentBatch,
-	DEFAULT_MAX_CONCURRENCY,
-} from "./parallel-batch.ts";
+import { createParallelSubagentBatch } from "./parallel-batch.ts";
 import { renderSubagentCall, renderSubagentResult } from "./progress-renderer.ts";
 import {
 	createSubagentInvocationAdapter,
@@ -100,7 +97,6 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		};
 
 		registerSubagentService(service);
-		let maxConcurrency = DEFAULT_MAX_CONCURRENCY;
 		const profileInitialization = registerSessionProfileBinding(
 			{ settingsPath },
 			{
@@ -111,8 +107,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 					// One-time migration: carry a legacy config.json into the session's
 					// settings document (the profile when one is active), then delete it.
 					await migrateSubagentConfigLegacy(configStore.configPath, LEGACY_CONFIG_PATH);
-					const config = configStore.load();
-					maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+					configStore.load();
 				},
 			},
 		);
@@ -171,7 +166,6 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 			configStore.rememberMainModel(ctx.model);
 			return invocationAdapter.execute(params, {
 				cwd: ctx.cwd,
-				maxConcurrency,
 				signal,
 				cacheAffinitySeed: ctx.sessionManager.getSessionId(),
 				onUpdate,

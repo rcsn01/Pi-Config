@@ -193,8 +193,10 @@ extension.
   formats final text and details, and applies one failure rule. The Parallel
   subagent batch owns scheduling and calls child execution directly.
 - **Parallel subagent batch** — one ordered, bounded-concurrency execution of
-  prepared Subagent launches. The deep module owns scheduling and immutable
-  task-state snapshots; launch preparation and Pi-specific rendering stay outside.
+  prepared Subagent launches. The deep module owns per-invocation concurrency
+  selection from an explicit override, the bound Profile configuration, or the
+  default; scheduling; and immutable task-state snapshots. Launch preparation
+  and Pi-specific rendering stay outside.
 - **Repo query batch** — the read-only batched evidence tool (`repo_query`) behind
   the subagent runner: one `executeRepoQuery` interface; validation, path safety,
   dedupe, truncation, and formatting hide inside.
