@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -16,12 +17,15 @@ const ListParameters = Type.Object({}, { additionalProperties: false });
 const RemoveParameters = Type.Object({
 	id: Type.String({ description: "Opaque snapshot ID returned by github_repo_acquire or github_repo_list" }),
 }, { additionalProperties: false });
+const SKILL_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "SKILL.md");
 
 export default function githubReposExtension(pi: ExtensionAPI): void {
 	registerGitHubReposExtension(pi);
 }
 
 export function registerGitHubReposExtension(pi: ExtensionAPI, injectedStoreFor?: (ctx: ExtensionContext) => RepositoryStore): void {
+	pi.on("resources_discover", () => ({ skillPaths: [SKILL_PATH] }));
+
 	const stores = new Map<string, GitHubRepositoryStore>();
 	const storeFor = injectedStoreFor ?? ((ctx: ExtensionContext) => {
 		const root = path.resolve(ctx.cwd, CONFIG_DIR_NAME, "repos");
