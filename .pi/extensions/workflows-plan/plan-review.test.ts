@@ -255,7 +255,7 @@ describe("simple plan review UI", () => {
 			getSnapshot: () => ({
 				state: { mode: "plan", revision: 1, changedAt: "now", phase: "awaiting_review" } as any,
 				latestPlan: "# Plan",
-				lifecycleGeneration: 1,
+				isCurrent: () => true,
 			}),
 			getSessionProfileBinding: () => undefined,
 			exitPlanMode,
@@ -563,6 +563,85 @@ describe("plan review lifecycle", () => {
 
 		expect(harness.sendUserMessage).not.toHaveBeenCalled();
 		expect(harness.notify).toHaveBeenCalledWith(expect.stringContaining("No feedback was sent"), "warning");
+	});
+
+	it("does not act when only the captured snapshot currency expires while the selector is open", async () => {
+		const notify = vi.fn();
+		const sendUserMessage = vi.fn();
+		const exitPlanMode = vi.fn(async () => true);
+		const selection = deferred<string | undefined>();
+		let isCurrent = true;
+		const binding = { settingsPath: "/settings.json" } as any;
+		const controller = createPlanReviewController({
+			getSnapshot: () => ({
+				state: { mode: "plan", revision: 1, changedAt: "now", phase: "awaiting_review" } as any,
+				latestPlan: "# Currency Plan",
+				latestPlanKey: "currency-signature",
+				isCurrent: () => isCurrent,
+			}),
+			getSessionProfileBinding: () => binding,
+			exitPlanMode,
+			enterPlanMode: vi.fn(async () => true),
+			markPlanPrompted: vi.fn(),
+			restoreReviewedPlan: vi.fn(),
+			appendEntry: vi.fn(),
+			sendUserMessage,
+		});
+		const ctx = {
+			mode: "tui",
+			hasUI: true,
+			ui: { notify, select: vi.fn(() => selection.promise) },
+			getContextUsage: () => undefined,
+			isIdle: () => true,
+		} as any;
+
+		const review = controller.prompt(ctx, "A proposed plan is ready for review.");
+		await vi.waitFor(() => expect(ctx.ui.select).toHaveBeenCalledOnce());
+		isCurrent = false;
+		selection.resolve("Implement in current session");
+		await review;
+
+		expect(sendUserMessage).not.toHaveBeenCalled();
+		expect(exitPlanMode).not.toHaveBeenCalled();
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("No action was taken"), "warning");
+	});
+
+	it("does not send revision feedback when only the captured snapshot currency expires while the editor is open", async () => {
+		const notify = vi.fn();
+		const sendUserMessage = vi.fn();
+		const feedback = deferred<string | undefined>();
+		let isCurrent = true;
+		const binding = { settingsPath: "/settings.json" } as any;
+		const controller = createPlanReviewController({
+			getSnapshot: () => ({
+				state: { mode: "plan", revision: 1, changedAt: "now", phase: "awaiting_review" } as any,
+				latestPlan: "# Currency Plan",
+				latestPlanKey: "currency-signature",
+				isCurrent: () => isCurrent,
+			}),
+			getSessionProfileBinding: () => binding,
+			exitPlanMode: vi.fn(async () => true),
+			enterPlanMode: vi.fn(async () => true),
+			markPlanPrompted: vi.fn(),
+			restoreReviewedPlan: vi.fn(),
+			appendEntry: vi.fn(),
+			sendUserMessage,
+		});
+		const ctx = {
+			mode: "tui",
+			hasUI: true,
+			ui: { notify, editor: vi.fn(() => feedback.promise) },
+			isIdle: () => true,
+		} as any;
+
+		const revision = controller.revise(ctx);
+		await vi.waitFor(() => expect(ctx.ui.editor).toHaveBeenCalledOnce());
+		isCurrent = false;
+		feedback.resolve("Apply obsolete feedback");
+		await revision;
+
+		expect(sendUserMessage).not.toHaveBeenCalled();
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("No feedback was sent"), "warning");
 	});
 
 	it("keeps the plan in the assistant message but never opens approval UI outside TUI mode", async () => {

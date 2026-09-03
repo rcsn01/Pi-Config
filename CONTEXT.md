@@ -130,11 +130,12 @@ extension.
   session-profile binding lookup, Plan Mode enter/exit, prompted-plan
   marking, reviewed-plan restore, transcript entries, and user messages.
   The Plan Mode lifecycle constructs the implementation inline.
-- **Plan session currency** — the staleness guard inside the Plan Mode
-  lifecycle. Each enqueued effect snapshots the live Plan Session and the
-  lifecycle generation; guarded primitives (Plan State writes, tool
-  projection, transcript entries, profile persistence, notifies) abandon
-  silently across awaits once either moves on.
+- **Plan session currency** — the Plan Mode lifecycle's current
+  `PlanSession` identity plus monotonic lifecycle generation.
+  `isCurrentPlanSession` is checked at operation-specific asynchronous
+  boundaries so stale flows abandon before their next effect. Plan Review
+  receives the same meaning through a captured snapshot `isCurrent`
+  callback, without depending on generation mechanics.
 - **Model-selection lifecycle** — the deep in-process module in
   `ui-model-selector/` that owns one Session's operation admission, disposal
   draining, initialization decisions, interactive selection ordering, Profile

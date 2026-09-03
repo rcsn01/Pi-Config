@@ -68,7 +68,8 @@ export interface PlanReviewSnapshot {
 	state: PlanState;
 	latestPlan?: string;
 	latestPlanKey?: string;
-	lifecycleGeneration: number;
+	/** True while the lifecycle Session and generation captured at snapshot time are still live. */
+	isCurrent(): boolean;
 }
 
 export interface PlanReviewHost {
@@ -225,7 +226,7 @@ export function createPlanReviewController(
 		if (!plan) return;
 		const snapshot = host.getSnapshot();
 		const revision = snapshot.state.revision;
-		const generation = snapshot.lifecycleGeneration;
+		const isCurrent = snapshot.isCurrent;
 		const signature = snapshot.latestPlanKey ?? planSignature(plan);
 		const binding = host.getSessionProfileBinding(ctx);
 		const trimmed = feedback?.trim() || (await ctx.ui.editor("What should Pi do differently?", ""))?.trim();
@@ -238,7 +239,7 @@ export function createPlanReviewController(
 		if (
 			!isPlanMode(current.state) ||
 			current.state.revision !== revision ||
-			current.lifecycleGeneration !== generation ||
+			!isCurrent() ||
 			current.latestPlanKey !== signature
 		) {
 			ctx.ui.notify(
@@ -295,7 +296,7 @@ export function createPlanReviewController(
 	async function handleAction(ctx: ExtensionContext, plan: string, reason: string): Promise<void> {
 		const snapshot = host.getSnapshot();
 		const reviewRevision = snapshot.state.revision;
-		const reviewGeneration = snapshot.lifecycleGeneration;
+		const reviewIsCurrent = snapshot.isCurrent;
 		const reviewSignature = snapshot.latestPlanKey ?? planSignature(plan);
 		const binding = host.getSessionProfileBinding(ctx);
 		const selected = await selectAction(ctx, reason);
@@ -305,7 +306,7 @@ export function createPlanReviewController(
 		if (
 			!isPlanMode(current.state) ||
 			current.state.revision !== reviewRevision ||
-			current.lifecycleGeneration !== reviewGeneration ||
+			!reviewIsCurrent() ||
 			current.latestPlanKey !== reviewSignature
 		) {
 			ctx.ui.notify(
