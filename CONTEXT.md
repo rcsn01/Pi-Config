@@ -183,6 +183,7 @@ extension.
 
 - **Repository snapshot** — an immutable, commit-pinned source tree under `.pi/repos`.
 - **Repository store** — the module that owns acquisition, manifests, limits, listing, locking, and explicit removal.
+- **GitHub repository exploration skill** — the `github-repo-explorer` skill dynamically provided by `tools-github-repos`; it directs remote inspection through the snapshot tools and keeps repository files treated as untrusted data. Acquisition and storage remain extension-owned.
 
 ## Ollama Cloud catalog
 

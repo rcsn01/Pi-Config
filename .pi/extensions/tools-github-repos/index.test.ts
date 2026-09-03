@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { RepositoryStore, Snapshot } from "./contract.ts";
 import { formatAcquired, registerGitHubReposExtension } from "./index.ts";
@@ -21,19 +22,34 @@ const snapshot: Snapshot = {
 function setup() {
 	const tools = new Map<string, any>();
 	const commands = new Map<string, any>();
+	const events = new Map<string, any>();
 	const store: RepositoryStore = {
 		acquire: vi.fn(async () => snapshot),
 		list: vi.fn(async () => [{ ...snapshot }]),
 		remove: vi.fn(async (id: string) => ({ id, repository: snapshot.repository, commit: snapshot.commit, removed: true as const })),
 	};
 	registerGitHubReposExtension({
+		on: (event: string, handler: any) => events.set(event, handler),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 	} as any, () => store);
-	return { tools, commands, store };
+	return { tools, commands, events, store };
 }
 
 describe("GitHub repository tools", () => {
+	it("publishes the companion exploration skill through resource discovery", () => {
+		const { events } = setup();
+		const discover = events.get("resources_discover");
+		expect(discover).toBeTypeOf("function");
+
+		const result = discover({ cwd: "/project", reason: "startup" }, {});
+		expect(result.skillPaths).toHaveLength(1);
+		const skillPath = result.skillPaths[0] as string;
+		expect(skillPath).toMatch(/tools-github-repos[\\/]SKILL\.md$/);
+		expect(existsSync(skillPath)).toBe(true);
+		expect(readFileSync(skillPath, "utf8")).toMatch(/^---\nname: github-repo-explorer\ndescription: .+\n---\n/);
+	});
+
 	it("registers three small tools and returns concise acquisition metadata", async () => {
 		const { tools, store } = setup();
 		expect([...tools.keys()]).toEqual(["github_repo_acquire", "github_repo_list", "github_repo_remove"]);

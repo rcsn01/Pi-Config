@@ -73,7 +73,9 @@ The balanced run is recommended. It counterbalances `A → A → B → B` and `B
 
 ## Temporary GitHub repository explorer
 
-The opt-in `tools-github-repos` extension acquires public `github.com` repositories as immutable source snapshots under `.pi/repos/`. The `github_repo_acquire` tool accepts `owner/repo` or a GitHub HTTPS URL plus an optional branch, tag, full ref, or 40-character commit. It returns the pinned commit and a local source path. Use the normal `read`, `grep`, and `find` tools on that path.
+The opt-in `tools-github-repos` extension acquires public `github.com` repositories as immutable source snapshots under `.pi/repos/`. Enable it with `/features enable tools-github-repos` and `/reload`; it requires `policy-permissions`.
+
+While enabled, the extension also exposes the `github-repo-explorer` skill. The skill tells the agent to call `github_repo_acquire` before inspecting a remote repository, then use the normal `read`, `grep`, and `find` tools on the returned path. The tool accepts `owner/repo` or a GitHub HTTPS URL plus an optional branch, tag, full ref, or 40-character commit. It returns the pinned commit and a local source path.
 
 Snapshots persist across Pi sessions. List them with `github_repo_list` or `/repos`. Remove one with `github_repo_remove({ id })` or `/repos remove <id>`. Pi never removes a completed snapshot automatically.
 
