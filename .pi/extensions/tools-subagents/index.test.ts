@@ -219,19 +219,16 @@ describe("subagent tool wiring", () => {
 			expect(harness.config.configPath).toBe(settingsPath);
 		});
 
-		it("loads profile-specific maxConcurrency after applying the session path", async () => {
+		it("uses profile maxConcurrency changes on the next Pi tool invocation", async () => {
 			const root = mkdtempSync(join(tmpdir(), "subagents-concurrency-"));
 			roots.push(root);
 			const settingsPath = join(root, "settings.json");
-			mkdirSync(join(root, "profiles"));
+			const profilesPath = join(root, "profiles");
+			const focusedPath = join(profilesPath, "focused.json");
+			mkdirSync(profilesPath);
 			writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+			writeFileSync(focusedPath, JSON.stringify({ subagents: { maxConcurrency: 1 } }));
 
-			const config = memoryConfigStore({ maxConcurrency: 2, defaultThinkingLevel: "minimal" });
-			const originalSetSettingsPath = config.setSettingsPath;
-			config.setSettingsPath = (path) => {
-				originalSetSettingsPath(path);
-				config.document.maxConcurrency = 7;
-			};
 			let release!: () => void;
 			const gate = new Promise<void>((resolve) => { release = resolve; });
 			let active = 0;
@@ -243,19 +240,24 @@ describe("subagent tool wiring", () => {
 				active--;
 				return agentResult({ agent: request.agent.name, task: request.task });
 			});
-			const harness = extensionHarness(executeChild, { config, settingsPath });
+			const harness = extensionHarness(executeChild, { settingsPath, injectConfig: false });
 			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+			writeFileSync(focusedPath, JSON.stringify({ subagents: { maxConcurrency: 3 } }));
+
 			const execution = harness.tools.get("subagent").execute("call", {
-				tasks: Array.from({ length: 8 }, (_, index) => ({
+				tasks: Array.from({ length: 4 }, (_, index) => ({
 					agent: index % 2 === 0 ? "worker" : "explorer",
 					task: `task ${index}`,
 				})),
 			}, undefined, undefined, harness.ctx);
 
-			await vi.waitFor(() => expect(peak).toBe(7));
-			release();
-			await execution;
-			expect(peak).toBe(7);
+			try {
+				await vi.waitFor(() => expect(peak).toBe(3));
+			} finally {
+				release();
+				await execution;
+			}
+			expect(peak).toBe(3);
 		});
 	});
 });
