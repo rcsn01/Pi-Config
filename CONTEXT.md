@@ -139,7 +139,7 @@ extension.
   owns the Plan Mode lifecycle's current `PlanSession` identity plus monotonic
   lifecycle generation: Session start binding, branch-change generation
   advance, Session-stop teardown, Session-id resolution, and staleness
-  checks. `isCurrentPlanSession` is checked at operation-specific asynchronous
+  checks. `isCurrent` is checked at operation-specific asynchronous
   boundaries so stale flows abandon before their next effect. Plan Review
   receives the same meaning through a captured snapshot `isCurrent`
   callback, without depending on generation mechanics.
