@@ -37,6 +37,7 @@ export interface HarnessOptions {
 	thinkingLevel?: ModelThinkingLevel;
 	availableModels?: any[];
 	setModelResult?: boolean;
+	emitThinkingLevelFeedback?: boolean;
 	activeTools?: string[];
 	idle?: boolean;
 	sandboxInitializeError?: Error;
@@ -87,6 +88,7 @@ export function createHarness(options: HarnessOptions = {}) {
 	let idle = options.idle ?? true;
 	const appendedEntries: Array<{ customType: string; data: any }> = [];
 	const registrations: string[] = [];
+	const selectionFeedback: Promise<unknown>[] = [];
 	const abort = vi.fn();
 
 	const custom = vi.fn();
@@ -191,7 +193,16 @@ export function createHarness(options: HarnessOptions = {}) {
 	});
 	const setThinkingLevel = vi.fn((level: ModelThinkingLevel) => {
 		timeline.push(`setThinking:${level}`);
+		const previousLevel = thinkingLevel;
 		thinkingLevel = level;
+		if (!options.emitThinkingLevelFeedback) return;
+		for (const handler of handlers.get("thinking_level_select") ?? []) {
+			selectionFeedback.push(Promise.resolve(handler({
+				type: "thinking_level_select",
+				level,
+				previousLevel,
+			}, ctx)));
+		}
 	});
 	const sandboxExec = vi.fn(async (..._args: Parameters<BashOperations["exec"]>): Promise<{ exitCode: number | null }> => ({ exitCode: 0 }));
 	const sandboxDispose = vi.fn(async () => {});
@@ -300,6 +311,11 @@ export function createHarness(options: HarnessOptions = {}) {
 		sendUserMessage,
 		setModel,
 		setThinkingLevel,
+		async drainSelectionFeedback(): Promise<void> {
+			while (selectionFeedback.length > 0) {
+				await Promise.all(selectionFeedback.splice(0));
+			}
+		},
 		abort,
 		setIdle: (nextIdle: boolean) => {
 			idle = nextIdle;

@@ -118,6 +118,9 @@ extension.
   State, transitions, Profile rollback, tool projection, proposed-plan state,
   and ordering across Plan Runtime and Plan Review. Its events carry the raw
   ExtensionContext, and every effect runs guarded by Plan session currency.
+- **Plan selection transition** — bookkeeping inside the Plan Mode lifecycle
+  that marks internal Profile application and restoration. Model and thinking
+  feedback emitted while this marker is active is not treated as a user selection.
 - **Plan Review host** — the narrow dependency interface the Plan Review
   controller receives instead of the whole lifecycle: plan snapshot access,
   session-profile binding lookup, Plan Mode enter/exit, prompted-plan
