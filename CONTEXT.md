@@ -39,6 +39,10 @@ extension.
   correlation, record retention, payload analysis, byte accounting, pause state,
   and diagnostics behind one synchronous interface. Analysis dashboard lifecycle
   and Pi event adaptation stay outside.
+- **Analysis observation adapter**: the deep Pi-facing module that registers
+  observation hooks, owns Main and Compaction source identity, translates Pi events
+  into Observability events, and pairs Compaction preparation with success or failure
+  cleanup. Analysis dashboard and Analysis capture module lifecycles stay outside.
 - **Child observation module** — the shared best-effort module that carries
   Observability events from a child Pi process into the parent process. It owns
   conditional child-extension loading, pipe setup, private framing, size limits,

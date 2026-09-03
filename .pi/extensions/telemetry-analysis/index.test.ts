@@ -59,41 +59,19 @@ describe("analysis extension adapter", () => {
 		expect(h.ctx.ui.notify.mock.calls.flat().join(" ")).not.toContain("OpenAI request analysis");
 	});
 
-	it("captures compaction preparation and attaches the saved summary and usage", async () => {
+	it("routes an observation to the runtime after analysis starts", async () => {
 		const runtime = fakeRuntime("http://localhost/#token=test");
 		const h = harness();
 		createAnalysisExtension({ createRuntime: () => runtime, openUrl: vi.fn() })(h.pi);
 		await h.commands.get("analysis").handler("", h.ctx);
-		const preparation = {
-			firstKeptEntryId: "kept", messagesToSummarize: [{ role: "user", content: "old" }],
-			turnPrefixMessages: [{ role: "assistant", content: "prefix" }], isSplitTurn: true, tokensBefore: 123,
-			previousSummary: "previous", fileOps: { readFiles: ["a.ts"], modifiedFiles: [] }, settings: { keepRecentTokens: 20 },
-		};
-		h.handlers.get("session_before_compact")({ preparation, customInstructions: "focus", reason: "manual", willRetry: false }, h.ctx);
-		const request = runtime.observe.mock.calls.map(([event]: any[]) => event).find((event: any) => event.type === "request");
-		expect(request).toMatchObject({ source: { channel: "compaction", displayLabel: "Compaction" }, api: "pi-compaction", fidelity: "pi-preparation" });
-		expect(request.payload).toMatchObject({ instructions: "focus", previousSummary: "previous", messagesToSummarize: preparation.messagesToSummarize, turnPrefixMessages: preparation.turnPrefixMessages });
-		const usage = { input: 2, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-		h.handlers.get("session_compact")({ compactionEntry: { summary: "saved summary", usage, tokensBefore: 123, firstKeptEntryId: "kept" }, reason: "manual", willRetry: false, fromExtension: false }, h.ctx);
-		const completion = runtime.observe.mock.calls.map(([event]: any[]) => event).find((event: any) => event.type === "assistant");
-		expect(completion.source.invocationId).toBe(request.source.invocationId);
-		expect(completion.message).toMatchObject({ summary: "saved summary", usage });
-	});
 
-	it("observes lifecycle events without replacing payloads or messages", async () => {
-		const runtime = fakeRuntime("http://localhost/#token=test");
-		const h = harness();
-		createAnalysisExtension({ createRuntime: () => runtime, openUrl: vi.fn() })(h.pi);
-		await h.commands.get("analysis").handler("", h.ctx);
-		expect(h.handlers.get("before_provider_request")({ payload: { secret: true } }, h.ctx)).toBeUndefined();
-		expect(h.handlers.get("message_end")({ message: { role: "assistant", content: [] } }, h.ctx)).toBeUndefined();
-		h.handlers.get("agent_start")({}, h.ctx);
-		h.handlers.get("turn_start")({ turnIndex: 3, timestamp: 99 }, h.ctx);
-		h.handlers.get("after_provider_response")({ status: 201 }, h.ctx);
-		expect(runtime.observe).toHaveBeenCalledWith(expect.objectContaining({ type: "request", payload: { secret: true } }));
-		expect(runtime.observe).toHaveBeenCalledWith(expect.objectContaining({ type: "assistant", message: { role: "assistant", content: [] }, source: expect.objectContaining({ channel: "main" }) }));
-		await h.handlers.get("session_shutdown")({ reason: "quit" }, h.ctx);
-		expect(runtime.close).toHaveBeenCalledOnce();
+		h.handlers.get("before_provider_request")({ payload: { secret: true } }, h.ctx);
+
+		expect(runtime.observe).toHaveBeenCalledWith(expect.objectContaining({
+			type: "request",
+			payload: { secret: true },
+			source: expect.objectContaining({ channel: "main" }),
+		}));
 	});
 
 	it("rebinds the persistent runtime across reload and session replacement", async () => {
