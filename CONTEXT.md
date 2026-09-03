@@ -122,6 +122,11 @@ extension.
   State, transitions, Profile rollback, tool projection, proposed-plan state,
   and ordering across Plan Runtime and Plan Review. Its events carry the raw
   ExtensionContext, and every effect runs guarded by Plan session currency.
+  Its internal Plan session currency and Pending-mode queue seams live beside
+  it in `workflows-plan/` and are private to its implementation; the
+  orchestration core keeps branch reconstruction, state commits, tool
+  projection, Profile apply/rollback, prompt/turn guarding, and Plan Review
+  host construction.
 - **Plan selection transition** — bookkeeping inside the Plan Mode lifecycle
   that marks internal Profile application and restoration. Model and thinking
   feedback emitted while this marker is active is not treated as a user selection.
@@ -130,12 +135,19 @@ extension.
   session-profile binding lookup, Plan Mode enter/exit, prompted-plan
   marking, reviewed-plan restore, transcript entries, and user messages.
   The Plan Mode lifecycle constructs the implementation inline.
-- **Plan session currency** — the Plan Mode lifecycle's current
-  `PlanSession` identity plus monotonic lifecycle generation.
-  `isCurrentPlanSession` is checked at operation-specific asynchronous
+- **Plan session currency** — the internal module in `plan-currency.ts` that
+  owns the Plan Mode lifecycle's current `PlanSession` identity plus monotonic
+  lifecycle generation: Session start binding, branch-change generation
+  advance, Session-stop teardown, Session-id resolution, and staleness
+  checks. `isCurrentPlanSession` is checked at operation-specific asynchronous
   boundaries so stale flows abandon before their next effect. Plan Review
   receives the same meaning through a captured snapshot `isCurrent`
   callback, without depending on generation mechanics.
+- **Pending-mode queue** — the internal module in `plan-pending-mode.ts` that
+  defers mode switches and `/plan` tasks issued while the agent is busy. It
+  owns the queued request, its `plan-pending` status surface, application at
+  agent settle, and cancellation on Session start, branch change, and Session
+  stop; the enter/exit transitions it defers stay in the lifecycle core.
 - **Model-selection lifecycle** — the deep in-process module in
   `ui-model-selector/` that owns one Session's operation admission, disposal
   draining, initialization decisions, interactive selection ordering, Profile
