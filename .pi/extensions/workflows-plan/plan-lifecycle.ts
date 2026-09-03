@@ -53,6 +53,7 @@ import {
 	profileLabel,
 } from "./model-profile.ts";
 import { createPlanCurrency, type PlanSession } from "./plan-currency.ts";
+import { createPlanPendingMode } from "./plan-pending-mode.ts";
 import { buildPlanModeSystemPrompt } from "./plan-prompt.ts";
 import { updatePlanStatus } from "./plan-renderer.ts";
 import {
@@ -289,7 +290,6 @@ export function createPlanLifecycle(
 	let latestProposedPlanKey: string | undefined;
 	let modeTransition: "entering" | "exiting" | undefined;
 	let modeTransitionPromise: Promise<boolean> | undefined;
-	let pendingModeRequest: { target: AgentMode; prompt?: string; task?: string } | undefined;
 	let lastPromptedMode: AgentMode | undefined;
 	let runtimeContext: ExtensionContext | undefined;
 	let requestModeRevision: number | undefined;
@@ -802,32 +802,6 @@ export function createPlanLifecycle(
 		sendUserMessage: (message, options) => pi.sendUserMessage(message, options),
 	}, dependencies.sessionProfileTransfer ?? sessionProfileTransfer);
 
-	function clearPendingMode(ctx: ExtensionContext): void {
-		pendingModeRequest = undefined;
-		ctx.ui.setStatus("plan-pending", undefined);
-	}
-
-	function queuePendingMode(
-		ctx: ExtensionContext,
-		target: AgentMode,
-		options: { prompt?: string; task?: string } = {},
-	): void {
-		if (target === planState.mode && !options.task) {
-			clearPendingMode(ctx);
-			ctx.ui.notify("Queued Plan Mode switch cancelled.", "info");
-			return;
-		}
-		pendingModeRequest = { target, ...options };
-		if (options.task) {
-			ctx.ui.setStatus("plan-pending", "plan task queued");
-			ctx.ui.notify("Plan task will start after the current run.", "info");
-			return;
-		}
-		const label = target === "plan" ? "Plan Mode" : "normal mode";
-		ctx.ui.setStatus("plan-pending", `${label} queued`);
-		ctx.ui.notify(`Mode switch to ${label} queued until the current run finishes.`, "info");
-	}
-
 	function activateTask(ctx: ExtensionContext, task: string): void {
 		latestProposedPlan = undefined;
 		latestProposedPlanKey = undefined;
@@ -845,35 +819,26 @@ export function createPlanLifecycle(
 		pi.sendUserMessage(task, undefined);
 	}
 
-	async function applyPendingMode(ctx: ExtensionContext): Promise<boolean> {
-		const request = pendingModeRequest;
-		if (!request) return false;
-		clearPendingMode(ctx);
-		if (request.target === "plan") {
-			if (!(isPlanMode(planState) || await enterPlanMode(ctx, request.prompt ?? request.task))) return true;
-			if (request.task) {
-				activateTask(ctx, request.task);
-				return true;
-			}
+	const pendingMode = createPlanPendingMode({
+		currentMode: () => planState.mode,
+		enter: (ctx, prompt) => enterPlanMode(ctx, prompt),
+		exit: (ctx) => exitPlanMode(ctx),
+		activateTask: (ctx, task) => activateTask(ctx, task),
+		notifyEntered: (ctx) => {
 			ctx.ui.notify(
 				activePlanProfile
 					? `📋 Plan mode active: ${profileLabel(activePlanProfile)}`
 					: "📋 Plan mode active.",
 				"info",
 			);
-			return true;
-		}
-		if (await exitPlanMode(ctx)) ctx.ui.notify("Plan mode exited.", "info");
-		return true;
-	}
+		},
+	});
 
 	async function togglePlanMode(ctx: ExtensionContext, source: PlanLifecycleModeToggled["source"]): Promise<void> {
 		currency.require(ctx);
 		if (!ctx.isIdle()) {
-			const effectiveTarget = pendingModeRequest?.target ?? planState.mode;
-			const target = effectiveTarget === "plan" ? "default" : "plan";
-			queuePendingMode(ctx, target, {
-				prompt: target === "plan" && source === "shortcut" ? planState.prompt : undefined,
+			pendingMode.toggle(ctx, {
+				prompt: source === "shortcut" ? planState.prompt : undefined,
 			});
 			return;
 		}
@@ -894,7 +859,7 @@ export function createPlanLifecycle(
 	async function startTask(ctx: ExtensionContext, task: string): Promise<void> {
 		currency.require(ctx);
 		if (!ctx.isIdle()) {
-			queuePendingMode(ctx, "plan", { task });
+			pendingMode.queue(ctx, "plan", { task });
 			return;
 		}
 		if (!(isPlanMode(planState) || await enterPlanMode(ctx, task))) return;
@@ -939,13 +904,13 @@ export function createPlanLifecycle(
 					const session = currency.begin(event.binding, event.ctx);
 					modeTransition = undefined;
 					modeTransitionPromise = undefined;
-					clearPendingMode(event.ctx);
+					pendingMode.clear(event.ctx);
 					lastPromptedMode = undefined;
 					await reconstructState(event.ctx, session);
 				});
 				return undefined as PlanLifecycleResult<E>;
 			case "branchChanged":
-				clearPendingMode(event.ctx);
+				pendingMode.clear(event.ctx);
 				await reconstruct(event.ctx);
 				return undefined as PlanLifecycleResult<E>;
 			case "sessionStopping":
@@ -957,7 +922,7 @@ export function createPlanLifecycle(
 						if (!currency.end(stoppingSession)) return;
 						modeTransition = undefined;
 						modeTransitionPromise = undefined;
-						clearPendingMode(event.ctx);
+						pendingMode.clear(event.ctx);
 						runtimeContext = event.ctx;
 						try {
 							await planRuntime.dispose();
@@ -975,11 +940,11 @@ export function createPlanLifecycle(
 				await togglePlanMode(event.ctx, event.source);
 				return undefined as PlanLifecycleResult<E>;
 			case "modeEntered":
-				if (!event.ctx.isIdle()) queuePendingMode(event.ctx, "plan", { prompt: event.prompt });
+				if (!event.ctx.isIdle()) pendingMode.queue(event.ctx, "plan", { prompt: event.prompt });
 				else await enterPlanMode(event.ctx, event.prompt);
 				return undefined as PlanLifecycleResult<E>;
 			case "modeExited":
-				if (!event.ctx.isIdle()) queuePendingMode(event.ctx, "default");
+				if (!event.ctx.isIdle()) pendingMode.queue(event.ctx, "default");
 				else if (await exitPlanMode(event.ctx)) event.ctx.ui.notify("Plan mode exited.", "info");
 				return undefined as PlanLifecycleResult<E>;
 			case "taskStarted":
@@ -1055,7 +1020,7 @@ export function createPlanLifecycle(
 				return await reviewController.handleInput(event.event, event.ctx) as PlanLifecycleResult<E>;
 			case "agentSettled":
 				if (!currency.resolve(event.ctx)) return undefined as PlanLifecycleResult<E>;
-				if (await applyPendingMode(event.ctx)) return undefined as PlanLifecycleResult<E>;
+				if (await pendingMode.apply(event.ctx)) return undefined as PlanLifecycleResult<E>;
 				await reviewController.handleAgentSettled(event.ctx);
 				return undefined as PlanLifecycleResult<E>;
 			case "turnEnded":
