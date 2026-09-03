@@ -5,6 +5,7 @@ import { getObservabilityService, resetObservabilityServiceForTests } from "../_
 import { createSubagentRunner } from "./subagent-runner.ts";
 import {
 	agent,
+	agentResult,
 	emitProcessResult,
 	fakeProcess,
 	memoryConfigStore,
@@ -19,6 +20,31 @@ async function waitForProcess(processes: unknown[]): Promise<void> {
 beforeEach(() => resetObservabilityServiceForTests());
 
 describe("single subagent runner", () => {
+	it("prepares a request before sending it to child execution", async () => {
+		const worker = agent();
+		const execute = vi.fn(async () => agentResult());
+		const run = createSubagentRunner({
+			registry: memoryRegistry([worker]),
+			config: memoryConfigStore({ defaultThinkingLevel: "minimal" }),
+			childExecution: { execute },
+		});
+
+		await run({
+			agent: "worker",
+			prompt: "legacy task",
+			cwd: "/workspace",
+			cacheAffinitySeed: "session",
+		});
+
+		expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+			agent: worker,
+			task: "legacy task",
+			cwd: "/workspace",
+			launch: { model: "openai/test-model", thinkingLevel: "minimal" },
+			cacheSessionId: deriveSubagentSessionId("session", "openai/test-model"),
+		}));
+	});
+
 	it("builds child arguments and parses chunked, malformed, and unterminated stream lines", async () => {
 		const spawn = spawnHarness();
 		const config = memoryConfigStore({ defaultThinkingLevel: "minimal" });

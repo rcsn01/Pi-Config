@@ -5,13 +5,13 @@ import type {
 	RunSubagentOptions,
 } from "../_shared/subagent-service.ts";
 import { agentRegistry, type AgentRegistry } from "./agent-registry.ts";
-import { deriveSubagentSessionId } from "./cache-affinity.ts";
 import {
 	createSubagentChildExecution,
 	type SpawnSubagentProcess,
 	type SubagentChildExecution,
 } from "./child-execution.ts";
 import { getDefaultSubagentConfig, type SubagentConfigStore } from "./config.ts";
+import { prepareSubagentLaunches } from "./launch-preparation.ts";
 
 export { BUILTIN_TOOLS, CUSTOM_TOOL_EXTENSIONS, EXT_BASE } from "./child-execution.ts";
 export type { SpawnSubagentProcess } from "./child-execution.ts";
@@ -50,24 +50,8 @@ export function createSubagentRunner(dependencies: SubagentRunnerDependencies = 
 	});
 
 	return async (options: RunSubagentOptions): Promise<AgentResult> => {
-		const agent = registry.resolve(options.agent);
-		const task = options.task ?? options.prompt ?? "";
-		const launch = config.resolveLaunch(agent, options.model, options.thinkingLevel);
-		const cacheSessionId = options.cacheAffinitySeed
-			? deriveSubagentSessionId(options.cacheAffinitySeed, launch.model)
-			: undefined;
-		return childExecution.execute({
-			agent,
-			task,
-			cwd: options.cwd,
-			launch,
-			cacheSessionId,
-			signal: options.signal,
-			timeoutMs: options.timeoutMs,
-			maxOutputBytes: options.maxOutputBytes,
-			onUpdate: options.onUpdate,
-			onProgress: options.onProgress,
-		});
+		const [request] = prepareSubagentLaunches([options], { registry, config });
+		return childExecution.execute(request);
 	};
 }
 

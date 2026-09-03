@@ -1,13 +1,16 @@
 import type {
-	AgentConfig,
 	AgentResult,
 	RunSubagentOptions,
 	RunSubagentsParallelOptions,
 	SubagentProgressEvent,
 } from "../_shared/subagent-service.ts";
 import { agentRegistry, type AgentRegistry } from "./agent-registry.ts";
+import {
+	createSubagentChildExecution,
+	type SubagentChildExecution,
+} from "./child-execution.ts";
 import { getDefaultSubagentConfig, type SubagentConfigStore } from "./config.ts";
-import { createSubagentRunner } from "./subagent-runner.ts";
+import { prepareSubagentLaunches } from "./launch-preparation.ts";
 
 export const DEFAULT_MAX_CONCURRENCY = 4;
 
@@ -39,7 +42,7 @@ export interface ParallelSubagentBatch {
 interface ParallelBatchDependencies {
 	registry?: AgentRegistry;
 	config?: SubagentConfigStore;
-	runSingle?: (options: RunSubagentOptions) => Promise<AgentResult>;
+	childExecution?: SubagentChildExecution;
 }
 
 interface CompatibilityCallbacks {
@@ -108,11 +111,7 @@ async function runOrdered<T, R>(
 export function createParallelSubagentBatch(dependencies: ParallelBatchDependencies = {}): ParallelSubagentBatch {
 	const registry = dependencies.registry ?? agentRegistry;
 	const getConfig = () => dependencies.config ?? getDefaultSubagentConfig();
-	let fallbackRunSingle: ((options: RunSubagentOptions) => Promise<AgentResult>) | undefined;
-	const runSingle = dependencies.runSingle ?? ((options: RunSubagentOptions) => {
-		fallbackRunSingle ??= createSubagentRunner({ registry, config: getConfig() });
-		return fallbackRunSingle(options);
-	});
+	const childExecution = dependencies.childExecution ?? createSubagentChildExecution();
 
 	async function execute(
 		tasks: readonly ParallelBatchTask[],
@@ -120,16 +119,6 @@ export function createParallelSubagentBatch(dependencies: ParallelBatchDependenc
 		compatibility: CompatibilityCallbacks = {},
 	): Promise<AgentResult[]> {
 		const config = getConfig();
-		const availableAgents = registry.load();
-		const available = availableAgents.map((agent) => agent.name).join(", ") || "none";
-		const agentsByName = new Map<string, AgentConfig>(availableAgents.map((agent) => [agent.name, agent]));
-
-		for (const task of tasks) {
-			if (!agentsByName.has(task.agent)) {
-				throw new Error(`Unknown agent: ${task.agent}. Available agents: ${available}`);
-			}
-		}
-
 		const concurrency = Math.max(
 			1,
 			options.maxConcurrency ?? config.load().maxConcurrency ?? DEFAULT_MAX_CONCURRENCY,
@@ -144,42 +133,42 @@ export function createParallelSubagentBatch(dependencies: ParallelBatchDependenc
 				...(event ? { event } : {}),
 			});
 		};
+		const requests: RunSubagentOptions[] = tasks.map((task, index) => ({
+			agent: task.agent,
+			task: task.task,
+			prompt: task.prompt,
+			cwd: task.cwd ?? options.cwd,
+			model: task.model,
+			thinkingLevel: task.thinkingLevel,
+			signal: options.signal,
+			timeoutMs: options.timeoutMs,
+			maxOutputBytes: options.maxOutputBytes,
+			cacheAffinitySeed: options.cacheAffinitySeed,
+			onUpdate: (progress) => {
+				liveResults[index] = { ...liveResults[index], progress: { ...progress } };
+				publish(index, "progress", latestEvents[index]);
+				latestEvents[index] = undefined;
+			},
+			onProgress: async (event, progress) => {
+				latestEvents[index] = event;
+				if (progress) {
+					liveResults[index] = { ...liveResults[index], progress: { ...progress } };
+				}
+				await compatibility.onProgress?.(index, event, progress);
+			},
+		}));
+		const preparedRequests = prepareSubagentLaunches(requests, { registry, config });
 
-		return runOrdered(tasks, concurrency, async (task, index) => {
-			const agent = agentsByName.get(task.agent)!;
-			const taskText = task.task ?? task.prompt ?? "";
-			const launch = config.resolveLaunch(agent, task.model, task.thinkingLevel);
+		return runOrdered(preparedRequests, concurrency, async (request, index) => {
 			liveResults[index] = {
 				...liveResults[index],
-				model: launch.model,
-				thinkingLevel: launch.thinkingLevel,
+				model: request.launch.model,
+				thinkingLevel: request.launch.thinkingLevel,
 				progress: { ...liveResults[index].progress, status: "running" },
 			};
 			publish(index, "started");
 
-			const result = await runSingle({
-				agent,
-				task: taskText,
-				cwd: task.cwd ?? options.cwd,
-				signal: options.signal,
-				timeoutMs: options.timeoutMs,
-				maxOutputBytes: options.maxOutputBytes,
-				cacheAffinitySeed: options.cacheAffinitySeed,
-				model: launch.model,
-				thinkingLevel: launch.thinkingLevel,
-				onUpdate: (progress) => {
-					liveResults[index] = { ...liveResults[index], progress: { ...progress } };
-					publish(index, "progress", latestEvents[index]);
-					latestEvents[index] = undefined;
-				},
-				onProgress: async (event, progress) => {
-					latestEvents[index] = event;
-					if (progress) {
-						liveResults[index] = { ...liveResults[index], progress: { ...progress } };
-					}
-					await compatibility.onProgress?.(index, event, progress);
-				},
-			});
+			const result = await childExecution.execute(request);
 
 			liveResults[index] = result;
 			publish(index, "completed", latestEvents[index]);

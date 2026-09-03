@@ -24,7 +24,7 @@ afterEach(() => {
 const BUNDLED_AGENTS = ["default", "explorer", "judge", "researcher", "worker"];
 
 function extensionHarness(
-	runSingle = vi.fn(async (options: any) => agentResult({ agent: options.agent.name, task: options.task })),
+	executeChild = vi.fn(async (request: any) => agentResult({ agent: request.agent.name, task: request.task })),
 	options: { config?: any; settingsPath?: string; alignConfigPath?: boolean; injectConfig?: boolean } = {},
 ) {
 	const handlers = new Map<string, any>();
@@ -55,7 +55,7 @@ function extensionHarness(
 		settingsPath: options.settingsPath,
 		registry,
 		...(injectedConfig ? { config: injectedConfig } : {}),
-		runSingle: runSingle as any,
+		childExecution: { execute: executeChild as any },
 	})(pi as any);
 	const ctx = {
 		cwd: "/workspace",
@@ -66,7 +66,7 @@ function extensionHarness(
 		modelRegistry: { refresh: vi.fn(), getAvailable: vi.fn(() => []), find: vi.fn() },
 		scopedModels: [],
 	} as any;
-	return { handlers, commands, tools, registrations, registry, config: injectedConfig ?? config, runSingle, ctx };
+	return { handlers, commands, tools, registrations, registry, config: injectedConfig ?? config, executeChild, ctx };
 }
 
 describe("subagent extension interfaces", () => {
@@ -171,21 +171,22 @@ describe("subagent tool wiring", () => {
 			output: "partial",
 			progress: { ...agentResult().progress, status: "failed", error: "boom" },
 		});
-		const runSingle = vi.fn(async (options: any) => {
-			options.onUpdate?.({ ...failed.progress, status: "running" });
+		const executeChild = vi.fn(async (request: any) => {
+			request.onUpdate?.({ ...failed.progress, status: "running" });
 			return failed;
 		});
-		const harness = extensionHarness(runSingle);
+		const harness = extensionHarness(executeChild);
 		const updates: any[] = [];
 		const result = await harness.tools.get("subagent").execute(
 			"call", { tasks: [{ agent: "worker", task: "Do work", cwd: "/task" }] }, undefined,
 			(update: any) => updates.push(update), harness.ctx,
 		);
-		expect(runSingle).toHaveBeenCalledWith(expect.objectContaining({
+		expect(executeChild).toHaveBeenCalledWith(expect.objectContaining({
 			agent: expect.objectContaining({ name: "worker" }),
 			task: "Do work",
 			cwd: "/task",
-			cacheAffinitySeed: "main-session-123",
+			launch: { model: "openai/test-model", thinkingLevel: "minimal" },
+			cacheSessionId: expect.stringMatching(/^subagent-/),
 		}));
 		expect(updates[0]).toMatchObject({ content: [{ text: "(running...)" }], details: { mode: "single" } });
 		expect(result).toMatchObject({
@@ -235,14 +236,14 @@ describe("subagent tool wiring", () => {
 			const gate = new Promise<void>((resolve) => { release = resolve; });
 			let active = 0;
 			let peak = 0;
-			const runSingle = vi.fn(async (options: any) => {
+			const executeChild = vi.fn(async (request: any) => {
 				active++;
 				peak = Math.max(peak, active);
 				await gate;
 				active--;
-				return agentResult({ agent: options.agent.name, task: options.task });
+				return agentResult({ agent: request.agent.name, task: request.task });
 			});
-			const harness = extensionHarness(runSingle, { config, settingsPath });
+			const harness = extensionHarness(executeChild, { config, settingsPath });
 			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
 			const execution = harness.tools.get("subagent").execute("call", {
 				tasks: Array.from({ length: 8 }, (_, index) => ({

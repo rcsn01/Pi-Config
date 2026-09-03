@@ -174,19 +174,24 @@ extension.
 
 ## Subagent tooling
 
+- **Subagent launch preparation** — the deep in-process module that turns raw single
+  or parallel Subagent requests into prepared child launches. It owns one registry
+  snapshot, whole-request-set agent validation, task normalization, model and thinking
+  resolution exactly once, and cache-affinity identity derivation; scheduling and child
+  process lifetime stay outside.
 - **Subagent child execution module** — the deep process-lifetime module for one
   resolved Subagent launch. It owns private prompt and task files, child
   observation setup, process spawning and termination, JSON event meaning,
   progress and usage state, partial output, truncation, terminal results, and
-  cleanup on every exit path. Agent and model resolution stay in the runner;
-  Pi result rendering stays in the invocation adapter.
+  cleanup on every exit path. It receives prepared requests; Pi result rendering
+  stays in the invocation adapter.
 - **Subagent invocation adapter** — the Pi-facing deep module for one `subagent`
   tool call: selects single or parallel mode, publishes immutable live snapshots,
-  formats final text and details, and applies one failure rule. Child execution
-  stays in the runner; scheduling stays in the Parallel subagent batch.
+  formats final text and details, and applies one failure rule. The Parallel
+  subagent batch owns scheduling and calls child execution directly.
 - **Parallel subagent batch** — one ordered, bounded-concurrency execution of
-  subagent tasks. The deep module owns validation, launch resolution, scheduling,
-  and immutable task-state snapshots; Pi-specific rendering stays in its adapter.
+  prepared Subagent launches. The deep module owns scheduling and immutable
+  task-state snapshots; launch preparation and Pi-specific rendering stay outside.
 - **Repo query batch** — the read-only batched evidence tool (`repo_query`) behind
   the subagent runner: one `executeRepoQuery` interface; validation, path safety,
   dedupe, truncation, and formatting hide inside.

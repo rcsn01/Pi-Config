@@ -26,6 +26,10 @@ import {
 	type AgentRegistry,
 } from "./agent-registry.ts";
 import {
+	createSubagentChildExecution,
+	type SubagentChildExecution,
+} from "./child-execution.ts";
+import {
 	createSubagentConfigStore,
 	LEGACY_CONFIG_PATH,
 	migrateSubagentConfigLegacy,
@@ -59,7 +63,7 @@ export interface SubagentsExtensionDependencies {
 	settingsPath?: string;
 	registry?: AgentRegistry;
 	config?: SubagentConfigStore;
-	runSingle?: typeof runSubagent;
+	childExecution?: SubagentChildExecution;
 }
 
 export function createSubagentsExtension(dependencies: SubagentsExtensionDependencies = {}) {
@@ -82,8 +86,9 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 			settingsPath,
 			legacyConfigPath: LEGACY_CONFIG_PATH,
 		});
-		const runSingle = dependencies.runSingle ?? createSubagentRunner({ registry, config: configStore });
-		const parallelBatch = createParallelSubagentBatch({ registry, config: configStore, runSingle });
+		const childExecution = dependencies.childExecution ?? createSubagentChildExecution();
+		const runSingle = createSubagentRunner({ registry, config: configStore, childExecution });
+		const parallelBatch = createParallelSubagentBatch({ registry, config: configStore, childExecution });
 		const invocationAdapter = createSubagentInvocationAdapter({ batch: parallelBatch });
 		const service: SubagentService = {
 			id: "tools-subagents",
