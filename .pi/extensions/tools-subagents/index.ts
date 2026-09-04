@@ -32,7 +32,6 @@ import {
 import {
 	createSubagentConfigStore,
 	LEGACY_CONFIG_PATH,
-	migrateSubagentConfigLegacy,
 	type SubagentConfigStore,
 } from "./config.ts";
 import { createSubagentsCommand } from "./model-commands.ts";
@@ -101,9 +100,8 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 				applyPath: (binding) => configStore.setSettingsPath(binding.settingsPath),
 				async initialize(_binding, _event, ctx) {
 					configStore.rememberMainModel(ctx.model);
-					// One-time migration: carry a legacy config.json into the session's
-					// settings document (the profile when one is active), then delete it.
-					await migrateSubagentConfigLegacy(configStore.configPath, LEGACY_CONFIG_PATH);
+					// Carry a legacy config.json into the active Settings document once.
+					await configStore.migrateLegacy();
 					configStore.load();
 				},
 			},

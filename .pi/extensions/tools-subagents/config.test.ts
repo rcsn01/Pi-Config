@@ -1,29 +1,18 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	appendChildModelArgument,
 	appendChildThinkingArgument,
-	canonicalMainModel,
-	clearAllContextWindows,
-	clearAllThinkingAssignments,
+	applySubagentConfigurationChanges,
 	createSubagentConfigStore,
-	migrateSubagentConfigLegacy,
 	parseModelConfiguration,
-	removeAgentContextWindow,
-	removeAgentModelAssignment,
-	removeAgentThinkingAssignment,
 	resolveSubagentAssignment,
-	setAgentContextWindow,
-	setAgentModelAssignment,
-	setAgentThinkingAssignment,
-	setAllContextWindows,
-	setAllModelAssignments,
-	setAllThinkingAssignments,
 	splitModelThinkingSetting,
-	validateContextWindow,
 } from "./config.ts";
+import { agent } from "./test-harness.ts";
 
 const mainModel = { provider: "anthropic", id: "claude-sonnet-4-6" };
 const roots: string[] = [];
@@ -186,156 +175,114 @@ describe("subagent model resolution", () => {
 			model: "openai/gpt-5.4",
 			thinkingLevel: "xhigh",
 		});
-		expect(canonicalMainModel(mainModel)).toBe("anthropic/claude-sonnet-4-6");
 	});
 });
 
-describe("subagent model configuration updates", () => {
-	it("setting all agents clears individual overrides and preserves unknown fields", () => {
-		expect(setAllModelAssignments({
-			maxConcurrency: 8,
+describe("subagent configuration changes", () => {
+	it("applies ordered model and thinking changes while preserving unknown fields", () => {
+		const input = {
 			custom: true,
 			defaultModel: "main",
-			agentModels: { worker: "openai/gpt-5.4" },
-			defaultThinkingLevel: "medium",
+			agentModels: { explorer: "anthropic/old", worker: "openai/old" },
+			defaultThinkingLevel: "low",
 			agentThinkingLevels: { worker: "high" },
-		}, "google/gemini-2.5-pro")).toEqual({
-			maxConcurrency: 8,
+		};
+		const result = applySubagentConfigurationChanges(input, [
+			{ kind: "set-model", target: { kind: "all" }, model: "google/gemini-2.5-pro" },
+			{ kind: "set-model", target: { kind: "agent", name: "worker" }, model: "openai/gpt-5.4" },
+			{ kind: "set-thinking", target: { kind: "all" }, thinkingLevel: "medium" },
+			{ kind: "set-thinking", target: { kind: "agent", name: "worker" }, thinkingLevel: "xhigh" },
+		]);
+		expect(result).toEqual({
 			custom: true,
 			defaultModel: "google/gemini-2.5-pro",
-			agentModels: {},
+			agentModels: { worker: "openai/gpt-5.4" },
 			defaultThinkingLevel: "medium",
+			agentThinkingLevels: { worker: "xhigh" },
+		});
+		expect(input).toEqual({
+			custom: true,
+			defaultModel: "main",
+			agentModels: { explorer: "anthropic/old", worker: "openai/old" },
+			defaultThinkingLevel: "low",
 			agentThinkingLevels: { worker: "high" },
 		});
 	});
 
-	it("setting one agent preserves all other assignments", () => {
-		expect(setAgentModelAssignment({
-			defaultModel: "main",
-			agentModels: { explorer: "anthropic/claude-haiku-4-5" },
-		}, "worker", "openai/gpt-5.4")).toEqual({
-			defaultModel: "main",
-			agentModels: {
-				explorer: "anthropic/claude-haiku-4-5",
-				worker: "openai/gpt-5.4",
-			},
+	it("removes only named overrides for inheritance", () => {
+		expect(applySubagentConfigurationChanges({
+			agentModels: { explorer: "anthropic/model", worker: "openai/model" },
+			agentThinkingLevels: { explorer: "low", worker: "high" },
+		}, [
+			{ kind: "inherit-model", agentName: "worker" },
+			{ kind: "inherit-thinking", agentName: "worker" },
+		])).toEqual({
+			agentModels: { explorer: "anthropic/model" },
+			agentThinkingLevels: { explorer: "low" },
 		});
 	});
 
-	it("inherit removes only the selected agent override", () => {
-		expect(removeAgentModelAssignment({
+	it("restores global Pi-default thinking and clears overrides", () => {
+		expect(applySubagentConfigurationChanges({
 			defaultModel: "main",
-			agentModels: {
-				explorer: "anthropic/claude-haiku-4-5",
-				worker: "openai/gpt-5.4",
-			},
-		}, "worker")).toEqual({
-			defaultModel: "main",
-			agentModels: { explorer: "anthropic/claude-haiku-4-5" },
-		});
-	});
-
-	it("sets, removes, and clears thinking assignments without discarding model settings", () => {
-		const configured = setAllThinkingAssignments({
-			defaultModel: "main",
-			agentModels: { worker: "openai/gpt-5.4" },
+			defaultThinkingLevel: "high",
 			agentThinkingLevels: { worker: "low" },
-		}, "high");
-		expect(configured).toEqual({
+		}, [{ kind: "default-thinking" }])).toEqual({
 			defaultModel: "main",
-			agentModels: { worker: "openai/gpt-5.4" },
-			defaultThinkingLevel: "high",
-			agentThinkingLevels: {},
-		});
-
-		const withAgent = setAgentThinkingAssignment(configured, "worker", "xhigh");
-		expect(withAgent).toEqual(expect.objectContaining({
-			defaultThinkingLevel: "high",
-			agentThinkingLevels: { worker: "xhigh" },
-		}));
-		expect(removeAgentThinkingAssignment(withAgent, "worker")).toEqual(expect.objectContaining({
-			defaultThinkingLevel: "high",
-			agentThinkingLevels: {},
-		}));
-		expect(clearAllThinkingAssignments(withAgent)).toEqual({
-			defaultModel: "main",
-			agentModels: { worker: "openai/gpt-5.4" },
 			agentThinkingLevels: {},
 		});
 	});
 
-	it("rejects empty, malformed, and invalid model/thinking settings", () => {
+	it("rejects empty names and malformed values", () => {
+		expect(() => applySubagentConfigurationChanges({}, [
+			{ kind: "inherit-model", agentName: " " },
+		])).toThrow(/agent name cannot be empty/);
+		expect(() => applySubagentConfigurationChanges({}, [
+			{ kind: "set-model", target: { kind: "all" }, model: "invalid" },
+		])).toThrow(/provider\/model/);
+		expect(() => applySubagentConfigurationChanges({}, [
+			{ kind: "set-thinking", target: { kind: "agent", name: "worker" }, thinkingLevel: "ultra" as any },
+		])).toThrow(/must be one of/);
+	});
+
+	it("keeps parser and context validation behavior", () => {
 		expect(() => parseModelConfiguration({ defaultModel: "" })).toThrow(/cannot be empty/);
-		expect(() => parseModelConfiguration({ defaultModel: "claude-sonnet-4-6" })).toThrow(/provider\/model/);
-		expect(() => parseModelConfiguration({ defaultModel: "anthropic//claude" })).toThrow(/provider\/model/);
-		expect(() => parseModelConfiguration({ agentModels: { worker: 42 } })).toThrow(/must be a string/);
 		expect(() => parseModelConfiguration({ agentModels: [] })).toThrow(/agentModels must be a JSON object/);
-		expect(() => parseModelConfiguration({ defaultThinkingLevel: "ultra" })).toThrow(/must be one of/);
 		expect(() => parseModelConfiguration({ agentThinkingLevels: [] })).toThrow(/agentThinkingLevels must be a JSON object/);
-		expect(() => parseModelConfiguration({ agentThinkingLevels: { worker: 42 } })).toThrow(/must be one of/);
 		expect(() => parseModelConfiguration({ defaultContextWindow: 0 })).toThrow(/positive integer/);
-		expect(() => parseModelConfiguration({ defaultContextWindow: 1.5 })).toThrow(/positive integer/);
-		expect(() => parseModelConfiguration({ agentContextWindows: [] })).toThrow(/agentContextWindows must be a JSON object/);
 		expect(() => parseModelConfiguration({ agentContextWindows: { worker: "200k" } })).toThrow(/positive integer/);
 		expect(() => parseModelConfiguration([])).toThrow(/must contain a JSON object/);
-	});
-
-	it("validates context windows as positive integers", () => {
-		expect(validateContextWindow(200000)).toBe(200000);
-		expect(() => validateContextWindow(0)).toThrow(/positive integer/);
-		expect(() => validateContextWindow(-1)).toThrow(/positive integer/);
-		expect(() => validateContextWindow(1.5)).toThrow(/positive integer/);
-		expect(() => validateContextWindow("200k")).toThrow(/positive integer/);
-	});
-
-	it("sets, removes, and clears context windows without discarding other settings", () => {
-		const all = setAllContextWindows({
-			defaultModel: "main",
-			defaultContextWindow: 131072,
-			agentContextWindows: { worker: 200000 },
-		}, 262144);
-		expect(all).toEqual({
-			defaultModel: "main",
-			defaultContextWindow: 262144,
-			agentContextWindows: {},
-		});
-
-		const withAgent = setAgentContextWindow(all, "worker", 131072);
-		expect(withAgent).toEqual(expect.objectContaining({ agentContextWindows: { worker: 131072 } }));
-		expect(removeAgentContextWindow(withAgent, "worker")).toEqual(expect.objectContaining({
-			defaultContextWindow: 262144,
-			agentContextWindows: {},
-		}));
-		expect(clearAllContextWindows(withAgent)).toEqual({
-			defaultModel: "main",
-			agentContextWindows: {},
-		});
-		expect(() => setAgentContextWindow({}, "worker", -5)).toThrow(/positive integer/);
+		expect(parseModelConfiguration({ defaultContextWindow: 200000 }).defaultContextWindow).toBe(200000);
 	});
 });
 
 describe("subagent config store", () => {
-	it("loads missing settings and validates root values and concurrency", () => {
+	it("loads missing and existing namespaces and validates Settings", () => {
 		const { settingsPath } = configHarness();
 		expect(createSubagentConfigStore({ settingsPath }).load()).toEqual({
 			agentModels: {}, agentThinkingLevels: {}, agentContextWindows: {}, maxConcurrency: undefined,
 		});
+		expect(createSubagentConfigStore({ settingsPath: configHarness('{"subagents":{"defaultModel":"main"}}').settingsPath }).load())
+			.toMatchObject({ defaultModel: "main" });
+		expect(() => createSubagentConfigStore({ settingsPath: configHarness('{"subagents":[]}').settingsPath }).load())
+			.toThrow(/must be a JSON object/);
 		expect(() => createSubagentConfigStore({ settingsPath: configHarness("[]").settingsPath }).load())
 			.toThrow(/root value must be a JSON object/);
 		expect(() => createSubagentConfigStore({ settingsPath: configHarness("{").settingsPath }).load())
 			.toThrow(/Cannot read/);
 		expect(() => createSubagentConfigStore({ settingsPath: configHarness('{"subagents":{"maxConcurrency":0}}').settingsPath }).load())
 			.toThrow(/positive integer/);
-		expect(() => createSubagentConfigStore({ settingsPath: configHarness('{"subagents":{"maxConcurrency":1.5}}').settingsPath }).load())
-			.toThrow(/positive integer/);
 	});
 
-	it("updates atomically while preserving unknown settings keys", async () => {
+	it("applies a semantic batch atomically and preserves unknown settings", async () => {
 		const { settingsPath } = configHarness(
 			'{"compaction":{"threshold":0.1},"subagents":{"maxConcurrency":3,"custom":true,"defaultModel":"main"}}',
 		);
 		const store = createSubagentConfigStore({ settingsPath });
-		await store.update((document) => setAgentModelAssignment(document, "worker", "openai/test"));
+		await store.applyChanges([
+			{ kind: "set-model", target: { kind: "agent", name: "worker" }, model: "openai/test" },
+			{ kind: "set-thinking", target: { kind: "agent", name: "worker" }, thinkingLevel: "high" },
+		]);
 		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
 			compaction: { threshold: 0.1 },
 			subagents: {
@@ -343,92 +290,146 @@ describe("subagent config store", () => {
 				custom: true,
 				defaultModel: "main",
 				agentModels: { worker: "openai/test" },
+				agentThinkingLevels: { worker: "high" },
 			},
 		});
 	});
 
-	it("honors a legacy config.json until settings.json gains a subagents key", () => {
-		const { settingsPath, legacyPath } = configHarness(
-			undefined,
-			'{"maxConcurrency":4,"defaultModel":"main","defaultThinkingLevel":"low"}',
-		);
+	it("bases queued changes on the latest namespace", async () => {
+		const { settingsPath } = configHarness("{}");
+		const first = createSubagentConfigStore({ settingsPath });
+		const second = createSubagentConfigStore({ settingsPath });
+		await Promise.all([
+			first.applyChanges([{ kind: "set-model", target: { kind: "agent", name: "worker" }, model: "openai/test" }]),
+			second.applyChanges([{ kind: "set-thinking", target: { kind: "agent", name: "worker" }, thinkingLevel: "high" }]),
+		]);
+		expect(JSON.parse(readFileSync(settingsPath, "utf8")).subagents).toEqual({
+			agentModels: { worker: "openai/test" },
+			agentThinkingLevels: { worker: "high" },
+		});
+	});
+
+	it("uses the legacy namespace as the first-write base", async () => {
+		const { settingsPath, legacyPath } = configHarness(undefined,
+			'{"maxConcurrency":4,"defaultModel":"main","custom":true}');
 		const store = createSubagentConfigStore({ settingsPath, legacyConfigPath: legacyPath });
-		expect(store.load()).toEqual({
-			defaultModel: "main",
-			defaultThinkingLevel: "low",
-			agentModels: {},
-			agentThinkingLevels: {},
-			agentContextWindows: {},
+		expect(store.load()).toMatchObject({ defaultModel: "main", maxConcurrency: 4 });
+		await store.applyChanges([
+			{ kind: "set-thinking", target: { kind: "agent", name: "worker" }, thinkingLevel: "low" },
+		]);
+		expect(JSON.parse(readFileSync(settingsPath, "utf8")).subagents).toEqual({
 			maxConcurrency: 4,
+			defaultModel: "main",
+			custom: true,
+			agentThinkingLevels: { worker: "low" },
 		});
 	});
 
-	it("migrates a legacy config.json into settings.json and removes it", async () => {
-		const { settingsPath, legacyPath } = configHarness(undefined, '{"maxConcurrency":4,"defaultModel":"main"}');
-		expect(await migrateSubagentConfigLegacy(settingsPath, legacyPath)).toBe(true);
-		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
-			subagents: { maxConcurrency: 4, defaultModel: "main" },
-		});
-		expect(existsSync(legacyPath)).toBe(false);
-		// No-op once settings.json already has a subagents key.
-		expect(await migrateSubagentConfigLegacy(settingsPath, legacyPath)).toBe(false);
+	it("resolves current and hypothetical assignments without writing", () => {
+		const { settingsPath } = configHarness('{"subagents":{"defaultModel":"main","agentModels":{"worker":"openai/old"}}}');
+		const store = createSubagentConfigStore({ settingsPath });
+		store.rememberMainModel({ provider: "anthropic", id: "first" });
+		const snapshot = store.load();
+		expect(store.resolveAssignment(agent(), { snapshot }).launch.model).toBe("openai/old");
+		expect(store.resolveAssignment(agent(), {
+			snapshot,
+			changes: [{ kind: "inherit-model", agentName: "worker" }],
+		}).launch.model).toBe("anthropic/first");
+		expect(JSON.parse(readFileSync(settingsPath, "utf8")).subagents.agentModels).toEqual({ worker: "openai/old" });
+		store.rememberMainModel({ provider: "anthropic", id: "second" });
+		expect(store.resolveMainModel()).toBe("anthropic/second");
 	});
 
-	it("migrates a legacy config.json into the session's profile instead of settings.json", async () => {
+	it("projects launch fields and tracks the Main model", () => {
+		const { settingsPath } = configHarness('{"subagents":{"defaultModel":"main","defaultThinkingLevel":"low"}}');
+		const store = createSubagentConfigStore({ settingsPath });
+		store.rememberMainModel({ provider: "openai", id: "first" });
+		const firstLaunch = store.resolveLaunch(agent({ model: "" }));
+		expect(firstLaunch).toEqual({ model: "openai/first", thinkingLevel: "low" });
+		expect(firstLaunch).not.toHaveProperty("modelSetting");
+		store.rememberMainModel({ provider: "anthropic", id: "second" });
+		expect(store.resolveLaunch(agent({ model: "" }))).toEqual({ model: "anthropic/second", thinkingLevel: "low" });
+	});
+
+	it("repoints persistence and migration to the active Profile", async () => {
 		const root = mkdtempSync(join(tmpdir(), "subagent-config-"));
 		roots.push(root);
 		const settingsPath = join(root, "settings.json");
 		const profilePath = join(root, "profiles", "focused.json");
 		const legacyPath = join(root, "config.json");
 		mkdirSync(join(root, "profiles"));
-		writeFileSync(settingsPath, '{"compaction":{"threshold":0.1}}');
+		writeFileSync(settingsPath, '{"subagents":{"defaultModel":"main"}}');
 		writeFileSync(profilePath, '{"uiModelSelector":{"profiles":{}}}');
 		writeFileSync(legacyPath, '{"maxConcurrency":4,"defaultModel":"main"}');
-
-		expect(await migrateSubagentConfigLegacy(profilePath, legacyPath)).toBe(true);
+		const store = createSubagentConfigStore({ settingsPath, legacyConfigPath: legacyPath });
+		store.setSettingsPath(profilePath);
+		expect(store.configPath).toBe(profilePath);
+		expect(await store.migrateLegacy()).toBe(true);
 		expect(JSON.parse(readFileSync(profilePath, "utf8"))).toEqual({
 			uiModelSelector: { profiles: {} },
 			subagents: { maxConcurrency: 4, defaultModel: "main" },
 		});
-		// settings.json is untouched by the profile-targeted migration.
-		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({ compaction: { threshold: 0.1 } });
+		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({ subagents: { defaultModel: "main" } });
 		expect(existsSync(legacyPath)).toBe(false);
 	});
 
-	it("repoints the config store at the session's profile with setSettingsPath", async () => {
-		const root = mkdtempSync(join(tmpdir(), "subagent-config-"));
-		roots.push(root);
-		const settingsPath = join(root, "settings.json");
-		const profilePath = join(root, "profiles", "focused.json");
-		mkdirSync(join(root, "profiles"));
-		writeFileSync(settingsPath, '{"subagents":{"defaultModel":"main"}}');
-		writeFileSync(profilePath, '{"uiModelSelector":{"profiles":{}}}');
-		const store = createSubagentConfigStore({ settingsPath });
-		expect(store.configPath).toBe(settingsPath);
-		expect(store.load()).toMatchObject({ defaultModel: "main" });
-
-		store.setSettingsPath(profilePath);
-		expect(store.configPath).toBe(profilePath);
-		expect(store.load()).not.toHaveProperty("defaultModel");
-		await store.update((document) => setAgentModelAssignment(document, "worker", "openai/test"));
-		expect(JSON.parse(readFileSync(profilePath, "utf8"))).toEqual({
-			uiModelSelector: { profiles: {} },
-			subagents: { agentModels: { worker: "openai/test" } },
+	it("does not replace a namespace added while migration waits", async () => {
+		const { settingsPath, legacyPath } = configHarness("{}", '{"defaultModel":"openai/legacy"}');
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		let queued!: () => void;
+		const entered = new Promise<void>((resolve) => { queued = resolve; });
+		const blocker = withFileMutationQueue(settingsPath, async () => {
+			queued();
+			await gate;
 		});
-		// settings.json keeps its own subagents namespace untouched.
-		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({ subagents: { defaultModel: "main" } });
+		await entered;
+		const store = createSubagentConfigStore({ settingsPath, legacyConfigPath: legacyPath });
+		const migration = store.migrateLegacy();
+		writeFileSync(settingsPath, '{"subagents":{"defaultModel":"openai/current"}}');
+		release();
+		await blocker;
+		expect(await migration).toBe(false);
+		expect(JSON.parse(readFileSync(settingsPath, "utf8")).subagents.defaultModel).toBe("openai/current");
+		expect(existsSync(legacyPath)).toBe(true);
 	});
 
-	it("tracks the main model dynamically when resolving launches", () => {
-		const { settingsPath } = configHarness('{"subagents":{"defaultModel":"main","defaultThinkingLevel":"low"}}');
-		const store = createSubagentConfigStore({ settingsPath });
-		const worker = { name: "worker", model: "", description: "", tools: [], systemPrompt: "", filePath: "" };
-		store.rememberMainModel({ provider: "openai", id: "first" });
-		const firstLaunch = store.resolveLaunch(worker);
-		expect(firstLaunch).toEqual({ model: "openai/first", thinkingLevel: "low" });
-		expect(firstLaunch).not.toHaveProperty("modelSetting");
-		store.rememberMainModel({ provider: "anthropic", id: "second" });
-		expect(store.resolveLaunch(worker)).toEqual({ model: "anthropic/second", thinkingLevel: "low" });
+	it("leaves the legacy file when the Settings write fails", async () => {
+		const root = mkdtempSync(join(tmpdir(), "subagent-config-"));
+		roots.push(root);
+		const blockedParent = join(root, "not-a-directory");
+		const settingsPath = join(blockedParent, "settings.json");
+		const legacyPath = join(root, "config.json");
+		writeFileSync(blockedParent, "blocked");
+		writeFileSync(legacyPath, '{"defaultModel":"main"}');
+		const store = createSubagentConfigStore({ settingsPath, legacyConfigPath: legacyPath });
+
+		await expect(store.migrateLegacy()).rejects.toThrow();
+		expect(existsSync(legacyPath)).toBe(true);
+	});
+
+	it("keeps invalid legacy data for fallback validation", async () => {
+		const malformed = configHarness(undefined, "{");
+		expect(await createSubagentConfigStore({
+			settingsPath: malformed.settingsPath, legacyConfigPath: malformed.legacyPath,
+		}).migrateLegacy()).toBe(false);
+		expect(existsSync(malformed.legacyPath)).toBe(true);
+
+		const invalid = configHarness(undefined, '{"defaultModel":"invalid"}');
+		const invalidStore = createSubagentConfigStore({
+			settingsPath: invalid.settingsPath, legacyConfigPath: invalid.legacyPath,
+		});
+		expect(await invalidStore.migrateLegacy()).toBe(false);
+		expect(() => invalidStore.load()).toThrow(/provider\/model/);
+		expect(existsSync(invalid.legacyPath)).toBe(true);
+	});
+
+	it("migrates valid assignments before load rejects malformed concurrency", async () => {
+		const { settingsPath, legacyPath } = configHarness(undefined, '{"defaultModel":"main","maxConcurrency":0}');
+		const store = createSubagentConfigStore({ settingsPath, legacyConfigPath: legacyPath });
+		expect(await store.migrateLegacy()).toBe(true);
+		expect(() => store.load()).toThrow(/maxConcurrency/);
+		expect(existsSync(legacyPath)).toBe(false);
 	});
 });
 

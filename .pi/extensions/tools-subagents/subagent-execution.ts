@@ -45,7 +45,7 @@ export interface SubagentExecution {
 
 interface SubagentExecutionDependencies {
 	registry?: AgentRegistry;
-	config?: SubagentConfigStore;
+	config?: Pick<SubagentConfigStore, "load" | "resolveLaunch">;
 	childExecution?: SubagentChildExecution;
 }
 
