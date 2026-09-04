@@ -30,7 +30,7 @@ import {
 	type SubagentThinkingLevel,
 } from "./config.ts";
 import { formatContextWindow } from "./formatting.ts";
-import { DEFAULT_MAX_CONCURRENCY } from "./parallel-batch.ts";
+import { DEFAULT_MAX_CONCURRENCY } from "./subagent-execution.ts";
 import { BUILTIN_TOOLS, CUSTOM_TOOL_EXTENSIONS, EXT_BASE } from "./child-execution.ts";
 
 export interface ModelCommandDependencies {

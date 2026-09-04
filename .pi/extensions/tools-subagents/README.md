@@ -300,8 +300,7 @@ tools-subagents/
 ├── config.ts                # Configuration storage, validation, and launch resolution
 ├── launch-preparation.ts    # Agent validation and resolved child requests
 ├── child-execution.ts       # Child process lifetime and event stream parsing
-├── subagent-runner.ts       # Single-request preparation and execution
-├── parallel-batch.ts        # Bounded scheduling and task-state snapshots
+├── subagent-execution.ts    # Direct execution, bounded scheduling, ordered results, and task-state snapshots
 ├── progress-renderer.ts     # Tool call and progress presentation
 ├── model-commands.ts        # /subagents command and interactive configuration
 ├── formatting.ts            # Token, duration, preview, and width formatting

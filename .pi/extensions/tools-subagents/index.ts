@@ -36,13 +36,12 @@ import {
 	type SubagentConfigStore,
 } from "./config.ts";
 import { createSubagentsCommand } from "./model-commands.ts";
-import { createParallelSubagentBatch } from "./parallel-batch.ts";
 import { renderSubagentCall, renderSubagentResult } from "./progress-renderer.ts";
+import { createSubagentExecution } from "./subagent-execution.ts";
 import {
 	createSubagentInvocationAdapter,
 	isFailedSubagentResult,
 } from "./subagent-invocation.ts";
-import { createSubagentRunner } from "./subagent-runner.ts";
 
 export type {
 	AgentConfig,
@@ -53,8 +52,7 @@ export type {
 	SubagentProgressEvent,
 } from "../_shared/subagent-service.ts";
 export { loadAgents, registerAgent, unregisterAgent } from "./agent-registry.ts";
-export { runSubagent } from "./subagent-runner.ts";
-export { runSubagentsParallel } from "./parallel-batch.ts";
+export { runSubagent, runSubagentsParallel } from "./subagent-execution.ts";
 
 export interface SubagentsExtensionDependencies {
 	settingsPath?: string;
@@ -84,16 +82,15 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 			legacyConfigPath: LEGACY_CONFIG_PATH,
 		});
 		const childExecution = dependencies.childExecution ?? createSubagentChildExecution();
-		const runSingle = createSubagentRunner({ registry, config: configStore, childExecution });
-		const parallelBatch = createParallelSubagentBatch({ registry, config: configStore, childExecution });
-		const invocationAdapter = createSubagentInvocationAdapter({ batch: parallelBatch });
+		const execution = createSubagentExecution({ registry, config: configStore, childExecution });
+		const invocationAdapter = createSubagentInvocationAdapter({ batch: execution });
 		const service: SubagentService = {
 			id: "tools-subagents",
 			registerAgent: (config) => registry.register(config),
 			unregisterAgent: (name) => registry.unregister(name),
 			loadAgents: () => registry.load(),
-			runSubagent: (options) => runSingle(options),
-			runSubagentsParallel: (options) => parallelBatch.runSubagentsParallel(options),
+			runSubagent: (options) => execution.runSubagent(options),
+			runSubagentsParallel: (options) => execution.runSubagentsParallel(options),
 		};
 
 		registerSubagentService(service);

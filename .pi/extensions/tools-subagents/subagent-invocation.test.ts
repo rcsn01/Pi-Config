@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ParallelBatchSnapshot } from "./parallel-batch.ts";
+import type { SubagentExecutionSnapshot } from "./subagent-execution.ts";
 import {
 	createSubagentInvocationAdapter,
 	type SubagentInvocationResult,
@@ -153,7 +153,7 @@ describe("Subagent invocation adapter", () => {
 		const stale = agentResult({
 			progress: { ...agentResult().progress, status: "running", lastMessage: "stale" },
 		});
-		let publishLateSnapshot: ((snapshot: ParallelBatchSnapshot) => void) | undefined;
+		let publishLateSnapshot: ((snapshot: SubagentExecutionSnapshot) => void) | undefined;
 		const runBatch = vi.fn(async (_tasks, options) => {
 			publishLateSnapshot = options.onSnapshot;
 			options.onSnapshot?.({ results: [first], changedIndex: 0, phase: "progress" });

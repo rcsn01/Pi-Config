@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import * as config from "./config.ts";
 import { deriveSubagentSessionId } from "./cache-affinity.ts";
-import { createParallelSubagentBatch } from "./parallel-batch.ts";
+import { createSubagentExecution } from "./subagent-execution.ts";
 import { agent, agentResult, memoryConfigStore, memoryRegistry } from "./test-harness.ts";
 
 function deferred<T>() {
@@ -10,11 +10,11 @@ function deferred<T>() {
 	return { promise, resolve };
 }
 
-describe("parallel subagent batch", () => {
+describe("Subagent execution", () => {
 	it("defers standalone configuration resolution until batch execution", () => {
 		const getDefaultSubagentConfig = vi.spyOn(config, "getDefaultSubagentConfig");
 
-		createParallelSubagentBatch();
+		createSubagentExecution();
 
 		expect(getDefaultSubagentConfig).not.toHaveBeenCalled();
 		getDefaultSubagentConfig.mockRestore();
@@ -51,13 +51,13 @@ describe("parallel subagent batch", () => {
 			await request.onProgress?.({ type: "completed", agent: request.agent.name, result }, result.progress);
 			return result;
 		});
-		const batch = createParallelSubagentBatch({
+		const execution = createSubagentExecution({
 			registry,
 			config: memoryConfigStore({ maxConcurrency: 1 }),
 			childExecution: { execute },
 		});
 
-		const promise = batch.runBatch([
+		const promise = execution.runBatch([
 			{ agent: "slow", prompt: "first", cwd: "/one", model: "openai/one", thinkingLevel: "high" },
 			{ agent: "fast", task: "second" },
 		], {
@@ -108,15 +108,49 @@ describe("parallel subagent batch", () => {
 		expect(firstSnapshot.results.map((result: any) => result.progress.status)).toEqual(["running", "pending"]);
 	});
 
+	it("keeps completed snapshot events immutable after publication", async () => {
+		const snapshots: any[] = [];
+		const childResult = agentResult({
+			output: "original",
+			progress: { ...agentResult().progress, lastMessage: "original progress" },
+		});
+		const execution = createSubagentExecution({
+			registry: memoryRegistry(),
+			config: memoryConfigStore(),
+			childExecution: {
+				execute: async (request) => {
+					await request.onProgress?.(
+						{ type: "completed", agent: "worker", result: childResult },
+						childResult.progress,
+					);
+					return childResult;
+				},
+			},
+		});
+
+		const [result] = await execution.runBatch(
+			[{ agent: "worker", task: "inspect" }],
+			{ cwd: "/root", onSnapshot: (snapshot) => snapshots.push(snapshot) },
+		);
+		const completed = snapshots.find((snapshot) => snapshot.phase === "completed");
+		result.output = "mutated";
+		result.progress.lastMessage = "mutated progress";
+
+		expect(completed.results[0].output).toBe("original");
+		expect(completed.results[0].progress.lastMessage).toBe("original progress");
+		expect(completed.event.result.output).toBe("original");
+		expect(completed.event.result.progress.lastMessage).toBe("original progress");
+	});
+
 	it("validates the whole batch before starting a child", async () => {
 		const execute = vi.fn();
-		const batch = createParallelSubagentBatch({
+		const execution = createSubagentExecution({
 			registry: memoryRegistry(),
 			config: memoryConfigStore(),
 			childExecution: { execute },
 		});
 
-		await expect(batch.runBatch([
+		await expect(execution.runBatch([
 			{ agent: "worker", task: "valid" },
 			{ agent: "missing", task: "invalid" },
 		], { cwd: "/root" })).rejects.toThrow("Unknown agent: missing. Available agents: worker");
@@ -129,13 +163,13 @@ describe("parallel subagent batch", () => {
 			.mockReturnValueOnce({ model: "openai/first" })
 			.mockImplementationOnce(() => { throw new Error("bad launch"); });
 		const execute = vi.fn();
-		const batch = createParallelSubagentBatch({
+		const execution = createSubagentExecution({
 			registry: memoryRegistry(),
 			config: configStore,
 			childExecution: { execute },
 		});
 
-		await expect(batch.runBatch([
+		await expect(execution.runBatch([
 			{ agent: "worker", task: "one" },
 			{ agent: "worker", task: "two" },
 		], { cwd: "/root" })).rejects.toThrow("bad launch");
@@ -146,7 +180,7 @@ describe("parallel subagent batch", () => {
 		const release = deferred<void>();
 		let active = 0;
 		let peak = 0;
-		const batch = createParallelSubagentBatch({
+		const execution = createSubagentExecution({
 			registry: memoryRegistry(),
 			config: memoryConfigStore({ maxConcurrency: 2 }),
 			childExecution: {
@@ -159,7 +193,7 @@ describe("parallel subagent batch", () => {
 				},
 			},
 		});
-		const promise = batch.runBatch([
+		const promise = execution.runBatch([
 			{ agent: "worker", task: "one" },
 			{ agent: "worker", task: "two" },
 			{ agent: "worker", task: "three" },
@@ -174,7 +208,7 @@ describe("parallel subagent batch", () => {
 	it("preserves indexed progress and completion callbacks through the compatibility adapter", async () => {
 		const progress: any[] = [];
 		const updates: any[] = [];
-		const batch = createParallelSubagentBatch({
+		const execution = createSubagentExecution({
 			registry: memoryRegistry(),
 			config: memoryConfigStore(),
 			childExecution: {
@@ -188,7 +222,7 @@ describe("parallel subagent batch", () => {
 			},
 		});
 
-		const results = await batch.runSubagentsParallel({
+		const results = await execution.runSubagentsParallel({
 			cwd: "/root",
 			tasks: [{ agent: "worker", prompt: "first" }],
 			onProgress: (index, event) => { progress.push([index, event.type]); },
@@ -198,5 +232,64 @@ describe("parallel subagent batch", () => {
 		expect(results[0].task).toBe("first");
 		expect(progress).toEqual([[0, "message"]]);
 		expect(updates).toEqual([[0, "first"]]);
+	});
+
+	it("prepares a direct request before sending it to child execution", async () => {
+		const worker = agent();
+		const expectedResult = agentResult();
+		const execute = vi.fn(async () => expectedResult);
+		const execution = createSubagentExecution({
+			registry: memoryRegistry([worker]),
+			config: memoryConfigStore({ defaultThinkingLevel: "minimal" }),
+			childExecution: { execute },
+		});
+
+		const result = await execution.runSubagent({
+			agent: "worker",
+			prompt: "legacy task",
+			cwd: "/workspace",
+			cacheAffinitySeed: "session",
+		});
+
+		expect(execute).toHaveBeenCalledTimes(1);
+		expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+			agent: worker,
+			task: "legacy task",
+			cwd: "/workspace",
+			launch: { model: "openai/test-model", thinkingLevel: "minimal" },
+			cacheSessionId: "subagent-0ddf41435c428ceb02f68c37425d9861",
+		}));
+		expect(result).toBe(expectedResult);
+	});
+
+	it("preserves native callbacks for direct execution", async () => {
+		const onProgress = vi.fn();
+		const onUpdate = vi.fn();
+		const event = { type: "message", agent: "worker", message: "working", tokens: 1 } as const;
+		const progress = agentResult().progress;
+		const execute = vi.fn(async (request: any) => {
+			await request.onProgress?.(event, progress);
+			request.onUpdate?.(progress);
+			return agentResult();
+		});
+		const execution = createSubagentExecution({
+			registry: memoryRegistry(),
+			config: memoryConfigStore(),
+			childExecution: { execute },
+		});
+
+		await execution.runSubagent({
+			agent: "worker",
+			task: "inspect",
+			cwd: "/workspace",
+			onProgress,
+			onUpdate,
+		});
+
+		expect(execute).toHaveBeenCalledWith(expect.objectContaining({ onProgress, onUpdate }));
+		expect(onProgress).toHaveBeenCalledOnce();
+		expect(onProgress).toHaveBeenCalledWith(event, progress);
+		expect(onUpdate).toHaveBeenCalledOnce();
+		expect(onUpdate).toHaveBeenCalledWith(progress);
 	});
 });
