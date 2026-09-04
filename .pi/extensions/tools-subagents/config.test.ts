@@ -14,10 +14,7 @@ import {
 	removeAgentContextWindow,
 	removeAgentModelAssignment,
 	removeAgentThinkingAssignment,
-	resolveLaunchConfiguration,
-	resolveModelAssignment,
-	selectContextWindowSetting,
-	selectModelSetting,
+	resolveSubagentAssignment,
 	setAgentContextWindow,
 	setAgentModelAssignment,
 	setAgentThinkingAssignment,
@@ -49,150 +46,147 @@ function configHarness(
 }
 
 describe("subagent model resolution", () => {
-	it("resolves main to the current main provider/model", () => {
-		expect(canonicalMainModel(mainModel)).toBe("anthropic/claude-sonnet-4-6");
-		expect(resolveModelAssignment({ agentName: "worker", config: { defaultModel: "main" }, mainModel })).toBe(
-			"anthropic/claude-sonnet-4-6",
-		);
-	});
+	const cases = [
+		{
+			name: "missing configuration falls back to main",
+			options: { agentName: "worker", config: {}, mainModel },
+			expected: { modelSetting: "main", launch: { model: "anthropic/claude-sonnet-4-6", thinkingLevel: undefined, contextWindow: undefined } },
+		},
+		{
+			name: "legacy default normalizes to main",
+			options: { agentName: "worker", config: { defaultModel: "default" }, mainModel },
+			expected: { modelSetting: "main", launch: { model: "anthropic/claude-sonnet-4-6", thinkingLevel: undefined, contextWindow: undefined } },
+		},
+		{
+			name: "a concrete model remains selected and resolved",
+			options: { agentName: "worker", config: { defaultModel: "openai/gpt-5.4" }, mainModel },
+			expected: { modelSetting: "openai/gpt-5.4", launch: { model: "openai/gpt-5.4", thinkingLevel: undefined, contextWindow: undefined } },
+		},
+		{
+			name: "per-agent model beats global and frontmatter",
+			options: { agentName: "worker", config: { defaultModel: "anthropic/global", agentModels: { worker: "openai/agent" } }, frontmatterModel: "google/frontmatter", mainModel },
+			expected: { modelSetting: "openai/agent", launch: { model: "openai/agent", thinkingLevel: undefined, contextWindow: undefined } },
+		},
+		{
+			name: "global model beats frontmatter",
+			options: { agentName: "worker", config: { defaultModel: "anthropic/global" }, frontmatterModel: "google/frontmatter", mainModel },
+			expected: { modelSetting: "anthropic/global", launch: { model: "anthropic/global", thinkingLevel: undefined, contextWindow: undefined } },
+		},
+		{
+			name: "frontmatter beats main without central model settings",
+			options: { agentName: "worker", config: {}, frontmatterModel: "google/frontmatter", mainModel },
+			expected: { modelSetting: "google/frontmatter", launch: { model: "google/frontmatter", thinkingLevel: undefined, contextWindow: undefined } },
+		},
+		{
+			name: "explicit model beats every configured source",
+			options: { agentName: "worker", explicitModel: "openai/explicit", config: { defaultModel: "anthropic/global", agentModels: { worker: "openai/agent" } }, frontmatterModel: "google/frontmatter", mainModel },
+			expected: { modelSetting: "openai/explicit", launch: { model: "openai/explicit", thinkingLevel: undefined, contextWindow: undefined } },
+		},
+		{
+			name: "main retains its setting while resolving the current model",
+			options: { agentName: "worker", config: { defaultModel: "main" }, mainModel },
+			expected: { modelSetting: "main", launch: { model: "anthropic/claude-sonnet-4-6", thinkingLevel: undefined, contextWindow: undefined } },
+		},
+		{
+			name: "explicit thinking beats an explicit-model suffix",
+			options: { agentName: "worker", explicitModel: "openai/explicit:high", explicitThinkingLevel: "off", config: { agentThinkingLevels: { worker: "low" } }, mainModel },
+			expected: { modelSetting: "openai/explicit", launch: { model: "openai/explicit", thinkingLevel: "off", contextWindow: undefined } },
+		},
+		{
+			name: "explicit-model suffix beats per-agent thinking",
+			options: { agentName: "worker", explicitModel: "openai/explicit:high", config: { agentThinkingLevels: { worker: "low" } }, mainModel },
+			expected: { modelSetting: "openai/explicit", launch: { model: "openai/explicit", thinkingLevel: "high", contextWindow: undefined } },
+		},
+		{
+			name: "per-agent thinking beats a configured-model suffix",
+			options: { agentName: "worker", config: { defaultModel: "openai/global:high", agentThinkingLevels: { worker: "low" } }, mainModel },
+			expected: { modelSetting: "openai/global", launch: { model: "openai/global", thinkingLevel: "low", contextWindow: undefined } },
+		},
+		{
+			name: "per-agent model suffix beats global thinking",
+			options: { agentName: "worker", config: { agentModels: { worker: "openai/agent:xhigh" }, defaultThinkingLevel: "minimal" }, mainModel },
+			expected: { modelSetting: "openai/agent", launch: { model: "openai/agent", thinkingLevel: "xhigh", contextWindow: undefined } },
+		},
+		{
+			name: "global model suffix beats global thinking",
+			options: { agentName: "worker", config: { defaultModel: "openai/global:high", defaultThinkingLevel: "minimal" }, mainModel },
+			expected: { modelSetting: "openai/global", launch: { model: "openai/global", thinkingLevel: "high", contextWindow: undefined } },
+		},
+		{
+			name: "frontmatter model suffix beats global thinking",
+			options: { agentName: "worker", config: { defaultThinkingLevel: "minimal" }, frontmatterModel: "google/frontmatter:max", mainModel },
+			expected: { modelSetting: "google/frontmatter", launch: { model: "google/frontmatter", thinkingLevel: "max", contextWindow: undefined } },
+		},
+		{
+			name: "global thinking beats the Pi default",
+			options: { agentName: "worker", config: { defaultThinkingLevel: "medium" }, mainModel },
+			expected: { modelSetting: "main", launch: { model: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium", contextWindow: undefined } },
+		},
+		{
+			name: "explicit context beats per-agent context",
+			options: { agentName: "worker", explicitContextWindow: 64000, config: { defaultContextWindow: 200000, agentContextWindows: { worker: 131072 } }, mainModel },
+			expected: { modelSetting: "main", launch: { model: "anthropic/claude-sonnet-4-6", thinkingLevel: undefined, contextWindow: 64000 } },
+		},
+		{
+			name: "per-agent context beats global context",
+			options: { agentName: "worker", config: { defaultContextWindow: 200000, agentContextWindows: { worker: 131072 } }, mainModel },
+			expected: { modelSetting: "main", launch: { model: "anthropic/claude-sonnet-4-6", thinkingLevel: undefined, contextWindow: 131072 } },
+		},
+		{
+			name: "missing context remains undefined",
+			options: { agentName: "worker", config: {}, mainModel },
+			expected: { modelSetting: "main", launch: { model: "anthropic/claude-sonnet-4-6", thinkingLevel: undefined, contextWindow: undefined } },
+		},
+		{
+			name: "legacy default thinking and context use Pi defaults",
+			options: { agentName: "worker", config: { defaultThinkingLevel: "default", agentThinkingLevels: { worker: "default" }, defaultContextWindow: "default", agentContextWindows: { worker: "default" } }, mainModel },
+			expected: { modelSetting: "main", launch: { model: "anthropic/claude-sonnet-4-6", thinkingLevel: undefined, contextWindow: undefined } },
+		},
+	] as const;
 
-	it("treats legacy default like main", () => {
-		expect(resolveModelAssignment({ agentName: "worker", config: { defaultModel: "default" }, mainModel })).toBe(
-			"anthropic/claude-sonnet-4-6",
-		);
-	});
+	for (const testCase of cases) {
+		it(testCase.name, () => {
+			expect(resolveSubagentAssignment(testCase.options)).toEqual(testCase.expected);
+		});
+	}
 
-	it("treats default thinking and context settings as Pi fallbacks", () => {
-		const parsed = parseModelConfiguration({
+	it("parses legacy default values without retaining sentinel assignments", () => {
+		expect(parseModelConfiguration({
 			defaultModel: "default",
 			defaultThinkingLevel: "default",
 			agentThinkingLevels: { worker: "default" },
 			defaultContextWindow: "default",
 			agentContextWindows: { worker: "default" },
-		});
-		expect(parsed).toEqual({
+		})).toEqual({
 			defaultModel: "main",
 			agentModels: {},
 			agentThinkingLevels: {},
 			agentContextWindows: {},
 		});
-		expect(resolveLaunchConfiguration({
+	});
+
+	it("propagates malformed setting errors unchanged", () => {
+		expect(() => resolveSubagentAssignment({
 			agentName: "worker",
-			config: {
-				defaultModel: "default",
-				defaultThinkingLevel: "default",
-				defaultContextWindow: "default",
-			},
+			config: { defaultContextWindow: 0 },
 			mainModel,
-		})).toEqual({
-			model: "anthropic/claude-sonnet-4-6",
-			thinkingLevel: undefined,
-			contextWindow: undefined,
-		});
+		})).toThrow("Subagent config defaultContextWindow must be a positive integer.");
 	});
 
-	it("leaves a specific model unchanged", () => {
-		expect(resolveModelAssignment({
+	it("preserves the missing Main model error", () => {
+		expect(() => resolveSubagentAssignment({
 			agentName: "worker",
-			config: { defaultModel: "openai/gpt-5.4" },
-			mainModel,
-		})).toBe("openai/gpt-5.4");
+			config: {},
+			mainModel: undefined,
+		})).toThrow('Cannot resolve subagent model "main": the main session has no active model.');
 	});
 
-	it("gives individual overrides precedence over the global default", () => {
-		expect(selectModelSetting({
-			agentName: "worker",
-			config: {
-				defaultModel: "anthropic/claude-haiku-4-5",
-				agentModels: { worker: "openai/gpt-5.4" },
-			},
-			frontmatterModel: "google/gemini-2.5-pro",
-		})).toBe("openai/gpt-5.4");
-	});
-
-	it("gives the global default precedence over Markdown frontmatter", () => {
-		expect(selectModelSetting({
-			agentName: "explorer",
-			config: { defaultModel: "anthropic/claude-haiku-4-5" },
-			frontmatterModel: "google/gemini-2.5-pro",
-		})).toBe("anthropic/claude-haiku-4-5");
-	});
-
-	it("gives explicit invocation overrides highest precedence", () => {
-		expect(selectModelSetting({
-			agentName: "worker",
-			explicitModel: "openai/gpt-5.4:high",
-			config: {
-				defaultModel: "anthropic/claude-haiku-4-5",
-				agentModels: { worker: "google/gemini-2.5-pro" },
-			},
-			frontmatterModel: "anthropic/claude-sonnet-4-6",
-		})).toBe("openai/gpt-5.4:high");
-	});
-
-	it("falls back to the current main model when settings are missing", () => {
-		expect(resolveModelAssignment({ agentName: "default", config: {}, mainModel })).toBe(
-			"anthropic/claude-sonnet-4-6",
-		);
-	});
-
-	it("resolves model identity and thinking as independent child settings", () => {
-		expect(resolveLaunchConfiguration({
-			agentName: "worker",
-			config: { defaultModel: "main", defaultThinkingLevel: "high" },
-			mainModel,
-		})).toEqual({ model: "anthropic/claude-sonnet-4-6", thinkingLevel: "high" });
-	});
-
-	it("uses agent thinking overrides before legacy model suffixes and global thinking", () => {
-		expect(resolveLaunchConfiguration({
-			agentName: "worker",
-			config: {
-				defaultModel: "openai/gpt-5.4:high",
-				defaultThinkingLevel: "minimal",
-				agentThinkingLevels: { worker: "low" },
-			},
-			mainModel,
-		})).toEqual({ model: "openai/gpt-5.4", thinkingLevel: "low" });
-	});
-
-	it("keeps model suffixes compatible and gives invocation overrides highest precedence", () => {
+	it("splits legacy model thinking shorthand", () => {
 		expect(splitModelThinkingSetting("openai/gpt-5.4:xhigh")).toEqual({
 			model: "openai/gpt-5.4",
 			thinkingLevel: "xhigh",
 		});
-		expect(resolveLaunchConfiguration({
-			agentName: "worker",
-			explicitModel: "openai/gpt-5.4:max",
-			explicitThinkingLevel: "off",
-			config: { agentThinkingLevels: { worker: "low" } },
-			mainModel,
-		})).toEqual({ model: "openai/gpt-5.4", thinkingLevel: "off", contextWindow: undefined });
-	});
-
-	it("resolves context windows by explicit > agent > global precedence", () => {
-		expect(selectContextWindowSetting({
-			agentName: "worker",
-			config: { defaultContextWindow: 200000, agentContextWindows: { worker: 131072 } },
-		})).toBe(131072);
-		expect(selectContextWindowSetting({
-			agentName: "explorer",
-			config: { defaultContextWindow: 200000, agentContextWindows: { worker: 131072 } },
-		})).toBe(200000);
-		expect(selectContextWindowSetting({
-			agentName: "explorer",
-			explicitContextWindow: 64000,
-			config: { defaultContextWindow: 200000 },
-		})).toBe(64000);
-		expect(selectContextWindowSetting({ agentName: "explorer", config: {} })).toBeUndefined();
-	});
-
-	it("carries the resolved context window through resolveLaunchConfiguration", () => {
-		expect(resolveLaunchConfiguration({
-			agentName: "worker",
-			config: { defaultContextWindow: 200000, agentContextWindows: { worker: 131072 } },
-			mainModel,
-		})).toEqual({ model: "anthropic/claude-sonnet-4-6", contextWindow: 131072 });
+		expect(canonicalMainModel(mainModel)).toBe("anthropic/claude-sonnet-4-6");
 	});
 });
 
@@ -430,7 +424,9 @@ describe("subagent config store", () => {
 		const store = createSubagentConfigStore({ settingsPath });
 		const worker = { name: "worker", model: "", description: "", tools: [], systemPrompt: "", filePath: "" };
 		store.rememberMainModel({ provider: "openai", id: "first" });
-		expect(store.resolveLaunch(worker)).toEqual({ model: "openai/first", thinkingLevel: "low" });
+		const firstLaunch = store.resolveLaunch(worker);
+		expect(firstLaunch).toEqual({ model: "openai/first", thinkingLevel: "low" });
+		expect(firstLaunch).not.toHaveProperty("modelSetting");
 		store.rememberMainModel({ provider: "anthropic", id: "second" });
 		expect(store.resolveLaunch(worker)).toEqual({ model: "anthropic/second", thinkingLevel: "low" });
 	});

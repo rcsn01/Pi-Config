@@ -46,7 +46,7 @@ The explorer can use `repo_query` to run independent read-only repository operat
 ```json
 {
   "operations": [
-    { "id": "symbols", "kind": "grep", "pattern": "resolveLaunchConfiguration", "path": ".pi/extensions", "glob": "*.ts", "context": 2 },
+    { "id": "symbols", "kind": "grep", "pattern": "resolveSubagentAssignment", "path": ".pi/extensions", "glob": "*.ts", "context": 2 },
     { "id": "config", "kind": "read", "path": ".pi/extensions/tools-subagents/config.ts", "offset": 180, "limit": 100 },
     { "id": "agent-files", "kind": "files", "query": "agent" }
   ]
