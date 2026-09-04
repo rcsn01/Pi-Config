@@ -190,13 +190,6 @@
 			"requires": [],
 			"conflicts": []
 		},
-		"tools-github-repos": {
-			"displayName": "GitHub Repository Snapshots",
-			"pack": "research",
-			"defaultEnabled": false,
-			"requires": ["policy-permissions"],
-			"conflicts": []
-		},
 		"tools-file-context": {
 			"displayName": "File Context",
 			"pack": "core",

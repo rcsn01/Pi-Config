@@ -23,7 +23,7 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
-		"test": "pnpm test:core && pnpm test:features && pnpm test:analysis && pnpm test:telemetry-usage && pnpm test:cache-effort && pnpm test:profiles && pnpm test:clear && pnpm test:config-skill && pnpm test:provider-codex && pnpm test:provider-ollama && pnpm test:subscription-usage && pnpm test:safety && pnpm test:ask-user && pnpm test:advisor && pnpm test:subagents && pnpm test:todos && pnpm test:web-fetch && pnpm test:github-repos && pnpm test:status && pnpm test:steer && pnpm test:goal && pnpm test:plan && pnpm test:worktree && pnpm test:workflows && pnpm test:integrations",
+		"test": "pnpm test:core && pnpm test:features && pnpm test:analysis && pnpm test:telemetry-usage && pnpm test:cache-effort && pnpm test:profiles && pnpm test:clear && pnpm test:config-skill && pnpm test:provider-codex && pnpm test:provider-ollama && pnpm test:subscription-usage && pnpm test:safety && pnpm test:ask-user && pnpm test:advisor && pnpm test:subagents && pnpm test:todos && pnpm test:web-fetch && pnpm test:github-repo-skill && pnpm test:status && pnpm test:steer && pnpm test:goal && pnpm test:plan && pnpm test:worktree && pnpm test:workflows && pnpm test:integrations",
 		"test:core": "pnpm test:shared && pnpm test:system-prompt",
 		"test:shared": "vitest run extensions/_shared",
 		"test:system-prompt": "vitest run extensions/config-system-prompt",
@@ -43,7 +43,7 @@
 		"test:provider-ollama": "vitest run extensions/provider-ollama",
 		"test:todos": "vitest run extensions/tools-todo",
 		"test:web-fetch": "vitest run extensions/tools-web-fetch extensions/tools-web-search",
-		"test:github-repos": "vitest run extensions/tools-github-repos",
+		"test:github-repo-skill": "node --test skills/github-repo-explorer/scripts/github-repo-snapshot.test.mjs",
 		"test:worktree": "vitest run extensions/tools-worktree",
 		"test:goal": "vitest run extensions/workflows-goal",
 		"test:plan": "vitest run extensions/workflows-plan",

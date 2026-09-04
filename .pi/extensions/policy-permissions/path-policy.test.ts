@@ -1,10 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { WRITE_TOOLS, extractPathsFromInput } from "./path-policy.ts";
+import { extractPathsFromInput } from "./path-policy.ts";
+import {
+	githubRepositorySnapshotOperation,
+	isNetworkCommand,
+	isReadOnlyShellCommand,
+	mentionsGithubRepositorySnapshotHelper,
+} from "../_shared/command-policy.ts";
 
 describe("tool classifications", () => {
-	it("classifies repository removal as a mutation without treating listing as one", () => {
-		expect(WRITE_TOOLS.has("github_repo_remove")).toBe(true);
-		expect(WRITE_TOOLS.has("github_repo_list")).toBe(false);
+	it("classifies skill snapshot commands by operation", () => {
+		const script = ".pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs";
+		expect(githubRepositorySnapshotOperation(`node ${script} acquire owner/repo`)).toBe("acquire");
+		expect(githubRepositorySnapshotOperation(`node ${script} list`)).toBe("list");
+		expect(githubRepositorySnapshotOperation(`node ${script} remove ghr_${"a".repeat(24)} --confirm`)).toBe("remove");
+		expect(isNetworkCommand(`node ${script} acquire owner/repo`)).toBe(true);
+		expect(isNetworkCommand(`node ${script} list`)).toBe(false);
+		expect(isReadOnlyShellCommand(`node ${script} list`)).toBe(true);
+		expect(isReadOnlyShellCommand(`node ${script} acquire owner/repo`)).toBe(false);
+		expect(isReadOnlyShellCommand(`node ${script} remove ghr_${"a".repeat(24)} --confirm`)).toBe(false);
+
+		const compound = `node ${script} list; node ${script} acquire owner/repo`;
+		expect(githubRepositorySnapshotOperation(compound)).toBeUndefined();
+		expect(mentionsGithubRepositorySnapshotHelper(compound)).toBe(true);
+		expect(isNetworkCommand(compound)).toBe(true);
+		expect(isReadOnlyShellCommand(compound)).toBe(false);
+		expect(githubRepositorySnapshotOperation(`node -e "run" ${script} list`)).toBeUndefined();
 	});
 });
 
