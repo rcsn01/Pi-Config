@@ -114,6 +114,56 @@ describe("subagents model command", () => {
 		expect(message).not.toContain("undefined");
 	});
 
+	it("renders model, thinking, and context from one effective assignment", async () => {
+		const config = memoryConfigStore({
+			defaultModel: "openai/gpt-5.2:high",
+			agentThinkingLevels: { worker: "low" },
+			agentContextWindows: { worker: 131072 },
+		});
+		const command = createSubagentsCommand({ registry: memoryRegistry([agent()]), config });
+		const ctx = context();
+
+		await command.handler("models", ctx);
+
+		const message = ctx.ui.notify.mock.calls.at(-1)?.[0] as string;
+		expect(message).toContain("- worker: openai/gpt-5.2 · thinking low · context 131.1K context");
+		expect(message).not.toContain("openai/gpt-5.2:high · thinking");
+	});
+
+	it.each([
+		["global", { defaultModel: "openai/global" }, agent(), "Uses openai/global"],
+		["frontmatter", {}, agent({ model: "google/frontmatter" }), "Uses google/frontmatter"],
+		["Main", {}, agent({ model: "" }), "Uses main → anthropic/main"],
+	])("previews the %s model fallback without persisting it", async (_name, initial, worker, expected) => {
+		const config = memoryConfigStore({ ...initial, agentModels: { worker: "openai/override" } });
+		const command = createSubagentsCommand({ registry: memoryRegistry([worker]), config });
+		const { custom, screens } = screenCustom(["worker", undefined, undefined]);
+		const ctx = context({ mode: "tui", custom });
+
+		await command.handler("", ctx);
+
+		expect(screens[1]).toContain(expected);
+		expect(config.updates).toHaveLength(0);
+	});
+
+	it("resolves thinking inheritance from the pending model choice", async () => {
+		const config = memoryConfigStore({
+			defaultModel: "openai/gpt-5.2:high",
+			defaultThinkingLevel: "minimal",
+			agentModels: { worker: "openai/override" },
+			agentThinkingLevels: { worker: "low" },
+		});
+		const command = createSubagentsCommand({ registry: memoryRegistry([agent()]), config });
+		const { custom, screens } = screenCustom(["worker", "inherit", undefined, undefined, undefined]);
+		const ctx = context({ mode: "tui", available: [gpt], custom });
+
+		await command.handler("", ctx);
+
+		expect(screens[2]).toContain("Model: openai/gpt-5.2");
+		expect(screens[2]).toContain("Uses high");
+		expect(config.updates).toHaveLength(0);
+	});
+
 	it("reports model assignments and applies model/thinking mutations", async () => {
 		const config = memoryConfigStore({
 			custom: true,

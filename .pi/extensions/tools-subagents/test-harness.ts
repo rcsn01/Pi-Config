@@ -7,7 +7,7 @@ import { createAgentRegistry, type AgentRegistry } from "./agent-registry.ts";
 import {
 	canonicalMainModel,
 	parseModelConfiguration,
-	resolveLaunchConfiguration,
+	resolveSubagentAssignment,
 	type ExtensionConfig,
 	type SubagentConfigStore,
 } from "./config.ts";
@@ -80,14 +80,14 @@ export function memoryConfigStore(initial: Record<string, unknown> = {}): Memory
 		},
 		getMainModel: () => activeMainModel,
 		resolveLaunch(config, explicitModel, explicitThinkingLevel) {
-			return resolveLaunchConfiguration({
+			return resolveSubagentAssignment({
 				agentName: config.name,
 				config: store.document,
 				explicitModel,
 				explicitThinkingLevel,
 				frontmatterModel: config.model,
 				mainModel: activeMainModel,
-			});
+			}).launch;
 		},
 		setSettingsPath: (path: string) => {
 			settingsPath = path;

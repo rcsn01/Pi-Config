@@ -47,6 +47,13 @@ export interface ResolvedLaunchConfiguration {
 	contextWindow?: number;
 }
 
+export interface ResolvedSubagentAssignment {
+	/** Canonical selected setting before `main` becomes a concrete model. */
+	modelSetting: string;
+	/** Resolved launch fields; contextWindow remains descriptive metadata. */
+	launch: ResolvedLaunchConfiguration;
+}
+
 export interface ExtensionConfig extends ModelConfiguration {
 	maxConcurrency?: number;
 }
@@ -206,76 +213,44 @@ export function canonicalMainModel(model: string | { provider: unknown; id: unkn
 	return normalizeModelSetting(`${model.provider}/${model.id}`, "main session model");
 }
 
-/** Select a setting according to invocation > agent > global > frontmatter > main precedence. */
-export function selectModelSetting(options: Omit<ResolveModelOptions, "mainModel">): string {
+/** Resolve the effective assignment used by displays and child launch preparation. */
+export function resolveSubagentAssignment(options: ResolveLaunchOptions): ResolvedSubagentAssignment {
 	const config = parseModelConfiguration(options.config ?? {});
+	let selectedModel: string;
 	if (options.explicitModel !== undefined) {
-		return normalizeModelSetting(options.explicitModel, "invocation model override");
+		selectedModel = normalizeModelSetting(options.explicitModel, "invocation model override");
+	} else if (Object.hasOwn(config.agentModels, options.agentName)) {
+		selectedModel = config.agentModels[options.agentName]!;
+	} else if (config.defaultModel !== undefined) {
+		selectedModel = config.defaultModel;
+	} else if (options.frontmatterModel?.trim()) {
+		selectedModel = normalizeModelSetting(options.frontmatterModel, `agent ${options.agentName} frontmatter model`);
+	} else {
+		selectedModel = MAIN_MODEL_SETTING;
 	}
-	if (Object.hasOwn(config.agentModels, options.agentName)) {
-		return config.agentModels[options.agentName]!;
-	}
-	if (config.defaultModel !== undefined) return config.defaultModel;
-	if (options.frontmatterModel?.trim()) {
-		return normalizeModelSetting(options.frontmatterModel, `agent ${options.agentName} frontmatter model`);
-	}
-	return MAIN_MODEL_SETTING;
-}
 
-/** Resolve the selected setting to the concrete model passed to a child Pi process. */
-export function resolveModelAssignment(options: ResolveModelOptions): string {
-	const setting = selectModelSetting(options);
-	return setting === MAIN_MODEL_SETTING ? canonicalMainModel(options.mainModel) : setting;
-}
-
-/** Select the optional thinking override according to agent > global > Pi default precedence. */
-export function selectThinkingLevelSetting(
-	options: Pick<ResolveLaunchOptions, "agentName" | "config" | "explicitThinkingLevel">,
-): SubagentThinkingLevel | undefined {
-	if (options.explicitThinkingLevel !== undefined) {
-		return normalizeThinkingLevel(options.explicitThinkingLevel, "invocation thinking level override");
-	}
-	const config = parseModelConfiguration(options.config ?? {});
-	if (Object.hasOwn(config.agentThinkingLevels, options.agentName)) {
-		return config.agentThinkingLevels[options.agentName];
-	}
-	return config.defaultThinkingLevel;
-}
-
-/** Select the optional context window according to explicit > agent > global precedence. */
-export function selectContextWindowSetting(
-	options: Pick<ResolveLaunchOptions, "agentName" | "config" | "explicitContextWindow">,
-): number | undefined {
-	if (options.explicitContextWindow !== undefined) {
-		return validateContextWindow(options.explicitContextWindow, "invocation context window override");
-	}
-	const config = parseModelConfiguration(options.config ?? {});
-	if (Object.hasOwn(config.agentContextWindows, options.agentName)) {
-		return config.agentContextWindows[options.agentName];
-	}
-	return config.defaultContextWindow;
-}
-
-/** Resolve model identity and thinking independently for child Pi CLI arguments. */
-export function resolveLaunchConfiguration(options: ResolveLaunchOptions): ResolvedLaunchConfiguration {
-	const resolved = splitModelThinkingSetting(resolveModelAssignment(options));
-	const config = parseModelConfiguration(options.config ?? {});
-	const explicitModelThinking = options.explicitModel === undefined
-		? undefined
-		: splitModelThinkingSetting(options.explicitModel).thinkingLevel;
+	const selected = splitModelThinkingSetting(selectedModel);
 	const agentThinking = Object.hasOwn(config.agentThinkingLevels, options.agentName)
 		? config.agentThinkingLevels[options.agentName]
 		: undefined;
+	const thinkingLevel = options.explicitThinkingLevel !== undefined
+		? normalizeThinkingLevel(options.explicitThinkingLevel, "invocation thinking level override")
+		: options.explicitModel !== undefined && selected.thinkingLevel !== undefined
+			? selected.thinkingLevel
+			: agentThinking ?? selected.thinkingLevel ?? config.defaultThinkingLevel;
+	const contextWindow = options.explicitContextWindow !== undefined
+		? validateContextWindow(options.explicitContextWindow, "invocation context window override")
+		: Object.hasOwn(config.agentContextWindows, options.agentName)
+			? config.agentContextWindows[options.agentName]
+			: config.defaultContextWindow;
+
 	return {
-		model: resolved.model,
-		thinkingLevel: options.explicitThinkingLevel !== undefined
-			? normalizeThinkingLevel(options.explicitThinkingLevel, "invocation thinking level override")
-			: explicitModelThinking ?? agentThinking ?? resolved.thinkingLevel ?? config.defaultThinkingLevel,
-		contextWindow: selectContextWindowSetting({
-			agentName: options.agentName,
-			config: options.config,
-			explicitContextWindow: options.explicitContextWindow,
-		}),
+		modelSetting: selected.model,
+		launch: {
+			model: selected.model === MAIN_MODEL_SETTING ? canonicalMainModel(options.mainModel) : selected.model,
+			thinkingLevel,
+			contextWindow,
+		},
 	};
 }
 
@@ -494,14 +469,14 @@ export function createSubagentConfigStore(options: SubagentConfigStoreOptions = 
 		},
 		getMainModel: () => activeMainModel,
 		resolveLaunch(agent, explicitModel, explicitThinkingLevel) {
-			return resolveLaunchConfiguration({
+			return resolveSubagentAssignment({
 				agentName: agent.name,
 				config: readDocument(),
 				explicitModel,
 				explicitThinkingLevel,
 				frontmatterModel: agent.model,
 				mainModel: activeMainModel,
-			});
+			}).launch;
 		},
 		setSettingsPath(path) {
 			settingsStore.setSettingsPath(path);

@@ -17,7 +17,7 @@ import {
 	normalizeThinkingLevel,
 	removeAgentModelAssignment,
 	removeAgentThinkingAssignment,
-	selectModelSetting,
+	resolveSubagentAssignment,
 	setAgentModelAssignment,
 	setAgentThinkingAssignment,
 	setAllModelAssignments,
@@ -26,6 +26,7 @@ import {
 	THINKING_LEVELS,
 	getDefaultSubagentConfig,
 	type ModelConfiguration,
+	type ResolvedSubagentAssignment,
 	type SubagentConfigStore,
 	type SubagentThinkingLevel,
 } from "./config.ts";
@@ -53,32 +54,13 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		"  /subagents thinking <agent> <inherit|off|minimal|low|medium|high|xhigh|max>",
 	].join("\n");
 
-	function selectedModelSettingForAgent(agent: AgentConfig, config: ModelConfiguration): string {
-		return selectModelSetting({
+	function resolveAssignment(agent: AgentConfig, config: unknown): ResolvedSubagentAssignment {
+		return resolveSubagentAssignment({
 			agentName: agent.name,
 			config,
 			frontmatterModel: agent.model,
+			mainModel: configStore.getMainModel(),
 		});
-	}
-
-	function effectiveModelForAgent(agent: AgentConfig, config: ModelConfiguration): { setting: string; resolved: string } {
-		const selected = selectedModelSettingForAgent(agent, config);
-		const split = splitModelThinkingSetting(selected);
-		return {
-			setting: split.model,
-			resolved: split.model === "main" ? canonicalMainModel(configStore.getMainModel()) : split.model,
-		};
-	}
-
-	function effectiveThinkingForAgent(agent: AgentConfig, config: ModelConfiguration): SubagentThinkingLevel | undefined {
-		if (Object.hasOwn(config.agentThinkingLevels, agent.name)) return config.agentThinkingLevels[agent.name];
-		const selected = splitModelThinkingSetting(selectedModelSettingForAgent(agent, config));
-		return selected.thinkingLevel ?? config.defaultThinkingLevel;
-	}
-
-	function effectiveContextWindowForAgent(agent: AgentConfig, config: ModelConfiguration): number | undefined {
-		if (Object.hasOwn(config.agentContextWindows, agent.name)) return config.agentContextWindows[agent.name];
-		return config.defaultContextWindow;
 	}
 
 	function contextDisplay(contextWindow: number | undefined): string {
@@ -107,11 +89,11 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			const missing = agent.tools
 				.filter((tool) => !BUILTIN_TOOLS.has(tool) && (!CUSTOM_TOOL_EXTENSIONS[tool] || !fs.existsSync(CUSTOM_TOOL_EXTENSIONS[tool])))
 				.map((tool) => `${tool}${CUSTOM_TOOL_EXTENSIONS[tool] ? ` (${CUSTOM_TOOL_EXTENSIONS[tool]})` : " (unmapped)"}`);
-			const effective = effectiveModelForAgent(agent, config);
+			const assignment = resolveAssignment(agent, config);
 			lines.push(`- ${agent.name}: ${agent.description || "(no description)"}`);
-			lines.push(`  model: ${modelDisplay(effective.setting, effective.resolved)}`);
-			lines.push(`  thinking: ${thinkingDisplay(effectiveThinkingForAgent(agent, config))}`);
-			lines.push(`  context: ${contextDisplay(effectiveContextWindowForAgent(agent, config))}`);
+			lines.push(`  model: ${modelDisplay(assignment.modelSetting, assignment.launch.model)}`);
+			lines.push(`  thinking: ${thinkingDisplay(assignment.launch.thinkingLevel)}`);
+			lines.push(`  context: ${contextDisplay(assignment.launch.contextWindow)}`);
 			lines.push(`  tools: ${agent.tools.join(", ") || "none"}`);
 			if (missing.length) lines.push(`  missing: ${missing.join(", ")}`);
 		}
@@ -147,8 +129,8 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			"Effective assignments:",
 		];
 		for (const agent of availableAgents) {
-			const effective = effectiveModelForAgent(agent, config);
-			lines.push(`- ${agent.name}: ${modelDisplay(effective.setting, effective.resolved)} · thinking ${thinkingDisplay(effectiveThinkingForAgent(agent, config))} · context ${contextDisplay(effectiveContextWindowForAgent(agent, config))}`);
+			const assignment = resolveAssignment(agent, config);
+			lines.push(`- ${agent.name}: ${modelDisplay(assignment.modelSetting, assignment.launch.model)} · thinking ${thinkingDisplay(assignment.launch.thinkingLevel)} · context ${contextDisplay(assignment.launch.contextWindow)}`);
 		}
 		return lines;
 	}
@@ -329,11 +311,11 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 				description: `${defaultModel} · thinking ${thinkingDisplay(defaultThinking)} · clears individual overrides`,
 			},
 			...availableAgents.map((agent) => {
-				const effective = effectiveModelForAgent(agent, config);
+				const assignment = resolveAssignment(agent, config);
 				return {
 					value: agent.name,
 					label: agent.name,
-					description: `${modelDisplay(effective.setting, effective.resolved)} · thinking ${thinkingDisplay(effectiveThinkingForAgent(agent, config))}`,
+					description: `${modelDisplay(assignment.modelSetting, assignment.launch.model)} · thinking ${thinkingDisplay(assignment.launch.thinkingLevel)}`,
 				};
 			}),
 		];
@@ -370,13 +352,11 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		const choices: SelectScreenItem[] = [];
 
 		if (agent) {
-			const inheritedAgentModels = { ...config.agentModels };
-			delete inheritedAgentModels[target];
-			const inherited = effectiveModelForAgent(agent, { ...config, agentModels: inheritedAgentModels });
+			const inherited = resolveAssignment(agent, removeAgentModelAssignment(config, target));
 			choices.push({
 				value: "inherit",
 				label: "Inherit global/frontmatter setting",
-				description: `Uses ${modelDisplay(inherited.setting, inherited.resolved)}`,
+				description: `Uses ${modelDisplay(inherited.modelSetting, inherited.launch.model)}`,
 				searchText: "inherit default global frontmatter",
 			});
 		}
@@ -414,21 +394,14 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		});
 	}
 
-	function modelSettingAfterChoice(
+	function configAfterIndividualModelChoice(
 		target: string,
 		choice: string,
-		agent: AgentConfig | undefined,
 		config: ModelConfiguration,
-	): string {
-		if (choice !== "inherit") return choice;
-		if (!agent || target === "all") throw new Error('"inherit" requires an individual subagent.');
-		const inheritedAgentModels = { ...config.agentModels };
-		delete inheritedAgentModels[target];
-		return selectModelSetting({
-			agentName: agent.name,
-			config: { ...config, agentModels: inheritedAgentModels },
-			frontmatterModel: agent.model,
-		});
+	): Record<string, unknown> {
+		return choice === "inherit"
+			? removeAgentModelAssignment(config, target)
+			: setAgentModelAssignment(config, target, choice);
 	}
 
 	function findCatalogueModel(
@@ -457,26 +430,35 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		const agent = target === "all" ? undefined : availableAgents.find((candidate) => candidate.name === target);
 		if (target !== "all" && !agent) throw new Error(`Unknown subagent: ${target}`);
 
-		const pendingModelSetting = modelSettingAfterChoice(target, modelChoice, agent, config);
+		const pendingConfig = target === "all"
+			? config
+			: configAfterIndividualModelChoice(target, modelChoice, config);
+		const pendingAssignment = agent ? resolveAssignment(agent, pendingConfig) : undefined;
+		const pendingModelSetting = pendingAssignment?.modelSetting ?? modelChoice;
 		const catalogueModel = findCatalogueModel(pendingModelSetting, models, ctx);
 		const supported = catalogueModel
 			? getSupportedThinkingLevels(catalogueModel).map((level) => normalizeThinkingLevel(level))
 			: [...THINKING_LEVELS];
 
-		const currentModelSetting = target === "all"
+		const currentRawModel = target === "all"
 			? config.defaultModel ?? "main"
-			: selectedModelSettingForAgent(agent!, config);
-		const pendingModel = splitModelThinkingSetting(pendingModelSetting).model;
-		const currentModel = splitModelThinkingSetting(currentModelSetting);
-		const sameModel = currentModel.model === pendingModel;
+			: Object.hasOwn(config.agentModels, target)
+				? config.agentModels[target]!
+				: undefined;
+		const currentAssignment = agent ? resolveAssignment(agent, config) : undefined;
+		const currentModel = currentAssignment?.modelSetting ?? splitModelThinkingSetting(currentRawModel!).model;
+		const currentModelSuffix = currentRawModel === undefined
+			? undefined
+			: splitModelThinkingSetting(currentRawModel).thinkingLevel;
+		const sameModel = currentModel === pendingModelSetting;
 		const currentValue = target === "all"
-			? sameModel && currentModel.thinkingLevel
-				? currentModel.thinkingLevel
+			? sameModel && currentModelSuffix
+				? currentModelSuffix
 				: config.defaultThinkingLevel ?? "default"
 			: Object.hasOwn(config.agentThinkingLevels, target)
-				? config.agentThinkingLevels[target]!
-				: sameModel && currentModel.thinkingLevel
-					? currentModel.thinkingLevel
+				? currentAssignment!.launch.thinkingLevel!
+				: sameModel && currentModelSuffix
+					? currentAssignment!.launch.thinkingLevel!
 					: "inherit";
 
 		const items: Array<{ value: string; label: string; description: string }> = [];
@@ -487,16 +469,12 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 				description: "Do not pass a --thinking override to child Pi processes",
 			});
 		} else {
-			const inheritedAgentThinking = { ...config.agentThinkingLevels };
-			delete inheritedAgentThinking[target];
-			const inheritedConfig = { ...config, agentThinkingLevels: inheritedAgentThinking };
-			const inheritedModelSetting = modelSettingAfterChoice(target, modelChoice, agent, inheritedConfig);
-			const inheritedSplit = splitModelThinkingSetting(inheritedModelSetting);
-			const inheritedLevel = inheritedSplit.thinkingLevel ?? inheritedConfig.defaultThinkingLevel;
+			const inheritedConfig = removeAgentThinkingAssignment(pendingConfig, target);
+			const inherited = resolveAssignment(agent!, inheritedConfig);
 			items.push({
 				value: "inherit",
 				label: "Inherit global/Pi default",
-				description: `Uses ${thinkingDisplay(inheritedLevel)}`,
+				description: `Uses ${thinkingDisplay(inherited.launch.thinkingLevel)}`,
 			});
 		}
 
@@ -508,10 +486,9 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			});
 		}
 
-		const modelLabel = splitModelThinkingSetting(pendingModelSetting).model;
 		return pickSelectScreen(ctx, {
 			title: `Select thinking for ${target === "all" ? "all subagents" : target}`,
-			subtitle: `Model: ${modelLabel}`,
+			subtitle: `Model: ${pendingModelSetting}`,
 			items,
 			currentValue,
 			showCurrentMarker: true,
