@@ -135,14 +135,16 @@ describe("subagent extension interfaces", () => {
 		expect(harness.tools.get("subagent")).toMatchObject({
 			name: "subagent",
 			label: "Subagent",
-			description: expect.stringContaining("Delegate tasks to isolated subagents"),
+			description: expect.stringContaining("Use this tool only when a subagent will inspect substantially more material than it returns"),
 			promptSnippet: "Delegate tasks",
 		});
 		const subagentDescription = harness.tools.get("subagent").description as string;
-		expect(subagentDescription).toContain("substantially smaller than the raw material");
-		expect(subagentDescription).toContain("one-or-two-file reads");
-		expect(subagentDescription).toContain("Do not delegate planning");
-		expect(subagentDescription).toContain("narrow question");
+		expect(subagentDescription).toContain("Do not delegate planning, architecture, design alternatives");
+		expect(subagentDescription).toContain("Available agents, using these exact names");
+		expect(subagentDescription).toContain("worker for implementing a bounded change after the main agent has decided the design");
+		expect(subagentDescription).toContain("Use parallel tasks only when they are independent");
+		expect(subagentDescription).toContain("one-or-two-file inspections");
+		expect(subagentDescription).toContain("narrow scope");
 		expect(subagentDescription).toContain("several external sources");
 		expect(subagentDescription).toContain("tasks[] entry");
 		expect(harness.tools.get("subagent")).not.toHaveProperty("promptGuidelines");
@@ -150,6 +152,9 @@ describe("subagent extension interfaces", () => {
 		expect(Object.keys(parameters.properties)).toEqual(["tasks"]);
 		expect(parameters.required).toEqual(["tasks"]);
 		expect(parameters.properties.tasks.minItems).toBe(1);
+		expect(parameters.properties.tasks.items.properties.agent.description).toContain(
+			"Exact registered agent name: default, explorer, worker, researcher, or judge",
+		);
 		expect(requireSubagentService().id).toBe("tools-subagents");
 	});
 
