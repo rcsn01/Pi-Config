@@ -210,10 +210,11 @@ extension.
   process lifetime stay outside.
 - **Subagent child execution module** — the deep process-lifetime module for one
   resolved Subagent launch. It owns private prompt and task files, child
-  observation setup, process spawning and termination, JSON event meaning,
-  progress and usage state, partial output, truncation, terminal results, and
-  cleanup on every exit path. It receives prepared requests; Pi result rendering
-  stays in the invocation adapter.
+  observation setup, process spawning and termination, and cleanup on every exit
+  path. Its private Child event ingestion module owns stdout framing, JSON event
+  meaning, progress and usage state, timing input, output selection, truncation,
+  and terminal result construction. It receives prepared requests; Pi result
+  rendering stays in the invocation adapter.
 - **Subagent invocation adapter** — the Pi-facing deep module for one `subagent`
   tool call: selects single or parallel mode, publishes immutable live snapshots,
   formats final text and details, and applies one failure rule. The Subagent
