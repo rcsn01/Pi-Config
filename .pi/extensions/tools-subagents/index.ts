@@ -122,12 +122,14 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		name: "subagent",
 		label: "Subagent",
 		description:
-			"Delegate tasks to isolated subagents; include all needed context. Supply exactly one tasks[] entry for a single invocation or multiple entries for parallel invocation. Use only when the final handoff will be substantially smaller than the raw material inspected — handle simple lookups, known-symbol traces, and one-or-two-file reads locally with parallel tool calls instead. Use explorer for repository evidence across several files and researcher only when several external sources must be read and summarized; keep direct documentation lookups local. Do not delegate planning, architecture, task decomposition, or implementation decisions — the main agent owns synthesis and planning. Give each subagent a narrow question, explicit scope, and requested evidence; ask for compact findings, not a work log. After it returns, rely on its cited findings; do not repeat its searches or reread cited files unless the handoff identifies a gap or conflicting evidence.",
+			"Use this tool only when a subagent will inspect substantially more material than it returns. Do not delegate planning, architecture, design alternatives, task decomposition, or implementation decisions; the main agent must do those itself. Available agents, using these exact names: explorer for read-only investigation across several repository files; researcher for research requiring several external sources; worker for implementing a bounded change after the main agent has decided the design; judge for evaluating supplied work against an explicit rubric; default for small general delegated work. Use parallel tasks only when they are independent. Give each task all necessary context, a narrow scope, and the evidence or output required. Do not use this tool for simple lookups, known-symbol traces, direct documentation reads, or one-or-two-file inspections; use local tools, including parallel tool calls, instead. Supply exactly one tasks[] entry for a single invocation or multiple entries for parallel invocation. Ask for compact findings, not a work log. After a subagent returns, rely on its cited findings; do not repeat its searches or reread cited files unless the handoff identifies a gap or conflicting evidence.",
 		promptSnippet: "Delegate tasks",
 		parameters: Type.Object({
 			tasks: Type.Array(
 				Type.Object({
-					agent: Type.String({ description: "Name of the agent to invoke" }),
+					agent: Type.String({
+						description: "Exact registered agent name: default, explorer, worker, researcher, or judge. Never invent a role name.",
+					}),
 					task: Type.String({ description: "Task description" }),
 					cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 				}),
