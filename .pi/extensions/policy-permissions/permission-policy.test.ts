@@ -87,7 +87,7 @@ describe("permission enforcement policy through the lifecycle interface", () => 
 			expect(d).toEqual({ action: "block", reason: expect.stringContaining("read-only") });
 		});
 
-		it.each(["ddg_search", "github_repo_acquire"])("blocks network tool %s", async (toolName) => {
+		it.each(["ddg_search"])("blocks network tool %s", async (toolName) => {
 			const s = makeDeps();
 			const d = await evaluateToolCall(
 				{ toolName, input: { query: "x" } },
@@ -97,15 +97,21 @@ describe("permission enforcement policy through the lifecycle interface", () => 
 			expect(d).toEqual({ action: "block", reason: expect.stringContaining("Network tool") });
 		});
 
-		it("blocks repository snapshot removal but permits listing", async () => {
+		it("blocks snapshot acquisition/removal through bash but permits listing", async () => {
 			const s = makeDeps();
+			const script = ".pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs";
 			await expect(evaluateToolCall(
-				{ toolName: "github_repo_remove", input: { id: "ghr_x" } },
+				{ toolName: "bash", input: { command: `node ${script} acquire owner/repo` } },
 				context({ mode: "read-only" }),
 				s.deps,
 			)).resolves.toEqual({ action: "block", reason: expect.stringContaining("read-only") });
 			await expect(evaluateToolCall(
-				{ toolName: "github_repo_list", input: {} },
+				{ toolName: "bash", input: { command: `node ${script} remove ghr_${"a".repeat(24)} --confirm` } },
+				context({ mode: "read-only" }),
+				s.deps,
+			)).resolves.toEqual({ action: "block", reason: expect.stringContaining("read-only") });
+			await expect(evaluateToolCall(
+				{ toolName: "bash", input: { command: `node ${script} list` } },
 				context({ mode: "read-only" }),
 				s.deps,
 			)).resolves.toEqual({ action: "allow" });
@@ -186,7 +192,7 @@ describe("permission enforcement policy through the lifecycle interface", () => 
 			expect(d).toEqual({ action: "block", reason: "User declined." });
 		});
 
-		it.each(["ddg_search", "github_repo_acquire"])("prompts for network tool %s", async (toolName) => {
+		it.each(["ddg_search"])("prompts for network tool %s", async (toolName) => {
 			const s = makeDeps({ approve: false });
 			const d = await evaluateToolCall(
 				{ toolName, input: {} },
@@ -195,6 +201,44 @@ describe("permission enforcement policy through the lifecycle interface", () => 
 			);
 			expect(s.prompts[0].title).toBe("Network Tool");
 			expect(d.action).toBe("block");
+		});
+
+		it("prompts for snapshot acquisition and removal through bash", async () => {
+			const script = ".pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs";
+			const acquire = makeDeps();
+			await expect(evaluateToolCall(
+				{ toolName: "bash", input: { command: `node ${script} acquire owner/repo` } },
+				context({ mode: "default" }),
+				acquire.deps,
+			)).resolves.toEqual({ action: "block", reason: "User declined." });
+			expect(acquire.prompts[0].title).toBe("Network Access");
+
+			const remove = makeDeps();
+			await expect(evaluateToolCall(
+				{ toolName: "bash", input: { command: `node ${script} remove ghr_${"a".repeat(24)} --confirm` } },
+				context({ mode: "default" }),
+				remove.deps,
+			)).resolves.toEqual({ action: "block", reason: "User declined." });
+			expect(remove.prompts[0].title).toBe("Repository Snapshot Removal");
+		});
+
+		it("blocks wrapped, aliased, and compound snapshot commands", async () => {
+			const script = ".pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs";
+			const commands = [
+				`node ${script} list; node ${script} acquire owner/repo`,
+				`node -e "run" ${script} list`,
+				`node ${script.replace("scripts/", "scripts/../scripts/")} acquire owner/repo`,
+			];
+
+			for (const command of commands) {
+				const s = makeDeps({ approve: true });
+				await expect(evaluateToolCall(
+					{ toolName: "bash", input: { command } },
+					context({ mode: "default" }),
+					s.deps,
+				)).resolves.toEqual({ action: "block", reason: expect.stringContaining("exact command") });
+				expect(s.prompts).toHaveLength(0);
+			}
 		});
 
 		it("prompts for sensitive path reads", async () => {
@@ -246,6 +290,25 @@ describe("permission enforcement policy through the lifecycle interface", () => 
 			expect(s.guardian[0].triggers).toEqual(["dangerous"]);
 			expect(s.guardian[0].message).toContain("recursive forced deletion");
 			expect(d).toEqual({ action: "block", reason: expect.stringContaining("Guardian") });
+		});
+
+		it("reviews snapshot acquisition and removal through bash", async () => {
+			const script = ".pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs";
+			const acquire = makeDeps({ guardianAllow: true });
+			await expect(evaluateToolCall(
+				{ toolName: "bash", input: { command: `node ${script} acquire owner/repo` } },
+				context({ mode: "auto-review" }),
+				acquire.deps,
+			)).resolves.toEqual({ action: "allow" });
+			expect(acquire.guardian[0].triggers).toEqual(["network"]);
+
+			const remove = makeDeps({ guardianAllow: true });
+			await expect(evaluateToolCall(
+				{ toolName: "bash", input: { command: `node ${script} remove ghr_${"a".repeat(24)} --confirm` } },
+				context({ mode: "auto-review" }),
+				remove.deps,
+			)).resolves.toEqual({ action: "allow" });
+			expect(remove.guardian[0].triggers).toEqual(["repository-snapshot-removal"]);
 		});
 
 		it("passes through when the guardian allows", async () => {

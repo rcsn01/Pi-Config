@@ -71,17 +71,15 @@ The extension makes no provider calls on startup and does not register a tool or
 
 The balanced run is recommended. It counterbalances `A → A → B → B` and `B → B → A → A`; Codex uses 16 calls because it tests both SSE and `auto`, while direct OpenAI uses 8. Calls may consume subscription quota or incur API charges.
 
-## Temporary GitHub repository explorer
+## GitHub repository explorer skill
 
-The opt-in `tools-github-repos` extension acquires public `github.com` repositories as immutable source snapshots under `.pi/repos/`. Enable it with `/features enable tools-github-repos` and `/reload`; it requires `policy-permissions`.
+The `github-repo-explorer` project skill acquires public `github.com` repositories as immutable source snapshots under `.pi/repos/`. Load it with `/skill:github-repo-explorer` or let it activate for remote source research. It uses the bundled helper through Pi's built-in `bash` tool; it does not register custom tools or a `/repos` command.
 
-While enabled, the extension also exposes the `github-repo-explorer` skill. The skill tells the agent to call `github_repo_acquire` before inspecting a remote repository, then use the normal `read`, `grep`, and `find` tools on the returned path. The tool accepts `owner/repo` or a GitHub HTTPS URL plus an optional branch, tag, full ref, or 40-character commit. It returns the pinned commit and a local source path.
-
-Snapshots persist across Pi sessions. List them with `github_repo_list` or `/repos`. Remove one with `github_repo_remove({ id })` or `/repos remove <id>`. Pi never removes a completed snapshot automatically.
+The helper accepts `owner/repo` or a GitHub HTTPS URL plus an optional branch, tag, full ref, or 40-character commit. Snapshots persist across Pi sessions. The skill provides commands for acquiring, listing, and explicitly removing snapshots; completed snapshots are never removed automatically.
 
 V1 supports public GitHub repositories only. It does not accept credentials, other hosts, SSH or local Git URLs, submodule contents, Git LFS downloads, or full history. Acquisition uses a depth-one fetch, checks tree and disk limits before publication, converts symlinks to regular files containing their targets, removes `.git`, strips executable bits, and marks source files read-only. Repository files remain untrusted data. Do not run their code, builds, tests, package managers, or scripts unless the user separately requests that execution.
 
-When `policy-permissions` is enabled, acquisition counts as network access, removal counts as a mutation, and listing stays read-only. `/repos` has no acquisition form, so network acquisition always goes through the tool permission flow.
+When `policy-permissions` is enabled, acquisition is classified as network access, removal as a mutation, and listing remains read-only.
 
 ## Experimental advisor
 

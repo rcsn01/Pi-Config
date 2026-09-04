@@ -42,7 +42,6 @@ const NETWORK_TOOL_NAMES = new Set([
 	"ddg_fetch",
 	"web_search",
 	"web_fetch",
-	"github_repo_acquire",
 ]);
 
 const NETWORK_COMMAND_PATTERNS = [
@@ -82,6 +81,13 @@ const NETWORK_COMMAND_PATTERNS = [
 	/\bopen\b/,
 	/\bxdg-open\b/,
 ];
+
+const GITHUB_SNAPSHOT_HELPER_PATH = ".pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs";
+const GITHUB_SNAPSHOT_HELPER_BASENAME = "github-repo-snapshot.mjs";
+const SNAPSHOT_COMMAND_UNSAFE_CHARS = new Set([
+	";", "&", "|", "`", "$", "(", ")", "<", ">", "!", "'", "\"", "#",
+	"*", "?", "[", "]", "{", "}", "\\", "~", "\r", "\n",
+]);
 
 const SENSITIVE_PATH_PATTERNS = [
 	/(^|\/)\.env(?:\.|$)/,
@@ -201,15 +207,59 @@ export function isNetworkToolName(toolName: string): boolean {
 	return NETWORK_TOOL_NAMES.has(toolName);
 }
 
-export function isNetworkCommand(command: string): boolean {
-	const normalized = command.replace(/\\\n/g, " ").trim();
-	return NETWORK_COMMAND_PATTERNS.some((re) => re.test(normalized));
+function normalizeShellCommand(command: string): string {
+	return command.replace(/\\\n/g, " ").trim();
 }
 
-// ── Existing exports (unchanged) ───────────────────────────────────────
+function containsSnapshotCommandSyntax(command: string): boolean {
+	for (const character of command) {
+		if (SNAPSHOT_COMMAND_UNSAFE_CHARS.has(character)) return true;
+	}
+	return false;
+}
+
+/**
+ * True for both canonical helper invocations and commands that mention the
+ * helper in a wrapper or compound command. Callers should fail closed when
+ * this is true but githubRepositorySnapshotOperation() returns undefined.
+ */
+export function mentionsGithubRepositorySnapshotHelper(command: string): boolean {
+	return normalizeShellCommand(command).includes(GITHUB_SNAPSHOT_HELPER_BASENAME);
+}
+
+export function githubRepositorySnapshotOperation(command: string): "acquire" | "list" | "remove" | undefined {
+	const normalized = normalizeShellCommand(command);
+	if (containsSnapshotCommandSyntax(normalized)) return undefined;
+	const args = normalized.split(/[ \t]+/);
+	if (args[0] !== "node" || args[1] !== GITHUB_SNAPSHOT_HELPER_PATH) return undefined;
+
+	switch (args[2]) {
+		case "list":
+			return args.length === 3 ? "list" : undefined;
+		case "acquire":
+			return args.length === 4 || (args.length === 6 && args[4] === "--ref") ? "acquire" : undefined;
+		case "remove":
+			return args.length === 5 && /^ghr_[0-9a-f]{24}$/.test(args[3]) && args[4] === "--confirm" ? "remove" : undefined;
+		default:
+			return undefined;
+	}
+}
+
+export function isNetworkCommand(command: string): boolean {
+	const normalized = normalizeShellCommand(command);
+	const snapshotOperation = githubRepositorySnapshotOperation(normalized);
+	const malformedSnapshotCommand = mentionsGithubRepositorySnapshotHelper(normalized) && snapshotOperation === undefined;
+	return snapshotOperation === "acquire" || malformedSnapshotCommand || NETWORK_COMMAND_PATTERNS.some((re) => re.test(normalized));
+}
+
+// ── Shell classification exports ───────────────────────────────────────
 
 export function isReadOnlyShellCommand(command: string): boolean {
-	return READ_ONLY_COMMAND_RE.test(command.trim());
+	const trimmed = command.trim();
+	const snapshotOperation = githubRepositorySnapshotOperation(trimmed);
+	if (snapshotOperation) return snapshotOperation === "list";
+	if (mentionsGithubRepositorySnapshotHelper(trimmed)) return false;
+	return READ_ONLY_COMMAND_RE.test(trimmed);
 }
 
 export function dangerousShellReason(command: string): string | undefined {

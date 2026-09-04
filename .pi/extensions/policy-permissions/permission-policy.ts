@@ -9,6 +9,8 @@ import {
 	dangerousShellReason,
 	evaluateExecPolicy,
 	extractExternalPathsFromCommand,
+	githubRepositorySnapshotOperation,
+	mentionsGithubRepositorySnapshotHelper,
 	isNetworkCommand,
 	isNetworkToolName,
 	isReadOnlyShellCommand,
@@ -76,8 +78,11 @@ export async function evaluateToolCall(
 
 	// ── Read-only mode: block mutations ────────────────────────────
 	if (mode === "read-only") {
-		// Block write/mutating tools entirely
-		if (WRITE_TOOLS.has(toolName)) {
+		const readOnlySnapshotOperation = toolName === "bash" ? githubRepositorySnapshotOperation(commandOf(input)) : undefined;
+
+		// Block write/mutating tools entirely. Snapshot listing is a read-only
+		// helper command even though it runs through the built-in bash tool.
+		if (WRITE_TOOLS.has(toolName) && !(toolName === "bash" && readOnlySnapshotOperation === "list")) {
 			return {
 				action: "block",
 				reason: `Approval mode is read-only. Tool \`${toolName}\` is blocked. Use /permissions default to allow modifications.`,
@@ -125,6 +130,17 @@ export async function evaluateToolCall(
 	if (toolName === "bash") {
 		const command = commandOf(input);
 		const trimmedCmd = command.trim();
+		const snapshotOperation = githubRepositorySnapshotOperation(trimmedCmd);
+		const mentionsSnapshotHelper = mentionsGithubRepositorySnapshotHelper(trimmedCmd);
+
+		// Do not let wrappers, aliases, path variants, or compound commands
+		// bypass the helper's network/removal classifications.
+		if ((mode === "default" || mode === "auto-review") && mentionsSnapshotHelper && !snapshotOperation) {
+			return {
+				action: "block",
+				reason: "Unrecognized GitHub snapshot helper command. Use the exact command shown by the github-repo-explorer skill.",
+			};
+		}
 
 		// Read-only bash: only read-only commands allowed
 		if (mode === "read-only" && !isReadOnlyShellCommand(trimmedCmd)) {
@@ -153,6 +169,10 @@ export async function evaluateToolCall(
 				if (network) {
 					triggers.push("network");
 					concerns.push("- Network: command may install/modify software outside the workspace");
+				}
+				if (snapshotOperation === "remove") {
+					triggers.push("repository-snapshot-removal");
+					concerns.push("- Repository snapshot removal: deletes a stored source snapshot");
 				}
 				if (externalPaths.length > 0) {
 					triggers.push("external-path");
@@ -188,6 +208,16 @@ export async function evaluateToolCall(
 					if (!allowed) {
 						deps.onDenied(input, "Network Access", trimmedCmd.slice(0, 200));
 						return { action: "block", reason: reason ?? "Network access blocked." };
+					}
+				}
+				if (snapshotOperation === "remove") {
+					const { allowed, reason } = await deps.requestApproval(
+						"Repository Snapshot Removal",
+						`This command deletes a stored repository source snapshot.\n\nCommand: ${trimmedCmd.slice(0, 200)}`,
+					);
+					if (!allowed) {
+						deps.onDenied(input, "Repository Snapshot Removal", trimmedCmd.slice(0, 200));
+						return { action: "block", reason: reason ?? "Repository snapshot removal blocked." };
 					}
 				}
 			}
