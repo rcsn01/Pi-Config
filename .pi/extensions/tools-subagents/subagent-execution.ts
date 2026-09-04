@@ -14,32 +14,36 @@ import { prepareSubagentLaunches } from "./launch-preparation.ts";
 
 export const DEFAULT_MAX_CONCURRENCY = 4;
 
-export type ParallelBatchTask = RunSubagentsParallelOptions["tasks"][number];
-export type ParallelBatchPhase = "started" | "progress" | "completed";
+export type SubagentExecutionTask = RunSubagentsParallelOptions["tasks"][number];
+export type SubagentExecutionPhase = "started" | "progress" | "completed";
 
-export interface ParallelBatchSnapshot {
+export interface SubagentExecutionSnapshot {
 	readonly results: readonly AgentResult[];
 	readonly changedIndex: number;
-	readonly phase: ParallelBatchPhase;
+	readonly phase: SubagentExecutionPhase;
 	readonly event?: SubagentProgressEvent;
 }
 
-export interface RunParallelBatchOptions {
+export interface RunSubagentBatchOptions {
 	cwd: string;
 	maxConcurrency?: number;
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	maxOutputBytes?: number;
 	cacheAffinitySeed?: string;
-	onSnapshot?: (snapshot: ParallelBatchSnapshot) => void;
+	onSnapshot?: (snapshot: SubagentExecutionSnapshot) => void;
 }
 
-export interface ParallelSubagentBatch {
-	runBatch(tasks: readonly ParallelBatchTask[], options: RunParallelBatchOptions): Promise<AgentResult[]>;
+export interface SubagentExecution {
+	runSubagent(options: RunSubagentOptions): Promise<AgentResult>;
+	runBatch(
+		tasks: readonly SubagentExecutionTask[],
+		options: RunSubagentBatchOptions,
+	): Promise<AgentResult[]>;
 	runSubagentsParallel(options: RunSubagentsParallelOptions): Promise<AgentResult[]>;
 }
 
-interface ParallelBatchDependencies {
+interface SubagentExecutionDependencies {
 	registry?: AgentRegistry;
 	config?: SubagentConfigStore;
 	childExecution?: SubagentChildExecution;
@@ -50,7 +54,7 @@ interface CompatibilityCallbacks {
 	onUpdate?: RunSubagentsParallelOptions["onUpdate"];
 }
 
-function pendingResult(task: ParallelBatchTask): AgentResult {
+function pendingResult(task: SubagentExecutionTask): AgentResult {
 	const taskText = task.task ?? task.prompt ?? "";
 	return {
 		agent: task.agent,
@@ -88,6 +92,12 @@ function snapshotResults(results: readonly AgentResult[]): readonly AgentResult[
 	return results.map(cloneResult);
 }
 
+function cloneProgressEvent(event: SubagentProgressEvent): SubagentProgressEvent {
+	if (event.type === "completed") return { ...event, result: cloneResult(event.result) };
+	if (event.type === "failed" && event.result) return { ...event, result: cloneResult(event.result) };
+	return { ...event };
+}
+
 async function runOrdered<T, R>(
 	items: readonly T[],
 	concurrency: number,
@@ -108,14 +118,25 @@ async function runOrdered<T, R>(
 	return results;
 }
 
-export function createParallelSubagentBatch(dependencies: ParallelBatchDependencies = {}): ParallelSubagentBatch {
+export function createSubagentExecution(
+	dependencies: SubagentExecutionDependencies = {},
+): SubagentExecution {
 	const registry = dependencies.registry ?? agentRegistry;
 	const getConfig = () => dependencies.config ?? getDefaultSubagentConfig();
 	const childExecution = dependencies.childExecution ?? createSubagentChildExecution();
+	const prepare = (
+		requests: readonly RunSubagentOptions[],
+		config = getConfig(),
+	) => prepareSubagentLaunches(requests, { registry, config });
 
-	async function execute(
-		tasks: readonly ParallelBatchTask[],
-		options: RunParallelBatchOptions,
+	async function runSubagent(options: RunSubagentOptions): Promise<AgentResult> {
+		const [request] = prepare([options]);
+		return childExecution.execute(request);
+	}
+
+	async function executeBatch(
+		tasks: readonly SubagentExecutionTask[],
+		options: RunSubagentBatchOptions,
 		compatibility: CompatibilityCallbacks = {},
 	): Promise<AgentResult[]> {
 		const config = getConfig();
@@ -125,12 +146,12 @@ export function createParallelSubagentBatch(dependencies: ParallelBatchDependenc
 		);
 		const liveResults = tasks.map(pendingResult);
 		const latestEvents: Array<SubagentProgressEvent | undefined> = new Array(tasks.length);
-		const publish = (changedIndex: number, phase: ParallelBatchPhase, event?: SubagentProgressEvent) => {
+		const publish = (changedIndex: number, phase: SubagentExecutionPhase, event?: SubagentProgressEvent) => {
 			options.onSnapshot?.({
 				results: snapshotResults(liveResults),
 				changedIndex,
 				phase,
-				...(event ? { event } : {}),
+				...(event ? { event: cloneProgressEvent(event) } : {}),
 			});
 		};
 		const requests: RunSubagentOptions[] = tasks.map((task, index) => ({
@@ -157,7 +178,7 @@ export function createParallelSubagentBatch(dependencies: ParallelBatchDependenc
 				await compatibility.onProgress?.(index, event, progress);
 			},
 		}));
-		const preparedRequests = prepareSubagentLaunches(requests, { registry, config });
+		const preparedRequests = prepare(requests, config);
 
 		return runOrdered(preparedRequests, concurrency, async (request, index) => {
 			liveResults[index] = {
@@ -179,16 +200,21 @@ export function createParallelSubagentBatch(dependencies: ParallelBatchDependenc
 	}
 
 	return {
-		runBatch: (tasks, options) => execute(tasks, options),
-		runSubagentsParallel: (options) => execute(options.tasks, options, {
+		runSubagent,
+		runBatch: (tasks, options) => executeBatch(tasks, options),
+		runSubagentsParallel: (options) => executeBatch(options.tasks, options, {
 			onProgress: options.onProgress,
 			onUpdate: options.onUpdate,
 		}),
 	};
 }
 
-const defaultParallelBatch = createParallelSubagentBatch();
+const defaultSubagentExecution = createSubagentExecution();
+
+export function runSubagent(options: RunSubagentOptions): Promise<AgentResult> {
+	return defaultSubagentExecution.runSubagent(options);
+}
 
 export function runSubagentsParallel(options: RunSubagentsParallelOptions): Promise<AgentResult[]> {
-	return defaultParallelBatch.runSubagentsParallel(options);
+	return defaultSubagentExecution.runSubagentsParallel(options);
 }

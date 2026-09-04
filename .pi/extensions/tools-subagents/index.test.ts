@@ -96,7 +96,7 @@ describe("subagent extension interfaces", () => {
 			.rejects.toThrow(/maxConcurrency/);
 	});
 
-	it("preserves public entrypoint, runner, and registration exports", () => {
+	it("preserves public entrypoint, execution, and registration exports", () => {
 		expect(subagentsExtension).toEqual(expect.any(Function));
 		expect(createSubagentsExtension).toEqual(expect.any(Function));
 		expect(registerAgent).toEqual(expect.any(Function));
@@ -170,6 +170,26 @@ describe("subagent extension interfaces", () => {
 });
 
 describe("subagent tool wiring", () => {
+	it("routes direct service calls through prepared child execution", async () => {
+		const expectedResult = agentResult({ task: "Direct work", output: "done" });
+		const executeChild = vi.fn(async () => expectedResult);
+		extensionHarness(executeChild);
+
+		const result = await requireSubagentService().runSubagent({
+			agent: "worker",
+			task: "Direct work",
+			cwd: "/workspace",
+		});
+
+		expect(executeChild).toHaveBeenCalledWith(expect.objectContaining({
+			agent: expect.objectContaining({ name: "worker" }),
+			task: "Direct work",
+			cwd: "/workspace",
+			launch: { model: "openai/test-model", thinkingLevel: "minimal" },
+		}));
+		expect(result).toBe(expectedResult);
+	});
+
 	it("passes Pi invocation context through the Subagent invocation adapter", async () => {
 		const failed = agentResult({
 			exitCode: 2,

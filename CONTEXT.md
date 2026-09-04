@@ -182,8 +182,8 @@ extension.
 ## Repository snapshots
 
 - **Repository snapshot** — an immutable, commit-pinned source tree under `.pi/repos`.
-- **Repository store** — the module that owns acquisition, manifests, limits, listing, locking, and explicit removal.
-- **GitHub repository exploration skill** — the `github-repo-explorer` skill dynamically provided by `tools-github-repos`; it directs remote inspection through the snapshot tools and keeps repository files treated as untrusted data. Acquisition and storage remain extension-owned.
+- **Repository snapshot helper** — the deep module in `.pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs` that owns acquisition, manifests, limits, listing, locking, and explicit removal behind a small CLI interface.
+- **GitHub repository exploration skill** — the project skill at `.pi/skills/github-repo-explorer/SKILL.md`; it directs remote inspection through the helper and the built-in file tools while keeping repository files treated as untrusted data.
 
 ## Ollama Cloud catalog
 
@@ -208,13 +208,14 @@ extension.
   stays in the invocation adapter.
 - **Subagent invocation adapter** — the Pi-facing deep module for one `subagent`
   tool call: selects single or parallel mode, publishes immutable live snapshots,
-  formats final text and details, and applies one failure rule. The Parallel
-  subagent batch owns scheduling and calls child execution directly.
-- **Parallel subagent batch** — one ordered, bounded-concurrency execution of
-  prepared Subagent launches. The deep module owns per-invocation concurrency
-  selection from an explicit override, the bound Profile configuration, or the
-  default; scheduling; and immutable task-state snapshots. Launch preparation
-  and Pi-specific rendering stay outside.
+  formats final text and details, and applies one failure rule. The Subagent
+  execution module owns scheduling and calls child execution directly.
+- **Subagent execution module** — the deep in-process module for one-task and
+  bounded batch execution. It owns launch preparation dispatch, configured or
+  caller-selected concurrency, ordered results, and immutable task-state
+  snapshots behind one interface. Direct one-task calls preserve native
+  progress callbacks; the Pi invocation adapter uses the batch snapshot path.
+  Child process lifetime stays behind the Subagent child execution seam.
 - **Repo query batch** — the read-only batched evidence tool (`repo_query`) behind
   the subagent runner: one `executeRepoQuery` interface; validation, path safety,
   dedupe, truncation, and formatting hide inside.

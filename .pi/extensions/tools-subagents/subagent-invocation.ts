@@ -1,8 +1,8 @@
 import type { AgentResult } from "../_shared/subagent-service.ts";
-import type { ParallelBatchTask, ParallelSubagentBatch } from "./parallel-batch.ts";
+import type { SubagentExecution, SubagentExecutionTask } from "./subagent-execution.ts";
 
 export interface SubagentInvocationParameters {
-	tasks: readonly ParallelBatchTask[];
+	tasks: readonly SubagentExecutionTask[];
 }
 
 export interface SubagentInvocationOptions {
@@ -62,7 +62,7 @@ function createCancellableThrottle(callback: () => void, delayMs: number) {
 }
 
 export function createSubagentInvocationAdapter(
-	dependencies: { batch: Pick<ParallelSubagentBatch, "runBatch"> },
+	dependencies: { batch: Pick<SubagentExecution, "runBatch"> },
 ): SubagentInvocationAdapter {
 	return {
 		async execute(parameters, options) {
