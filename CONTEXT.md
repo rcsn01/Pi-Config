@@ -196,13 +196,13 @@ extension.
 ## Subagent tooling
 
 - **Subagent assignment resolution module** — the deep in-process module in
-  `tools-subagents/config.ts` that turns one Agent definition, one configuration
-  snapshot, the current Main model, and optional invocation overrides into the
-  selected model setting plus resolved launch fields. Its context-window field is
-  configured metadata for display, not a per-launch override; the child gets its
-  actual context window from the selected model's catalogue entry. Status rendering,
-  picker previews, and Subagent launch preparation consume the same precedence
-  implementation through this seam.
+  `tools-subagents/config.ts` that owns assignment parsing and precedence, semantic
+  model and thinking changes, Profile-aware `subagents` namespace persistence,
+  legacy fallback and migration, current Main-model observation, and preview and
+  launch resolution. `_shared/settings-document.ts` remains the Settings document
+  seam. The Pi `/subagents` command adapter owns catalogue access, TUI flow, and
+  notifications. Context-window settings remain display metadata; the child gets
+  its actual context window from the selected model's catalogue entry.
 - **Subagent launch preparation** — the deep in-process module that turns raw single
   or parallel Subagent requests into prepared child launches. It owns one registry
   snapshot, whole-request-set agent validation, task normalization, model and thinking

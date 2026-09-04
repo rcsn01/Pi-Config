@@ -197,10 +197,33 @@ describe("subagents model command", () => {
 		expect(screens[1]).toContain("Main session model");
 		expect(screens[1]).toContain("openai/gpt-5.2");
 		expect(config.document).toMatchObject({ defaultModel: "openai/gpt-5.2", defaultThinkingLevel: "high" });
+		expect(config.updates).toHaveLength(1);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			expect.stringContaining("All subagents now use openai/gpt-5.2 with high thinking"),
 			"info",
 		);
+	});
+
+	it("produces the same namespace through direct and interactive routes", async () => {
+		const initial = {
+			defaultModel: "main",
+			agentModels: { explorer: "openai/old" },
+			defaultThinkingLevel: "minimal",
+			agentThinkingLevels: { explorer: "low" },
+		};
+		const direct = memoryConfigStore(initial);
+		const directCommand = createSubagentsCommand({ registry: memoryRegistry([agent()]), config: direct });
+		const directContext = context({ available: [gpt] });
+		await directCommand.handler("model worker openai/gpt-5.2", directContext);
+		await directCommand.handler("thinking worker high", directContext);
+
+		const interactive = memoryConfigStore(initial);
+		const interactiveCommand = createSubagentsCommand({ registry: memoryRegistry([agent()]), config: interactive });
+		const { custom } = screenCustom(["worker", "openai/gpt-5.2", "high", undefined]);
+		await interactiveCommand.handler("", context({ mode: "tui", available: [gpt], custom }));
+
+		expect(interactive.document).toEqual(direct.document);
+		expect(interactive.updates).toHaveLength(1);
 	});
 
 	it("returns from thinking cancellation to model selection", async () => {

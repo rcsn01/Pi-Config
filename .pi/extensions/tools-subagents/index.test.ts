@@ -233,6 +233,32 @@ describe("subagent tool wiring", () => {
 			expect(harness.config.configPath).toBe(join(profilesDirectoryFor(settingsPath), "focused.json"));
 		});
 
+		it("applies the Profile path before migration and validation", async () => {
+			const root = mkdtempSync(join(tmpdir(), "subagents-profile-order-"));
+			roots.push(root);
+			const settingsPath = join(root, "settings.json");
+			mkdirSync(join(root, "profiles"));
+			writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+			const config = memoryConfigStore();
+			const calls: string[] = [];
+			const setSettingsPath = config.setSettingsPath.bind(config);
+			config.setSettingsPath = (path) => { calls.push(`path:${path}`); setSettingsPath(path); };
+			const migrateLegacy = config.migrateLegacy.bind(config);
+			config.migrateLegacy = async () => { calls.push("migrate"); return migrateLegacy(); };
+			const load = config.load.bind(config);
+			config.load = () => { calls.push("load"); return load(); };
+			const harness = extensionHarness(undefined, { settingsPath, config });
+			calls.length = 0;
+
+			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+
+			expect(calls).toEqual([
+				`path:${join(profilesDirectoryFor(settingsPath), "focused.json")}`,
+				"migrate",
+				"load",
+			]);
+		});
+
 		it("keeps the config store on settings.json when no profile is bound", async () => {
 			const root = mkdtempSync(join(tmpdir(), "subagents-noprofile-"));
 			roots.push(root);

@@ -5,7 +5,8 @@ import { vi } from "vitest";
 import type { AgentConfig, AgentResult } from "../_shared/subagent-service.ts";
 import { createAgentRegistry, type AgentRegistry } from "./agent-registry.ts";
 import {
-	canonicalMainModel,
+	applySubagentConfigurationChanges,
+	normalizeModelSetting,
 	parseModelConfiguration,
 	resolveSubagentAssignment,
 	type ExtensionConfig,
@@ -64,34 +65,47 @@ export function memoryConfigStore(initial: Record<string, unknown> = {}): Memory
 		},
 		document: structuredClone(initial),
 		updates: [],
-		readDocument: () => structuredClone(store.document),
 		load: () => {
 			const parsed = parseModelConfiguration(store.document);
 			return { ...parsed, maxConcurrency: store.document.maxConcurrency as number | undefined } satisfies ExtensionConfig;
 		},
-		async update(mutate) {
-			store.document = mutate(structuredClone(store.document));
-			parseModelConfiguration(store.document);
+		async applyChanges(changes) {
+			store.document = applySubagentConfigurationChanges(structuredClone(store.document), changes);
 			store.updates.push(structuredClone(store.document));
-			return structuredClone(store.document);
 		},
 		rememberMainModel(model) {
-			activeMainModel = model ? canonicalMainModel(model) : undefined;
+			if (!model) {
+				activeMainModel = undefined;
+				return;
+			}
+			if (typeof model.provider !== "string" || typeof model.id !== "string") {
+				throw new Error('Cannot resolve subagent model "main": the main session has no active model.');
+			}
+			activeMainModel = normalizeModelSetting(`${model.provider}/${model.id}`, "main session model");
 		},
-		getMainModel: () => activeMainModel,
-		resolveLaunch(config, explicitModel, explicitThinkingLevel) {
+		resolveMainModel: () => {
+			if (!activeMainModel) throw new Error('Cannot resolve subagent model "main": the main session has no active model.');
+			return activeMainModel;
+		},
+		resolveAssignment(config, options = {}) {
+			let document: unknown = options.snapshot ?? store.document;
+			if (options.changes) document = applySubagentConfigurationChanges(document, options.changes);
 			return resolveSubagentAssignment({
 				agentName: config.name,
-				config: store.document,
-				explicitModel,
-				explicitThinkingLevel,
+				config: document,
+				explicitModel: options.explicitModel,
+				explicitThinkingLevel: options.explicitThinkingLevel,
 				frontmatterModel: config.model,
 				mainModel: activeMainModel,
-			}).launch;
+			});
+		},
+		resolveLaunch(config, explicitModel, explicitThinkingLevel) {
+			return store.resolveAssignment(config, { explicitModel, explicitThinkingLevel }).launch;
 		},
 		setSettingsPath: (path: string) => {
 			settingsPath = path;
 		},
+		migrateLegacy: async () => false,
 	};
 	return store;
 }
