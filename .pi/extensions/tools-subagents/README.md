@@ -299,7 +299,8 @@ tools-subagents/
 ├── agent-registry.ts        # Agent discovery, registration, and lookup
 ├── config.ts                # Configuration storage, validation, and launch resolution
 ├── launch-preparation.ts    # Agent validation and resolved child requests
-├── child-execution.ts       # Child process lifetime and event stream parsing
+├── child-execution.ts       # Child command, process lifetime, observation, abort, and cleanup
+├── child-event-ingestion.ts # Stdout framing, event state, usage, timing input, and terminal results
 ├── subagent-execution.ts    # Direct execution, bounded scheduling, ordered results, and task-state snapshots
 ├── progress-renderer.ts     # Tool call and progress presentation
 ├── model-commands.ts        # /subagents command and interactive configuration
