@@ -129,14 +129,17 @@ extension.
   construction, and routes every guarded Profile application, persistence,
   default preservation, and rollback through the Plan profile transition seam.
 - **Plan profile transition** — the internal module in
-  `workflows-plan/plan-profile-transition.ts` that owns one currency-guarded
-  Profile transition: apply a target Profile through Pi, optionally persist it
-  to the Session's Plan-mode persistence (skipping default-sentinel profiles),
-  preserve captured normal defaults, and, when a step fails after the target
-  applied, roll back to a fallback Profile before reporting the primary and
-  rollback errors as data. It owns the transition marker; notification text,
-  Plan State commits, tool projection, and runtime warming stay in the
-  lifecycle core.
+  `workflows-plan/plan-profile-transition.ts` that owns one Profile transition
+  guarded through the Plan guarded effect seam: apply a target Profile through
+  Pi (unguarded head, so the apply runs even when the Session went stale at
+  entry), then persist it to the Session's Plan-mode persistence (skipping
+  default-sentinel profiles) and preserve captured normal defaults as guarded
+  steps, and, when a step fails after the target applied, roll back to a
+  fallback Profile before reporting the primary and rollback errors as data.
+  Its host supplies guarded runs (`createGuard(session)`) instead of a raw
+  currency predicate, so staleness checking is not re-declared inside the
+  transition. It owns the transition marker; notification text, Plan State
+  commits, tool projection, and runtime warming stay in the lifecycle core.
 - **Plan selection transition** — the marker the Plan profile transition
   module holds while a guarded Profile application or restoration is in
   flight; Model and thinking feedback emitted while this marker is active is
@@ -151,9 +154,17 @@ extension.
   lifecycle generation: Session start binding, branch-change generation
   advance, Session-stop teardown, Session-id resolution, and staleness
   checks. `isCurrent` is checked at operation-specific asynchronous
-  boundaries so stale flows abandon before their next effect. Plan Review
-  receives the same meaning through a captured snapshot `isCurrent`
+  boundaries so stale flows abandon before their next effect; flows declare
+  those boundaries as Plan guarded effects instead of hand-writing checks.
+  Plan Review receives the same meaning through a captured snapshot `isCurrent`
   callback, without depending on generation mechanics.
+- **Plan guarded effect** — one currency-guarded effect run, created by
+  `PlanCurrency.guard(session, whileValid?)`: the caller declares steps, the
+  runner re-evaluates staleness live before every step and after the last,
+  abandons remaining steps silently on staleness, and reports staleness as a
+  boolean. Step errors propagate untouched (error boundaries stay
+  caller-owned); the compound mode predicate is declared once per run; effects
+  that must run even when stale stay outside the run as an unguarded head.
 - **Pending-mode queue** — the internal module in `plan-pending-mode.ts` that
   defers mode switches and `/plan` tasks issued while the agent is busy. It
   owns the queued request, its `plan-pending` status surface, application at
