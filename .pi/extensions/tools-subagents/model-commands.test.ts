@@ -144,6 +144,7 @@ describe("subagents model command", () => {
 
 		expect(screens[1]).toContain(expected);
 		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
 	});
 
 	it("resolves thinking inheritance from the pending model choice", async () => {
@@ -162,6 +163,7 @@ describe("subagents model command", () => {
 		expect(screens[2]).toContain("Model: openai/gpt-5.2");
 		expect(screens[2]).toContain("Uses high");
 		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
 	});
 
 	it("reports model assignments and applies model/thinking mutations", async () => {
@@ -178,13 +180,40 @@ describe("subagents model command", () => {
 
 		await command.handler("model all main", ctx);
 		expect(config.document).toMatchObject({ custom: true, defaultModel: "main", agentModels: {} });
+		expect(config.edits[0]).toEqual({ target: { kind: "all" }, model: { kind: "set", setting: "main" } });
 		await command.handler("model worker inherit", ctx);
 		expect(config.document).toMatchObject({ agentModels: {} });
+		expect(config.edits[1]).toEqual({ target: { kind: "agent", name: "worker" }, model: { kind: "inherit" } });
 		await command.handler("thinking all high", ctx);
 		expect(config.document).toMatchObject({ defaultThinkingLevel: "high", agentThinkingLevels: {} });
+		expect(config.edits[2]).toEqual({ target: { kind: "all" }, thinking: { kind: "set", level: "high" } });
 		await command.handler("thinking worker inherit", ctx);
 		expect(config.document).toMatchObject({ agentThinkingLevels: {} });
+		expect(config.edits[3]).toEqual({ target: { kind: "agent", name: "worker" }, thinking: { kind: "inherit" } });
 		expect(config.updates).toHaveLength(4);
+	});
+
+	it("surfaces edit legality errors from the assignment module with usage text", async () => {
+		const config = memoryConfigStore({ agentModels: { worker: "openai/old" } });
+		const command = createSubagentsCommand({ registry: memoryRegistry([agent()]), config });
+		const ctx = context();
+		await command.handler("model all inherit", ctx);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining('"inherit" applies only to an individual agent.'),
+			"error",
+		);
+		await command.handler("thinking all inherit", ctx);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Subagent thinking level for all must be one of"),
+			"error",
+		);
+		await command.handler("thinking worker default", ctx);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Subagent thinking level for worker must be one of"),
+			"error",
+		);
+		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
 	});
 
 	it("applies the three-step shared TUI selector flow", async () => {
@@ -198,32 +227,15 @@ describe("subagents model command", () => {
 		expect(screens[1]).toContain("openai/gpt-5.2");
 		expect(config.document).toMatchObject({ defaultModel: "openai/gpt-5.2", defaultThinkingLevel: "high" });
 		expect(config.updates).toHaveLength(1);
+		expect(config.edits).toEqual([{
+			target: { kind: "all" },
+			model: { kind: "set", setting: "openai/gpt-5.2" },
+			thinking: { kind: "set", level: "high" },
+		}]);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			expect.stringContaining("All subagents now use openai/gpt-5.2 with high thinking"),
 			"info",
 		);
-	});
-
-	it("produces the same namespace through direct and interactive routes", async () => {
-		const initial = {
-			defaultModel: "main",
-			agentModels: { explorer: "openai/old" },
-			defaultThinkingLevel: "minimal",
-			agentThinkingLevels: { explorer: "low" },
-		};
-		const direct = memoryConfigStore(initial);
-		const directCommand = createSubagentsCommand({ registry: memoryRegistry([agent()]), config: direct });
-		const directContext = context({ available: [gpt] });
-		await directCommand.handler("model worker openai/gpt-5.2", directContext);
-		await directCommand.handler("thinking worker high", directContext);
-
-		const interactive = memoryConfigStore(initial);
-		const interactiveCommand = createSubagentsCommand({ registry: memoryRegistry([agent()]), config: interactive });
-		const { custom } = screenCustom(["worker", "openai/gpt-5.2", "high", undefined]);
-		await interactiveCommand.handler("", context({ mode: "tui", available: [gpt], custom }));
-
-		expect(interactive.document).toEqual(direct.document);
-		expect(interactive.updates).toHaveLength(1);
 	});
 
 	it("returns from thinking cancellation to model selection", async () => {
@@ -234,6 +246,12 @@ describe("subagents model command", () => {
 		await command.handler("", ctx);
 		expect(ctx.ui.custom).toHaveBeenCalledTimes(6);
 		expect(config.document).toMatchObject({ defaultModel: "main", defaultThinkingLevel: "high" });
+		expect(config.updates).toHaveLength(1);
+		expect(config.edits).toEqual([{
+			target: { kind: "all" },
+			model: { kind: "set", setting: "main" },
+			thinking: { kind: "set", level: "high" },
+		}]);
 	});
 
 	it("offers only authenticated models in the interactive picker", async () => {
@@ -255,6 +273,7 @@ describe("subagents model command", () => {
 		expect(modelScreen).toContain("openai/gpt-5.2");
 		expect(modelScreen).not.toContain("ollama/qwen3.8:27b");
 		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
 	});
 
 	it("rejects direct assignment of an unauthenticated model before persistence", async () => {
@@ -272,6 +291,7 @@ describe("subagents model command", () => {
 			"error",
 		);
 		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
 	});
 
 	it("notifies and returns when the catalogue refresh fails", async () => {
@@ -314,6 +334,7 @@ describe("subagents model command", () => {
 			"error",
 		);
 		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
 	});
 
 	it("exits quietly when the refresh is aborted", async () => {
@@ -337,6 +358,7 @@ describe("subagents model command", () => {
 		await command.handler("model all openai/gpt-5.2", direct);
 		expect(direct.ui.notify).not.toHaveBeenCalled();
 		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
 	});
 
 	it("does not mutate configuration for unknown agents or unavailable models", async () => {
@@ -346,6 +368,7 @@ describe("subagents model command", () => {
 		await command.handler("model missing main", ctx);
 		await command.handler("model worker openai/unavailable", ctx);
 		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
 		expect(ctx.modelRegistry.refresh).toHaveBeenCalledWith(
 			expect.objectContaining({ allowNetwork: false }),
 		);
@@ -366,5 +389,6 @@ describe("subagents model command", () => {
 		await command.handler("", tuiCtx);
 		expect(tuiCtx.ui.custom).toHaveBeenCalledOnce();
 		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
 	});
 });

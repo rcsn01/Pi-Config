@@ -57,16 +57,25 @@ export interface ExtensionConfig extends ModelConfiguration {
 
 export type SubagentAssignmentTarget = { kind: "all" } | { kind: "agent"; name: string };
 
-export type SubagentConfigurationChange =
-	| { kind: "set-model"; target: SubagentAssignmentTarget; model: string }
-	| { kind: "inherit-model"; agentName: string }
-	| { kind: "set-thinking"; target: SubagentAssignmentTarget; thinkingLevel: SubagentThinkingLevel }
-	| { kind: "default-thinking" }
-	| { kind: "inherit-thinking"; agentName: string };
+export type SubagentModelEdit =
+	| { readonly kind: "set"; readonly setting: string }
+	| { readonly kind: "inherit" };
+
+export type SubagentThinkingEdit =
+	| { readonly kind: "set"; readonly level: SubagentThinkingLevel }
+	| { readonly kind: "inherit" }
+	| { readonly kind: "default" };
+
+/** One semantic model/thinking edit; the same value is previewed and committed. */
+export interface SubagentAssignmentEdit {
+	readonly target: SubagentAssignmentTarget;
+	readonly model?: SubagentModelEdit;
+	readonly thinking?: SubagentThinkingEdit;
+}
 
 export interface ResolveStoredAssignmentOptions {
 	snapshot?: ExtensionConfig;
-	changes?: readonly SubagentConfigurationChange[];
+	edit?: SubagentAssignmentEdit;
 	explicitModel?: string;
 	explicitThinkingLevel?: SubagentThinkingLevel;
 }
@@ -74,7 +83,7 @@ export interface ResolveStoredAssignmentOptions {
 export interface SubagentConfigStore {
 	readonly configPath: string;
 	load(): ExtensionConfig;
-	applyChanges(changes: readonly SubagentConfigurationChange[]): Promise<void>;
+	applyAssignmentEdit(edit: SubagentAssignmentEdit): Promise<void>;
 	rememberMainModel(model: { provider: unknown; id: unknown } | undefined): void;
 	resolveMainModel(): string;
 	resolveAssignment(agent: AgentConfig, options?: ResolveStoredAssignmentOptions): ResolvedSubagentAssignment;
@@ -264,75 +273,95 @@ export function resolveSubagentAssignment(options: ResolveLaunchOptions): Resolv
 	};
 }
 
-/** Apply an ordered batch of semantic assignment changes without mutating the input. */
-export function applySubagentConfigurationChanges(
+function requireAssignmentTarget(target: SubagentAssignmentTarget): SubagentAssignmentTarget {
+	if (target?.kind === "agent") {
+		if (!target.name.trim()) throw new Error("Subagent agent name cannot be empty.");
+		return target;
+	}
+	if (target?.kind === "all") return target;
+	throw new Error(`Unknown subagent assignment target: ${String((target as { kind?: unknown } | undefined)?.kind)}.`);
+}
+
+/**
+ * Apply one high-level assignment edit to a Settings namespace without mutating the input.
+ * @internal Shared by the production store and its in-memory test adapter.
+ */
+export function applySubagentAssignmentEdit(
 	document: unknown,
-	changes: readonly SubagentConfigurationChange[],
+	edit: SubagentAssignmentEdit,
 ): Record<string, unknown> {
-	let next: Record<string, unknown> = { ...requireDocument(document) };
+	if (!edit.model && !edit.thinking) {
+		throw new Error("Subagent assignment edit must include a model or thinking change.");
+	}
+	const next: Record<string, unknown> = { ...requireDocument(document) };
 	const parsed = parseModelConfiguration(next);
 	let agentModels = { ...parsed.agentModels };
 	let agentThinkingLevels = { ...parsed.agentThinkingLevels };
-	const requireAgent = (name: string): string => {
-		if (!name.trim()) throw new Error("Subagent agent name cannot be empty.");
-		return name;
-	};
+	const target = requireAssignmentTarget(edit.target);
 
-	for (const change of changes) {
-		switch (change.kind) {
-			case "set-model":
-				if (change.target.kind === "all") {
+	if (edit.model) {
+		switch (edit.model.kind) {
+			case "set": {
+				const setting = normalizeModelSetting(
+					edit.model.setting,
+					target.kind === "all" ? "default model" : `model for ${target.name}`,
+				);
+				if (target.kind === "all") {
 					agentModels = {};
-					next = {
-						...next,
-						defaultModel: normalizeModelSetting(change.model, "default model"),
-						agentModels,
-					};
+					next.defaultModel = setting;
 				} else {
-					const name = requireAgent(change.target.name);
-					agentModels = {
-						...agentModels,
-						[name]: normalizeModelSetting(change.model, `model for ${name}`),
-					};
-					next = { ...next, agentModels };
+					agentModels = { ...agentModels, [target.name]: setting };
 				}
-				break;
-			case "inherit-model": {
-				const name = requireAgent(change.agentName);
-				agentModels = { ...agentModels };
-				delete agentModels[name];
-				next = { ...next, agentModels };
+				next.agentModels = agentModels;
 				break;
 			}
-			case "set-thinking":
-				if (change.target.kind === "all") {
-					agentThinkingLevels = {};
-					next = {
-						...next,
-						defaultThinkingLevel: normalizeThinkingLevel(change.thinkingLevel, "default thinking level"),
-						agentThinkingLevels,
-					};
-				} else {
-					const name = requireAgent(change.target.name);
-					agentThinkingLevels = {
-						...agentThinkingLevels,
-						[name]: normalizeThinkingLevel(change.thinkingLevel, `thinking level for ${name}`),
-					};
-					next = { ...next, agentThinkingLevels };
-				}
+			case "inherit":
+				if (target.kind !== "agent") throw new Error('"inherit" applies only to an individual agent.');
+				delete agentModels[target.name];
+				next.agentModels = agentModels;
 				break;
-			case "default-thinking":
+			default:
+				throw new Error(`Unknown subagent model edit kind: ${String((edit.model as { kind?: unknown }).kind)}.`);
+		}
+	}
+
+	if (edit.thinking) {
+		switch (edit.thinking.kind) {
+			case "set": {
+				const level = normalizeThinkingLevel(
+					edit.thinking.level,
+					target.kind === "all" ? "default thinking level" : `thinking level for ${target.name}`,
+				);
+				if (target.kind === "all") {
+					agentThinkingLevels = {};
+					next.defaultThinkingLevel = level;
+				} else {
+					agentThinkingLevels = { ...agentThinkingLevels, [target.name]: level };
+				}
+				next.agentThinkingLevels = agentThinkingLevels;
+				break;
+			}
+			case "default":
+				// Pi-default thinking is a global-only operation; individual targets keep the
+				// standard thinking-level diagnostic so direct-command text stays unchanged.
+				if (target.kind !== "all") {
+					throw new Error(`Subagent thinking level for ${target.name} must be one of: ${THINKING_LEVELS.join(", ")}.`);
+				}
 				agentThinkingLevels = {};
-				next = { ...next, agentThinkingLevels };
+				next.agentThinkingLevels = agentThinkingLevels;
 				delete next.defaultThinkingLevel;
 				break;
-			case "inherit-thinking": {
-				const name = requireAgent(change.agentName);
-				agentThinkingLevels = { ...agentThinkingLevels };
-				delete agentThinkingLevels[name];
-				next = { ...next, agentThinkingLevels };
+			case "inherit":
+				// Thinking inheritance is an individual-only operation; a global target keeps
+				// the standard thinking-level diagnostic so direct-command text stays unchanged.
+				if (target.kind !== "agent") {
+					throw new Error(`Subagent thinking level for all must be one of: ${THINKING_LEVELS.join(", ")}.`);
+				}
+				delete agentThinkingLevels[target.name];
+				next.agentThinkingLevels = agentThinkingLevels;
 				break;
-			}
+			default:
+				throw new Error(`Unknown subagent thinking edit kind: ${String((edit.thinking as { kind?: unknown }).kind)}.`);
 		}
 	}
 
@@ -394,18 +423,17 @@ export function createSubagentConfigStore(options: SubagentConfigStoreOptions = 
 	};
 	const resolveAssignment = (agent: AgentConfig, options: ResolveStoredAssignmentOptions = {}): ResolvedSubagentAssignment => {
 		let config: unknown = options.snapshot ?? readSettingsNamespace();
-		if (options.changes) config = applySubagentConfigurationChanges(config, options.changes);
+		if (options.edit) config = applySubagentAssignmentEdit(config, options.edit);
 		return resolveSubagentAssignment({ agentName: agent.name, config, explicitModel: options.explicitModel,
 			explicitThinkingLevel: options.explicitThinkingLevel, frontmatterModel: agent.model, mainModel: activeMainModel });
 	};
 	return {
 		get configPath() { return settingsPath; },
 		load,
-		async applyChanges(changes) {
+		async applyAssignmentEdit(edit) {
 			await mutateSettingsDocument(settingsPath, (document) => {
 				const base = namespaceFrom(document) ?? readLegacyDocument() ?? {};
-				const namespace = applySubagentConfigurationChanges(structuredClone(base), changes);
-				parseModelConfiguration(namespace);
+				const namespace = applySubagentAssignmentEdit(structuredClone(base), edit);
 				return { ...document, [SUBAGENTS_SETTINGS_KEY]: namespace };
 			});
 		},

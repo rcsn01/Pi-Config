@@ -6,11 +6,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	appendChildModelArgument,
 	appendChildThinkingArgument,
-	applySubagentConfigurationChanges,
 	createSubagentConfigStore,
 	parseModelConfiguration,
 	resolveSubagentAssignment,
 	splitModelThinkingSetting,
+	type SubagentAssignmentEdit,
+	type SubagentThinkingLevel,
 } from "./config.ts";
 import { agent } from "./test-harness.ts";
 
@@ -178,71 +179,249 @@ describe("subagent model resolution", () => {
 	});
 });
 
-describe("subagent configuration changes", () => {
-	it("applies ordered model and thinking changes while preserving unknown fields", () => {
-		const input = {
-			custom: true,
-			defaultModel: "main",
-			agentModels: { explorer: "anthropic/old", worker: "openai/old" },
-			defaultThinkingLevel: "low",
-			agentThinkingLevels: { worker: "high" },
+describe("subagent assignment edits", () => {
+	function editHarness(content?: string): {
+		settingsPath: string;
+		store: ReturnType<typeof createSubagentConfigStore>;
+		subagents: () => Record<string, unknown>;
+	} {
+		const { settingsPath } = configHarness(content);
+		return {
+			settingsPath,
+			store: createSubagentConfigStore({ settingsPath }),
+			subagents: () => (JSON.parse(readFileSync(settingsPath, "utf8")) as { subagents: Record<string, unknown> }).subagents,
 		};
-		const result = applySubagentConfigurationChanges(input, [
-			{ kind: "set-model", target: { kind: "all" }, model: "google/gemini-2.5-pro" },
-			{ kind: "set-model", target: { kind: "agent", name: "worker" }, model: "openai/gpt-5.4" },
-			{ kind: "set-thinking", target: { kind: "all" }, thinkingLevel: "medium" },
-			{ kind: "set-thinking", target: { kind: "agent", name: "worker" }, thinkingLevel: "xhigh" },
-		]);
-		expect(result).toEqual({
-			custom: true,
-			defaultModel: "google/gemini-2.5-pro",
-			agentModels: { worker: "openai/gpt-5.4" },
-			defaultThinkingLevel: "medium",
-			agentThinkingLevels: { worker: "xhigh" },
-		});
-		expect(input).toEqual({
-			custom: true,
-			defaultModel: "main",
-			agentModels: { explorer: "anthropic/old", worker: "openai/old" },
-			defaultThinkingLevel: "low",
-			agentThinkingLevels: { worker: "high" },
-		});
-	});
+	}
 
-	it("removes only named overrides for inheritance", () => {
-		expect(applySubagentConfigurationChanges({
-			agentModels: { explorer: "anthropic/model", worker: "openai/model" },
-			agentThinkingLevels: { explorer: "low", worker: "high" },
-		}, [
-			{ kind: "inherit-model", agentName: "worker" },
-			{ kind: "inherit-thinking", agentName: "worker" },
-		])).toEqual({
-			agentModels: { explorer: "anthropic/model" },
-			agentThinkingLevels: { explorer: "low" },
-		});
-	});
+	async function expectEditRejected(
+		content: string,
+		edit: SubagentAssignmentEdit,
+		pattern: RegExp,
+	): Promise<void> {
+		const { settingsPath, store } = editHarness(content);
+		await expect(store.applyAssignmentEdit(edit)).rejects.toThrow(pattern);
+		expect(readFileSync(settingsPath, "utf8")).toBe(content);
+	}
 
-	it("restores global Pi-default thinking and clears overrides", () => {
-		expect(applySubagentConfigurationChanges({
-			defaultModel: "main",
+	it("sets both globals and clears both individual maps with one combined edit", async () => {
+		const { store, subagents } = editHarness(
+			'{"subagents":{"custom":true,"agentModels":{"worker":"openai/old"},"agentThinkingLevels":{"worker":"low"}}}',
+		);
+		await store.applyAssignmentEdit({
+			target: { kind: "all" },
+			model: { kind: "set", setting: "openai/new" },
+			thinking: { kind: "set", level: "high" },
+		});
+		expect(subagents()).toEqual({
+			custom: true,
+			defaultModel: "openai/new",
+			agentModels: {},
 			defaultThinkingLevel: "high",
-			agentThinkingLevels: { worker: "low" },
-		}, [{ kind: "default-thinking" }])).toEqual({
-			defaultModel: "main",
 			agentThinkingLevels: {},
 		});
 	});
 
-	it("rejects empty names and malformed values", () => {
-		expect(() => applySubagentConfigurationChanges({}, [
-			{ kind: "inherit-model", agentName: " " },
-		])).toThrow(/agent name cannot be empty/);
-		expect(() => applySubagentConfigurationChanges({}, [
-			{ kind: "set-model", target: { kind: "all" }, model: "invalid" },
-		])).toThrow(/provider\/model/);
-		expect(() => applySubagentConfigurationChanges({}, [
-			{ kind: "set-thinking", target: { kind: "agent", name: "worker" }, thinkingLevel: "ultra" as any },
-		])).toThrow(/must be one of/);
+	it("sets both individual overrides with one combined edit", async () => {
+		const { store, subagents } = editHarness('{"subagents":{"defaultModel":"openai/global"}}');
+		await store.applyAssignmentEdit({
+			target: { kind: "agent", name: "worker" },
+			model: { kind: "set", setting: "openai/new" },
+			thinking: { kind: "set", level: "high" },
+		});
+		expect(subagents()).toEqual({
+			defaultModel: "openai/global",
+			agentModels: { worker: "openai/new" },
+			agentThinkingLevels: { worker: "high" },
+		});
+	});
+
+	it("removes only the named override for individual inheritance", async () => {
+		const { store, subagents } = editHarness(
+			'{"subagents":{"agentModels":{"explorer":"anthropic/old","worker":"openai/old"},"agentThinkingLevels":{"explorer":"low","worker":"high"}}}',
+		);
+		await store.applyAssignmentEdit({ target: { kind: "agent", name: "worker" }, model: { kind: "inherit" } });
+		expect(subagents()).toEqual({
+			agentModels: { explorer: "anthropic/old" },
+			agentThinkingLevels: { explorer: "low", worker: "high" },
+		});
+		await store.applyAssignmentEdit({ target: { kind: "agent", name: "worker" }, thinking: { kind: "inherit" } });
+		expect(subagents()).toEqual({
+			agentModels: { explorer: "anthropic/old" },
+			agentThinkingLevels: { explorer: "low" },
+		});
+	});
+
+	it("restores global Pi-default thinking and clears individual overrides", async () => {
+		const { store, subagents } = editHarness(
+			'{"subagents":{"defaultModel":"main","defaultThinkingLevel":"high","agentThinkingLevels":{"worker":"low"},"defaultContextWindow":200000}}',
+		);
+		await store.applyAssignmentEdit({ target: { kind: "all" }, thinking: { kind: "default" } });
+		expect(subagents()).toEqual({
+			defaultModel: "main",
+			agentThinkingLevels: {},
+			defaultContextWindow: 200000,
+		});
+	});
+
+	it("preserves unrelated settings and namespace keys through every edit", async () => {
+		const { settingsPath, store } = editHarness(
+			'{"unrelated":1,"subagents":{"custom":true,"maxConcurrency":2,"defaultModel":"main","agentModels":{"worker":"openai/old"},"agentThinkingLevels":{"worker":"low"},"defaultContextWindow":200000,"agentContextWindows":{"worker":131072}}}',
+		);
+		await store.applyAssignmentEdit({ target: { kind: "all" }, model: { kind: "set", setting: "openai/new" } });
+		await store.applyAssignmentEdit({ target: { kind: "agent", name: "worker" }, thinking: { kind: "set", level: "low" } });
+		await store.applyAssignmentEdit({ target: { kind: "agent", name: "worker" }, model: { kind: "inherit" } });
+		await store.applyAssignmentEdit({ target: { kind: "all" }, thinking: { kind: "default" } });
+		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
+			unrelated: 1,
+			subagents: {
+				custom: true,
+				maxConcurrency: 2,
+				defaultModel: "openai/new",
+				agentModels: {},
+				agentThinkingLevels: {},
+				defaultContextWindow: 200000,
+				agentContextWindows: { worker: 131072 },
+			},
+		});
+	});
+
+	it("leaves the preview snapshot unchanged", async () => {
+		const { store } = editHarness('{"subagents":{"agentModels":{"worker":"openai/old"}}}');
+		const snapshot = store.load();
+		const before = structuredClone(snapshot);
+		store.resolveAssignment(agent(), {
+			snapshot,
+			edit: {
+				target: { kind: "all" },
+				model: { kind: "set", setting: "openai/new" },
+				thinking: { kind: "set", level: "high" },
+			},
+		});
+		expect(snapshot).toEqual(before);
+	});
+
+	it("resolves the same effective assignment through preview and commit", async () => {
+		const { store } = editHarness('{"subagents":{"agentModels":{"worker":"openai/old"}}}');
+		store.rememberMainModel(mainModel);
+		const edit: SubagentAssignmentEdit = { target: { kind: "agent", name: "worker" }, model: { kind: "inherit" } };
+		const previewed = store.resolveAssignment(agent(), { snapshot: store.load(), edit });
+		await store.applyAssignmentEdit(edit);
+		expect(store.resolveAssignment(agent(), { snapshot: store.load() })).toEqual(previewed);
+	});
+
+	it("writes nothing when one field of a combined edit is invalid", async () => {
+		await expectEditRejected(
+			'{"subagents":{"agentModels":{"worker":"openai/old"}}}',
+			{
+				target: { kind: "agent", name: "worker" },
+				model: { kind: "set", setting: "openai/new" },
+				thinking: { kind: "set", level: "ultra" as SubagentThinkingLevel },
+			},
+			/must be one of/,
+		);
+	});
+
+	it("rejects an edit with neither a model nor a thinking change", async () => {
+		await expectEditRejected(
+			'{"subagents":{"defaultModel":"main"}}',
+			{ target: { kind: "all" } },
+			/Subagent assignment edit must include a model or thinking change/,
+		);
+	});
+
+	it("rejects global model inheritance without writing", async () => {
+		await expectEditRejected(
+			'{"subagents":{"agentModels":{"worker":"openai/old"}}}',
+			{ target: { kind: "all" }, model: { kind: "inherit" } },
+			/"inherit" applies only to an individual agent/,
+		);
+	});
+
+	it("rejects global thinking inheritance without writing", async () => {
+		await expectEditRejected(
+			'{"subagents":{}}',
+			{ target: { kind: "all" }, thinking: { kind: "inherit" } },
+			/Subagent thinking level for all must be one of/,
+		);
+	});
+
+	it("rejects individual Pi-default thinking without writing", async () => {
+		await expectEditRejected(
+			'{"subagents":{}}',
+			{ target: { kind: "agent", name: "worker" }, thinking: { kind: "default" } },
+			/Subagent thinking level for worker must be one of/,
+		);
+	});
+
+	it("rejects empty agent names without writing", async () => {
+		await expectEditRejected(
+			'{"subagents":{}}',
+			{ target: { kind: "agent", name: "  " }, model: { kind: "set", setting: "openai/new" } },
+			/agent name cannot be empty/,
+		);
+		await expectEditRejected(
+			'{"subagents":{}}',
+			{ target: { kind: "agent", name: "" }, thinking: { kind: "inherit" } },
+			/agent name cannot be empty/,
+		);
+	});
+
+	it("retains current diagnostics for invalid model and thinking values", async () => {
+		await expectEditRejected(
+			'{"subagents":{}}',
+			{ target: { kind: "all" }, model: { kind: "set", setting: "invalid" } },
+			/default model must be "main" or a canonical "provider\/model" identifier/,
+		);
+		await expectEditRejected(
+			'{"subagents":{}}',
+			{ target: { kind: "agent", name: "worker" }, model: { kind: "set", setting: "" } },
+			/cannot be empty/,
+		);
+		await expectEditRejected(
+			'{"subagents":{}}',
+			{ target: { kind: "agent", name: "worker" }, thinking: { kind: "set", level: "ultra" as SubagentThinkingLevel } },
+			/Subagent thinking level for worker must be one of/,
+		);
+		await expectEditRejected(
+			'{"subagents":{}}',
+			{ target: { kind: "all" }, thinking: { kind: "set", level: "ultra" as SubagentThinkingLevel } },
+			/Subagent default thinking level must be one of/,
+		);
+	});
+
+	it("rejects unknown edit kinds without writing", async () => {
+		await expectEditRejected(
+			'{"subagents":{}}',
+			{ target: { kind: "all" }, model: { kind: "bogus" } as never },
+			/Unknown subagent model edit kind/,
+		);
+		await expectEditRejected(
+			'{"subagents":{}}',
+			{ target: { kind: "all" }, thinking: { kind: "bogus" } as never },
+			/Unknown subagent thinking edit kind/,
+		);
+	});
+
+	it("rejects unknown assignment targets without writing", async () => {
+		await expectEditRejected(
+			'{"subagents":{}}',
+			{ target: { kind: "bogus" } as never, model: { kind: "inherit" } },
+			/Unknown subagent assignment target/,
+		);
+	});
+
+	it("applies model before thinking so a configured suffix keeps precedence", async () => {
+		const { store } = editHarness("{}");
+		store.rememberMainModel(mainModel);
+		await store.applyAssignmentEdit({
+			target: { kind: "all" },
+			model: { kind: "set", setting: "openai/global:high" },
+			thinking: { kind: "set", level: "low" },
+		});
+		expect(store.resolveAssignment(agent(), { snapshot: store.load() })).toEqual({
+			modelSetting: "openai/global",
+			launch: { model: "openai/global", thinkingLevel: "high", contextWindow: undefined },
+		});
 	});
 
 	it("keeps parser and context validation behavior", () => {
@@ -274,15 +453,16 @@ describe("subagent config store", () => {
 			.toThrow(/positive integer/);
 	});
 
-	it("applies a semantic batch atomically and preserves unknown settings", async () => {
+	it("commits a combined edit as one atomic Settings update and preserves unknown settings", async () => {
 		const { settingsPath } = configHarness(
 			'{"compaction":{"threshold":0.1},"subagents":{"maxConcurrency":3,"custom":true,"defaultModel":"main"}}',
 		);
 		const store = createSubagentConfigStore({ settingsPath });
-		await store.applyChanges([
-			{ kind: "set-model", target: { kind: "agent", name: "worker" }, model: "openai/test" },
-			{ kind: "set-thinking", target: { kind: "agent", name: "worker" }, thinkingLevel: "high" },
-		]);
+		await store.applyAssignmentEdit({
+			target: { kind: "agent", name: "worker" },
+			model: { kind: "set", setting: "openai/test" },
+			thinking: { kind: "set", level: "high" },
+		});
 		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
 			compaction: { threshold: 0.1 },
 			subagents: {
@@ -300,8 +480,8 @@ describe("subagent config store", () => {
 		const first = createSubagentConfigStore({ settingsPath });
 		const second = createSubagentConfigStore({ settingsPath });
 		await Promise.all([
-			first.applyChanges([{ kind: "set-model", target: { kind: "agent", name: "worker" }, model: "openai/test" }]),
-			second.applyChanges([{ kind: "set-thinking", target: { kind: "agent", name: "worker" }, thinkingLevel: "high" }]),
+			first.applyAssignmentEdit({ target: { kind: "agent", name: "worker" }, model: { kind: "set", setting: "openai/test" } }),
+			second.applyAssignmentEdit({ target: { kind: "agent", name: "worker" }, thinking: { kind: "set", level: "high" } }),
 		]);
 		expect(JSON.parse(readFileSync(settingsPath, "utf8")).subagents).toEqual({
 			agentModels: { worker: "openai/test" },
@@ -314,9 +494,7 @@ describe("subagent config store", () => {
 			'{"maxConcurrency":4,"defaultModel":"main","custom":true}');
 		const store = createSubagentConfigStore({ settingsPath, legacyConfigPath: legacyPath });
 		expect(store.load()).toMatchObject({ defaultModel: "main", maxConcurrency: 4 });
-		await store.applyChanges([
-			{ kind: "set-thinking", target: { kind: "agent", name: "worker" }, thinkingLevel: "low" },
-		]);
+		await store.applyAssignmentEdit({ target: { kind: "agent", name: "worker" }, thinking: { kind: "set", level: "low" } });
 		expect(JSON.parse(readFileSync(settingsPath, "utf8")).subagents).toEqual({
 			maxConcurrency: 4,
 			defaultModel: "main",
@@ -333,7 +511,7 @@ describe("subagent config store", () => {
 		expect(store.resolveAssignment(agent(), { snapshot }).launch.model).toBe("openai/old");
 		expect(store.resolveAssignment(agent(), {
 			snapshot,
-			changes: [{ kind: "inherit-model", agentName: "worker" }],
+			edit: { target: { kind: "agent", name: "worker" }, model: { kind: "inherit" } },
 		}).launch.model).toBe("anthropic/first");
 		expect(JSON.parse(readFileSync(settingsPath, "utf8")).subagents.agentModels).toEqual({ worker: "openai/old" });
 		store.rememberMainModel({ provider: "anthropic", id: "second" });
