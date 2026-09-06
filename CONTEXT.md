@@ -222,10 +222,12 @@ extension.
   the same edit is previewed in memory and committed atomically to the current
   Profile's Settings document.
 - **Subagent assignment resolution module** — the deep in-process module in
-  `tools-subagents/config.ts` that owns assignment parsing and precedence, semantic
-  model and thinking changes, Profile-aware `subagents` namespace persistence,
-  legacy fallback and migration, current Main-model observation, and preview and
-  launch resolution. `_shared/settings-document.ts` remains the Settings document
+  `tools-subagents/config.ts` that owns assignment parsing and precedence, the
+  target-aware current model and thinking choices shown for `all` or one agent
+  including legacy direct-model suffix interpretation, semantic model and thinking
+  changes, Profile-aware `subagents` namespace persistence, legacy fallback and
+  migration, current Main-model observation, and preview and launch resolution.
+  `_shared/settings-document.ts` remains the Settings document
   seam. The Pi `/subagents` command adapter owns catalogue access, TUI flow, and
   notifications. Context-window settings remain display metadata; the child gets
   its actual context window from the selected model's catalogue entry.

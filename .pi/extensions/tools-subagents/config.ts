@@ -66,11 +66,50 @@ export type SubagentThinkingEdit =
 	| { readonly kind: "inherit" }
 	| { readonly kind: "default" };
 
+/** Direct stored model choice for one assignment target; a read result, never persisted. */
+export type SubagentAssignmentModelSelection =
+	| { readonly kind: "default" }
+	| { readonly kind: "inherit" }
+	| { readonly kind: "set"; readonly setting: string };
+
 /** One semantic model/thinking edit; the same value is previewed and committed. */
 export interface SubagentAssignmentEdit {
 	readonly target: SubagentAssignmentTarget;
 	readonly model?: SubagentModelEdit;
 	readonly thinking?: SubagentThinkingEdit;
+}
+
+/** Discriminated target so an individual selection always carries its matching AgentConfig. */
+type AssignmentSelectionTarget =
+	| {
+			readonly target: { readonly kind: "all" };
+			readonly agent?: never;
+	  }
+	| {
+			readonly target: { readonly kind: "agent"; readonly name: string };
+			readonly agent: AgentConfig;
+	  };
+
+export type ResolveAssignmentSelectionOptions = AssignmentSelectionTarget & {
+	config?: unknown;
+	mainModel: string | { provider: unknown; id: unknown } | undefined;
+};
+
+export type ResolveStoredAssignmentSelectionOptions = AssignmentSelectionTarget & {
+	snapshot?: ExtensionConfig;
+	edit?: SubagentAssignmentEdit;
+};
+
+/** One target's direct choices plus its effective assignment, resolved together. */
+export interface ResolvedSubagentAssignmentSelection {
+	/** Direct target choice used by the model picker. */
+	readonly model: SubagentAssignmentModelSelection;
+	/** Legacy :thinking suffix on the direct target model choice, if present. */
+	readonly modelSuffixThinkingLevel?: SubagentThinkingLevel;
+	/** Direct target thinking choice, excluding any model suffix. */
+	readonly thinking: SubagentThinkingEdit;
+	/** Effective assignment after fallback and current Main-model resolution. */
+	readonly assignment: ResolvedSubagentAssignment;
 }
 
 export interface ResolveStoredAssignmentOptions {
@@ -87,6 +126,7 @@ export interface SubagentConfigStore {
 	rememberMainModel(model: { provider: unknown; id: unknown } | undefined): void;
 	resolveMainModel(): string;
 	resolveAssignment(agent: AgentConfig, options?: ResolveStoredAssignmentOptions): ResolvedSubagentAssignment;
+	resolveAssignmentSelection(options: ResolveStoredAssignmentSelectionOptions): ResolvedSubagentAssignmentSelection;
 	resolveLaunch(agent: AgentConfig, explicitModel?: string, explicitThinkingLevel?: SubagentThinkingLevel): ResolvedLaunchConfiguration;
 	setSettingsPath(path: string): void;
 	migrateLegacy(): Promise<boolean>;
@@ -232,9 +272,11 @@ function canonicalMainModel(model: string | { provider: unknown; id: unknown } |
 	return normalizeModelSetting(`${model.provider}/${model.id}`, "main session model");
 }
 
-/** Resolve the effective assignment used by displays and child launch preparation. */
-export function resolveSubagentAssignment(options: ResolveLaunchOptions): ResolvedSubagentAssignment {
-	const config = parseModelConfiguration(options.config ?? {});
+/** Effective model, thinking, and context precedence over one already-parsed configuration. */
+function resolveParsedSubagentAssignment(
+	options: ResolveLaunchOptions,
+	config: ModelConfiguration,
+): ResolvedSubagentAssignment {
 	let selectedModel: string;
 	if (options.explicitModel !== undefined) {
 		selectedModel = normalizeModelSetting(options.explicitModel, "invocation model override");
@@ -270,6 +312,50 @@ export function resolveSubagentAssignment(options: ResolveLaunchOptions): Resolv
 			thinkingLevel,
 			contextWindow,
 		},
+	};
+}
+
+/** Resolve the effective assignment used by displays and child launch preparation. */
+export function resolveSubagentAssignment(options: ResolveLaunchOptions): ResolvedSubagentAssignment {
+	return resolveParsedSubagentAssignment(options, parseModelConfiguration(options.config ?? {}));
+}
+
+/**
+ * Resolve one target's direct model and thinking choices together with its effective
+ * assignment. Direct choices describe the stored target setting; equal effective
+ * values cannot hide the difference between a direct choice and a fallback.
+ */
+export function resolveSubagentAssignmentSelection(
+	options: ResolveAssignmentSelectionOptions,
+): ResolvedSubagentAssignmentSelection {
+	const config = parseModelConfiguration(options.config ?? {});
+	const isAgent = options.target.kind === "agent";
+	// A well-typed individual selection always carries its matching AgentConfig; an
+	// `all` selection has none, so frontmatter participates only for individual targets.
+	const assignment = resolveParsedSubagentAssignment(
+		{
+			agentName: isAgent ? options.target.name : "",
+			frontmatterModel: isAgent ? options.agent?.model : undefined,
+			mainModel: options.mainModel,
+		},
+		config,
+	);
+
+	const directModel = isAgent ? config.agentModels[options.target.name] : config.defaultModel;
+	const modelSuffixThinkingLevel = directModel === undefined
+		? undefined
+		: splitModelThinkingSetting(directModel).thinkingLevel;
+	const directThinking = isAgent ? config.agentThinkingLevels[options.target.name] : config.defaultThinkingLevel;
+
+	return {
+		model: directModel === undefined
+			? { kind: isAgent ? "inherit" : "default" }
+			: { kind: "set", setting: directModel },
+		...(modelSuffixThinkingLevel === undefined ? {} : { modelSuffixThinkingLevel }),
+		thinking: directThinking === undefined
+			? { kind: isAgent ? "inherit" : "default" }
+			: { kind: "set", level: directThinking },
+		assignment,
 	};
 }
 
@@ -427,6 +513,13 @@ export function createSubagentConfigStore(options: SubagentConfigStoreOptions = 
 		return resolveSubagentAssignment({ agentName: agent.name, config, explicitModel: options.explicitModel,
 			explicitThinkingLevel: options.explicitThinkingLevel, frontmatterModel: agent.model, mainModel: activeMainModel });
 	};
+	const resolveAssignmentSelection = (
+		options: ResolveStoredAssignmentSelectionOptions,
+	): ResolvedSubagentAssignmentSelection => {
+		let config: unknown = options.snapshot ?? readSettingsNamespace();
+		if (options.edit) config = applySubagentAssignmentEdit(config, options.edit);
+		return resolveSubagentAssignmentSelection({ ...options, config, mainModel: activeMainModel });
+	};
 	return {
 		get configPath() { return settingsPath; },
 		load,
@@ -440,6 +533,7 @@ export function createSubagentConfigStore(options: SubagentConfigStoreOptions = 
 		rememberMainModel(model) { activeMainModel = model ? canonicalMainModel(model) : undefined; },
 		resolveMainModel() { return canonicalMainModel(activeMainModel); },
 		resolveAssignment,
+		resolveAssignmentSelection,
 		resolveLaunch(agent, explicitModel, explicitThinkingLevel) {
 			return resolveAssignment(agent, { explicitModel, explicitThinkingLevel }).launch;
 		},

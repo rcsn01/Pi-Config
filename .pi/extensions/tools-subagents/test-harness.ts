@@ -9,9 +9,12 @@ import {
 	normalizeModelSetting,
 	parseModelConfiguration,
 	resolveSubagentAssignment,
+	resolveSubagentAssignmentSelection,
 	type ExtensionConfig,
+	type ResolvedSubagentAssignmentSelection,
 	type SubagentAssignmentEdit,
 	type SubagentConfigStore,
+	type ResolveStoredAssignmentSelectionOptions,
 } from "./config.ts";
 import type { SpawnSubagentProcess } from "./child-execution.ts";
 
@@ -102,6 +105,11 @@ export function memoryConfigStore(initial: Record<string, unknown> = {}): Memory
 				frontmatterModel: config.model,
 				mainModel: activeMainModel,
 			});
+		},
+		resolveAssignmentSelection(options: ResolveStoredAssignmentSelectionOptions): ResolvedSubagentAssignmentSelection {
+			let document: unknown = options.snapshot ?? store.document;
+			if (options.edit) document = applySubagentAssignmentEdit(document, options.edit);
+			return resolveSubagentAssignmentSelection({ ...options, config: document, mainModel: activeMainModel });
 		},
 		resolveLaunch(config, explicitModel, explicitThinkingLevel) {
 			return store.resolveAssignment(config, { explicitModel, explicitThinkingLevel }).launch;
