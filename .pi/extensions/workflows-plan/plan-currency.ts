@@ -22,6 +22,30 @@ export interface PlanCurrencyDependencies {
 	createPersistence(settingsPath: string): ModelSelectionPersistence;
 }
 
+/** One declared step of a Plan guarded effect. Errors are caller-owned: the
+ *  runner never catches. Sync steps are allowed; every step is a boundary. */
+export type PlanGuardStep = () => void | Promise<void>;
+
+/** One currency-guarded effect run, bound to a PlanSession. */
+export interface PlanGuard {
+	/** The run's identity anchor. */
+	readonly session: PlanSession;
+	/**
+	 * The full liveness predicate — currency identity (session + generation)
+	 * plus the run's compound predicate, evaluated live. For caller-owned
+	 * error boundaries and positive-gated reporting.
+	 */
+	isCurrent(): boolean;
+	/**
+	 * Run the declared steps in order. Staleness is checked before every step
+	 * (entry included) and once after the final step. On staleness the
+	 * remaining steps are abandoned silently — no notify, no throw — and the
+	 * run resolves `false`. A throwing step propagates unchanged. Resolves
+	 * `true` iff every step ran and the final boundary held.
+	 */
+	run(...steps: PlanGuardStep[]): Promise<boolean>;
+}
+
 export interface PlanCurrency {
 	/** sessionStarted: bind a fresh Session (fresh persistence, generation from begin). */
 	begin(binding: SessionProfileBinding, ctx: ExtensionContext): PlanSession;
@@ -41,6 +65,13 @@ export interface PlanCurrency {
 	isCurrent(session: PlanSession): boolean;
 	/** Review-host snapshot: capture (session, generation) once; isCurrent() stays meaningful. */
 	snapshot(): { isCurrent(): boolean };
+	/**
+	 * Plan guarded effect seam: declare the run's compound liveness predicate
+	 * once (e.g. the lifecycle's isPlanMode); the runner owns every
+	 * awaited-boundary staleness check. `whileValid` is evaluated live after
+	 * the currency check at each boundary.
+	 */
+	guard(session: PlanSession, whileValid?: () => boolean): PlanGuard;
 }
 
 export function createPlanCurrency(dependencies: PlanCurrencyDependencies): PlanCurrency {
@@ -98,5 +129,20 @@ export function createPlanCurrency(dependencies: PlanCurrencyDependencies): Plan
 		};
 	}
 
-	return { begin, advance, end, resolve, require, isCurrent, snapshot };
+	function guard(session: PlanSession, whileValid?: () => boolean): PlanGuard {
+		const live = () => isCurrent(session) && (whileValid === undefined || whileValid());
+		return {
+			session,
+			isCurrent: live,
+			async run(...steps: PlanGuardStep[]): Promise<boolean> {
+				for (const step of steps) {
+					if (!live()) return false;
+					await step();
+				}
+				return live();
+			},
+		};
+	}
+
+	return { begin, advance, end, resolve, require, isCurrent, snapshot, guard };
 }

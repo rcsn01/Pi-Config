@@ -5,7 +5,7 @@ import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import type { ModelSelectionSettings, StoredModelSelectionSettings } from "../_shared/model-selection.ts";
 import { applyModelSelection } from "../_shared/model-selection.ts";
 import { createPlanProfileTransition } from "./plan-profile-transition.ts";
-import type { PlanSession } from "./plan-currency.ts";
+import { createPlanCurrency, type PlanSession } from "./plan-currency.ts";
 
 vi.mock("../_shared/model-selection.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../_shared/model-selection.ts")>();
@@ -32,23 +32,26 @@ function ctx(): ExtensionContext {
 	return {} as ExtensionContext;
 }
 
-function createSession(): PlanSession {
+function ctxFor(sessionId: string): ExtensionContext {
+	return { sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
+}
+
+const hostBinding = { profileName: undefined, settingsPath: "/settings.json" };
+
+/** A host whose guard wraps a real Plan session currency; staleness is
+ *  scripted by advancing the currency. */
+function createHost() {
 	const persistence = {
 		load: vi.fn(),
 		save: vi.fn(async () => {}),
 	} as unknown as ModelSelectionPersistence & { save: ReturnType<typeof vi.fn> };
-	return {
-		binding: { profileName: undefined, settingsPath: "/settings.json" },
-		sessionId: "session-a",
-		persistence,
-		generation: 1,
-	} as PlanSession;
-}
-
-function createHost() {
-	const isCurrent = vi.fn(() => true);
+	const currency = createPlanCurrency({ createPersistence: () => persistence });
+	const session = currency.begin(hostBinding, ctxFor("session-a"));
+	const goStale = () => {
+		currency.advance(session);
+	};
 	const preserveDefaults = vi.fn(async () => {});
-	return { isCurrent, preserveDefaults };
+	return { persistence, currency, session, goStale, preserveDefaults, createGuard: (s: PlanSession) => currency.guard(s) };
 }
 
 function createTransition(host = createHost()) {
@@ -71,9 +74,8 @@ describe("Plan profile transition", () => {
 	it("applies the target through Pi with the request label and reports it as data", async () => {
 		const { transition, host, pi } = createTransition();
 		mockApplyProfile();
-		const session = createSession();
 
-		const outcome = await transition.apply(ctx(), session, {
+		const outcome = await transition.apply(ctx(), host.session, {
 			target: storedTarget,
 			label: "Plan Mode profile",
 		});
@@ -87,40 +89,38 @@ describe("Plan profile transition", () => {
 	});
 
 	it("persists the applied profile to the Session's Plan-mode persistence", async () => {
-		const { transition } = createTransition();
+		const { transition, host } = createTransition();
 		mockApplyProfile();
-		const session = createSession();
 
-		const outcome = await transition.apply(ctx(), session, {
+		const outcome = await transition.apply(ctx(), host.session, {
 			target: storedTarget,
 			label: "Plan Mode profile",
-			persist: { session },
+			persist: { session: host.session },
 		});
 
 		expect(outcome.ok).toBe(true);
-		expect(session.persistence.save).toHaveBeenCalledWith("plan", appliedProfile);
+		expect(host.persistence.save).toHaveBeenCalledWith("plan", appliedProfile);
 	});
 
 	it("skips persistence when the stored profile defers to Pi's defaults", async () => {
-		const { transition } = createTransition();
+		const { transition, host } = createTransition();
 		mockApplyProfile();
-		const session = createSession();
 
-		const outcome = await transition.apply(ctx(), session, {
+		const outcome = await transition.apply(ctx(), host.session, {
 			target: { provider: DEFAULT_SENTINEL, modelId: "m", thinkingLevel: "medium" },
 			label: "Plan Mode profile",
-			persist: { session, unlessSentinel: { provider: DEFAULT_SENTINEL, modelId: "m", thinkingLevel: "medium" } },
+			persist: { session: host.session, unlessSentinel: { provider: DEFAULT_SENTINEL, modelId: "m", thinkingLevel: "medium" } },
 		});
 
 		expect(outcome.ok).toBe(true);
-		expect(session.persistence.save).not.toHaveBeenCalled();
+		expect(host.persistence.save).not.toHaveBeenCalled();
 	});
 
 	it("preserves the request's captured normal defaults", async () => {
 		const { transition, host } = createTransition();
 		mockApplyProfile();
 
-		const outcome = await transition.apply(ctx(), createSession(), {
+		const outcome = await transition.apply(ctx(), host.session, {
 			target: storedTarget,
 			label: "Plan Mode profile",
 			defaults: normalProfile,
@@ -132,51 +132,53 @@ describe("Plan profile transition", () => {
 
 	it("abandons silently when the session goes stale after the apply", async () => {
 		const { transition, host } = createTransition();
-		mockApplyProfile();
-		const session = createSession();
-		host.isCurrent.mockReturnValue(false);
+		vi.mocked(applyModelSelection).mockImplementationOnce(async () => {
+			host.goStale();
+			return appliedProfile;
+		});
 
-		const outcome = await transition.apply(ctx(), session, {
+		const outcome = await transition.apply(ctx(), host.session, {
 			target: storedTarget,
 			label: "Plan Mode profile",
-			persist: { session },
+			persist: { session: host.session },
 			defaults: normalProfile,
 		});
 
 		expect(outcome).toEqual({ ok: true, profile: appliedProfile });
-		expect(session.persistence.save).not.toHaveBeenCalled();
+		expect(host.persistence.save).not.toHaveBeenCalled();
 		expect(host.preserveDefaults).not.toHaveBeenCalled();
 	});
 
 	it("abandons the remaining effects when the session goes stale after persisting", async () => {
 		const { transition, host } = createTransition();
 		mockApplyProfile();
-		const session = createSession();
-		// current after apply, stale after persist
-		host.isCurrent.mockReturnValueOnce(true).mockReturnValue(false);
+		host.persistence.save.mockImplementationOnce(async () => {
+			host.goStale();
+		});
 
-		const outcome = await transition.apply(ctx(), session, {
+		const outcome = await transition.apply(ctx(), host.session, {
 			target: storedTarget,
 			label: "Plan Mode profile",
-			persist: { session },
+			persist: { session: host.session },
 			defaults: normalProfile,
 		});
 
 		expect(outcome).toEqual({ ok: true, profile: appliedProfile });
-		expect(session.persistence.save).toHaveBeenCalledTimes(1);
+		expect(host.persistence.save).toHaveBeenCalledTimes(1);
 		expect(host.preserveDefaults).not.toHaveBeenCalled();
 	});
 
 	it("abandons with a plain result when the session goes stale after preserving defaults", async () => {
 		const { transition, host } = createTransition();
 		mockApplyProfile();
-		const session = createSession();
-		host.isCurrent.mockReturnValue(true);
+		host.preserveDefaults.mockImplementationOnce(async () => {
+			host.goStale();
+		});
 
-		const outcome = await transition.apply(ctx(), session, {
+		const outcome = await transition.apply(ctx(), host.session, {
 			target: storedTarget,
 			label: "Plan Mode profile",
-			persist: { session },
+			persist: { session: host.session },
 			defaults: normalProfile,
 		});
 
@@ -188,13 +190,12 @@ describe("Plan profile transition", () => {
 		const { transition, host } = createTransition();
 		const failure = new Error("preserve failed");
 		vi.mocked(applyModelSelection).mockResolvedValueOnce(appliedProfile).mockResolvedValueOnce(normalProfile);
-		const session = createSession();
 		host.preserveDefaults.mockRejectedValueOnce(failure).mockResolvedValueOnce(undefined);
 
-		const outcome = await transition.apply(ctx(), session, {
+		const outcome = await transition.apply(ctx(), host.session, {
 			target: storedTarget,
 			label: "Plan Mode profile",
-			persist: { session },
+			persist: { session: host.session },
 			defaults: normalProfile,
 			rollback: { target: normalProfile, label: "Normal profile", defaults: normalProfile },
 		});
@@ -214,11 +215,11 @@ describe("Plan profile transition", () => {
 	});
 
 	it("does not roll back when the apply itself failed", async () => {
-		const { transition } = createTransition();
+		const { transition, host } = createTransition();
 		const failure = new Error("apply failed");
 		vi.mocked(applyModelSelection).mockRejectedValue(failure);
 
-		const outcome = await transition.apply(ctx(), createSession(), {
+		const outcome = await transition.apply(ctx(), host.session, {
 			target: storedTarget,
 			label: "Plan Mode profile",
 			rollback: { target: normalProfile, label: "Normal profile" },
@@ -229,19 +230,18 @@ describe("Plan profile transition", () => {
 	});
 
 	it("reports the rollback failure without throwing", async () => {
-		const { transition } = createTransition();
+		const { transition, host } = createTransition();
 		const saveFailure = new Error("save failed");
 		const rollbackFailure = new Error("rollback failed");
 		vi.mocked(applyModelSelection).mockResolvedValueOnce(appliedProfile).mockRejectedValueOnce(rollbackFailure);
-		const session = createSession();
-		session.persistence.save = vi.fn(async () => {
+		host.persistence.save.mockImplementationOnce(async () => {
 			throw saveFailure;
-		}) as unknown as ModelSelectionPersistence["save"];
+		});
 
-		const outcome = await transition.apply(ctx(), session, {
+		const outcome = await transition.apply(ctx(), host.session, {
 			target: storedTarget,
 			label: "Plan Mode profile",
-			persist: { session },
+			persist: { session: host.session },
 			rollback: { target: normalProfile, label: "Normal profile" },
 		});
 
@@ -252,18 +252,17 @@ describe("Plan profile transition", () => {
 	});
 
 	it("reports the failure without attempting a rollback when none is supplied", async () => {
-		const { transition } = createTransition();
+		const { transition, host } = createTransition();
 		const failure = new Error("save failed");
 		mockApplyProfile();
-		const session = createSession();
-		session.persistence.save = vi.fn(async () => {
+		host.persistence.save.mockImplementationOnce(async () => {
 			throw failure;
-		}) as unknown as ModelSelectionPersistence["save"];
+		});
 
-		const outcome = await transition.apply(ctx(), session, {
+		const outcome = await transition.apply(ctx(), host.session, {
 			target: storedTarget,
 			label: "Plan Mode profile",
-			persist: { session },
+			persist: { session: host.session },
 		});
 
 		expect(outcome).toEqual({ ok: false, error: failure, profile: appliedProfile });
@@ -274,17 +273,15 @@ describe("Plan profile transition", () => {
 		const { transition, host } = createTransition();
 		const failure = new Error("save failed");
 		mockApplyProfile();
-		const session = createSession();
-		session.persistence.save = vi.fn(async () => {
+		host.persistence.save.mockImplementationOnce(async () => {
+			host.goStale();
 			throw failure;
-		}) as unknown as ModelSelectionPersistence["save"];
-		// current after apply, stale when the failure is handled
-		host.isCurrent.mockReturnValueOnce(true).mockReturnValueOnce(false);
+		});
 
-		const outcome = await transition.apply(ctx(), session, {
+		const outcome = await transition.apply(ctx(), host.session, {
 			target: storedTarget,
 			label: "Plan Mode profile",
-			persist: { session },
+			persist: { session: host.session },
 			rollback: { target: normalProfile, label: "Normal profile" },
 		});
 
@@ -295,7 +292,7 @@ describe("Plan profile transition", () => {
 	});
 
 	it("holds the Plan selection transition marker while a transition is in flight", async () => {
-		const { transition } = createTransition();
+		const { transition, host } = createTransition();
 		let release!: (value: ModelSelectionSettings) => void;
 		vi.mocked(applyModelSelection).mockReturnValueOnce(
 			new Promise((resolve) => {
@@ -303,7 +300,7 @@ describe("Plan profile transition", () => {
 			}),
 		);
 
-		const pending = transition.apply(ctx(), createSession(), {
+		const pending = transition.apply(ctx(), host.session, {
 			target: storedTarget,
 			label: "Plan Mode profile",
 		});

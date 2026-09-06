@@ -24,6 +24,7 @@ import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import {
 	createModelSelectionPersistence,
 	type CreateModelSelectionPersistence,
+	type ModelSelectionPersistence,
 } from "../_shared/model-selection-persistence.ts";
 import type { SessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
@@ -50,7 +51,7 @@ import {
 	profileFromCurrentSession,
 	profileLabel,
 } from "./model-profile.ts";
-import { createPlanCurrency, type PlanSession } from "./plan-currency.ts";
+import { createPlanCurrency, type PlanGuardStep, type PlanSession } from "./plan-currency.ts";
 import { createPlanPendingMode } from "./plan-pending-mode.ts";
 import { createPlanProfileTransition } from "./plan-profile-transition.ts";
 import { buildPlanModeSystemPrompt } from "./plan-prompt.ts";
@@ -330,7 +331,7 @@ export function createPlanLifecycle(
 	const currency = createPlanCurrency({ createPersistence: persistenceFactory });
 
 	const profileTransition = createPlanProfileTransition(pi, {
-		isCurrent: (session) => currency.isCurrent(session),
+		createGuard: (session) => currency.guard(session),
 		preserveDefaults,
 	}, { nativeDefaults: dependencies.nativeDefaults });
 
@@ -372,11 +373,13 @@ export function createPlanLifecycle(
 		planRuntime.warm(ctx.cwd);
 	}
 
-	async function refreshPlanRuntime(ctx: ExtensionContext, session: PlanSession): Promise<void> {
-		await enqueueLifecycle(async () => {
-			if (!currency.isCurrent(session)) return;
-			runtimeContext = ctx;
-			await planRuntime.refresh(ctx.cwd);
+	async function refreshPlanRuntime(ctx: ExtensionContext, session: PlanSession): Promise<boolean> {
+		return enqueueLifecycle(async () => {
+			const guard = currency.guard(session);
+			return guard.run(async () => {
+				runtimeContext = ctx;
+				await planRuntime.refresh(ctx.cwd);
+			});
 		});
 	}
 
@@ -385,17 +388,20 @@ export function createPlanLifecycle(
 		const previousState = planState;
 		const previousNormalTools = previousState.normalTools;
 		runtimeContext = ctx;
+		const guard = currency.guard(session);
 		try {
+			// Head-outside the guarded run: cleanup always runs, even when the
+			// session went stale at entry.
 			await planRuntime.dispose();
 		} catch (error) {
-			if (currency.isCurrent(session)) {
+			if (guard.isCurrent()) {
 				ctx.ui.notify(
 					`Could not clean up the previous Plan Bash sandbox: ${error instanceof Error ? error.message : String(error)}`,
 					"warning",
 				);
 			}
 		}
-		if (!currency.isCurrent(session)) return;
+		if (!guard.isCurrent()) return;
 
 		const reconstructed = reconstructPlanState({
 			entries: ctx.sessionManager.getBranch(),
@@ -420,25 +426,28 @@ export function createPlanLifecycle(
 			activePlanProfile = profileFromCurrentSession(pi, ctx);
 			const fallback = planState.normalProfile ?? activePlanProfile;
 			if (fallback) {
+				let captured: ModeModelProfile | undefined;
 				try {
-					const defaults = await normalDefaultsStore.capture(ctx.cwd, fallback);
-					if (!currency.isCurrent(session)) return;
-					normalGlobalDefaults = defaults;
+					const held = await guard.run(async () => {
+						captured = await normalDefaultsStore.capture(ctx.cwd, fallback);
+					});
+					if (!held) return;
+					normalGlobalDefaults = captured;
 				} catch (error) {
-					if (!currency.isCurrent(session)) return;
+					if (!guard.isCurrent()) return;
 					ctx.ui.notify(
 						`Could not read Pi's normal defaults: ${error instanceof Error ? error.message : String(error)}`,
 						"error",
 					);
 				}
 			}
-			if (!currency.isCurrent(session)) return;
-			warmPlanRuntime(ctx);
+			// Entry check: warm only when still current.
+			await guard.run(() => warmPlanRuntime(ctx));
 		} else {
 			ctx.ui.setStatus("plan-runtime", undefined);
 			pi.setActiveTools(previousNormalTools ?? toolsAtStart.filter((name) => name !== "plan_bash"));
 		}
-		if (currency.isCurrent(session) && !modeTransition) updatePlanStatus(ctx, planState);
+		if (guard.isCurrent() && !modeTransition) updatePlanStatus(ctx, planState);
 	};
 
 	const reconstruct = (ctx: ExtensionContext): Promise<void> => {
@@ -505,7 +514,6 @@ export function createPlanLifecycle(
 			return false;
 		}
 
-		let capturedDefaults: ModeModelProfile | undefined;
 		const normalTools = pi.getActiveTools().filter((name) => name !== "plan_bash");
 		const abortEnter = (error: unknown, rollbackError?: unknown): false => {
 			pi.setActiveTools(normalTools);
@@ -521,41 +529,53 @@ export function createPlanLifecycle(
 			);
 			return false;
 		};
+		const guard = currency.guard(session);
+		let capturedDefaults: ModeModelProfile | undefined;
+		let stored: Awaited<ReturnType<ModelSelectionPersistence["load"]>>; // "plan" slot
 		try {
-			capturedDefaults = await normalDefaultsStore.capture(ctx.cwd, normalProfile);
-			if (!currency.isCurrent(session)) return false;
-			const storedProfile = await session.persistence.load("plan");
-			if (!currency.isCurrent(session)) return false;
-			if (!storedProfile) {
-				await session.persistence.save("plan", normalProfile);
-				if (!currency.isCurrent(session)) return false;
+			const prepared = await guard.run(
+				async () => {
+					capturedDefaults = await normalDefaultsStore.capture(ctx.cwd, normalProfile);
+				},
+				async () => {
+					stored = await session.persistence.load("plan");
+				},
+			);
+			if (!prepared) return false;
+
+			// Shared adopt block for both entry paths: one awaited effect per
+			// step, so the synchronous commit never lands after a later step's
+			// await.
+			const adoptEntry = (profile: ModeModelProfile): PlanGuardStep => () => {
 				normalGlobalDefaults = capturedDefaults;
 				planState = { ...planState, normalProfile, normalTools };
-				activePlanProfile = normalProfile;
+				activePlanProfile = profile;
 				clearPlanForEntry();
 				commitPlanState(ctx, "plan", prompt, normalTools);
 				warmPlanRuntime(ctx);
-				return true;
+			};
+
+			if (!stored) {
+				return await guard.run(
+					async () => {
+						await session.persistence.save("plan", normalProfile);
+					},
+					adoptEntry(normalProfile),
+				);
 			}
 
 			const outcome = await profileTransition.apply(ctx, session, {
-				target: storedProfile,
+				target: stored,
 				label: "Plan Mode profile",
-				persist: { session, unlessSentinel: storedProfile },
+				persist: { session, unlessSentinel: stored },
 				defaults: capturedDefaults,
 				rollback: { target: normalProfile, label: "Normal profile", defaults: capturedDefaults },
 			});
-			if (!currency.isCurrent(session)) return false;
+			if (!guard.isCurrent()) return false;
 			if (!outcome.ok) return abortEnter(outcome.error, outcome.rollbackError);
-			normalGlobalDefaults = capturedDefaults;
-			planState = { ...planState, normalProfile, normalTools };
-			activePlanProfile = outcome.profile!;
-			clearPlanForEntry();
-			commitPlanState(ctx, "plan", prompt, normalTools);
-			warmPlanRuntime(ctx);
-			return true;
+			return await guard.run(adoptEntry(outcome.profile!));
 		} catch (error) {
-			if (!currency.isCurrent(session)) return false;
+			if (!guard.isCurrent()) return false;
 			return abortEnter(error);
 		}
 	}
@@ -564,17 +584,20 @@ export function createPlanLifecycle(
 		if (!isPlanMode(planState)) return true;
 		const normalTools = planState.normalTools;
 		runtimeContext = ctx;
+		const guard = currency.guard(session);
 		try {
+			// Head-outside the guarded run: sandbox cleanup must run even when
+			// the session went stale at entry.
 			await planRuntime.dispose();
-			if (!currency.isCurrent(session)) return false;
 		} catch (error) {
-			if (!currency.isCurrent(session)) return false;
+			if (!guard.isCurrent()) return false;
 			ctx.ui.notify(
 				`Could not exit Plan Mode because the Plan Bash sandbox could not be cleaned up: ${error instanceof Error ? error.message : String(error)}`,
 				"error",
 			);
 			return false;
 		}
+		if (!guard.isCurrent()) return false;
 
 		const normalProfile = planState.normalProfile;
 		if (normalProfile) {
@@ -586,7 +609,7 @@ export function createPlanLifecycle(
 					? { target: activePlanProfile, label: "Plan Mode profile" }
 					: undefined,
 			});
-			if (!currency.isCurrent(session)) return false;
+			if (!guard.isCurrent()) return false;
 			if (!outcome.ok) {
 				const rollbackNote = outcome.rollbackError
 					? ` Rollback also failed: ${outcome.rollbackError instanceof Error ? outcome.rollbackError.message : String(outcome.rollbackError)}`
@@ -599,7 +622,6 @@ export function createPlanLifecycle(
 				return false;
 			}
 		}
-		if (!currency.isCurrent(session)) return false;
 		commitPlanState(ctx, "default", undefined, normalTools);
 		return true;
 	}
@@ -687,32 +709,43 @@ export function createPlanLifecycle(
 		profile: ModeModelProfile,
 		defaults: ModeModelProfile | undefined,
 	): Promise<void> {
-		if (!currency.isCurrent(session) || !isPlanMode(planState)) return;
-		activePlanProfile = profile;
+		// The compound predicate is declared once per run and evaluated live —
+		// never latched — so a mid-run mode flip abandons and a flip back does
+		// not resurrect an already-finished run.
+		const guard = currency.guard(session, () => isPlanMode(planState));
 		let persistenceError: unknown;
-		try {
-			await session.persistence.save("plan", profile);
-		} catch (error) {
-			persistenceError = error;
-		}
-		if (!currency.isCurrent(session) || !isPlanMode(planState)) return;
-		try {
-			await preserveDefaults(ctx, defaults);
-		} catch (error) {
-			if (!currency.isCurrent(session) || !isPlanMode(planState)) return;
-			ctx.ui.notify(
-				`Could not preserve Pi's normal defaults: ${error instanceof Error ? error.message : String(error)}`,
-				"error",
-			);
-		}
-		if (!currency.isCurrent(session) || !isPlanMode(planState)) return;
-		if (persistenceError) {
-			ctx.ui.notify(
-				`Could not save the Plan Mode profile: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}`,
-				"error",
-			);
-		}
-		updatePlanStatus(ctx, planState);
+		await guard.run(
+			() => {
+				activePlanProfile = profile;
+			},
+			async () => {
+				try {
+					await session.persistence.save("plan", profile);
+				} catch (error) {
+					persistenceError = error; // error-as-data, reported in the final step
+				}
+			},
+			async () => {
+				try {
+					await preserveDefaults(ctx, defaults);
+				} catch (error) {
+					if (!guard.isCurrent()) return;
+					ctx.ui.notify(
+						`Could not preserve Pi's normal defaults: ${error instanceof Error ? error.message : String(error)}`,
+						"error",
+					);
+				}
+			},
+			() => {
+				if (persistenceError) {
+					ctx.ui.notify(
+						`Could not save the Plan Mode profile: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}`,
+						"error",
+					);
+				}
+				updatePlanStatus(ctx, planState);
+			},
+		);
 	}
 
 	reviewController = createPlanReviewController({
@@ -819,9 +852,9 @@ export function createPlanLifecycle(
 			return;
 		}
 		try {
-			await refreshPlanRuntime(ctx, session);
-			if (!currency.isCurrent(session)) return;
-			ctx.ui.notify("Plan Bash disposable workspace refreshed from the host.", "info");
+			if (await refreshPlanRuntime(ctx, session)) {
+				ctx.ui.notify("Plan Bash disposable workspace refreshed from the host.", "info");
+			}
 		} catch (error) {
 			if (!currency.isCurrent(session)) return;
 			ctx.ui.notify(

@@ -21,7 +21,7 @@ import {
 } from "../_shared/model-selection.ts";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import type { ModeModelProfile } from "./model-profile.ts";
-import type { PlanSession } from "./plan-currency.ts";
+import type { PlanGuard, PlanSession } from "./plan-currency.ts";
 
 export interface PlanProfileTransitionRequest {
 	/** Profile to apply through Pi; as stored, so default sentinels still resolve. */
@@ -51,8 +51,9 @@ export interface PlanProfileTransitionResult {
 }
 
 export interface PlanProfileTransitionHost {
-	/** Plan session currency guard, checked at each asynchronous boundary. */
-	isCurrent(session: PlanSession): boolean;
+	/** One Plan guarded effect per transition; staleness is checked at every
+	 *  boundary the transition declares. Replaces isCurrent(session). */
+	createGuard(session: PlanSession): PlanGuard;
 	/** The lifecycle's normal-defaults preservation; undefined defaults fall
 	 *  back to the lifecycle's captured normal defaults. */
 	preserveDefaults(ctx: ExtensionContext, defaults?: ModeModelProfile): Promise<void>;
@@ -88,22 +89,6 @@ export function createPlanProfileTransition(
 		});
 	}
 
-	async function restoreFallback(
-		ctx: ExtensionContext,
-		session: PlanSession,
-		rollback: NonNullable<PlanProfileTransitionRequest["rollback"]>,
-	): Promise<{ profile?: ModeModelProfile; rollbackError?: unknown }> {
-		if (!host.isCurrent(session)) return {};
-		try {
-			const profile = await applyProfile(ctx, rollback.target, rollback.label);
-			if (!host.isCurrent(session)) return { profile };
-			await host.preserveDefaults(ctx, rollback.defaults);
-			return { profile };
-		} catch (error) {
-			return { rollbackError: error };
-		}
-	}
-
 	async function apply(
 		ctx: ExtensionContext,
 		session: PlanSession,
@@ -111,31 +96,55 @@ export function createPlanProfileTransition(
 	): Promise<PlanProfileTransitionResult> {
 		transitionDepth++;
 		try {
+			const guard = host.createGuard(session);
 			let profile: ModeModelProfile | undefined;
-			let targetApplied = false;
+			let applied = false;
 			try {
+				// Unguarded head: the apply runs even when the session went
+				// stale at entry, so the profile never sticks half-applied.
 				profile = await applyProfile(ctx, request.target, request.label);
-				targetApplied = true;
-				if (!host.isCurrent(session)) return { ok: true, profile };
-				const sentinelRef = request.persist?.unlessSentinel;
-				if (request.persist && !(sentinelRef !== undefined && usesDefaultSentinel(sentinelRef))) {
-					await request.persist.session.persistence.save("plan", profile);
-				}
-				if (!host.isCurrent(session)) return { ok: true, profile };
-				await host.preserveDefaults(ctx, request.defaults);
-				if (!host.isCurrent(session)) return { ok: true, profile };
+				applied = true;
+				await guard.run(
+					async () => {
+						const sentinelRef = request.persist?.unlessSentinel;
+						if (request.persist && !(sentinelRef !== undefined && usesDefaultSentinel(sentinelRef))) {
+							await request.persist.session.persistence.save("plan", profile!);
+						}
+					},
+					() => host.preserveDefaults(ctx, request.defaults),
+				);
 				return { ok: true, profile };
 			} catch (error) {
-				if (!targetApplied || !request.rollback) {
-					return { ok: false, error, profile: targetApplied ? profile : undefined };
+				if (!applied || !request.rollback) {
+					return { ok: false, error, profile: applied ? profile : undefined };
 				}
-				const restored = await restoreFallback(ctx, session, request.rollback);
-				return {
-					ok: false,
-					error,
-					profile: restored.profile,
-					rollbackError: restored.rollbackError,
-				};
+				let rollbackProfile: ModeModelProfile | undefined;
+				let rollbackError: unknown;
+				try {
+					await guard.run(
+						async () => {
+							try {
+								rollbackProfile = await applyProfile(ctx, request.rollback!.target, request.rollback!.label);
+							} catch (error) {
+								// Capture as data, then rethrow so the runner skips
+								// the restore step (today's semantics).
+								rollbackError = error;
+								throw error;
+							}
+						},
+						async () => {
+							try {
+								await host.preserveDefaults(ctx, request.rollback!.defaults);
+							} catch (error) {
+								rollbackError = error; // error-as-data: keep reporting the primary error
+							}
+						},
+					);
+				} catch {
+					// Step-1 failure already captured as rollbackError; step 2 was
+					// skipped by the runner.
+				}
+				return { ok: false, error, profile: rollbackProfile, rollbackError };
 			}
 		} finally {
 			transitionDepth--;

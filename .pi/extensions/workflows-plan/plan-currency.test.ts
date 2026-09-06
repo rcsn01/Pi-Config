@@ -94,4 +94,182 @@ describe("Plan session currency", () => {
 		currency.end(currency.resolve(ctxFor("session-a"))!);
 		expect(snapshot.isCurrent()).toBe(false);
 	});
+
+	it("guard.run executes steps in order and resolves true when current throughout", async () => {
+		const { currency } = createCurrency();
+		const session = currency.begin(binding, ctxFor("session-a"));
+		const guard = currency.guard(session);
+		const order: string[] = [];
+
+		const held = await guard.run(
+			() => {
+				order.push("one");
+			},
+			async () => {
+				await Promise.resolve();
+				order.push("two");
+			},
+			() => {
+				order.push("three");
+			},
+		);
+
+		expect(held).toBe(true);
+		expect(order).toEqual(["one", "two", "three"]);
+	});
+
+	it("guard.run abandons at entry when the predicate is false before the first step", async () => {
+		const { currency } = createCurrency();
+		const session = currency.begin(binding, ctxFor("session-a"));
+		const guard = currency.guard(session);
+		const step = vi.fn();
+		currency.advance(session);
+
+		const held = await guard.run(step, step);
+
+		expect(held).toBe(false);
+		expect(step).not.toHaveBeenCalled();
+	});
+
+	it("guard.run abandons the remaining steps when the predicate flips mid-run", async () => {
+		const { currency } = createCurrency();
+		const session = currency.begin(binding, ctxFor("session-a"));
+		const guard = currency.guard(session);
+		const later = vi.fn();
+
+		const held = await guard.run(
+			() => {},
+			() => {
+				currency.advance(session);
+			},
+			later,
+		);
+
+		expect(held).toBe(false);
+		expect(later).not.toHaveBeenCalled();
+	});
+
+	it("guard.run applies the trailing boundary: all steps ran but a late flip resolves false", async () => {
+		const { currency } = createCurrency();
+		const session = currency.begin(binding, ctxFor("session-a"));
+		const guard = currency.guard(session);
+		const final = vi.fn(() => {
+			currency.advance(session);
+		});
+
+		const held = await guard.run(() => {}, final);
+
+		expect(held).toBe(false);
+		expect(final).toHaveBeenCalledTimes(1);
+	});
+
+	it("guard whileValid abandons live: a flip abandons and a flip back does not resurrect a finished run", async () => {
+		const { currency } = createCurrency();
+		const session = currency.begin(binding, ctxFor("session-a"));
+		let planMode = false;
+		const guard = currency.guard(session, () => planMode);
+		const step = vi.fn();
+
+		// Currency current but compound predicate false: abandoned at entry.
+		await expect(guard.run(step)).resolves.toBe(false);
+		expect(step).not.toHaveBeenCalled();
+
+		// Compound predicate flips true mid-run: later boundaries re-evaluate.
+		planMode = true;
+		const abandoned: boolean[] = [];
+		abandoned.push(await guard.run(
+			() => {
+				planMode = false;
+			},
+			step,
+		));
+		expect(abandoned[0]).toBe(false);
+		expect(step).not.toHaveBeenCalled();
+
+		// Flip back to true: a fresh run proceeds — the predicate is never latched.
+		planMode = true;
+		await expect(guard.run(step, step)).resolves.toBe(true);
+		expect(step).toHaveBeenCalledTimes(2);
+	});
+
+	it("guard evaluates currency before whileValid", async () => {
+		const { currency } = createCurrency();
+		const session = currency.begin(binding, ctxFor("session-a"));
+		const whileValid = vi.fn(() => true);
+		const guard = currency.guard(session, whileValid);
+		currency.advance(session);
+
+		await expect(guard.run(() => {})).resolves.toBe(false);
+
+		expect(whileValid).not.toHaveBeenCalled();
+	});
+
+	it("guard propagates a throwing step and later steps never run", async () => {
+		const { currency } = createCurrency();
+		const session = currency.begin(binding, ctxFor("session-a"));
+		const guard = currency.guard(session);
+		const failure = new Error("step failed");
+		const later = vi.fn();
+
+		await expect(guard.run(
+			() => {
+				throw failure;
+			},
+			later,
+		)).rejects.toBe(failure);
+		expect(later).not.toHaveBeenCalled();
+		// The guard stays live after a caller-owned error boundary.
+		expect(guard.isCurrent()).toBe(true);
+	});
+
+	it("guard treats sync void steps as boundaries", async () => {
+		const { currency } = createCurrency();
+		const session = currency.begin(binding, ctxFor("session-a"));
+		const guard = currency.guard(session);
+		const later = vi.fn();
+
+		const held = await guard.run(
+			() => {
+				currency.advance(session);
+			},
+			later,
+		);
+
+		expect(held).toBe(false);
+		expect(later).not.toHaveBeenCalled();
+	});
+
+	it("guard.isCurrent reflects the live predicate", () => {
+		const { currency } = createCurrency();
+		const session = currency.begin(binding, ctxFor("session-a"));
+		const guard = currency.guard(session);
+
+		expect(guard.isCurrent()).toBe(true);
+		currency.advance(session);
+		expect(guard.isCurrent()).toBe(false);
+	});
+
+	it("a guard bound to a stale session abandons at entry", async () => {
+		const { currency } = createCurrency();
+		const session = currency.begin(binding, ctxFor("session-a"));
+		currency.advance(session);
+		const guard = currency.guard(session);
+		const step = vi.fn();
+
+		await expect(guard.run(step)).resolves.toBe(false);
+		expect(step).not.toHaveBeenCalled();
+	});
+
+	it("a run never mutates currency state", async () => {
+		const { currency } = createCurrency();
+		const session = currency.begin(binding, ctxFor("session-a"));
+		const guard = currency.guard(session);
+
+		await expect(guard.run(() => {}, async () => {})).resolves.toBe(true);
+		expect(currency.isCurrent(session)).toBe(true);
+
+		currency.advance(session);
+		await expect(guard.run(() => {})).resolves.toBe(false);
+		expect(currency.isCurrent(session)).toBe(false);
+	});
 });

@@ -691,6 +691,43 @@ describe("stale work across branch changes", () => {
 		expect(harness.notify).toHaveBeenCalledWith(expect.stringContaining("Plan mode active"), "info");
 	});
 
+	it("skips every effect when a modeToggled entry goes stale before its first boundary", async () => {
+		const stores = createProfileDependencies();
+		const harness = createHarness({
+			branch: [],
+			model: normalModel,
+			availableModels: [normalModel],
+			dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		harness.appendedEntries.splice(0);
+
+		// The toggle is dispatched before the branch change, so its queued run
+		// pins the old Session identity; the branch change advances the currency
+		// before that run ever executes.
+		const entry = harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		harness.setBranch([]);
+		const reconstruction = harness.emit("session_tree", { type: "session_tree" });
+		await Promise.all([entry, reconstruction]);
+
+		// Stale at entry: no defaults capture, no persistence, no commit, no notify.
+		expect(stores.capture).not.toHaveBeenCalled();
+		expect(stores.load).not.toHaveBeenCalled();
+		expect(stores.save).not.toHaveBeenCalled();
+		expect(harness.appendedEntries).toHaveLength(0);
+		expect(harness.notify).not.toHaveBeenCalledWith(expect.stringContaining("Plan mode active"), "info");
+		expect(harness.notify).not.toHaveBeenCalledWith("Plan Mode is already entering.", "info");
+		expect(harness.getActiveToolNames()).toContain("bash");
+		expect(harness.getActiveToolNames()).not.toContain("plan_bash");
+		expect(harness.setStatus).toHaveBeenCalledWith("plan", undefined);
+
+		// The transition marker was cleared, so a later toggle enters cleanly.
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		expect(harness.getActiveToolNames()).toContain("plan_bash");
+		expect(harness.notify).toHaveBeenCalledWith(expect.stringContaining("Plan mode active"), "info");
+		expect(stores.capture).toHaveBeenCalledTimes(1);
+	});
+
 	it("drops an exit invalidated by a branch change without committing, notifying, or blocking later toggles", async () => {
 		const pendingRestore = deferred<void>();
 		const stores = createProfileDependencies(profileFor(normalModel, "medium"));
