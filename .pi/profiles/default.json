@@ -2,10 +2,10 @@
   "uiModelSelector": {
     "profiles": {
       "normal": {
-        "provider": "default",
-        "modelId": "default",
-        "thinkingLevel": "default",
-        "contextWindow": "default"
+        "provider": "ollama-cloud",
+        "modelId": "glm-5.3",
+        "thinkingLevel": "max",
+        "contextWindow": 262144
       },
       "plan": {
         "provider": "default",
@@ -17,9 +17,9 @@
   },
   "subagents": {
     "maxConcurrency": 4,
-    "defaultModel": "default",
+    "defaultModel": "ollama-cloud/glm-5.3-flash",
     "agentModels": {},
-    "defaultThinkingLevel": "default",
+    "defaultThinkingLevel": "max",
     "agentThinkingLevels": {},
     "defaultContextWindow": "default",
     "agentContextWindows": {
@@ -32,5 +32,11 @@
   },
   "configProfiles": {
     "active": "default"
+  },
+  "guardian": {
+    "provider": "ollama-cloud",
+    "modelId": "glm-5.3-flash",
+    "thinkingLevel": "max",
+    "contextWindow": 262144
   }
 }
