@@ -32,8 +32,6 @@ import {
 } from "../_shared/session-profile-transfer.ts";
 import { UI_GLYPHS } from "../_shared/ui-style.ts";
 import {
-	applyModelSelection,
-	usesDefaultSentinel,
 	validateConcreteModelSelection,
 } from "../_shared/model-selection.ts";
 import {
@@ -54,6 +52,7 @@ import {
 } from "./model-profile.ts";
 import { createPlanCurrency, type PlanSession } from "./plan-currency.ts";
 import { createPlanPendingMode } from "./plan-pending-mode.ts";
+import { createPlanProfileTransition } from "./plan-profile-transition.ts";
 import { buildPlanModeSystemPrompt } from "./plan-prompt.ts";
 import { updatePlanStatus } from "./plan-renderer.ts";
 import {
@@ -283,7 +282,6 @@ export function createPlanLifecycle(
 	let planState: PlanState = createInitialPlanState();
 	let activePlanProfile: ModeModelProfile | undefined;
 	let normalGlobalDefaults: ModeModelProfile | undefined;
-	let profileTransitionDepth = 0;
 	let profileEventQueue = Promise.resolve();
 	let lifecycleQueue = Promise.resolve();
 	let latestProposedPlan: string | undefined;
@@ -331,6 +329,11 @@ export function createPlanLifecycle(
 
 	const currency = createPlanCurrency({ createPersistence: persistenceFactory });
 
+	const profileTransition = createPlanProfileTransition(pi, {
+		isCurrent: (session) => currency.isCurrent(session),
+		preserveDefaults,
+	}, { nativeDefaults: dependencies.nativeDefaults });
+
 	const planRuntime = createPlanRuntimeCoordinator({
 		createWorkspace: (hostRoot, options) => workspaceFactory(hostRoot, options),
 		createSandbox: (workspace) => sandboxFactory(workspace),
@@ -362,15 +365,6 @@ export function createPlanLifecycle(
 		const result = lifecycleQueue.then(task, task);
 		lifecycleQueue = result.then(() => undefined, () => undefined);
 		return result;
-	}
-
-	async function withProfileTransition<T>(operation: () => Promise<T>): Promise<T> {
-		profileTransitionDepth++;
-		try {
-			return await operation();
-		} finally {
-			profileTransitionDepth--;
-		}
 	}
 
 	function warmPlanRuntime(ctx: ExtensionContext): void {
@@ -511,9 +505,22 @@ export function createPlanLifecycle(
 			return false;
 		}
 
-		let switchedSessionProfile = false;
 		let capturedDefaults: ModeModelProfile | undefined;
 		const normalTools = pi.getActiveTools().filter((name) => name !== "plan_bash");
+		const abortEnter = (error: unknown, rollbackError?: unknown): false => {
+			pi.setActiveTools(normalTools);
+			activePlanProfile = undefined;
+			normalGlobalDefaults = undefined;
+			planState = { ...planState, normalProfile: undefined, normalTools: undefined };
+			const rollbackNote = rollbackError
+				? ` Rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+				: "";
+			ctx.ui.notify(
+				`Could not enter Plan Mode: ${error instanceof Error ? error.message : String(error)}${rollbackNote}`,
+				"error",
+			);
+			return false;
+		};
 		try {
 			capturedDefaults = await normalDefaultsStore.capture(ctx.cwd, normalProfile);
 			if (!currency.isCurrent(session)) return false;
@@ -531,56 +538,25 @@ export function createPlanLifecycle(
 				return true;
 			}
 
-			const appliedProfile = await withProfileTransition(async () => {
-				const profile = await applyModelSelection(pi, ctx, storedProfile, {
-					label: "Plan Mode profile",
-					nativeDefaults: dependencies.nativeDefaults,
-				});
-				switchedSessionProfile = true;
-				if (!currency.isCurrent(session)) return profile;
-				if (!usesDefaultSentinel(storedProfile)) await session.persistence.save("plan", profile);
-				if (!currency.isCurrent(session)) return profile;
-				await preserveDefaults(ctx, capturedDefaults);
-				return profile;
+			const outcome = await profileTransition.apply(ctx, session, {
+				target: storedProfile,
+				label: "Plan Mode profile",
+				persist: { session, unlessSentinel: storedProfile },
+				defaults: capturedDefaults,
+				rollback: { target: normalProfile, label: "Normal profile", defaults: capturedDefaults },
 			});
 			if (!currency.isCurrent(session)) return false;
+			if (!outcome.ok) return abortEnter(outcome.error, outcome.rollbackError);
 			normalGlobalDefaults = capturedDefaults;
 			planState = { ...planState, normalProfile, normalTools };
-			activePlanProfile = appliedProfile;
+			activePlanProfile = outcome.profile!;
 			clearPlanForEntry();
 			commitPlanState(ctx, "plan", prompt, normalTools);
 			warmPlanRuntime(ctx);
 			return true;
 		} catch (error) {
 			if (!currency.isCurrent(session)) return false;
-			let rollbackError: unknown;
-			if (switchedSessionProfile) {
-				try {
-					await withProfileTransition(async () => {
-						await applyModelSelection(pi, ctx, normalProfile, {
-							label: "Normal profile",
-							nativeDefaults: dependencies.nativeDefaults,
-						});
-						if (!currency.isCurrent(session)) return;
-						await preserveDefaults(ctx, capturedDefaults);
-					});
-				} catch (failure) {
-					rollbackError = failure;
-				}
-			}
-			if (!currency.isCurrent(session)) return false;
-			pi.setActiveTools(normalTools);
-			activePlanProfile = undefined;
-			normalGlobalDefaults = undefined;
-			planState = { ...planState, normalProfile: undefined, normalTools: undefined };
-			const rollbackNote = rollbackError
-				? ` Rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
-				: "";
-			ctx.ui.notify(
-				`Could not enter Plan Mode: ${error instanceof Error ? error.message : String(error)}${rollbackNote}`,
-				"error",
-			);
-			return false;
+			return abortEnter(error);
 		}
 	}
 
@@ -602,46 +578,26 @@ export function createPlanLifecycle(
 
 		const normalProfile = planState.normalProfile;
 		if (normalProfile) {
-			const restored = await withProfileTransition(async () => {
-				let restoredSessionProfile = false;
-				try {
-					await applyModelSelection(pi, ctx, normalProfile, {
-						label: "Normal profile",
-						nativeDefaults: dependencies.nativeDefaults,
-					});
-					if (!currency.isCurrent(session)) return false;
-					restoredSessionProfile = true;
-					await preserveDefaults(ctx);
-					if (!currency.isCurrent(session)) return false;
-				} catch (error) {
-					if (!currency.isCurrent(session)) return false;
-					let rollbackError: unknown;
-					if (restoredSessionProfile && activePlanProfile) {
-						try {
-							await applyModelSelection(pi, ctx, activePlanProfile, {
-								label: "Plan Mode profile",
-								nativeDefaults: dependencies.nativeDefaults,
-							});
-							if (!currency.isCurrent(session)) return false;
-							await preserveDefaults(ctx);
-						} catch (failure) {
-							rollbackError = failure;
-						}
-					}
-					if (!currency.isCurrent(session)) return false;
-					const rollbackNote = rollbackError
-						? ` Rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
-						: "";
-					ctx.ui.notify(
-						`Could not exit Plan Mode: ${error instanceof Error ? error.message : String(error)}${rollbackNote}`,
-						"error",
-					);
-					warmPlanRuntime(ctx);
-					return false;
-				}
-				return true;
+			const outcome = await profileTransition.apply(ctx, session, {
+				target: normalProfile,
+				label: "Normal profile",
+				defaults: undefined,
+				rollback: activePlanProfile
+					? { target: activePlanProfile, label: "Plan Mode profile" }
+					: undefined,
 			});
-			if (!restored) return false;
+			if (!currency.isCurrent(session)) return false;
+			if (!outcome.ok) {
+				const rollbackNote = outcome.rollbackError
+					? ` Rollback also failed: ${outcome.rollbackError instanceof Error ? outcome.rollbackError.message : String(outcome.rollbackError)}`
+					: "";
+				ctx.ui.notify(
+					`Could not exit Plan Mode: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}${rollbackNote}`,
+					"error",
+				);
+				warmPlanRuntime(ctx);
+				return false;
+			}
 		}
 		if (!currency.isCurrent(session)) return false;
 		commitPlanState(ctx, "default", undefined, normalTools);
@@ -654,17 +610,22 @@ export function createPlanLifecycle(
 		modeRevisionCounter = advanced.revisionCounter;
 	}
 
-	async function enterPlanMode(ctx: ExtensionContext, prompt?: string): Promise<boolean> {
+	async function runModeTransition(
+		ctx: ExtensionContext,
+		direction: "entering" | "exiting",
+		isAlreadyInTargetMode: () => boolean,
+		runInternal: (session: PlanSession) => Promise<boolean>,
+	): Promise<boolean> {
 		const session = currency.require(ctx);
-		if (isPlanMode(planState)) return true;
+		if (isAlreadyInTargetMode()) return true;
 		if (modeTransition) {
 			ctx.ui.notify(`Plan Mode is already ${modeTransition}.`, "info");
 			return false;
 		}
 		beginModeTransition();
-		modeTransition = "entering";
-		ctx.ui.setStatus("plan", "plan starting");
-		const transition = enqueueLifecycle(() => enterPlanModeInternal(ctx, session, prompt));
+		modeTransition = direction;
+		ctx.ui.setStatus("plan", direction === "entering" ? "plan starting" : "plan exiting");
+		const transition = enqueueLifecycle(() => runInternal(session));
 		modeTransitionPromise = transition;
 		try {
 			return await transition;
@@ -681,28 +642,14 @@ export function createPlanLifecycle(
 		}
 	}
 
+	async function enterPlanMode(ctx: ExtensionContext, prompt?: string): Promise<boolean> {
+		return runModeTransition(ctx, "entering", () => isPlanMode(planState), (session) =>
+			enterPlanModeInternal(ctx, session, prompt));
+	}
+
 	async function exitPlanMode(ctx: ExtensionContext): Promise<boolean> {
-		const session = currency.require(ctx);
-		if (!isPlanMode(planState)) return true;
-		if (modeTransition) {
-			ctx.ui.notify(`Plan Mode is already ${modeTransition}.`, "info");
-			return false;
-		}
-		beginModeTransition();
-		modeTransition = "exiting";
-		ctx.ui.setStatus("plan", "plan exiting");
-		const transition = enqueueLifecycle(() => exitPlanModeInternal(ctx, session));
-		modeTransitionPromise = transition;
-		try {
-			return await transition;
-		} finally {
-			// See enterPlanMode: free the transition marker even when stale.
-			if (modeTransitionPromise === transition) {
-				modeTransition = undefined;
-				modeTransitionPromise = undefined;
-				if (currency.isCurrent(session)) updatePlanStatus(ctx, planState);
-			}
-		}
+		return runModeTransition(ctx, "exiting", () => !isPlanMode(planState), (session) =>
+			exitPlanModeInternal(ctx, session));
 	}
 
 	function enqueueProfileEvent(task: () => Promise<void>): Promise<void> {
@@ -714,7 +661,7 @@ export function createPlanLifecycle(
 	function observePlanSelection(
 		event: PlanLifecycleModelChanged | PlanLifecycleThinkingLevelChanged,
 	): Promise<void> {
-		if (!isPlanMode(planState) || profileTransitionDepth > 0) return Promise.resolve();
+		if (!isPlanMode(planState) || profileTransition.inTransition()) return Promise.resolve();
 		if (event.type === "modelChanged" && event.source === "restore") return Promise.resolve();
 
 		let profile: ModeModelProfile;
