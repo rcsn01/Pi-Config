@@ -1,603 +1,1170 @@
-# Plan · Guarded-effect seam for the Plan session currency
+# Plan: deepen Subagent assignment resolution with target-aware current meaning
 
-**Candidate:** #1 from the 2026-09-06 architecture review (`/tmp/architecture-review-20260906-221408.html`)
-**Scope:** `.pi/extensions/workflows-plan/` — `plan-currency.ts`, `plan-lifecycle.ts`, `plan-profile-transition.ts`
-**Status:** decided (design-it-twice run 2026-09-06; three interface designs compared, Design 3 core selected with refinements)
-**Baseline commit:** `e8f60f8` — all line references below refer to this state
+**Candidate:** 1 from the architecture review, "Current meaning" accessor for
+Subagent assignment resolution
+
+**Status:** design finalised. All grilling decisions use the recommended answer.
+This document is an implementation plan, not the implementation.
+
+**Baseline:** `c3fdd4e` (`Add Plan guarded effect seam to the Plan session
+currency`)
+
+**Scope:**
+
+- `.pi/extensions/tools-subagents/config.ts`
+- `.pi/extensions/tools-subagents/model-commands.ts`
+- `.pi/extensions/tools-subagents/test-harness.ts`
+- `.pi/extensions/tools-subagents/config.test.ts`
+- `.pi/extensions/tools-subagents/model-commands.test.ts`
+
+The working tree already contains an unrelated modification to
+`.pi/profiles/default.json`. Keep it untouched. The deleted `plan.md` is being
+replaced by this plan at the user's request.
 
 ---
 
-## 1 · Goal
+## 1. Goal
 
-The Plan Mode lifecycle hand-writes ~23 currency staleness guards of the shape
-`if (!currency.isCurrent(session)) return …` at async boundaries across six
-flows, plus four compound guards `!isCurrent(session) || !isPlanMode(planState)`
-repeated inside one function, and the Plan profile transition module re-checks
-`host.isCurrent` five times. The staleness invariant lives in the heads of
-maintainers, not in code: every new async step must remember to re-check, and
-the failure mode of a forgotten check is *an effect executing on a stale
-Session*.
+Make the Subagent assignment resolution module authoritative for both effective
+assignment values and the target-specific choices shown by `/subagents`.
 
-Deepen the Plan session currency module with a **Plan guarded effect** runner
-(see CONTEXT.md): callers declare steps, the runner re-evaluates staleness live
-before every step and after the last, abandons remaining steps silently on
-staleness, and reports staleness as data. The Plan profile transition module
-consumes the same seam through its host. After the change:
+`config.ts` already owns the hard part of effective resolution:
 
-- 23 mid-flow guard sites across the two modules collapse into step
-  declarations; the compound predicate is declared once per run instead of 4×.
-- The forgotten-guard bug class is deleted by construction: an undeclared
-  boundary degrades to "step skipped by the runner", never "effect on a stale
-  Session".
-- `plan-lifecycle.ts` shrinks; staleness policy concentrates in the module
-  that already owns Session identity (locality), and both modules test
-  staleness at one seam instead of per flow (leverage).
+- model precedence;
+- thinking precedence;
+- context-window metadata precedence;
+- `main` resolution against the current Main model;
+- legacy `default` and `provider/model:thinking` handling;
+- Settings validation and assignment edits;
+- persistence and legacy migration.
 
-**Deletion test:** deleting the runner would reappear as ~23 scattered guards
-across every caller — it earns its keep.
+`model-commands.ts` already uses `resolveAssignment()` for status output in
+`statusLines()`, `modelStatusLines()`, and `selectSubagentTarget()`. The
+remaining shallow part is in the interactive picker. It reads the raw
+`agentModels`, `defaultModel`, and `agentThinkingLevels` maps and splits model
+suffixes to reconstruct:
 
-## 2 · Design decision
+- whether an individual target is set or inherits;
+- whether the global target is unset or follows `main`;
+- which direct model setting is current;
+- which direct thinking setting is current;
+- whether a legacy model suffix should be shown as the current thinking choice;
+- how the current state compares with a pending model choice.
 
-Three interface designs were produced in parallel (minimize-interface,
-maximize-flexibility, optimize-for-common-caller). Selected: the
-**variadic boolean runner** (smallest interface, live re-evaluation), with two
-refinements from the other designs.
+That is assignment meaning, not TUI formatting. It belongs behind the existing
+assignment seam.
 
-Why this shape:
+### Deletion test
 
-- **Live re-evaluation, no latching.** Today's checks are live; the compound
-  predicate `isPlanMode(planState)` can flip back to true mid-run, and today's
-  code would continue. A latching runner (rejected Design 1) would permanently
-  abandon on a transient flip — a semantics change.
-- **Boolean staleness.** The dominant flow shape is 3–5 linear steps with
-  silent abandonment and a boolean/void result. Value retention is handled by
-  closure locals (no discriminated union, no generics).
-- **Live `isCurrent()` on the guard.** Caller-owned error boundaries (catch
-  blocks) and positive-gated writes ("notify only if still current") reuse the
-  same declared predicate instead of re-deriving `currency.isCurrent(session)`
-  by hand at the easiest places to forget.
-- **Second consumer justifies the seam.** The lifecycle flows and the Plan
-  profile transition module both consume `currency.guard` — a real seam, not a
-  hypothetical one (one-adapter rule satisfied).
+Deleting the new accessor would put `Object.hasOwn(...)` checks, raw map reads,
+model suffix parsing, and target-specific fallback decisions back into the
+picker. Complexity would reappear at every command path. The accessor earns its
+place because it concentrates that complexity in the existing deep module.
 
-### 2.1 · Interface (additive to `plan-currency.ts`)
+### Result
+
+After this change:
+
+- the command adapter asks one interface for a target's current choices and
+effective assignment;
+- current and pending picker states use the same implementation;
+- the adapter keeps only target conversion, catalogue lookup, rendering, and
+notifications;
+- launch preparation keeps its existing narrow `resolveLaunch()` interface;
+- Settings shape, migration, command text, and child launch values do not
+change.
+
+This is an in-process deepening. No external adapter or new file is needed.
+The production Settings-backed store and the existing in-memory test store are
+the two adapters that make the store seam real.
+
+---
+
+## 2. Grilling decision tree, resolved with recommended answers
+
+These are the design questions that would have been asked during the grilling
+loop. The recommended branch is final for each one.
+
+### Q1. What is in scope?
+
+**Recommended answer:** Only the missing semantic read projection for stored
+Subagent assignments. Do not change command parsing, model catalogue lookup,
+Settings persistence, child process launching, context-window policy, or Plan
+Mode.
+
+The existing `resolveSubagentAssignment()` and `resolveLaunch()` behavior is
+already the correct effective-assignment seam. This change fills the picker
+state gap around it.
+
+### Q2. Where does the seam live?
+
+**Recommended answer:** Keep the seam in
+`.pi/extensions/tools-subagents/config.ts`, beside the existing assignment
+parser, edit reducer, and resolver. Add one method to
+`SubagentConfigStore`.
+
+Do not create `assignment-selection.ts`. Splitting tightly coupled parsing,
+selection, and effective resolution across files would reduce locality. The
+new implementation belongs inside the module that already owns assignment
+meaning.
+
+### Q3. What interface shape gives the most depth?
+
+**Recommended answer:** Add one target-aware
+`resolveAssignmentSelection(options)` method. It returns the direct target
+choices, the legacy model suffix when present, and the effective
+`ResolvedSubagentAssignment` in one result.
+
+Do not add four accessors such as `currentModel()`, `currentThinking()`,
+`currentContext()`, and `currentSource()`. That would preserve a wide interface
+and make callers assemble the meaning again.
+
+### Q4. How are `all` and an individual agent represented?
+
+**Recommended answer:** Use discriminated options. The `all` target has no
+`AgentConfig`; an individual target requires the matching `AgentConfig` because
+frontmatter participates in its effective fallback.
+
+Do not fabricate an agent with empty frontmatter for the `all` target. The
+`all` target resolves only the global setting and `main` fallback.
+
+### Q5. How do hypothetical picker choices work?
+
+**Recommended answer:** Accept the same immutable `snapshot` and one semantic
+`SubagentAssignmentEdit` pattern already used by `resolveAssignment()`. Apply
+the edit in memory, then resolve the result. Make separate calls for current
+and pending state.
+
+Do not cache a selection result across screens. Do not mutate the snapshot. Do
+not put both current and pending state into one long-lived object.
+
+### Q6. How should legacy `:thinking` suffixes work?
+
+**Recommended answer:** The accessor returns the suffix on the target's direct
+model setting as `modelSuffixThinkingLevel`. The effective assignment continues
+to apply the existing precedence rules.
+
+A fallback suffix from global configuration or agent frontmatter is effective
+for an individual agent, but it is not that agent's direct model choice. The
+accessor must preserve this distinction so the picker still shows `inherit` in
+that case.
+
+### Q7. What stays in the command adapter?
+
+**Recommended answer:** Formatting, notifications, target conversion, model
+catalogue lookup, and the comparison between the current and pending model
+choice. The adapter may map semantic choices to the strings required by
+`pickSelectScreen()`.
+
+The adapter must not read assignment maps to decide precedence or split a raw
+configured model to discover effective thinking. That work crosses the
+assignment interface.
+
+### Q8. What compatibility guarantee is required?
+
+**Recommended answer:** Preserve all observable behavior. Keep
+`resolveAssignment()` and `resolveLaunch()` as existing interfaces. Do not
+change the Settings schema, legacy migration, command usage text, notification
+text, menu labels, sort order, cancellation behavior, or child launch fields.
+
+### Q9. What is the test strategy?
+
+**Recommended answer:** Test the pure selection resolver through its interface,
+then test the command adapter through rendered output and persisted outcomes.
+Keep existing effective-resolution and persistence tests. Do not expose private
+picker helpers for tests.
+
+The interface is the test surface. The command tests should not reconstruct the
+same precedence rules in their setup or assertions.
+
+### Q10. What documentation changes are needed?
+
+**Recommended answer:** No README behavior change. The existing `CONTEXT.md`
+term, **Subagent assignment resolution module**, already names the owner of
+assignment parsing, precedence, persistence, preview, and launch resolution.
+If implementation wording needs sharpening, amend that existing entry rather
+than adding a second domain term or module.
+
+---
+
+## 3. Current architecture and target architecture
+
+### Before
+
+```text
+                         effective assignment
+launch-preparation ------------------------------> resolveLaunch()
+                                                        |
+                                                        v
+                                             config.ts resolver
+
+/subagents status -------------------------------> resolveAssignment()
+/subagents target ------------------------------> resolveAssignment()
+
+interactive model picker ---> raw agentModels/defaultModel + split suffixes
+interactive thinking picker -> raw thinking maps + split suffixes
+                              + hand-written target precedence
+```
+
+The lower two paths cross the module seam only for some previews. They still
+know how to interpret direct versus inherited choices. That is the locality
+problem.
+
+### After
+
+```text
+launch-preparation ------------------------------> resolveLaunch()
+                                                        |
+                                                        v
+                                             parsed assignment core
+                                                        ^
+                                                        |
+/subagents status -------------------------------> resolveAssignmentSelection()
+/subagents target -------------------------------> resolveAssignmentSelection()
+model picker current/pending -------------------> resolveAssignmentSelection()
+thinking picker current/pending ----------------> resolveAssignmentSelection()
+```
+
+`resolveAssignmentSelection()` returns semantic choices plus an effective
+assignment. The command adapter formats those values. `resolveLaunch()` still
+returns only launch data, so display metadata cannot leak into child execution.
+
+---
+
+## 4. Chosen interface
+
+Add the following types near the existing assignment types in
+`.pi/extensions/tools-subagents/config.ts`.
+
+### 4.1 Direct model choice
 
 ```ts
-/** One declared step of a Plan guarded effect. Errors are caller-owned: the
- *  runner never catches. Sync steps are allowed; every step is a boundary. */
-export type PlanGuardStep = () => void | Promise<void>;
+export type SubagentAssignmentModelSelection =
+	| { readonly kind: "default" }
+	| { readonly kind: "inherit" }
+	| { readonly kind: "set"; readonly setting: string };
+```
 
-/** One currency-guarded effect run, bound to a PlanSession. */
-export interface PlanGuard {
-	/** The run's identity anchor. */
-	readonly session: PlanSession;
-	/**
-	 * The full liveness predicate — currency identity (session + generation)
-	 * plus the run's compound predicate, evaluated live. For caller-owned
-	 * error boundaries and positive-gated reporting.
-	 */
-	isCurrent(): boolean;
-	/**
-	 * Run the declared steps in order. Staleness is checked before every step
-	 * (entry included) and once after the final step. On staleness the
-	 * remaining steps are abandoned silently — no notify, no throw — and the
-	 * run resolves `false`. A throwing step propagates unchanged. Resolves
-	 * `true` iff every step ran and the final boundary held.
-	 */
-	run(...steps: PlanGuardStep[]): Promise<boolean>;
-}
+Meaning:
 
-export interface PlanCurrency {
-	// …existing members unchanged (begin, advance, end, resolve, require,
-	// isCurrent, snapshot)…
+| Choice | Valid target | Meaning |
+| --- | --- | --- |
+| `{ kind: "default" }` | `all` | No `defaultModel` is stored. The effective global model falls back to `main`. |
+| `{ kind: "inherit" }` | individual agent | No `agentModels[agentName]` is stored. The agent follows global, frontmatter, or `main` precedence. |
+| `{ kind: "set", setting }` | both | The target has a direct model setting. `setting` remains normalized and may retain a legacy `:thinking` suffix. |
 
-	/**
-	 * Plan guarded effect seam: declare the run's compound liveness predicate
-	 * once (e.g. the lifecycle's isPlanMode); the runner owns every
-	 * awaited-boundary staleness check. `whileValid` is evaluated live after
-	 * the currency check at each boundary.
-	 */
-	guard(session: PlanSession, whileValid?: () => boolean): PlanGuard;
+`default` is a read result, not a new persisted model value. A global edit
+still uses the existing `SubagentModelEdit` type and stores `main` when that is
+the selected value.
+
+### 4.2 Target-aware options
+
+Use a discriminated target shape so callers cannot accidentally omit an agent
+for an individual selection.
+
+```ts
+type AssignmentSelectionTarget =
+	| {
+			readonly target: { readonly kind: "all" };
+			readonly agent?: never;
+	  }
+	| {
+			readonly target: { readonly kind: "agent"; readonly name: string };
+			readonly agent: AgentConfig;
+	  };
+
+export type ResolveStoredAssignmentSelectionOptions = AssignmentSelectionTarget & {
+	snapshot?: ExtensionConfig;
+	edit?: SubagentAssignmentEdit;
+};
+
+export type ResolveAssignmentSelectionOptions = AssignmentSelectionTarget & {
+	config?: unknown;
+	mainModel: string | { provider: unknown; id: unknown } | undefined;
+};
+```
+
+The implementation validates at the type level, matching the existing
+`resolveAssignment()` seam rather than adding new runtime checks:
+
+- an empty or invalid target uses the existing assignment-target error
+  behavior where applicable, inherited from `applySubagentAssignmentEdit()`;
+- an `all` target must not use agent frontmatter.
+
+Do not add a runtime check that `agent.name` equals `target.name`, or that a
+supplied `edit.target` matches `target`. `resolveAssignment()` has never
+enforced this between its own `agent` and `edit` arguments, and every real
+caller builds both from the same target string in one place in
+`model-commands.ts`. A mismatch could only happen through a bypassed type
+system, which this module does not otherwise guard against.
+
+### 4.3 Result
+
+```ts
+export interface ResolvedSubagentAssignmentSelection {
+	/** Direct target choice used by the model picker. */
+	readonly model: SubagentAssignmentModelSelection;
+	/** Legacy :thinking suffix on the direct target model choice, if present. */
+	readonly modelSuffixThinkingLevel?: SubagentThinkingLevel;
+	/** Direct target thinking choice, excluding any model suffix. */
+	readonly thinking: SubagentThinkingEdit;
+	/** Effective assignment after fallback and current Main-model resolution. */
+	readonly assignment: ResolvedSubagentAssignment;
 }
 ```
 
-### 2.2 · Implementation (inside `createPlanCurrency`)
+The `thinking` field reuses `SubagentThinkingEdit` because its three meanings
+already match the stored target choices:
+
+- `set` means `defaultThinkingLevel` for `all` or
+  `agentThinkingLevels[name]` for an individual;
+- `default` means the global target has no explicit thinking level;
+- `inherit` means the individual target has no explicit thinking level.
+
+The result intentionally separates `modelSuffixThinkingLevel` from
+`thinking`. A suffix is part of a legacy model setting. It is not the same
+thing as a separate `agentThinkingLevels` or `defaultThinkingLevel` value.
+
+### 4.4 Store interface
+
+Add one method to `SubagentConfigStore`:
 
 ```ts
-function guard(session: PlanSession, whileValid?: () => boolean): PlanGuard {
-	const live = () => isCurrent(session) && (whileValid === undefined || whileValid());
-	return {
-		session,
-		isCurrent: live,
-		async run(...steps: PlanGuardStep[]): Promise<boolean> {
-			for (const step of steps) {
-				if (!live()) return false;
-				await step();
-			}
-			return live();
+resolveAssignmentSelection(
+	options: ResolveStoredAssignmentSelectionOptions,
+): ResolvedSubagentAssignmentSelection;
+```
+
+The existing methods remain:
+
+```ts
+resolveAssignment(
+	agent: AgentConfig,
+	options?: ResolveStoredAssignmentOptions,
+): ResolvedSubagentAssignment;
+resolveLaunch(
+	agent: AgentConfig,
+	explicitModel?: string,
+	explicitThinkingLevel?: SubagentThinkingLevel,
+): ResolvedLaunchConfiguration;
+```
+
+`resolveLaunch()` stays narrow. It must continue returning `.launch`, not the
+new selection result.
+
+### 4.5 Pure implementation path
+
+Refactor the body of `resolveSubagentAssignment()` into a private parsed
+implementation so the new selection resolver parses the configuration once.
+The shape is:
+
+```ts
+function resolveParsedSubagentAssignment(
+	options: ResolveLaunchOptions,
+	config: ModelConfiguration,
+): ResolvedSubagentAssignment {
+	// Existing model, thinking, context, and main-model logic.
+}
+
+export function resolveSubagentAssignment(
+	options: ResolveLaunchOptions,
+): ResolvedSubagentAssignment {
+	const config = parseModelConfiguration(options.config ?? {});
+	return resolveParsedSubagentAssignment(options, config);
+}
+
+export function resolveSubagentAssignmentSelection(
+	options: ResolveAssignmentSelectionOptions,
+): ResolvedSubagentAssignmentSelection {
+	const config = parseModelConfiguration(options.config ?? {});
+
+	const assignment = resolveParsedSubagentAssignment(
+		{
+			agentName: options.target.kind === "agent" ? options.agent.name : "",
+			config,
+			frontmatterModel: options.target.kind === "agent" ? options.agent.model : undefined,
+			mainModel: options.mainModel,
 		},
+		config,
+	);
+
+	// Derive direct target choices from the parsed config. Do not infer inherit
+	// from the effective assignment because equal effective values can come from
+	// different sources.
+	return {
+		model: /* target-specific direct/default/inherit choice */,
+		...(/* direct model suffix, if any */),
+		thinking: /* target-specific direct/default/inherit choice */,
+		assignment,
 	};
 }
 ```
 
-(~10 lines. The `whileValid` predicate is **never latched** — re-evaluated live
-at every boundary, matching today's re-check semantics.)
+The actual implementation must keep the existing resolver's branch order and
+error messages unchanged. The new function adds a semantic projection; it
+does not introduce another precedence implementation.
 
-### 2.3 · Adoption rules (the contract)
-
-| # | Rule |
-|---|------|
-| R1 | A boundary exists **before every step (entry included)** and **after the final step** (trailing). Sync steps are still boundaries. |
-| R2 | Staleness never throws. `run` resolves `false`; remaining steps are skipped silently; effects already committed stay committed. |
-| R3 | Step errors propagate untouched. Catch blocks are caller-owned and read `guard.isCurrent()` (or raw `currency.isCurrent(session)`) to distinguish staleness from real failures. |
-| R4 | **One awaited effect per step.** A synchronous commit that must not land after another step's await belongs to the next step (or sits behind `guard.isCurrent()`). |
-| R5 | **Head-outside rule:** effects that must run even when stale at entry (sandbox `dispose` cleanup) or are pinned to run stale-at-entry (the transition's apply) stay outside the run as an unguarded head. |
-| R6 | Dispatch-level admissions (`currency.resolve(ctx)`), entry preconditions (`currency.require(ctx)`), and positive-gated writes (`if (isCurrent) updatePlanStatus`) are **not** boundaries — they stay raw. |
-| R7 | `whileValid` (compound predicate) is declared once per run, evaluated after the currency check, live — never latched. |
-| R8 | Guards are function-local; never stored beyond the flow that created them (the `whileValid` closure reads live lifecycle state). |
-
-## 3 · Migration map (boundary-for-boundary)
-
-Line numbers are today's. "→" maps each existing guard to its new owner.
-
-### 3.1 · `refreshPlanRuntime` + `refreshRequested` (L375–381, L816–832)
+For the stored adapter method, mirror the existing `resolveAssignment()`
+pattern:
 
 ```ts
-async function refreshPlanRuntime(ctx: ExtensionContext, session: PlanSession): Promise<boolean> {
-	return enqueueLifecycle(async () => {
-		const guard = currency.guard(session);
-		return guard.run(() => {
-			runtimeContext = ctx;
-			return planRuntime.refresh(ctx.cwd);
-		});
+const resolveAssignmentSelection = (
+	options: ResolveStoredAssignmentSelectionOptions,
+): ResolvedSubagentAssignmentSelection => {
+	let config: unknown = options.snapshot ?? readSettingsNamespace();
+	if (options.edit) {
+		config = applySubagentAssignmentEdit(config, options.edit);
+	}
+	return resolveSubagentAssignmentSelection({
+		...options,
+		config,
+		mainModel: activeMainModel,
 	});
-}
-
-async function refreshRequested(ctx: ExtensionContext, session: PlanSession): Promise<void> {
-	if (!isPlanMode(planState)) { /* unchanged warning */ return; }
-	try {
-		if (await refreshPlanRuntime(ctx, session)) {
-			ctx.ui.notify("Plan Bash disposable workspace refreshed from the host.", "info");
-		}
-	} catch (error) {
-		if (!currency.isCurrent(session)) return;
-		ctx.ui.notify(`Could not refresh Plan Bash; isolated command execution is unavailable: ${fmt(error)}`, "error");
-	}
-}
-```
-
-| Today | New |
-|-------|-----|
-| L377 entry guard | `run` entry check |
-| L823 post-await check | `run` trailing check → boolean gates the success notify |
-| L826 catch check | stays raw (R3) |
-
-Pinned by: "suppresses a stale refresh success notification", "suppresses a
-stale refresh failure notification".
-
-### 3.2 · `reconstructState` (L383–442)
-
-```ts
-const reconstructState = async (ctx: ExtensionContext, session: PlanSession) => {
-	const toolsAtStart = pi.getActiveTools();
-	const previousState = planState;
-	const previousNormalTools = previousState.normalTools;
-	runtimeContext = ctx;
-	const guard = currency.guard(session);
-	try {
-		await planRuntime.dispose();            // head-outside (R5): cleanup always runs
-	} catch (error) {
-		if (guard.isCurrent()) ctx.ui.notify(`Could not clean up the previous Plan Bash sandbox: ${fmt(error)}`, "warning");
-	}
-	if (!guard.isCurrent()) return;             // was L398
-
-	const reconstructed = reconstructPlanState({ /* unchanged sync block */ });
-	/* …unchanged sync assignments… */
-	reviewController.clearDeferredPlan();
-
-	if (isPlanMode(planState)) {
-		planState.normalTools ??= …;
-		pi.setActiveTools(planToolSet(planState.normalTools));
-		activePlanProfile = profileFromCurrentSession(pi, ctx);
-		const fallback = planState.normalProfile ?? activePlanProfile;
-		if (fallback) {
-			let captured: ModeModelProfile | undefined;
-			const held = await guard.run(async () => { captured = await normalDefaultsStore.capture(ctx.cwd, fallback); });
-			if (!held) return;                  // was L425
-			normalGlobalDefaults = captured;
-			— catch variant: was L428 → catch { if (!guard.isCurrent()) return; notify }
-		}
-		const warmed = await guard.run(() => warmPlanRuntime(ctx));   // entry check = L435
-		void warmed;
-	} else {
-		ctx.ui.setStatus("plan-runtime", undefined);
-		pi.setActiveTools(previousNormalTools ?? toolsAtStart.filter((name) => name !== "plan_bash"));
-	}
-	if (guard.isCurrent() && !modeTransition) updatePlanStatus(ctx, planState);   // was L441
 };
 ```
 
-Notes: the dispose **head stays outside** any run (R5 — a stale-at-entry run
-must not skip sandbox cleanup); the sync reconstruct block needs no boundary
-(no invalidation window between sync statements); L425's value flows through a
-closure local (R4); L391/L428 catch-gates become `guard.isCurrent()` reads
-(same predicate, new owner).
+Do not write during selection resolution. Do not cache `activeMainModel` beyond
+the existing remembered value. `/model` updates must affect later selection and
+launch calls exactly as they do today.
 
-### 3.3 · `enterPlanModeInternal` (L496–561)
+---
+
+## 5. Exact selection semantics
+
+The implementation and tests must pin these cases.
+
+### 5.1 Model choice
+
+For `target.kind === "all"`:
+
+1. If `config.defaultModel` exists, return
+   `{ kind: "set", setting: config.defaultModel }`.
+2. Otherwise return `{ kind: "default" }`.
+3. Parse the suffix only from `config.defaultModel`.
+4. Resolve the effective assignment without agent frontmatter or an
+   individual model override.
+
+For `target.kind === "agent"`:
+
+1. If `config.agentModels[target.name]` exists, return
+   `{ kind: "set", setting: config.agentModels[target.name] }`.
+2. Otherwise return `{ kind: "inherit" }`.
+3. Parse a suffix only from that direct agent model setting.
+4. Resolve the effective assignment with the matching `AgentConfig`, so global,
+   frontmatter, and `main` fallback remain available.
+
+Examples:
+
+| Settings | Target | `model` | `modelSuffixThinkingLevel` |
+| --- | --- | --- | --- |
+| no `defaultModel` | `all` | `default` | absent |
+| `defaultModel: "main"` | `all` | `set("main")` | absent |
+| `defaultModel: "openai/gpt:high"` | `all` | `set("openai/gpt:high")` | `high` |
+| no `agentModels.worker` | `worker` | `inherit` | absent, even if global or frontmatter has a suffix |
+| `agentModels.worker: "openai/gpt:xhigh"` | `worker` | `set("openai/gpt:xhigh")` | `xhigh` |
+
+### 5.2 Thinking choice
+
+For `target.kind === "all"`:
+
+- `defaultThinkingLevel` present -> `{ kind: "set", level }`;
+- absent or legacy `default` -> `{ kind: "default" }`.
+
+For `target.kind === "agent"`:
+
+- `agentThinkingLevels[target.name]` present -> `{ kind: "set", level }`;
+- absent or legacy `default` -> `{ kind: "inherit" }`.
+
+The separate thinking choice does not erase a model suffix. The effective
+`assignment.launch.thinkingLevel` continues to follow the current resolver.
+For example, a global `openai/gpt:high` suffix beats global `minimal` thinking,
+while an individual `agentThinkingLevels.worker: low` beats that suffix.
+
+### 5.3 Effective assignment
+
+The `assignment` field must be exactly the existing
+`resolveSubagentAssignment()` result for the same stored configuration:
+
+Model selection:
+
+1. `agentModels[agentName]`;
+2. `defaultModel`;
+3. agent Markdown frontmatter `model`;
+4. `main`.
+
+Thinking selection for a stored assignment:
+
+1. `agentThinkingLevels[agentName]`;
+2. thinking suffix on the selected model;
+3. `defaultThinkingLevel`;
+4. Pi default, represented by `undefined`.
+
+Context metadata selection:
+
+1. `agentContextWindows[agentName]`;
+2. `defaultContextWindow`;
+3. `undefined`.
+
+The explicit invocation branches remain in
+`resolveSubagentAssignment()` for launch preparation. The stored selection
+projection does not invent invocation overrides.
+
+---
+
+## 6. File-by-file implementation
+
+### 6.1 `.pi/extensions/tools-subagents/config.ts`
+
+1. Add `SubagentAssignmentModelSelection` beside
+   `SubagentModelEdit` and `SubagentThinkingEdit`.
+2. Add the discriminated selection option types.
+3. Add `ResolvedSubagentAssignmentSelection`.
+4. Add `resolveAssignmentSelection()` to `SubagentConfigStore`.
+5. Extract the current resolver body into
+   `resolveParsedSubagentAssignment(options, parsedConfig)` without changing
+   branch order, normalization, or errors.
+6. Keep `resolveSubagentAssignment()` exported and make it parse once before
+   calling the parsed implementation.
+7. Add `resolveSubagentAssignmentSelection()` as the one pure semantic
+   selection projection.
+8. Derive direct model and thinking choices from `ModelConfiguration`, not from
+   the effective result. Effective values cannot tell `inherit` from a direct
+   setting when both resolve to the same model or level.
+9. Use `splitModelThinkingSetting()` exactly once for the direct target model
+   setting when deriving `modelSuffixThinkingLevel`.
+10. For `all`, pass no frontmatter and no fabricated `AgentConfig` into the
+    effective resolver.
+11. For an individual, require the matching `AgentConfig` and pass its
+    `name` and `model` into the effective resolver.
+12. Add the production store closure beside the existing `resolveAssignment`
+    closure. It must read the same Settings namespace, honor the same legacy
+    fallback, apply edits only to an in-memory copy, and use `activeMainModel`.
+13. Keep `resolveAssignment()` and `resolveLaunch()` behavior intact.
+14. Keep `ResolvedLaunchConfiguration` unchanged. `contextWindow` remains
+    descriptive metadata and is not a child context-window override.
+15. Keep persistence, migration, parser diagnostics, and unknown namespace
+    preservation unchanged.
+
+Implementation notes:
+
+- Do not move the assignment edit reducer into the command adapter.
+- Do not expose raw `ModelConfiguration` maps through the new interface.
+- Do not add a source enum unless a test proves the selected choice fields are
+  insufficient. The recommended design uses direct choice plus suffix and
+  effective assignment, which covers current callers without extra metadata.
+- Do not add a new file. The module already has depth and the new behavior
+  belongs at its existing seam.
+
+### 6.2 `.pi/extensions/tools-subagents/model-commands.ts`
+
+Add one local wiring helper with no assignment logic. It should:
+
+- convert the command's string target to `SubagentAssignmentTarget`;
+- pass the matching `AgentConfig` for an individual;
+- pass the loaded `ExtensionConfig` as `snapshot`;
+- optionally pass a matching `SubagentAssignmentEdit`;
+- call `configStore.resolveAssignmentSelection()`.
+
+The helper may narrow the TypeScript union. It must not inspect
+`agentModels`, `defaultModel`, `agentThinkingLevels`, or suffixes.
+
+#### `statusLines()`
+
+Replace `configStore.resolveAssignment(agent, { snapshot: config })` with the
+selection result's `.assignment`.
+
+Keep the existing formatting:
+
+- `modelDisplay(assignment.modelSetting, assignment.launch.model)`;
+- `thinkingDisplay(assignment.launch.thinkingLevel)`;
+- `contextDisplay(assignment.launch.contextWindow)`;
+- missing-tool checks and notifications.
+
+#### `modelStatusLines()`
+
+Use `.assignment` for each effective-assignment row.
+
+Keep the raw override lists based on `configStore.load()`. Those lists are an
+intentional persisted-Settings display, not effective precedence logic.
+
+#### `selectSubagentTarget()`
+
+Resolve the `all` target through the new accessor so the adapter no longer
+splits `config.defaultModel` to derive the global row.
+
+Map the result as follows:
+
+- `model.kind === "default"` keeps the existing
+  `"(unset; per-agent fallback)"` label;
+- otherwise use `modelDisplay(assignment.modelSetting,
+  assignment.launch.model)`;
+- use `modelSuffixThinkingLevel` when present, otherwise use the level from a
+  `thinking.kind === "set"` choice, otherwise show `Pi default`;
+- keep the existing `clears individual overrides` text.
+
+Resolve every individual target through the accessor and format its
+`.assignment` exactly as before.
+
+#### `selectSubagentModel()`
+
+1. Resolve the current target once.
+2. Derive the picker `currentValue` from semantic result fields:
+   - `model.kind === "inherit"` -> `"inherit"`;
+   - `model.kind === "default"` -> `"main"`;
+   - `model.kind === "set"` -> `assignment.modelSetting`.
+3. Keep the raw `model.setting` only for the existing
+   `configured as <raw-setting>` presentation when a legacy suffix is present.
+4. Resolve the individual inherit preview by passing the existing semantic
+   `{ model: { kind: "inherit" } }` edit and formatting the returned
+   `.assignment`.
+5. Keep the Main-model item and all model catalogue filtering unchanged.
+6. Remove the `Object.hasOwn(config.agentModels, target)` branch and the
+   `splitModelThinkingSetting(currentValue)` call from this picker.
+7. Keep `pickSelectScreen()` options and current-marker behavior unchanged.
+
+The current model base and the raw configured setting have different jobs. Use
+`assignment.modelSetting` for the marker value and `model.setting` for the
+legacy configured text. Do not collapse them into one field.
+
+#### `findCatalogueModel()`
+
+Change the caller to pass the canonical base value from
+`pendingSelection.assignment.modelSetting`. The helper may still resolve
+`main` through `configStore.resolveMainModel()` and use the model registry
+fallback. It should no longer split a raw configured setting or decide
+assignment precedence.
+
+`catalogueModelReference()` may continue using
+`splitModelThinkingSetting()` for direct user input to
+`validateAvailableModel()`. That is input normalization, not current assignment
+resolution, and remains in the adapter by design.
+
+#### `selectSubagentThinking()`
+
+Use two selection calls:
+
+1. `currentSelection` from the unedited snapshot;
+2. `pendingSelection` from the same snapshot plus the model edit chosen in the
+   previous screen.
+
+Resolve `pendingModelSetting` from
+`pendingSelection.assignment.modelSetting`, then use it for catalogue lookup
+and supported thinking levels.
+
+Compute the current picker value from semantic fields without reading raw
+maps:
+
+- For `all`, use the direct model suffix when it exists and the current and
+  pending base models match. Otherwise use a direct global thinking level or
+  `"default"`.
+- For an individual, use a direct thinking level first. If there is no direct
+  level, use the direct model suffix only when its base model matches the
+  pending model. Otherwise use `"inherit"`.
+- When a suffix supplies the individual value, use
+  `currentSelection.assignment.launch.thinkingLevel` for the exact existing
+  effective value.
+
+Build the individual `inherit` description with the pending model edit plus a
+thinking inherit edit, then format the returned effective assignment. Do not
+read `agentThinkingLevels` or `agentModels` directly.
+
+Keep these behaviors:
+
+- a model change is a pending edit, not an invocation override;
+- a per-agent thinking setting remains explicit even if the pending model
+  changes;
+- a legacy suffix is a current thinking choice only when its base model is the
+  pending model;
+- `all` offers Pi default, while an individual offers inherit;
+- the screen and cancellation flow remain unchanged.
+
+#### Functions that remain adapter-owned
+
+These stay in `model-commands.ts`:
+
+- `assignmentTarget()` and target-string validation;
+- `modelEdit()`, `thinkingEdit()`, and `combinedEdit()` because they lower
+  command input into the existing edit interface;
+- `requireKnownTarget()` and all `ctx.ui.notify()` calls;
+- model catalogue refresh and authentication checks;
+- `contextDisplay()`, `modelDisplay()`, and `thinkingDisplay()`;
+- raw persisted override lists in `modelStatusLines()`;
+- direct command parsing and usage text.
+
+The command adapter is still a Pi adapter. It should not become a second
+assignment implementation.
+
+### 6.3 `.pi/extensions/tools-subagents/test-harness.ts`
+
+1. Import `resolveSubagentAssignmentSelection` and its option/result types as
+   needed.
+2. Add `resolveAssignmentSelection()` to `memoryConfigStore()`.
+3. Mirror the production store exactly:
+   - use `options.snapshot ?? store.document`;
+   - apply `options.edit` with `applySubagentAssignmentEdit()` to a cloned
+     document;
+   - call the pure selection resolver with `activeMainModel`;
+   - never mutate the snapshot;
+   - preserve the existing `updates` and `edits` recording behavior for commits.
+4. Do not write a second selection or precedence implementation in the test
+   adapter.
+
+### 6.4 `.pi/extensions/tools-subagents/config.test.ts`
+
+Keep the existing `resolveSubagentAssignment()` table. It remains the test
+surface for effective launch precedence and explicit invocation overrides.
+Add a new `describe("subagent assignment selection", ...)` for the new pure
+resolver.
+
+Required cases:
+
+1. `all` with no global model returns `model.kind === "default"` and an
+   effective `main` assignment.
+2. `all` with explicit `defaultModel: "main"` returns `model.kind === "set"`
+   with `setting: "main"`.
+3. `all` with `defaultModel: "openai/gpt:high"` returns the raw normalized
+   setting and `modelSuffixThinkingLevel: "high"`.
+4. `all` with a model suffix and global thinking proves the suffix still wins
+   in `assignment.launch.thinkingLevel`.
+5. An individual without an `agentModels` entry returns `model.kind ===
+   "inherit"` even when global configuration supplies a model.
+6. An individual without an `agentModels` entry returns no direct suffix even
+   when global configuration or frontmatter contains a suffix.
+7. An individual with `agentModels.worker: "openai/gpt:xhigh"` returns a set
+   model and `modelSuffixThinkingLevel: "xhigh"`.
+8. An individual direct thinking setting beats its direct model suffix in the
+   effective assignment.
+9. An individual without direct thinking returns `thinking.kind ===
+   "inherit"`, while its effective assignment can still inherit a global
+   thinking level.
+10. An `all` target without direct thinking returns `thinking.kind ===
+    "default"`.
+11. An `all` target with direct thinking returns `thinking.kind === "set"`.
+12. A concrete direct model does not require a current Main model; a `main`
+    fallback still produces the existing missing-Main-model error.
+13. A malformed model, thinking, or context setting preserves the existing
+    parser error.
+
+Use table-driven cases for the precedence combinations. Assert the complete
+semantic result where it is stable:
 
 ```ts
-async function enterPlanModeInternal(ctx, session, prompt?): Promise<boolean> {
-	if (isPlanMode(planState)) return true;
-	const normalProfile = profileFromCurrentSession(pi, ctx);
-	if (!normalProfile) { /* unchanged notify */ return false; }
-
-	const normalTools = pi.getActiveTools().filter((name) => name !== "plan_bash");
-	const abortEnter = (error: unknown, rollbackError?: unknown): false => { /* unchanged */ };
-
-	const guard = currency.guard(session);
-	let capturedDefaults: ModeModelProfile | undefined;
-	let stored: Awaited<ReturnType<ModelSelectionPersistence["load"]>>;  // "plan" slot
-	try {
-		const prepared = await guard.run(
-			async () => { capturedDefaults = await normalDefaultsStore.capture(ctx.cwd, normalProfile); },
-			async () => { stored = await session.persistence.load("plan"); },
-		);
-		if (!prepared) return false;            // boundaries = old L526, L528
-
-		// Shared adopt block (today duplicated at L531–535 and L546–555):
-		const adoptEntry = (profile: ModeModelProfile): PlanGuardStep => () => {
-			normalGlobalDefaults = capturedDefaults;
-			planState = { ...planState, normalProfile, normalTools };
-			activePlanProfile = profile;
-			clearPlanForEntry();
-			commitPlanState(ctx, "plan", prompt, normalTools);
-			warmPlanRuntime(ctx);
-		};
-
-		if (!stored) {
-			return await guard.run(
-				async () => { await session.persistence.save("plan", normalProfile); },
-				adoptEntry(normalProfile),
-			);                                      // mid-check = old L531; entry check new-but-safe
-		}
-
-		const outcome = await profileTransition.apply(ctx, session, {
-			target: stored,
-			label: "Plan Mode profile",
-			persist: { session, unlessSentinel: stored },
-			defaults: capturedDefaults,
-			rollback: { target: normalProfile, label: "Normal profile", defaults: capturedDefaults },
-		});
-		if (!guard.isCurrent()) return false;   // was L548
-		if (!outcome.ok) return abortEnter(outcome.error, outcome.rollbackError);
-		return await guard.run(adoptEntry(outcome.profile!));
-	} catch (error) {
-		if (!guard.isCurrent()) return false;   // was L558
-		return abortEnter(error);
-	}
-}
-```
-
-Notes: the run's entry check before `capture` is new behavior only when the
-flow is stale *before* its first effect — verified unpinned (the
-"drops an entry invalidated by a branch change" test pins outcomes, not
-effect execution; staleness in that test arises while `load` is pending).
-The duplicated adopt blocks (review finding 7) collapse into `adoptEntry` —
-same behavior, one block.
-
-Pinned by: "drops an entry invalidated by a branch change…", "returns the
-original system prompt when branch reconstruction invalidates the awaited
-transition".
-
-### 3.4 · `exitPlanModeInternal` (L563–605)
-
-```ts
-async function exitPlanModeInternal(ctx, session): Promise<boolean> {
-	if (!isPlanMode(planState)) return true;
-	const normalTools = planState.normalTools;
-	runtimeContext = ctx;
-	const guard = currency.guard(session);
-	try {
-		await planRuntime.dispose();            // head-outside (R5)
-	} catch (error) {
-		if (!guard.isCurrent()) return false;   // was L591
-		ctx.ui.notify(`Could not exit Plan Mode because the Plan Bash sandbox could not be cleaned up: ${fmt(error)}`, "error");
-		return false;
-	}
-	if (!guard.isCurrent()) return false;       // was L589
-
-	const normalProfile = planState.normalProfile;
-	if (normalProfile) {
-		const outcome = await profileTransition.apply(ctx, session, { /* unchanged */ });
-		if (!guard.isCurrent()) return false;   // new position = old L602 semantics
-		if (!outcome.ok) { /* unchanged rollback-note notify + warmPlanRuntime + return false */ }
-	}
-	commitPlanState(ctx, "default", undefined, normalTools);
-	return true;
-}
-```
-
-(The old L602 check sat between the `!outcome.ok` branch and the commit; keep
-that order — staleness check **before** the ok-check.)
-
-### 3.5 · `rememberActivePlanProfile` (L684–716) — the compound-predicate exemplar
-
-```ts
-async function rememberActivePlanProfile(
-	ctx: ExtensionContext,
-	session: PlanSession,
-	profile: ModeModelProfile,
-	defaults: ModeModelProfile | undefined,
-): Promise<void> {
-	const guard = currency.guard(session, () => isPlanMode(planState));  // declared once (R7)
-	let persistenceError: unknown;
-	await guard.run(
-		() => { activePlanProfile = profile; },
-		async () => {
-			try { await session.persistence.save("plan", profile); }
-			catch (error) { persistenceError = error; }          // error-as-data, reported in step 4
+expect(resolveSubagentAssignmentSelection({
+	target: { kind: "agent", name: "worker" },
+	agent: agent(),
+	config: {
+		defaultModel: "openai/global:high",
+		agentThinkingLevels: { worker: "low" },
+	},
+	mainModel,
+})).toEqual({
+	model: { kind: "inherit" },
+	thinking: { kind: "set", level: "low" },
+	assignment: {
+		modelSetting: "openai/global",
+		launch: {
+			model: "openai/global",
+			thinkingLevel: "low",
+			contextWindow: undefined,
 		},
-		async () => {
-			try { await preserveDefaults(ctx, defaults); }
-			catch (error) {
-				if (!guard.isCurrent()) return;                  // was L702
-				ctx.ui.notify(`Could not preserve Pi's normal defaults: ${fmt(error)}`, "error");
-			}
-		},
-		() => {
-			if (persistenceError) {
-				ctx.ui.notify(`Could not save the Plan Mode profile: ${fmt(persistenceError)}`, "error");
-			}
-			updatePlanStatus(ctx, planState);
-		},
-	);
-}
+	},
+});
 ```
 
-| Today | New |
-|-------|-----|
-| L690 compound guard | run entry check |
-| L698 compound guard | boundary between save and preserve steps |
-| L702 compound guard (inside preserve catch) | `guard.isCurrent()` |
-| L708 compound guard | boundary between preserve and notify/status steps |
+For absent optional suffixes, assert that the property is absent or undefined
+consistently with the chosen implementation. Do not assert private helper
+calls.
 
-The four duplicated `!isCurrent || !isPlanMode` expressions collapse into one
-`whileValid` declaration. Pinned by: "silences a stale profile persistence
-failure after a branch change", "silences a stale normal-defaults failure
-after a branch change".
+Extend store tests with:
 
-### 3.6 · Sites that stay raw (R1/R6 — deliberately unchanged)
+- production `resolveAssignmentSelection()` delegates to the pure resolver;
+- a snapshot plus edit produces the same selection that a later committed edit
+  produces;
+- selection preview leaves the Settings file unchanged;
+- changing the remembered Main model changes later `main` selection results;
+- `resolveLaunch()` still returns only launch fields and does not expose
+  `model` selection metadata.
 
-| Site | Why it stays |
-|------|--------------|
-| L333 `isCurrent: (session) => currency.isCurrent(session)` | replaced by `createGuard` adapter (§3.7) |
-| L640 `runModeTransition` finally | positive-gated status write at caller-owned boundary |
-| L725 review snapshot | Plan Review's captured-snapshot contract |
-| L728 `getSessionProfileBinding` | `resolve`-based lookup, not a boundary |
-| L910 `agentPromptConstruction` | dispatch admission (class b) |
-| L966–995 dispatch admissions | event routing (class b) |
-| sessionStarted/sessionStopping `begin`/`end` | identity transitions, not guards |
+Keep all existing edit, migration, queue, Settings preservation, parser, and
+child-argument tests. They cover separate interfaces and should not be deleted.
 
-After migration, `plan-lifecycle.ts` retains ~8 raw currency reads (all
-class b/c or positive-gated), down from 26 `currency.` guard/adapter sites.
+### 6.5 `.pi/extensions/tools-subagents/model-commands.test.ts`
 
-### 3.7 · `plan-profile-transition.ts` — host swap + guarded steps
+Keep the tests that cover notifications, direct commands, catalogue failures,
+unknown agents, cancellation, and persisted edits. Add focused black-box cases
+for the paths moved to the new accessor.
 
-Host interface change (type-only import from `plan-currency.ts`; dependency
-direction unchanged — the transition still never imports the currency
-implementation):
+1. **Effective status remains unchanged.** Use a global model suffix, an
+   individual thinking override, and an individual context setting. Assert the
+   same effective status line and the absence of the raw suffix in the separate
+   thinking text.
+2. **Individual direct suffix remains visible in the model picker.** Configure
+   `agentModels.worker` with a `:high` suffix, open the worker model picker,
+   and assert that the base model is marked current while the description still
+   says `configured as <raw-setting>`.
+3. **Inherited fallback remains visible.** Use a table or the existing scripted
+   picker flow for global, frontmatter, and Main fallback. Assert the inherit
+   description and no Settings writes.
+4. **Global target preserves unset versus explicit Main.** Open the target
+   picker once with no `defaultModel` and once with `defaultModel: "main"`.
+   Assert the existing global-row text, including
+   `"(unset; per-agent fallback)"` for the unset case.
+5. **Pending model drives thinking preview.** Choose a model for an individual,
+   then inspect the thinking screen. Assert that the displayed model and
+   inherited thinking description come from the pending model edit, not the
+   current stored model.
+6. **Suffix current-marker rules remain unchanged.** Cover:
+   - same base model plus direct suffix selects that suffix level;
+   - a changed pending base model falls back to inherit/default;
+   - a direct agent thinking override wins over the suffix.
+7. **No preview writes.** Cancel from target, model, and thinking screens and
+   assert zero `updates` and zero `edits`.
 
-```ts
-export interface PlanProfileTransitionHost {
-	/** One Plan guarded effect per transition; staleness is checked at every
-	 *  boundary the transition declares. Replaces isCurrent(session). */
-	createGuard(session: PlanSession): PlanGuard;
-	/** The lifecycle's normal-defaults preservation; undefined defaults fall
-	 *  back to the lifecycle's captured normal defaults. */
-	preserveDefaults(ctx: ExtensionContext, defaults?: ModeModelProfile): Promise<void>;
-}
+Drive the existing `screenCustom()` helper and assert rendered screen text or
+current markers. Do not export private selector functions. Do not assert that a
+particular config map was read; assert what the command presented and whether
+it wrote Settings.
+
+### 6.6 `.pi/extensions/tools-subagents/launch-preparation.ts`
+
+No production change is expected.
+
+Keep its `Pick<SubagentConfigStore, "resolveLaunch">` dependency narrow. The
+new selection method must not force launch preparation to know about display
+choices.
+
+Run its current tests to confirm:
+
+- one registry snapshot;
+- whole-request validation before resolution;
+- one launch resolution per request;
+- no partial work after a later validation failure;
+- only normalized launch data reaches child execution.
+
+### 6.7 `.pi/extensions/tools-subagents/subagent-execution.ts`, `index.ts`, and `README.md`
+
+No production change is expected.
+
+`subagent-execution.ts` continues to receive `ResolvedLaunchConfiguration`.
+`index.ts` keeps its Pi wiring and dependency construction. `README.md` keeps
+its current precedence and suffix wording because this refactor changes no
+behavior.
+
+After implementation, compare the README precedence tables with the tests. If
+the wording has an error, fix the wording in a separate deliberate edit. Do not
+add internal implementation detail to user documentation.
+
+### 6.8 `CONTEXT.md`
+
+The existing **Subagent assignment resolution module** entry already names the
+correct domain concept and seam. No new domain term or separate module is
+needed.
+
+If the implementation adds a sentence, amend only that existing entry to say
+that the module also owns target-aware current model/thinking choices and
+legacy direct-model suffix interpretation for the command adapter. Do not add a
+second glossary entry for a UI-specific name.
+
+---
+
+## 7. Implementation order
+
+Use one coherent refactor. Keep the working tree's unrelated profile change
+out of the diff.
+
+### Step 0: Baseline
+
+From `.pi/`, run the focused current suite and typecheck before editing code:
+
+```bash
+pnpm exec vitest run \
+	extensions/tools-subagents/config.test.ts \
+	extensions/tools-subagents/model-commands.test.ts \
+	extensions/tools-subagents/launch-preparation.test.ts
+pnpm typecheck
 ```
 
-Lifecycle construction site (one line changes):
+If the baseline fails, record the failure before attributing it to this plan.
 
-```ts
-const profileTransition = createPlanProfileTransition(pi, {
-	createGuard: (session) => currency.guard(session),
-	preserveDefaults,
-}, { nativeDefaults: dependencies.nativeDefaults });
+### Step 1: Add the semantic result and characterization tests
+
+In `config.test.ts`:
+
+- add imports for the new pure resolver and types;
+- add the target-aware selection cases;
+- add target, suffix, direct-thinking, and fallback assertions;
+- add preview and Main-model freshness cases at the store interface.
+
+The tests should initially fail because the new method and result do not exist.
+Do not change the existing effective-resolution cases while adding the new
+surface.
+
+### Step 2: Implement the pure resolver in `config.ts`
+
+- extract the parsed effective resolver without changing behavior;
+- add the discriminated target types and result type;
+- implement direct model choice derivation;
+- implement direct thinking choice derivation;
+- parse only the direct target model suffix;
+- construct the effective assignment through the shared parsed resolver;
+- make the new pure tests pass.
+
+At the end of this step, all assignment semantics still live in `config.ts`.
+
+### Step 3: Add the production and memory store methods
+
+- add `resolveAssignmentSelection()` to `SubagentConfigStore`;
+- implement the Settings-backed method beside `resolveAssignment()`;
+- implement the memory adapter method through the same pure resolver;
+- keep edit previews immutable;
+- keep `resolveLaunch()` unchanged except for any type-only adjustments.
+
+Run `config.test.ts` after this step.
+
+### Step 4: Migrate command status and target descriptions
+
+- add the thin local store-call helper in `model-commands.ts`;
+- move `statusLines()` and effective rows in `modelStatusLines()` to
+  `.assignment`;
+- move individual and global target descriptions to the new result;
+- preserve raw persisted override lists and exact text.
+
+Run the model command tests before changing picker internals.
+
+### Step 5: Migrate model picker state
+
+- replace raw current model map reads with `currentSelection.model`;
+- preserve base model marker and raw suffix display using separate result
+  fields;
+- use selection-based hypothetical edits for inherit preview;
+- pass canonical pending assignment model to catalogue lookup;
+- remove only the now-obsolete current-state map and suffix branches.
+
+Run the model command tests after this step.
+
+### Step 6: Migrate thinking picker state
+
+- resolve current and pending selections separately;
+- derive pending model and supported thinking levels from the pending effective
+  assignment;
+- derive current marker from direct thinking choice, direct suffix, and the
+  current-versus-pending base comparison;
+- use a pending inherit edit for the inherited description;
+- preserve all current `all` versus individual behavior.
+
+Add or finish the suffix-marker tests, then run the whole subagent suite.
+
+### Step 7: Remove only obsolete adapter logic
+
+After tests pass, use `rg` to confirm that `model-commands.ts` no longer has
+assignment precedence branches in the picker. Remove unused imports and local
+variables only after the migration is complete.
+
+Do not remove `splitModelThinkingSetting()` from `config.ts`. It remains part of
+the assignment implementation and direct input normalization.
+
+### Step 8: Documentation and final review
+
+- verify that `CONTEXT.md` still accurately describes the module;
+- do not change README wording unless a real documentation error appears;
+- review the diff for Settings writes, command text, and launch-shape changes;
+- confirm the unrelated `.pi/profiles/default.json` modification remains
+  untouched.
+
+---
+
+## 8. Verification commands
+
+Run from `.pi/`:
+
+```bash
+pnpm exec vitest run extensions/tools-subagents/config.test.ts
+pnpm exec vitest run extensions/tools-subagents/model-commands.test.ts
+pnpm exec vitest run extensions/tools-subagents/launch-preparation.test.ts
+pnpm test:subagents
+pnpm typecheck
 ```
 
-`apply` — the target apply is an **unguarded head** (its test pins that the
-apply runs and reports `{ ok: true, profile }` even when stale at entry):
+Run the broader shared tests because the store interface is used by shared
+adapters and type definitions:
 
-```ts
-async function apply(ctx, session, request): Promise<PlanProfileTransitionResult> {
-	transitionDepth++;
-	try {
-		const guard = host.createGuard(session);
-		let profile: ModeModelProfile | undefined;
-		let applied = false;
-		try {
-			profile = await applyProfile(ctx, request.target, request.label);   // unguarded head (R5)
-			applied = true;
-			await guard.run(
-				async () => {
-					const sentinelRef = request.persist?.unlessSentinel;
-					if (request.persist && !(sentinelRef !== undefined && usesDefaultSentinel(sentinelRef))) {
-						await request.persist.session.persistence.save("plan", profile!);
-					}
-				},
-				() => host.preserveDefaults(ctx, request.defaults),
-			);
-			return { ok: true, profile };
-		} catch (error) {
-			if (!applied || !request.rollback) {
-				return { ok: false, error, profile: applied ? profile : undefined };
-			}
-			let rollbackProfile: ModeModelProfile | undefined;
-			let rollbackError: unknown;
-			try {
-				await guard.run(
-					async () => {
-						try { rollbackProfile = await applyProfile(ctx, request.rollback!.target, request.rollback!.label); }
-						catch (error) { rollbackError = error; throw error; }   // rethrow: skips step 2 (today's semantics)
-					},
-					async () => {
-						try { await host.preserveDefaults(ctx, request.rollback!.defaults); }
-						catch (error) { rollbackError = error; }                // error-as-data (today's semantics)
-					},
-				);
-			} catch {
-				// step-1 failure already captured as rollbackError; step 2 was skipped by the runner
-			}
-			return { ok: false, error, profile: rollbackProfile, rollbackError };
-		}
-	} finally {
-		transitionDepth--;
-	}
-}
+```bash
+pnpm test:core
 ```
 
-Boundary mapping (old `host.isCurrent` positions → new):
+Check for stale duplicated resolution logic:
 
-| Old position | New owner |
-|--------------|-----------|
-| apply L119 (post-apply) | persist-run entry check |
-| apply L124 (post-persist) | boundary between persist and preserve steps |
-| apply L126 (post-preserve) | persist-run trailing check |
-| restore L96 (leading) | rollback-run entry check |
-| restore L99 (post-apply-rollback) | boundary between rollback steps |
-
-The rollback-run entry check doubles as today's restore-leading check — when
-stale there, the run returns at entry (steps skipped), producing exactly
-today's `{ ok: false, error, profile: undefined, rollbackError: undefined }`.
-`inTransition()` / `transitionDepth` are untouched.
-
-## 4 · Test plan
-
-Per DEEPENING.md: replace, don't layer — but the existing suites are
-behavioral and survive. The interface is the test surface.
-
-### 4.1 · `plan-currency.test.ts` — survives untouched; gains a guard block
-
-New cases (all through `currency.guard`):
-
-1. `run` executes steps in order and resolves `true` when current throughout.
-2. Entry staleness: predicate false before the first step → no step runs, resolves `false`.
-3. Mid-run abandonment: predicate flips after step 2 → steps 3+ never run, resolves `false`.
-4. Trailing staleness: predicate flips during the last step → all steps ran, resolves `false`.
-5. Compound `whileValid`: currency current but `whileValid` false → abandoned; `whileValid` flip mid-run abandons; flip back does **not** resurrect (subsequent boundaries re-evaluate live — a run that already returned `false` is done, but a fresh run proceeds).
-6. Evaluation order: currency short-circuits before `whileValid` (spy call counts).
-7. Throwing step propagates; later steps never run; `guard.isCurrent()` still live afterwards.
-8. Sync (`void`) steps work and are boundaries.
-9. `guard.isCurrent()` reflects the live predicate (`true` → `advance` → `false`).
-10. A guard bound to a stale session (advance after begin) abandons at entry.
-11. A run never mutates currency state (isCurrent unchanged after a `false` run).
-
-### 4.2 · `plan-profile-transition.test.ts` — outcome assertions survive; staleness scripting migrates
-
-The host fake changes shape (`isCurrent` → `createGuard`). The fake wraps a
-**real** `createPlanCurrency` and scripts staleness by advancing it:
-
-```ts
-function createHost() {
-	const preserveDefaults = vi.fn(async () => {});
-	const currency = createPlanCurrency({ createPersistence: () => persistence });
-	const session = currency.begin(binding, ctxFor("session-a"));  // real PlanSession
-	const goStale = () => { currency.advance(session); };
-	return { preserveDefaults, session, goStale, createGuard: (s: PlanSession) => currency.guard(s) };
-}
+```bash
+rg -n \
+  "resolveAssignment\(|currentRawModel|hasOverride|Object\\.hasOwn\\(config\\.(agentModels|agentThinkingLevels)|splitModelThinkingSetting\\(current" \
+  extensions/tools-subagents/model-commands.ts
 ```
 
-Per-test scripting map (assertions unchanged; only the staleness trigger moves):
+Expected results:
 
-| Test | Old scripting | New scripting |
-|------|---------------|---------------|
-| "abandons silently when the session goes stale after the apply" | `isCurrent.mockReturnValue(false)` | `applyModelSelection` mock: `async () => { host.goStale(); return appliedProfile; }` |
-| "abandons the remaining effects when the session goes stale after persisting" | `mockReturnValueOnce(true).mockReturnValue(false)` | `persistence.save` mock: `async () => { host.goStale(); }` |
-| "abandons with a plain result when the session goes stale after preserving defaults" | always true (assert-only) | `host.preserveDefaults` mock: `async () => { host.goStale(); }` |
-| "skips the rollback when the session went stale before it could start" | `mockReturnValueOnce(true).mockReturnValueOnce(false)` | `persistence.save` mock: `async () => { host.goStale(); throw failure; }` |
-| "rolls back to the fallback when a later step fails" | none (always true) | unchanged |
-| all others | none / assert-only | unchanged |
+- no old `resolveAssignment()` calls remain in `model-commands.ts` for the
+  migrated status or picker paths;
+- no `currentRawModel` or `hasOverride` helper remains;
+- no picker-specific `Object.hasOwn(config.agentModels, ...)` or
+  `Object.hasOwn(config.agentThinkingLevels, ...)` remains;
+- `splitModelThinkingSetting()` may remain for direct input normalization and
+  must not be treated as a failure by itself.
 
-Verified by hand against the boundary map in §3.7: every outcome assertion
-(`toEqual` payloads, save/preserve call counts, rollback error reporting,
-`inTransition` behavior) holds with identical values.
+Check the final diff:
 
-### 4.3 · `plan-lifecycle.test.ts` (890 lines) — survives
+```bash
+git diff --check
+git status --short
+git diff -- .pi/extensions/tools-subagents/config.ts \
+  .pi/extensions/tools-subagents/model-commands.ts \
+  .pi/extensions/tools-subagents/test-harness.ts \
+  .pi/extensions/tools-subagents/config.test.ts \
+  .pi/extensions/tools-subagents/model-commands.test.ts \
+  CONTEXT.md
+```
 
-Drives events through public `dispatch` (zero coupling to `currency`
-internals) and pins behavioral outcomes: commits, notifications, tool state,
-status writes, later-toggle recovery. The §3 migration is
-boundary-for-boundary, so notify text, rollback notes, and return values are
-identical. One strictly-safer behavior addition (stale-at-entry flows skip
-their first effect) is not pinned anywhere — verified against the staleness
-suite (L644–884) and the queueing/toggle suites.
+The final diff must not modify `.pi/profiles/default.json` as part of this
+work. `plan.md` is the requested plan artifact.
 
-### 4.4 · New behavior coverage to add (lifecycle suite, optional but recommended)
+---
 
-- A stale-at-entry `modeToggled` entry performs no persistence `load`/`save`
-  and no notify (pins the entry-check semantics deliberately).
+## 9. Acceptance criteria
 
-## 5 · Implementation order (each step keeps the suite green)
+### Assignment module
 
-1. **Add the seam.** `plan-currency.ts`: `PlanGuardStep`, `PlanGuard`,
-   `guard()` (+ interface member). `plan-currency.test.ts`: the 11 guard
-   cases. Verify: `cd .pi && pnpm test:plan && pnpm typecheck`.
-2. **Migrate `rememberActivePlanProfile`** (compound exemplar). Verify:
-   `pnpm test:plan` — the two "silences a stale …" tests must pass unchanged.
-3. **Migrate `refreshPlanRuntime` + `refreshRequested`** (boolean return).
-   Verify: refresh staleness tests unchanged.
-4. **Migrate `enterPlanModeInternal`** (+ `adoptEntry` dedupe). Verify:
-   entry-drop and prompt-invalidation tests unchanged.
-5. **Migrate `exitPlanModeInternal`** and **`reconstructState`** (head-outside
-   dispose). Verify: full `pnpm test:plan` including the sandbox integration
-   test.
-6. **Swap the transition host** (`createGuard`) and migrate `apply`/rollback to
-   guarded steps; re-script the four staleness tests per §4.2. Verify:
-   `pnpm test:plan`.
-7. **Delete dead raw guards.** Remove the old adapter lambda (L333) and every
-   collapsed site; grep-verify no `if (!currency.isCurrent(` remains in the six
-   migrated flows (raw reads allowed only per §3.6).
-8. **Docs.** CONTEXT.md already updated (Plan guarded effect entry, Plan
-   session currency + Plan profile transition wording) — verify it matches the
-   landed shape; adjust the Plan Mode lifecycle entry's seam list only if
-   naming shifted.
-9. **Full verification.** `cd .pi && pnpm typecheck && pnpm test:plan`;
-   then `pnpm test` (full matrix) before merge — the seam is internal to
-   `workflows-plan`, but the full suite guards accidental cross-extension
-   drift.
+- `resolveSubagentAssignmentSelection()` is the only implementation of
+  target-specific direct model and thinking choice meaning.
+- `resolveParsedSubagentAssignment()` is the shared implementation of effective
+  model, thinking, and context precedence.
+- The new result contains direct model choice, direct suffix metadata, direct
+  thinking choice, and the existing effective assignment.
+- `all` never receives fabricated frontmatter.
+- Individual selections require the matching `AgentConfig`.
+- Hypothetical edits are applied to a clone and never persisted.
+- Current Main-model changes are observed on later calls. No stale cache exists.
+- Existing parser errors and missing-Main-model errors remain unchanged.
 
-## 6 · Risks & mitigations
+### Command adapter
 
-| Risk | Mitigation |
-|------|-----------|
-| Step-fusion mistake moves an effect past its boundary (R4 violation) | One-await-per-step discipline; per-flow boundary maps above; behavioral suites pin outcomes |
-| Entry-check behavior change (first effect skipped when stale at entry) | Verified unpinned; strictly safer; §4.4 pins it deliberately |
-| Transition test mock-call drift | §4.2 scripting map; assertions verbatim |
-| Guard outliving its flow (`whileValid` reads live `planState`) | R8: guards are function-local; all migrations create them at flow top |
-| Name shadowing (`isCurrent` module fn vs guard method) | Internal alias `live` in `createPlanCurrency` |
-| New flows regressing to hand-written checks | The runner is the path of least resistance; §3.6 documents the legitimate raw sites; review checklist item: "new async step → new guarded step, not a new `if (!isCurrent)`" |
-| Rollback reporting delta: when the rollback apply succeeds but the rollback's `preserveDefaults` then fails, today's `restoreFallback` drops `profile` from the result (single try/catch swallows it); the guarded rollback's two-step form reports `profile: rollbackProfile` alongside `rollbackError` instead | Unpinned by any current test (no test rejects `preserveDefaults` only on the rollback leg). Inert today: both callers (`enterPlanModeInternal` via `abortEnter`, `exitPlanModeInternal`) read `outcome.profile` only on the `ok: true` path, never on `ok: false` — verified via `plan-lifecycle.ts:549,552,590–595`. Flag if a future caller starts reading `profile` on failure |
+- `statusLines()`, effective rows in `modelStatusLines()`, and target
+  descriptions use the new selection interface.
+- Model and thinking pickers resolve current and pending state through the same
+  interface.
+- The adapter contains no assignment precedence implementation.
+- The adapter still owns formatting, notifications, model catalogue lookup,
+  direct command parsing, and Pi interaction.
+- Existing current markers, suffix text, menu labels, and cancellation paths are
+  unchanged.
 
-## 7 · Out of scope (recorded, not forgotten)
+### Launch and persistence
 
-- **Turn-identity staleness** (`requestPlanSession` / `requestModeRevision` /
-  `lastPromptedMode`, L288–292, 918–941) — a different staleness discipline
-  (per-turn, not per-Session); folding it into the currency seam is a separate
-  decision.
-- **Queues + busy-admission** (architecture-review candidate 2: the two
-  hand-rolled promise queues, three admission sites, transition-marker
-  cleanup) — its own candidate.
-- **Mode-announcement dedupe** and the `preserveDefaults` three-file bounce —
-  separate micro-candidates surfaced by the same review.
+- `resolveLaunch()` keeps its existing narrow interface and result shape.
+- Launch preparation and child execution receive no selection metadata.
+- No Settings schema, migration, queue, or atomic-write behavior changes.
+- Unknown Settings and subagent namespace keys remain preserved.
 
-## 8 · Vocabulary
+### Tests and documentation
 
-All terms per the codebase-design skill and CONTEXT.md: **module**
-(Plan session currency), **interface** (`PlanCurrency.guard` / `PlanGuard`),
-**implementation** (the ~10-line runner), **seam** (the guarded-effect seam,
-internal to the Plan Mode lifecycle's implementation), **adapter** (the
-transition's host `createGuard`), **depth** (boundary discipline hidden behind
-two methods), **leverage** (one seam, two consumers, N flows), **locality**
-(staleness policy in one module).
+- New selection tests cover all-versus-agent, direct-versus-inherited,
+  suffix-versus-explicit-thinking, pending-model, and Main-model cases.
+- Command tests assert observable rendered output and write behavior rather than
+  private helper calls.
+- Existing subagent tests, shared tests, and typecheck pass.
+- `CONTEXT.md` remains accurate and no UI-specific glossary term is added.
+
+### Architecture outcome
+
+The assignment module becomes deeper. Callers learn one target-aware
+interface, while the implementation hides direct choice interpretation,
+legacy suffix handling, effective fallback, and Main-model resolution.
+
+The command adapter gains leverage from one result across status and both picker
+screens. Maintainers gain locality because a change to assignment meaning lands
+in `config.ts` and its interface tests instead of in several command branches.
+
+---
+
+## 10. Risks and controls
+
+### Legacy suffix precedence
+
+A model suffix is not always a direct thinking choice. A fallback suffix can
+be effective without being selected directly by the individual target.
+
+**Control:** return `modelSuffixThinkingLevel` only for the target's direct
+model setting. Keep effective thinking in `assignment.launch.thinkingLevel`.
+Test global, frontmatter, per-agent, and per-agent-thinking-overrides cases.
+
+### Current versus pending model
+
+The thinking picker compares the stored current model with a prospective model
+choice. Using the pending result as the current result would make current
+markers drift.
+
+**Control:** make two accessor calls from the same snapshot. Use current result
+for current markers and pending result for catalogue and inherited descriptions.
+
+### Global target semantics
+
+The global target has no frontmatter fallback. Passing a fabricated agent would
+silently change global display and thinking behavior.
+
+**Control:** discriminated options and a pure `all` path with no agent.
+
+### `default` versus explicit `main`
+
+Both can launch the current Main model but the target picker displays them
+differently. Collapsing them would remove the existing unset diagnostic.
+
+**Control:** return `model.kind === "default"` when no global setting exists and
+`model.kind === "set"` for explicit `main`.
+
+### Main-model freshness
+
+Caching the new result could make `/model` changes invisible to later picker or
+launch calls.
+
+**Control:** resolve against the store's current `activeMainModel` on each
+call. Keep the existing `rememberMainModel()` wiring unchanged.
+
+### Display metadata leaking into launch
+
+A caller could accidentally pass the new selection result to child execution.
+
+**Control:** keep `assignment.launch` nested and make `resolveLaunch()` return
+only that nested object. Preserve the existing `Pick<SubagentConfigStore,
+"resolveLaunch">` in launch preparation.
+
+### Over-testing implementation details
+
+Tests that assert raw map reads or private selector helpers would preserve the
+shallow design.
+
+**Control:** test the pure resolver's semantic result and the command's
+rendered output. Keep only the existing parser and persistence tests that cover
+their own interfaces.
+
+### Scope drift
+
+The architecture review found other friction in Plan Mode, Analysis capture,
+Guardian context, dashboards, Session holders, and fake-Pi fixtures. None of
+those are part of this candidate.
+
+**Control:** no changes outside the listed files except a deliberate wording
+amendment to the existing `CONTEXT.md` entry if needed.
+
+---
+
+## 11. Rollback point
+
+This change has no data migration and no persisted-state change.
+
+If a picker behavior mismatch appears:
+
+1. keep the new pure selection tests as characterization;
+2. restore the command adapter's previous picker reads temporarily;
+3. keep `resolveAssignment()` and `resolveLaunch()` unchanged;
+4. isolate the mismatch to direct choice, suffix interpretation, or pending
+   state before retrying the picker migration.
+
+No Settings repair or user action is required for rollback.

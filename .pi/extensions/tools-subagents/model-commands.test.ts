@@ -166,6 +166,92 @@ describe("subagents model command", () => {
 		expect(config.edits).toHaveLength(0);
 	});
 
+	it("keeps an individual direct suffix visible in the model picker", async () => {
+		const config = memoryConfigStore({ agentModels: { worker: "openai/gpt-5.2:high" } });
+		const command = createSubagentsCommand({ registry: memoryRegistry([agent()]), config });
+		const { custom, screens } = screenCustom(["worker", undefined, undefined]);
+		const ctx = context({ mode: "tui", available: [gpt], custom });
+
+		await command.handler("", ctx);
+
+		expect(screens[1]).toContain("● openai/gpt-5.2");
+		expect(screens[1]).toContain("configured as openai/gpt-5.2:high");
+		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
+	});
+
+	it.each([
+		["unset", {}, "(unset; per-agent fallback)"],
+		["explicit main", { defaultModel: "main" }, "main → anthropic/main"],
+	] as const)("preserves the %s global row in the target picker", async (_name, initial, expected) => {
+		const config = memoryConfigStore(initial);
+		const command = createSubagentsCommand({ registry: memoryRegistry([agent()]), config });
+		const { custom, screens } = screenCustom([undefined]);
+		const ctx = context({ mode: "tui", custom });
+
+		await command.handler("", ctx);
+
+		expect(screens[0]).toContain(expected);
+		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
+	});
+
+	it("marks the direct suffix level when the pending model keeps its base", async () => {
+		const config = memoryConfigStore({ agentModels: { worker: "openai/gpt-5.2:high" } });
+		const command = createSubagentsCommand({ registry: memoryRegistry([agent()]), config });
+		const { custom, screens } = screenCustom(["worker", "openai/gpt-5.2", undefined, undefined, undefined]);
+		const ctx = context({ mode: "tui", available: [gpt], custom });
+
+		await command.handler("", ctx);
+
+		expect(screens[2]).toContain("Model: openai/gpt-5.2");
+		expect(screens[2]).toContain("● high");
+		expect(screens[2]).not.toContain("● inherit");
+		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
+	});
+
+	it("falls back to inherit when the pending model changes the base", async () => {
+		const config = memoryConfigStore({ agentModels: { worker: "openai/gpt-5.2:high" } });
+		const command = createSubagentsCommand({ registry: memoryRegistry([agent()]), config });
+		const { custom, screens } = screenCustom(["worker", "ollama/qwen3.8:27b", undefined, undefined, undefined]);
+		const ctx = context({ mode: "tui", available: [gpt, qwen], custom });
+
+		await command.handler("", ctx);
+
+		expect(screens[2]).toContain("Model: ollama/qwen3.8:27b");
+		expect(screens[2]).toContain("● Inherit global/Pi default");
+		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
+	});
+
+	it("keeps a direct thinking override ahead of a direct model suffix", async () => {
+		const config = memoryConfigStore({ agentModels: { worker: "openai/gpt-5.2:high" }, agentThinkingLevels: { worker: "low" } });
+		const command = createSubagentsCommand({ registry: memoryRegistry([agent()]), config });
+		const { custom, screens } = screenCustom(["worker", "openai/gpt-5.2", undefined, undefined, undefined]);
+		const ctx = context({ mode: "tui", available: [gpt], custom });
+
+		await command.handler("", ctx);
+
+		expect(screens[2]).toContain("● low");
+		expect(screens[2]).not.toContain("● high");
+		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
+	});
+
+	it("writes nothing while backing out of every picker screen", async () => {
+		const config = memoryConfigStore({ agentModels: { worker: "openai/gpt-5.2:high" }, agentThinkingLevels: { worker: "low" } });
+		const command = createSubagentsCommand({ registry: memoryRegistry([agent()]), config });
+		const { custom } = screenCustom(["worker", "openai/gpt-5.2", undefined, undefined, undefined]);
+		const ctx = context({ mode: "tui", available: [gpt], custom });
+
+		await command.handler("", ctx);
+
+		expect(ctx.ui.custom).toHaveBeenCalledTimes(5);
+		expect(config.updates).toHaveLength(0);
+		expect(config.edits).toHaveLength(0);
+	});
+
 	it("reports model assignments and applies model/thinking mutations", async () => {
 		const config = memoryConfigStore({
 			custom: true,

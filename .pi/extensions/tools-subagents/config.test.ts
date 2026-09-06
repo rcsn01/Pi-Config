@@ -9,6 +9,7 @@ import {
 	createSubagentConfigStore,
 	parseModelConfiguration,
 	resolveSubagentAssignment,
+	resolveSubagentAssignmentSelection,
 	splitModelThinkingSetting,
 	type SubagentAssignmentEdit,
 	type SubagentThinkingLevel,
@@ -176,6 +177,190 @@ describe("subagent model resolution", () => {
 			model: "openai/gpt-5.4",
 			thinkingLevel: "xhigh",
 		});
+	});
+});
+
+describe("subagent assignment selection", () => {
+	const cases = [
+		{
+			name: "an unset global model reports the default choice with an effective main assignment",
+			options: { target: { kind: "all" }, mainModel },
+			expected: {
+				model: { kind: "default" },
+				thinking: { kind: "default" },
+				assignment: {
+					modelSetting: "main",
+					launch: { model: "anthropic/claude-sonnet-4-6", thinkingLevel: undefined, contextWindow: undefined },
+					},
+			},
+		},
+		{
+			name: "an explicit global main setting stays distinct from the unset default",
+			options: { target: { kind: "all" }, config: { defaultModel: "main" }, mainModel },
+			expected: {
+				model: { kind: "set", setting: "main" },
+				thinking: { kind: "default" },
+				assignment: {
+					modelSetting: "main",
+					launch: { model: "anthropic/claude-sonnet-4-6", thinkingLevel: undefined, contextWindow: undefined },
+					},
+			},
+		},
+		{
+			name: "a global model suffix is direct metadata and beats global thinking",
+			options: { target: { kind: "all" }, config: { defaultModel: "openai/gpt:high", defaultThinkingLevel: "minimal" }, mainModel },
+			expected: {
+				model: { kind: "set", setting: "openai/gpt:high" },
+				modelSuffixThinkingLevel: "high",
+				thinking: { kind: "set", level: "minimal" },
+				assignment: {
+					modelSetting: "openai/gpt",
+					launch: { model: "openai/gpt", thinkingLevel: "high", contextWindow: undefined },
+					},
+			},
+		},
+		{
+			name: "an agent without a direct model inherits even when a global model exists",
+			options: { target: { kind: "agent", name: "worker" }, agent: agent({ model: "google/frontmatter" }), config: { defaultModel: "anthropic/global" }, mainModel },
+			expected: {
+				model: { kind: "inherit" },
+				thinking: { kind: "inherit" },
+				assignment: {
+					modelSetting: "anthropic/global",
+					launch: { model: "anthropic/global", thinkingLevel: undefined, contextWindow: undefined },
+					},
+			},
+		},
+		{
+			name: "an inheriting agent reports no direct suffix even when fallbacks carry one",
+			options: {
+				target: { kind: "agent", name: "worker" },
+				agent: agent({ model: "google/frontmatter:max" }),
+				config: { defaultModel: "openai/global:high", defaultThinkingLevel: "minimal" },
+				mainModel,
+			},
+			expected: {
+				model: { kind: "inherit" },
+				thinking: { kind: "inherit" },
+				assignment: {
+					modelSetting: "openai/global",
+					launch: { model: "openai/global", thinkingLevel: "high", contextWindow: undefined },
+					},
+			},
+		},
+		{
+			name: "a direct agent model keeps its suffix as direct metadata",
+			options: { target: { kind: "agent", name: "worker" }, agent: agent(), config: { agentModels: { worker: "openai/gpt:xhigh" } }, mainModel },
+			expected: {
+				model: { kind: "set", setting: "openai/gpt:xhigh" },
+				modelSuffixThinkingLevel: "xhigh",
+				thinking: { kind: "inherit" },
+				assignment: {
+					modelSetting: "openai/gpt",
+					launch: { model: "openai/gpt", thinkingLevel: "xhigh", contextWindow: undefined },
+					},
+			},
+		},
+		{
+			name: "a direct agent thinking level beats its direct model suffix",
+			options: {
+				target: { kind: "agent", name: "worker" },
+				agent: agent(),
+				config: { agentModels: { worker: "openai/gpt:xhigh" }, agentThinkingLevels: { worker: "low" } },
+				mainModel,
+			},
+			expected: {
+				model: { kind: "set", setting: "openai/gpt:xhigh" },
+				modelSuffixThinkingLevel: "xhigh",
+				thinking: { kind: "set", level: "low" },
+				assignment: {
+					modelSetting: "openai/gpt",
+					launch: { model: "openai/gpt", thinkingLevel: "low", contextWindow: undefined },
+					},
+			},
+		},
+		{
+			name: "an inheriting agent still inherits a global thinking level",
+			options: { target: { kind: "agent", name: "worker" }, agent: agent(), config: { defaultThinkingLevel: "medium" }, mainModel },
+			expected: {
+				model: { kind: "inherit" },
+				thinking: { kind: "inherit" },
+				assignment: {
+					modelSetting: "openai/test-model",
+					launch: { model: "openai/test-model", thinkingLevel: "medium", contextWindow: undefined },
+					},
+			},
+		},
+		{
+			name: "a global direct thinking level is reported as set",
+			options: { target: { kind: "all" }, config: { defaultThinkingLevel: "high" }, mainModel },
+			expected: {
+				model: { kind: "default" },
+				thinking: { kind: "set", level: "high" },
+				assignment: {
+					modelSetting: "main",
+					launch: { model: "anthropic/claude-sonnet-4-6", thinkingLevel: "high", contextWindow: undefined },
+					},
+			},
+		},
+	] as const;
+
+	for (const testCase of cases) {
+		it(testCase.name, () => {
+			expect(resolveSubagentAssignmentSelection(testCase.options)).toEqual(testCase.expected);
+		});
+	}
+
+	it("returns the complete semantic result for a mixed global and individual state", () => {
+		expect(resolveSubagentAssignmentSelection({
+				target: { kind: "agent", name: "worker" },
+				agent: agent(),
+				config: {
+					defaultModel: "openai/global:high",
+					agentThinkingLevels: { worker: "low" },
+				},
+				mainModel,
+			})).toEqual({
+				model: { kind: "inherit" },
+				thinking: { kind: "set", level: "low" },
+				assignment: {
+					modelSetting: "openai/global",
+					launch: {
+						model: "openai/global",
+						thinkingLevel: "low",
+						contextWindow: undefined,
+					},
+				},
+			});
+	});
+
+	it("resolves a concrete direct model without a Main model and keeps the main fallback error", () => {
+		expect(resolveSubagentAssignmentSelection({
+			target: { kind: "agent", name: "worker" },
+			agent: agent(),
+			config: { agentModels: { worker: "openai/gpt" } },
+			mainModel: undefined,
+		}).assignment.launch.model).toBe("openai/gpt");
+		expect(() => resolveSubagentAssignmentSelection({
+				target: { kind: "agent", name: "worker" },
+				agent: agent({ model: "" }),
+				config: {},
+				mainModel: undefined,
+			})).toThrow('Cannot resolve subagent model "main": the main session has no active model.');
+	});
+
+	it("propagates malformed selection settings unchanged", () => {
+		expect(() => resolveSubagentAssignmentSelection({
+			target: { kind: "all" }, config: { defaultModel: "" }, mainModel,
+		})).toThrow(/cannot be empty/);
+		expect(() => resolveSubagentAssignmentSelection({
+			target: { kind: "agent", name: "worker" }, agent: agent(),
+			config: { agentThinkingLevels: { worker: "ultra" } }, mainModel,
+		})).toThrow(/must be one of/);
+		expect(() => resolveSubagentAssignmentSelection({
+			target: { kind: "agent", name: "worker" }, agent: agent(),
+			config: { agentContextWindows: { worker: 0 } }, mainModel,
+		})).toThrow(/positive integer/);
 	});
 });
 
@@ -527,6 +712,40 @@ describe("subagent config store", () => {
 		expect(firstLaunch).not.toHaveProperty("modelSetting");
 		store.rememberMainModel({ provider: "anthropic", id: "second" });
 		expect(store.resolveLaunch(agent({ model: "" }))).toEqual({ model: "anthropic/second", thinkingLevel: "low" });
+	});
+
+	it("delegates selections to the pure resolver without writing", async () => {
+		const content = '{"subagents":{"defaultModel":"main","agentModels":{"worker":"openai/old"}}}';
+		const { settingsPath } = configHarness(content);
+		const store = createSubagentConfigStore({ settingsPath });
+		store.rememberMainModel(mainModel);
+		const snapshot = store.load();
+		const before = structuredClone(snapshot);
+
+		const current = store.resolveAssignmentSelection({ target: { kind: "agent", name: "worker" }, agent: agent(), snapshot });
+		expect(current).toEqual(resolveSubagentAssignmentSelection({
+			target: { kind: "agent", name: "worker" },
+			agent: agent(),
+			config: snapshot,
+			mainModel,
+		}));
+		const pending = store.resolveAssignmentSelection({
+			target: { kind: "agent", name: "worker" },
+			agent: agent(),
+			snapshot,
+			edit: { target: { kind: "agent", name: "worker" }, model: { kind: "inherit" } },
+		});
+
+		expect(pending.model).toEqual({ kind: "inherit" });
+		expect(pending.assignment.launch.model).toBe("anthropic/claude-sonnet-4-6");
+		expect(snapshot).toEqual(before);
+		expect(readFileSync(settingsPath, "utf8")).toBe(content);
+
+		await store.applyAssignmentEdit({ target: { kind: "agent", name: "worker" }, model: { kind: "inherit" } });
+		expect(store.resolveAssignmentSelection({ target: { kind: "agent", name: "worker" }, agent: agent() })).toEqual(pending);
+		store.rememberMainModel({ provider: "anthropic", id: "second" });
+		expect(store.resolveAssignmentSelection({ target: { kind: "all" } }).assignment.launch.model).toBe("anthropic/second");
+		expect(Object.keys(store.resolveLaunch(agent())).sort()).toEqual(["contextWindow", "model", "thinkingLevel"]);
 	});
 
 	it("repoints persistence and migration to the active Profile", async () => {
