@@ -195,6 +195,10 @@ extension.
 
 ## Subagent tooling
 
+- **Subagent assignment edit** — one semantic model/thinking change for either all
+  Subagents or one named Subagent. It owns set, inherit, and Pi-default meaning;
+  the same edit is previewed in memory and committed atomically to the current
+  Profile's Settings document.
 - **Subagent assignment resolution module** — the deep in-process module in
   `tools-subagents/config.ts` that owns assignment parsing and precedence, semantic
   model and thinking changes, Profile-aware `subagents` namespace persistence,

@@ -5,11 +5,12 @@ import { vi } from "vitest";
 import type { AgentConfig, AgentResult } from "../_shared/subagent-service.ts";
 import { createAgentRegistry, type AgentRegistry } from "./agent-registry.ts";
 import {
-	applySubagentConfigurationChanges,
+	applySubagentAssignmentEdit,
 	normalizeModelSetting,
 	parseModelConfiguration,
 	resolveSubagentAssignment,
 	type ExtensionConfig,
+	type SubagentAssignmentEdit,
 	type SubagentConfigStore,
 } from "./config.ts";
 import type { SpawnSubagentProcess } from "./child-execution.ts";
@@ -54,6 +55,7 @@ export function agentResult(overrides: Partial<AgentResult> = {}): AgentResult {
 export interface MemoryConfigStore extends SubagentConfigStore {
 	document: Record<string, unknown>;
 	updates: Record<string, unknown>[];
+	edits: SubagentAssignmentEdit[];
 }
 
 export function memoryConfigStore(initial: Record<string, unknown> = {}): MemoryConfigStore {
@@ -65,12 +67,14 @@ export function memoryConfigStore(initial: Record<string, unknown> = {}): Memory
 		},
 		document: structuredClone(initial),
 		updates: [],
+		edits: [],
 		load: () => {
 			const parsed = parseModelConfiguration(store.document);
 			return { ...parsed, maxConcurrency: store.document.maxConcurrency as number | undefined } satisfies ExtensionConfig;
 		},
-		async applyChanges(changes) {
-			store.document = applySubagentConfigurationChanges(structuredClone(store.document), changes);
+		async applyAssignmentEdit(edit) {
+			store.document = applySubagentAssignmentEdit(structuredClone(store.document), edit);
+			store.edits.push(structuredClone(edit));
 			store.updates.push(structuredClone(store.document));
 		},
 		rememberMainModel(model) {
@@ -89,7 +93,7 @@ export function memoryConfigStore(initial: Record<string, unknown> = {}): Memory
 		},
 		resolveAssignment(config, options = {}) {
 			let document: unknown = options.snapshot ?? store.document;
-			if (options.changes) document = applySubagentConfigurationChanges(document, options.changes);
+			if (options.edit) document = applySubagentAssignmentEdit(document, options.edit);
 			return resolveSubagentAssignment({
 				agentName: config.name,
 				config: document,

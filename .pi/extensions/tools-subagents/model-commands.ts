@@ -16,8 +16,8 @@ import {
 	normalizeThinkingLevel,
 	splitModelThinkingSetting,
 	THINKING_LEVELS,
+	type SubagentAssignmentEdit,
 	type SubagentAssignmentTarget,
-	type SubagentConfigurationChange,
 	type SubagentConfigStore,
 	type SubagentThinkingLevel,
 } from "./config.ts";
@@ -49,17 +49,39 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		return target === "all" ? { kind: "all" } : { kind: "agent", name: target };
 	}
 
-	function modelChange(target: string, value: string): SubagentConfigurationChange {
-		return value === "inherit"
-			? { kind: "inherit-model", agentName: target }
-			: { kind: "set-model", target: assignmentTarget(target), model: value };
+	function targetName(target: SubagentAssignmentTarget): string {
+		return target.kind === "all" ? "all" : target.name;
 	}
 
-	function thinkingChange(target: string, value: string): SubagentConfigurationChange {
-		if (value === "default") return { kind: "default-thinking" };
-		return value === "inherit"
-			? { kind: "inherit-thinking", agentName: target }
-			: { kind: "set-thinking", target: assignmentTarget(target), thinkingLevel: normalizeThinkingLevel(value) };
+	function modelEdit(target: SubagentAssignmentTarget, value: string): SubagentAssignmentEdit {
+		const setting = value.trim();
+		return setting.toLowerCase() === "inherit"
+			? { target, model: { kind: "inherit" } }
+			: { target, model: { kind: "set", setting: normalizeModelSetting(setting, `model for ${targetName(target)}`) } };
+	}
+
+	function thinkingEdit(target: SubagentAssignmentTarget, value: string): SubagentAssignmentEdit {
+		const level = value.trim().toLowerCase();
+		if (level === "default") return { target, thinking: { kind: "default" } };
+		if (level === "inherit") return { target, thinking: { kind: "inherit" } };
+		return { target, thinking: { kind: "set", level: normalizeThinkingLevel(level, `thinking level for ${targetName(target)}`) } };
+	}
+
+	function combinedEdit(
+		target: SubagentAssignmentTarget,
+		modelValue: string,
+		thinkingValue: string,
+	): SubagentAssignmentEdit {
+		return { ...modelEdit(target, modelValue), thinking: thinkingEdit(target, thinkingValue).thinking };
+	}
+
+	function requireKnownTarget(target: string, availableAgents: AgentConfig[], ctx: ExtensionContext): boolean {
+		if (target === "all" || availableAgents.some((candidate) => candidate.name === target)) return true;
+		ctx.ui.notify(
+			`Unknown subagent: ${target}. Available: ${availableAgents.map((item) => item.name).join(", ") || "none"}\n\n${SUBAGENT_MODEL_USAGE}`,
+			"error",
+		);
+		return false;
 	}
 
 	function contextDisplay(contextWindow: number | undefined): string {
@@ -164,37 +186,26 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		availableAgents: AgentConfig[],
 		ctx: ExtensionContext,
 	): Promise<void> {
-		const agent = availableAgents.find((candidate) => candidate.name === target);
-		if (target !== "all" && !agent) {
-			ctx.ui.notify(`Unknown subagent: ${target}. Available: ${availableAgents.map((item) => item.name).join(", ") || "none"}\n\n${SUBAGENT_MODEL_USAGE}`, "error");
-			return;
-		}
+		if (!requireKnownTarget(target, availableAgents, ctx)) return;
 
-		const value = rawValue.trim();
-		if (value.toLowerCase() === "inherit") {
-			if (target === "all") {
-				ctx.ui.notify(`"inherit" applies only to an individual agent.\n\n${SUBAGENT_MODEL_USAGE}`, "error");
-				return;
-			}
-			await configStore.applyChanges([{ kind: "inherit-model", agentName: target }]);
-			ctx.ui.notify(`${target} now inherits the global/frontmatter model setting.`, "info");
-			return;
-		}
-
-		let setting: string;
+		let edit: SubagentAssignmentEdit;
 		try {
-			setting = normalizeModelSetting(value, `model for ${target}`);
+			edit = modelEdit(assignmentTarget(target), rawValue);
+			const pending = edit.model!;
+			if (pending.kind === "set" && !(await validateAvailableModel(pending.setting, ctx))) return;
+			await configStore.applyAssignmentEdit(edit);
 		} catch (error) {
 			ctx.ui.notify(`${error instanceof Error ? error.message : String(error)}\n\n${SUBAGENT_MODEL_USAGE}`, "error");
 			return;
 		}
-		if (!(await validateAvailableModel(setting, ctx))) return;
 
-		await configStore.applyChanges([{ kind: "set-model", target: assignmentTarget(target), model: setting }]);
-		if (target === "all") {
-			ctx.ui.notify(`All subagents now use ${setting}; individual overrides were cleared.`, "info");
+		const model = edit.model!;
+		if (model.kind === "inherit") {
+			ctx.ui.notify(`${target} now inherits the global/frontmatter model setting.`, "info");
+		} else if (target === "all") {
+			ctx.ui.notify(`All subagents now use ${model.setting}; individual overrides were cleared.`, "info");
 		} else {
-			ctx.ui.notify(`${target} now uses ${setting}.`, "info");
+			ctx.ui.notify(`${target} now uses ${model.setting}.`, "info");
 		}
 	}
 
@@ -204,37 +215,26 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		availableAgents: AgentConfig[],
 		ctx: ExtensionContext,
 	): Promise<void> {
-		const agent = availableAgents.find((candidate) => candidate.name === target);
-		if (target !== "all" && !agent) {
-			ctx.ui.notify(`Unknown subagent: ${target}. Available: ${availableAgents.map((item) => item.name).join(", ") || "none"}\n\n${SUBAGENT_MODEL_USAGE}`, "error");
-			return;
-		}
+		if (!requireKnownTarget(target, availableAgents, ctx)) return;
 
-		const value = rawValue.trim().toLowerCase();
-		if (target === "all" && value === "default") {
-			await configStore.applyChanges([{ kind: "default-thinking" }]);
-			ctx.ui.notify("All subagents now use Pi's default thinking behavior; individual thinking overrides were cleared.", "info");
-			return;
-		}
-		if (target !== "all" && value === "inherit") {
-			await configStore.applyChanges([{ kind: "inherit-thinking", agentName: target }]);
-			ctx.ui.notify(`${target} now inherits the global/Pi default thinking level.`, "info");
-			return;
-		}
-
-		let level: SubagentThinkingLevel;
+		let edit: SubagentAssignmentEdit;
 		try {
-			level = normalizeThinkingLevel(value, `thinking level for ${target}`);
+			edit = thinkingEdit(assignmentTarget(target), rawValue);
+			await configStore.applyAssignmentEdit(edit);
 		} catch (error) {
 			ctx.ui.notify(`${error instanceof Error ? error.message : String(error)}\n\n${SUBAGENT_MODEL_USAGE}`, "error");
 			return;
 		}
 
-		await configStore.applyChanges([{ kind: "set-thinking", target: assignmentTarget(target), thinkingLevel: level }]);
-		if (target === "all") {
-			ctx.ui.notify(`All subagents now use ${level} thinking; individual thinking overrides were cleared.`, "info");
+		const thinking = edit.thinking!;
+		if (thinking.kind === "default") {
+			ctx.ui.notify("All subagents now use Pi's default thinking behavior; individual thinking overrides were cleared.", "info");
+		} else if (thinking.kind === "inherit") {
+			ctx.ui.notify(`${target} now inherits the global/Pi default thinking level.`, "info");
+		} else if (target === "all") {
+			ctx.ui.notify(`All subagents now use ${thinking.level} thinking; individual thinking overrides were cleared.`, "info");
 		} else {
-			ctx.ui.notify(`${target} now uses ${level} thinking.`, "info");
+			ctx.ui.notify(`${target} now uses ${thinking.level} thinking.`, "info");
 		}
 	}
 
@@ -248,24 +248,17 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		const agent = availableAgents.find((candidate) => candidate.name === target);
 		if (target !== "all" && !agent) throw new Error(`Unknown subagent: ${target}`);
 
-		const modelValue = rawModel.trim();
-		const inheritModel = modelValue.toLowerCase() === "inherit";
-		if (target === "all" && inheritModel) throw new Error('"inherit" applies only to an individual agent model.');
-		const modelSetting = inheritModel ? undefined : normalizeModelSetting(modelValue, `model for ${target}`);
-		if (modelSetting && !(await validateAvailableModel(modelSetting, ctx))) return;
+		const edit = combinedEdit(assignmentTarget(target), rawModel, rawThinking);
+		const model = edit.model!;
+		if (model.kind === "set" && !(await validateAvailableModel(model.setting, ctx))) return;
 
-		const thinkingValue = rawThinking.trim().toLowerCase();
-		const clearThinking = target === "all" && thinkingValue === "default";
-		const inheritThinking = target !== "all" && thinkingValue === "inherit";
-		if (!clearThinking && !inheritThinking) normalizeThinkingLevel(thinkingValue, `thinking level for ${target}`);
+		await configStore.applyAssignmentEdit(edit);
 
-		await configStore.applyChanges([
-			modelChange(target, inheritModel ? "inherit" : modelSetting!),
-			thinkingChange(target, clearThinking ? "default" : inheritThinking ? "inherit" : thinkingValue),
-		]);
-
-		const modelNote = inheritModel ? "inherited model" : modelSetting;
-		const thinkingNote = clearThinking ? "Pi default thinking" : inheritThinking ? "inherited thinking" : `${thinkingValue} thinking`;
+		const thinking = edit.thinking!;
+		const modelNote = model.kind === "inherit" ? "inherited model" : model.setting;
+		const thinkingNote = thinking.kind === "default"
+			? "Pi default thinking"
+			: thinking.kind === "inherit" ? "inherited thinking" : `${thinking.level} thinking`;
 		ctx.ui.notify(
 			target === "all"
 				? `All subagents now use ${modelNote} with ${thinkingNote}; individual overrides were cleared.`
@@ -336,7 +329,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		if (agent) {
 			const inherited = configStore.resolveAssignment(agent, {
 				snapshot: config,
-				changes: [{ kind: "inherit-model", agentName: target }],
+				edit: modelEdit({ kind: "agent", name: target }, "inherit"),
 			});
 			choices.push({
 				value: "inherit",
@@ -405,9 +398,9 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		const agent = target === "all" ? undefined : availableAgents.find((candidate) => candidate.name === target);
 		if (target !== "all" && !agent) throw new Error(`Unknown subagent: ${target}`);
 
-		const pendingModelChange = modelChange(target, modelChoice);
+		const pendingModelEdit = modelEdit(assignmentTarget(target), modelChoice);
 		const pendingAssignment = agent
-			? configStore.resolveAssignment(agent, { snapshot: config, changes: [pendingModelChange] })
+			? configStore.resolveAssignment(agent, { snapshot: config, edit: pendingModelEdit })
 			: undefined;
 		const pendingModelSetting = pendingAssignment?.modelSetting ?? modelChoice;
 		const catalogueModel = findCatalogueModel(pendingModelSetting, models, ctx);
@@ -446,7 +439,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		} else {
 			const inherited = configStore.resolveAssignment(agent!, {
 				snapshot: config,
-				changes: [pendingModelChange, { kind: "inherit-thinking", agentName: target }],
+				edit: { ...pendingModelEdit, thinking: { kind: "inherit" } },
 			});
 			items.push({
 				value: "inherit",
