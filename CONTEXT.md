@@ -122,14 +122,25 @@ extension.
   State, transitions, Profile rollback, tool projection, proposed-plan state,
   and ordering across Plan Runtime and Plan Review. Its events carry the raw
   ExtensionContext, and every effect runs guarded by Plan session currency.
-  Its internal Plan session currency and Pending-mode queue seams live beside
-  it in `workflows-plan/` and are private to its implementation; the
-  orchestration core keeps branch reconstruction, state commits, tool
-  projection, Profile apply/rollback, prompt/turn guarding, and Plan Review
-  host construction.
-- **Plan selection transition** — bookkeeping inside the Plan Mode lifecycle
-  that marks internal Profile application and restoration. Model and thinking
-  feedback emitted while this marker is active is not treated as a user selection.
+  Its internal Plan session currency, Pending-mode queue, and Plan profile
+  transition seams live beside it in `workflows-plan/` and are private to its
+  implementation; the orchestration core keeps branch reconstruction, state
+  commits, tool projection, prompt/turn guarding, and Plan Review host
+  construction, and routes every guarded Profile application, persistence,
+  default preservation, and rollback through the Plan profile transition seam.
+- **Plan profile transition** — the internal module in
+  `workflows-plan/plan-profile-transition.ts` that owns one currency-guarded
+  Profile transition: apply a target Profile through Pi, optionally persist it
+  to the Session's Plan-mode persistence (skipping default-sentinel profiles),
+  preserve captured normal defaults, and, when a step fails after the target
+  applied, roll back to a fallback Profile before reporting the primary and
+  rollback errors as data. It owns the transition marker; notification text,
+  Plan State commits, tool projection, and runtime warming stay in the
+  lifecycle core.
+- **Plan selection transition** — the marker the Plan profile transition
+  module holds while a guarded Profile application or restoration is in
+  flight; Model and thinking feedback emitted while this marker is active is
+  not treated as a user selection.
 - **Plan Review host** — the narrow dependency interface the Plan Review
   controller receives instead of the whole lifecycle: plan snapshot access,
   session-profile binding lookup, Plan Mode enter/exit, prompted-plan
