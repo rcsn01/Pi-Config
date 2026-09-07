@@ -86,6 +86,12 @@ export interface RunSubagentOptions {
 	/** Main-session namespace used only to derive an isolated child cache-affinity ID. */
 	cacheAffinitySeed?: string;
 	onUpdate?: (progress: AgentProgress) => void;
+	/**
+	 * Receives events in emission order. `started` precedes child work and one
+	 * `completed` or `failed` event ends a child result. Execution waits for each
+	 * returned promise. A rejected consumer rejects execution without changing
+	 * the result status.
+	 */
 	onProgress?: (event: SubagentProgressEvent, progress?: AgentProgress) => void | Promise<void>;
 }
 
@@ -99,6 +105,11 @@ export interface RunSubagentsParallelOptions {
 	/** Main-session namespace shared by every child in this parallel invocation. */
 	cacheAffinitySeed?: string;
 	onUpdate?: (index: number, result: AgentResult) => void;
+	/**
+	 * Receives ordered, awaited progress for each child index. Different indices
+	 * may interleave, and fail-fast batch rejection does not wait for other
+	 * children to finish winding down.
+	 */
 	onProgress?: (index: number, event: SubagentProgressEvent, progress?: AgentProgress) => void | Promise<void>;
 }
 

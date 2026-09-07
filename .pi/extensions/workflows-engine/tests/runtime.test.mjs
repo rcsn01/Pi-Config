@@ -26,6 +26,33 @@ async function tempProject() {
   return mkdtemp(path.join(os.tmpdir(), 'workflow-runtime-test-'));
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((settle) => { resolve = settle; });
+  return { promise, resolve };
+}
+
+const workflowTestAgent = {
+  name: 'worker',
+  description: 'worker test agent',
+  tools: [],
+  model: 'test-model',
+  systemPrompt: '',
+  filePath: 'worker.md',
+};
+
+function registerAdapterSubagents({ runSubagent, runSubagentsParallel = async () => { throw new Error('not used'); } }) {
+  subagentService.clearSubagentService();
+  return subagentService.registerSubagentService({
+    id: 'workflow-adapter-test',
+    registerAgent() {},
+    unregisterAgent() {},
+    loadAgents: () => [workflowTestAgent],
+    runSubagent,
+    runSubagentsParallel,
+  });
+}
+
 function registerFakeSubagents(respond) {
   const calls = [];
   const agents = ['default', 'explorer', 'researcher', 'worker'].map((name) => ({
@@ -46,6 +73,7 @@ function registerFakeSubagents(respond) {
       const agent = typeof options.agent === 'string' ? options.agent : options.agent.name;
       const task = options.task || options.prompt || '';
       calls.push({ agent, task, cacheAffinitySeed: options.cacheAffinitySeed });
+      await options.onProgress?.({ type: 'started', agent, task });
       const output = await respond({ agent, task, cwd: options.cwd, calls });
       const progress = {
         agent,
@@ -57,8 +85,7 @@ function registerFakeSubagents(respond) {
         durationMs: 1,
         lastMessage: output,
       };
-      options.onUpdate?.(progress);
-      return {
+      const result = {
         agent,
         task,
         output,
@@ -67,6 +94,10 @@ function registerFakeSubagents(respond) {
         model: 'test-model',
         usage: { input: 4, output: 6, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
       };
+      options.onUpdate?.(progress);
+      await options.onProgress?.({ type: 'message', agent, message: output, tokens: progress.tokens }, progress);
+      await options.onProgress?.({ type: 'completed', agent, result }, progress);
+      return result;
     },
     async runSubagentsParallel() { throw new Error('not used by workflow runtime'); },
   });
@@ -100,19 +131,13 @@ function registerFailedStatusSubagents(result = failedStatusResult()) {
     id: 'workflow-status-test',
     registerAgent() {},
     unregisterAgent() {},
-    loadAgents: () => [{
-      name: 'worker',
-      description: 'worker test agent',
-      tools: [],
-      model: 'test-model',
-      systemPrompt: '',
-      filePath: 'worker.md',
-    }],
-    async runSubagent() {
+    loadAgents: () => [workflowTestAgent],
+    async runSubagent(options) {
+      await options.onProgress?.({ type: 'failed', agent: result.agent, result, error: result.output }, result.progress);
       return result;
     },
     async runSubagentsParallel(options) {
-      options.onUpdate?.(0, result);
+      await options.onProgress?.(0, { type: 'failed', agent: result.agent, result, error: result.output }, result.progress);
       return [result];
     },
   });
@@ -365,7 +390,76 @@ test('abort marks the run stopped and preserves completed keyed results', async 
   }
 });
 
-test('single subagent adaptation emits failed from authoritative status', async () => {
+test('single subagent adaptation passes authoritative events through unchanged', async () => {
+  const progress = failedStatusResult().progress;
+  progress.status = 'completed';
+  const result = { ...failedStatusResult(), output: 'done', progress };
+  const authoritative = [
+    { type: 'started', agent: 'worker', task: 'inspect' },
+    { type: 'tool_call', agent: 'worker', tool: 'read', args: 'file.ts' },
+    { type: 'tool_result', agent: 'worker', tool: 'read', args: 'file.ts' },
+    { type: 'message', agent: 'worker', message: 'done', tokens: 4 },
+    { type: 'completed', agent: 'worker', result },
+  ];
+  const unregister = registerAdapterSubagents({
+    async runSubagent(options) {
+      const misleading = { ...progress, currentTool: 'ignored', lastMessage: 'ignored', recentTools: [{ tool: 'ignored', args: '' }] };
+      options.onUpdate?.(misleading);
+      options.onUpdate?.(misleading);
+      for (const event of authoritative) await options.onProgress?.(event, progress);
+      return result;
+    },
+  });
+  const observed = [];
+  try {
+    assert.equal(await workflowSubagentRunner.runSubagent({
+      agent: 'worker',
+      prompt: 'inspect',
+      cwd: process.cwd(),
+      onProgress: (event) => observed.push(event),
+    }), result);
+    assert.deepEqual(observed, authoritative);
+  } finally {
+    unregister();
+  }
+});
+
+test('single subagent adaptation awaits asynchronous progress consumers', async () => {
+  const gate = deferred();
+  const delivered = [];
+  const result = { ...failedStatusResult(), output: 'done' };
+  result.progress.status = 'completed';
+  const unregister = registerAdapterSubagents({
+    async runSubagent(options) {
+      await options.onProgress?.({ type: 'started', agent: 'worker', task: 'inspect' }, result.progress);
+      delivered.push('service-after-started');
+      await options.onProgress?.({ type: 'completed', agent: 'worker', result }, result.progress);
+      return result;
+    },
+  });
+  let settled = false;
+  try {
+    const running = workflowSubagentRunner.runSubagent({
+      agent: 'worker',
+      prompt: 'inspect',
+      cwd: process.cwd(),
+      onProgress: async (event) => {
+        delivered.push(event.type);
+        if (event.type === 'started') await gate.promise;
+      },
+    }).finally(() => { settled = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(delivered, ['started']);
+    assert.equal(settled, false);
+    gate.resolve();
+    await running;
+    assert.deepEqual(delivered, ['started', 'service-after-started', 'completed']);
+  } finally {
+    unregister();
+  }
+});
+
+test('authoritative failure is forwarded once and not reconstructed from the result', async () => {
   const fake = registerFailedStatusSubagents();
   const events = [];
   try {
@@ -376,30 +470,89 @@ test('single subagent adaptation emits failed from authoritative status', async 
       onProgress: (event) => events.push(event),
     });
     assert.equal(result, fake.result);
-    assert.equal(events.at(-1).type, 'failed');
-    assert.equal(events.at(-1).result, fake.result);
-    assert.equal(events.at(-1).error, 'Subagent reported failure');
+    assert.deepEqual(events, [{ type: 'failed', agent: 'worker', result: fake.result, error: 'Subagent reported failure' }]);
   } finally {
     fake.unregister();
   }
 });
 
-test('parallel subagent adaptation emits failed from authoritative status', async () => {
-  const fake = registerFailedStatusSubagents();
+test('single subagent adaptation reports pre-terminal execution exceptions once', async () => {
+  const executionError = new Error('setup failed');
+  const unregister = registerAdapterSubagents({
+    async runSubagent() { throw executionError; },
+  });
   const events = [];
   try {
-    const results = await workflowSubagentRunner.runSubagentsParallel({
-      tasks: [{ agent: 'worker', prompt: 'report failure' }],
-      cwd: process.cwd(),
-      onProgress: (index, event) => events.push({ index, event }),
-    });
-    assert.equal(results[0], fake.result);
-    assert.equal(events.at(-1).index, 0);
-    assert.equal(events.at(-1).event.type, 'failed');
-    assert.equal(events.at(-1).event.result, fake.result);
-    assert.equal(events.at(-1).event.error, 'Subagent reported failure');
+    await assert.rejects(
+      workflowSubagentRunner.runSubagent({
+        agent: 'worker',
+        prompt: 'inspect',
+        cwd: process.cwd(),
+        onProgress: (event) => events.push(event),
+      }),
+      (error) => error === executionError,
+    );
+    assert.deepEqual(events, [{ type: 'failed', agent: 'worker', error: 'setup failed' }]);
   } finally {
-    fake.unregister();
+    unregister();
+  }
+});
+
+test('single subagent adaptation propagates consumer rejection without a synthetic failure', async () => {
+  const consumerError = new Error('store append failed');
+  let callbacks = 0;
+  const unregister = registerAdapterSubagents({
+    async runSubagent(options) {
+      await options.onProgress?.({ type: 'started', agent: 'worker', task: 'inspect' });
+      return failedStatusResult();
+    },
+  });
+  try {
+    await assert.rejects(
+      workflowSubagentRunner.runSubagent({
+        agent: 'worker',
+        prompt: 'inspect',
+        cwd: process.cwd(),
+        onProgress: async () => {
+          callbacks++;
+          throw consumerError;
+        },
+      }),
+      (error) => error === consumerError,
+    );
+    assert.equal(callbacks, 1);
+  } finally {
+    unregister();
+  }
+});
+
+test('parallel subagent adaptation preserves indices and per-child event order', async () => {
+  const first = failedStatusResult();
+  first.progress.status = 'completed';
+  first.output = 'first';
+  const second = { ...failedStatusResult(), agent: 'explorer', output: 'second', progress: { ...failedStatusResult().progress, agent: 'explorer', status: 'completed' } };
+  const unregister = registerAdapterSubagents({
+    async runSubagent() { throw new Error('not used'); },
+    async runSubagentsParallel(options) {
+      options.onUpdate?.(0, first);
+      await options.onProgress?.(0, { type: 'started', agent: 'worker', task: 'first' }, first.progress);
+      await options.onProgress?.(1, { type: 'started', agent: 'explorer', task: 'second' }, second.progress);
+      await options.onProgress?.(0, { type: 'completed', agent: 'worker', result: first }, first.progress);
+      await options.onProgress?.(1, { type: 'completed', agent: 'explorer', result: second }, second.progress);
+      return [first, second];
+    },
+  });
+  const observed = [];
+  try {
+    const results = await workflowSubagentRunner.runSubagentsParallel({
+      tasks: [{ agent: 'worker', prompt: 'first' }, { agent: 'explorer', prompt: 'second' }],
+      cwd: process.cwd(),
+      onProgress: (index, event) => observed.push([index, event.type]),
+    });
+    assert.deepEqual(results, [first, second]);
+    assert.deepEqual(observed, [[0, 'started'], [1, 'started'], [0, 'completed'], [1, 'completed']]);
+  } finally {
+    unregister();
   }
 });
 

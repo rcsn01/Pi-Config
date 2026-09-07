@@ -248,8 +248,10 @@ extension.
   path. Its private Child event ingestion module owns stdout framing, JSON event
   meaning, progress and usage state, terminal Subagent result status, timing
   input, output selection, truncation, and terminal result construction. It
-  receives prepared requests; Pi result rendering stays in the invocation
-  adapter.
+  delivers authoritative progress to consumers in emission order per child,
+  and child execution settles only after asynchronous progress consumption
+  settles. It receives prepared requests; Pi result rendering stays in the
+  invocation adapter.
 - **Subagent invocation adapter** — the Pi-facing deep module for one `subagent`
   tool call: selects single or parallel mode, publishes immutable live snapshots,
   formats final text and details, and reads authoritative Subagent result status

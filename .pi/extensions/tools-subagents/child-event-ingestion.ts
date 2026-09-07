@@ -101,9 +101,29 @@ export function createSubagentChildEventIngestion(
 	let recentToolCount = 0;
 	let lastMessage = "";
 	let streamedText = "";
+	let progressDelivery = Promise.resolve();
+	let progressConsumerFailed = false;
+	let progressConsumerError: unknown;
 
 	const emitProgress = (event: SubagentProgressEvent): void => {
-		void options.onProgress?.(event, progress);
+		if (!options.onProgress) return;
+		const snapshot: AgentProgress = {
+			...progress,
+			recentTools: progress.recentTools.map((tool) => ({ ...tool })),
+		};
+		progressDelivery = progressDelivery.then(async () => {
+			if (progressConsumerFailed) return;
+			try {
+				await options.onProgress?.(event, snapshot);
+			} catch (error) {
+				progressConsumerFailed = true;
+				progressConsumerError = error;
+			}
+		});
+	};
+	const drainProgress = async (): Promise<void> => {
+		await progressDelivery;
+		if (progressConsumerFailed) throw progressConsumerError;
 	};
 	const updateThrottle = createThrottle(() => {
 		progress.durationMs = Date.now() - startedAt;
@@ -254,15 +274,16 @@ export function createSubagentChildEventIngestion(
 			}
 
 			if (progress.status === "completed") {
-				await options.onProgress?.({ type: "completed", agent: options.agentName, result }, progress);
+				emitProgress({ type: "completed", agent: options.agentName, result });
 			} else {
-				await options.onProgress?.({
+				emitProgress({
 					type: "failed",
 					agent: options.agentName,
 					result,
 					error: progress.error || result.output || `Subagent ${options.agentName} failed`,
-				}, progress);
+				});
 			}
+			await drainProgress();
 			return result;
 		},
 	};
