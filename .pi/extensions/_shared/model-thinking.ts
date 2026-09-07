@@ -27,3 +27,21 @@ export const THINKING_DESCRIPTIONS: Record<ModelThinkingLevel, string> = {
 	xhigh: "Extra-high reasoning",
 	max: "Maximum reasoning",
 };
+
+const THINKING_LEVEL_LIST = MODEL_THINKING_LEVELS.join(", ");
+
+/**
+ * Validate user-supplied thinking-level input: trims, lowercases, and checks
+ * membership in the closed vocabulary. Throws
+ * `${label} must be one of: ${THINKING_LEVEL_LIST}.` on anything else.
+ */
+export function normalizeThinkingLevel(value: unknown, options: { label: string }): ModelThinkingLevel {
+	if (typeof value !== "string") {
+		throw new Error(`${options.label} must be one of: ${THINKING_LEVEL_LIST}.`);
+	}
+	const normalized = value.trim().toLowerCase();
+	if (!MODEL_THINKING_LEVELS.includes(normalized as SupportedModelThinkingLevel)) {
+		throw new Error(`${options.label} must be one of: ${THINKING_LEVEL_LIST}.`);
+	}
+	return normalized as ModelThinkingLevel;
+}

@@ -21,6 +21,7 @@ import {
 	type PiNativeDefaults,
 } from "./pi-defaults.ts";
 import { matchFamily } from "./model-families.ts";
+import { ModelReferenceError, resolveModelReference, validateContextWindow } from "./model-reference.ts";
 import { MODEL_THINKING_LEVELS, type SupportedModelThinkingLevel } from "./model-thinking.ts";
 import { PLAN_STATE_ENTRY_TYPE } from "./session-entries.ts";
 
@@ -122,13 +123,6 @@ export function resolveContextWindow(contextWindow: number): number {
 function requiredNonEmptyString(value: unknown, label: string): string {
 	if (typeof value !== "string" || !value.trim()) throw new Error(`${label} must be a non-empty string.`);
 	return value;
-}
-
-function validateContextWindow(value: unknown, label: string): number {
-	if (!Number.isInteger(value) || (value as number) <= 0) {
-		throw new Error(`${label} must be a positive integer.`);
-	}
-	return value as number;
 }
 
 function validateContextWindows(value: unknown): Record<string, number> {
@@ -337,30 +331,6 @@ function resolveStoredSelection(
 	};
 }
 
-/** Refresh the registry for one provider and return its catalogue model. */
-async function resolveProfileModel(
-	ctx: ExtensionContext,
-	provider: string,
-	modelId: string,
-	label: string,
-): Promise<Model<any>> {
-	const refresh = await ctx.modelRegistry.refresh({ allowNetwork: false, providers: [provider] });
-	if (refresh.aborted) throw new Error(`Refreshing ${provider} was aborted.`);
-	const refreshError = refresh.errors.get(provider);
-	if (refreshError) throw refreshError;
-	const model = ctx.modelRegistry.find(provider, modelId);
-	if (!model) throw new Error(`${label} model ${provider}/${modelId} is unavailable.`);
-	if (
-		ctx.scopedModels.length > 0 &&
-		!ctx.scopedModels.some((entry) =>
-			entry.model.provider === provider && entry.model.id === modelId
-		)
-	) {
-		throw new Error(`${label} model ${provider}/${modelId} is outside this session's model scope.`);
-	}
-	return model;
-}
-
 async function applyResolvedModelSelection(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -430,7 +400,20 @@ export async function applyModelSelection(
 				: { ...currentModel, contextWindow };
 		}
 	} else {
-		const catalogueModel = await resolveProfileModel(ctx, resolved.provider, resolved.modelId, options.label);
+		let catalogueModel: Model<any>;
+		try {
+			catalogueModel = await resolveModelReference(ctx, { provider: resolved.provider, modelId: resolved.modelId }, {
+				label: options.label,
+				refresh: true,
+			});
+		} catch (error) {
+			// The raw provider error (message and identity) survives exactly as the
+			// previous inline implementation's re-throw.
+			if (error instanceof ModelReferenceError && error.reason === "refresh" && error.cause instanceof Error) {
+				throw error.cause;
+			}
+			throw error;
+		}
 		const contextWindow = context.kind === "catalogue"
 			? catalogueModel.contextWindow
 			: context.kind === "stored"

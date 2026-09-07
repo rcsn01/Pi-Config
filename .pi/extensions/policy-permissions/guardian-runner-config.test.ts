@@ -58,7 +58,8 @@ vi.mock("../_shared/observability.ts", () => ({
 	getObservabilityService: () => ({ isActive: () => false, publish: vi.fn() }),
 }));
 
-import { disposeAutoReviewer, runAutoReviewer } from "./guardian-runner.ts";
+import { disposeAutoReviewer, resolveGuardianModel, runAutoReviewer } from "./guardian-runner.ts";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -68,6 +69,14 @@ afterEach(async () => {
 });
 
 describe("Guardian runner profile configuration", () => {
+	it("rejects a guardian model spec with an empty provider instead of falling back to the default", async () => {
+		const runtime = { getModel: vi.fn(() => undefined) } as unknown as ModelRuntime;
+
+		await expect(resolveGuardianModel("/id", runtime))
+			.rejects.toThrow('guardian model "/id" is not a valid model reference.');
+		expect(runtime.getModel).not.toHaveBeenCalled();
+	});
+
 	it("creates the isolated session with the selected model, thinking, and context", async () => {
 		const root = mkdtempSync(join(tmpdir(), "guardian-runner-config-"));
 		roots.push(root);

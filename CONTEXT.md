@@ -170,6 +170,14 @@ extension.
   owns the queued request, its `plan-pending` status surface, application at
   agent settle, and cancellation on Session start, branch change, and Session
   stop; the enter/exit transitions it defers stay in the lifecycle core.
+- **Model reference** — one designation of a model in qualified
+  (`provider/model`), bare-id, or `provider/model:thinking` shape. The Model
+  reference module in `_shared/model-reference.ts` owns parsing, resolution
+  against a model lookup with refresh and the scoped-models invariant (default
+  enforce, explicitly waivable), typed resolution errors, and shared
+  context-window validation; adapters render their own error text. Symbolic
+  vocabularies (`main`, `default` sentinels) stay domain-owned.
+  Pi-native-defaults read/write live in `pi-defaults.ts`.
 - **Model-selection lifecycle** — the deep in-process module in
   `ui-model-selector/` that owns one Session's operation admission, disposal
   draining, initialization decisions, interactive selection ordering, Profile

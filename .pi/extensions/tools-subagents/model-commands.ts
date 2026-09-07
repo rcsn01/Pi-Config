@@ -7,6 +7,7 @@ import {
 	modelKey,
 } from "../_shared/model-picker.ts";
 import { THINKING_DESCRIPTIONS } from "../_shared/model-thinking.ts";
+import { resolveModelReference } from "../_shared/model-reference.ts";
 import { pickSelectScreen, type SelectScreenItem } from "../_shared/select-screen.ts";
 import type { AgentConfig } from "../_shared/subagent-service.ts";
 import { agentRegistry, type AgentRegistry } from "./agent-registry.ts";
@@ -379,18 +380,17 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		});
 	}
 
-	function findCatalogueModel(
+	async function findCatalogueModel(
 		reference: string,
 		models: readonly Model<Api>[],
 		ctx: ExtensionContext,
-	): Model<Api> | undefined {
+	): Promise<Model<Api> | undefined> {
 		const target = reference === "main" ? configStore.resolveMainModel() : reference;
 		const listed = models.find((model) => modelKey(model) === target);
 		if (listed) return listed;
-		const slash = target.indexOf("/");
-		return slash > 0
-			? ctx.modelRegistry.find(target.slice(0, slash), target.slice(slash + 1))
-			: undefined;
+		// The child Pi process enforces model scope and auth at launch; the picker
+		// only needs a catalogue match here, so scope is deliberately ignored.
+		return resolveModelReference(ctx, target, { optional: true, scope: "ignore" });
 	}
 
 	async function selectSubagentThinking(
@@ -408,7 +408,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		const currentSelection = targetSelection(target, availableAgents, { snapshot: config });
 		const pendingSelection = targetSelection(target, availableAgents, { snapshot: config, edit: pendingModelEdit });
 		const pendingModelSetting = pendingSelection.assignment.modelSetting;
-		const catalogueModel = findCatalogueModel(pendingModelSetting, models, ctx);
+		const catalogueModel = await findCatalogueModel(pendingModelSetting, models, ctx);
 		const supported = catalogueModel
 			? getSupportedThinkingLevels(catalogueModel).map((level) => normalizeThinkingLevel(level))
 			: [...THINKING_LEVELS];

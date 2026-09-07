@@ -1,5 +1,5 @@
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { MODEL_THINKING_LEVELS } from "../_shared/model-thinking.ts";
+import { normalizeThinkingLevel } from "../_shared/model-thinking.ts";
 import {
 	mutateSettingsDocument,
 	readSettingsDocument,
@@ -31,8 +31,10 @@ export function parseGuardianSettings(document: unknown): GuardianSettings | und
 	if (!isRecord(document.guardian)) throw new Error("guardian must be a JSON object.");
 
 	const raw = document.guardian;
-	const thinkingLevel = raw.thinkingLevel;
-	if (typeof thinkingLevel !== "string" || !MODEL_THINKING_LEVELS.includes(thinkingLevel as ModelThinkingLevel)) {
+	let thinkingLevel: ModelThinkingLevel;
+	try {
+		thinkingLevel = normalizeThinkingLevel(raw.thinkingLevel, { label: "guardian.thinkingLevel" });
+	} catch {
 		throw new Error("guardian.thinkingLevel must be one of off, minimal, low, medium, high, xhigh, or max.");
 	}
 	if (!Number.isInteger(raw.contextWindow) || (raw.contextWindow as number) <= 0) {
@@ -42,7 +44,7 @@ export function parseGuardianSettings(document: unknown): GuardianSettings | und
 	return {
 		provider: requiredString(raw.provider, "provider"),
 		modelId: requiredString(raw.modelId, "modelId"),
-		thinkingLevel: thinkingLevel as ModelThinkingLevel,
+		thinkingLevel,
 		contextWindow: raw.contextWindow as number,
 	};
 }
