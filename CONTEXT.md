@@ -237,7 +237,7 @@ extension.
   resolution exactly once, and cache-affinity identity derivation; scheduling and child
   process lifetime stay outside.
 - **Subagent result status** — the authoritative `AgentProgress.status` meaning
-  shared across Subagent execution, invocation, rendering, and workflow adapters.
+  shared across Subagent execution, invocation, rendering, and Workflow.
   `pending` and `running` are nonterminal; `completed` and `failed` are terminal.
   The Child event ingestion module computes terminal status from the process
   outcome and captured error. Consumers read status instead of inferring outcome
@@ -258,11 +258,15 @@ extension.
   when applying Pi's error flag. The Subagent execution module owns scheduling
   and calls child execution directly.
 - **Subagent execution module** — the deep in-process module for one-task and
-  bounded batch execution. It owns launch preparation dispatch, configured or
-  caller-selected concurrency, ordered results, and immutable task-state
-  snapshots behind one interface. Direct one-task calls preserve native
-  progress callbacks; the Pi invocation adapter uses the batch snapshot path.
-  Child process lifetime stays behind the Subagent child execution seam.
+  bounded batch execution. It owns execution behind the registered cross-extension
+  Subagent service seam, launch preparation dispatch, named request resolution
+  through Subagent launch preparation, configured or caller-selected concurrency,
+  ordered results, immutable task-state snapshots, and repair of a missing
+  terminal event when prepared child execution rejects — preserving progress-
+  consumer and execution error identity instead of masking them. Direct one-task
+  calls preserve native progress callbacks; the Pi invocation adapter uses the
+  batch snapshot path. Child process lifetime stays behind the Subagent child
+  execution seam.
 - **Repo query batch** — the read-only batched evidence tool (`repo_query`) behind
   the subagent runner: one `executeRepoQuery` interface; validation, path safety,
   dedupe, truncation, and formatting hide inside.

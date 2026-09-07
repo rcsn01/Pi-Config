@@ -71,6 +71,8 @@ Rules:
 
 `dependsOn` can declare downstream dependencies. `/workflow restart <run-id> <key>` invalidates the selected key and any keys projected from explicit dependency events.
 
+`agent_started` records an admitted launch attempt: the runtime persists it before Subagent launch preflight validates the agent name and launch configuration. A preflight or execution rejection appends `agent_failed`, so the event stream always contains the complete attempt. A misspelled agent name may therefore create the requested worktree before the launch fails; the worktree remains governed by the existing preservation policy.
+
 ## Trust Model
 
 - Bundled workflows are trusted extension code.
