@@ -27,6 +27,17 @@ async function finish(
 	return ingestion.finish({ exitCode: 0, stderr: "", ...outcome });
 }
 
+function deferred() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((settle) => { resolve = settle; });
+	return { promise, resolve };
+}
+
+async function flushMicrotasks(): Promise<void> {
+	await Promise.resolve();
+	await Promise.resolve();
+}
+
 afterEach(() => {
 	vi.useRealTimers();
 });
@@ -252,6 +263,103 @@ describe("Subagent child event ingestion", () => {
 		].join(""));
 		const result = await finish(ingestion);
 		expect(result.timing).toMatchObject({ partial: false, anomalyCount: 0 });
+	});
+
+	it("delivers asynchronous progress serially and drains it before finish settles", async () => {
+		const firstGate = deferred();
+		const secondGate = deferred();
+		const terminalGate = deferred();
+		const started: string[] = [];
+		const settled: string[] = [];
+		const ingestion = createSubagentChildEventIngestion({
+			agentName: "worker",
+			task: "inspect",
+			model: "openai/launch",
+			onProgress: async (event) => {
+				started.push(event.type);
+				const gate = event.type === "message" ? firstGate : event.type === "tool_call" ? secondGate : terminalGate;
+				await gate.promise;
+				settled.push(event.type);
+			},
+		});
+		ingestion.write(line({ type: "message_update", message: { role: "assistant", content: "first" } }));
+		ingestion.write(line({ type: "tool_execution_start", toolName: "read", args: { path: "file.ts" } }));
+		let finishSettled = false;
+		const finishing = finish(ingestion).finally(() => { finishSettled = true; });
+
+		await flushMicrotasks();
+		expect(started).toEqual(["message"]);
+		expect(finishSettled).toBe(false);
+		firstGate.resolve();
+		await vi.waitFor(() => expect(started).toEqual(["message", "tool_call"]));
+		expect(settled).toEqual(["message"]);
+		secondGate.resolve();
+		await vi.waitFor(() => expect(started).toEqual(["message", "tool_call", "completed"]));
+		expect(finishSettled).toBe(false);
+		terminalGate.resolve();
+		await finishing;
+		expect(settled).toEqual(["message", "tool_call", "completed"]);
+	});
+
+	it("snapshots progress when an event enters the delivery queue", async () => {
+		const gate = deferred();
+		const snapshots: AgentProgress[] = [];
+		const ingestion = createSubagentChildEventIngestion({
+			agentName: "worker",
+			task: "inspect",
+			model: "openai/launch",
+			onProgress: async (event, progress) => {
+				if (event.type === "tool_result") {
+					await gate.promise;
+					snapshots.push(progress!);
+				}
+			},
+		});
+		ingestion.write(line({ type: "tool_execution_start", toolName: "read", args: { path: "first.ts" } }));
+		ingestion.write(line({ type: "tool_execution_end" }));
+		ingestion.write(line({ type: "tool_execution_start", toolName: "edit", args: { path: "second.ts" } }));
+		ingestion.write(line({ type: "tool_execution_end" }));
+		const finishing = finish(ingestion);
+
+		await flushMicrotasks();
+		gate.resolve();
+		const result = await finishing;
+		expect(snapshots[0]).toMatchObject({
+			status: "running",
+			toolCount: 1,
+			recentTools: [{ tool: "read", args: "first.ts" }],
+		});
+		expect(snapshots[0].recentTools).not.toBe(result.progress.recentTools);
+		expect(snapshots[0].recentTools[0]).not.toBe(result.progress.recentTools[0]);
+	});
+
+	it("contains and propagates the first progress consumer rejection", async () => {
+		const rejection = new Error("progress persistence failed");
+		const invoked: string[] = [];
+		const unhandled: unknown[] = [];
+		const onUnhandled = (error: unknown) => { unhandled.push(error); };
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			const ingestion = createSubagentChildEventIngestion({
+				agentName: "worker",
+				task: "inspect",
+				model: "openai/launch",
+				onProgress: async (event) => {
+					invoked.push(event.type);
+					if (event.type === "message") throw rejection;
+				},
+			});
+			ingestion.write(line({ type: "message_update", message: { role: "assistant", content: "first" } }));
+			ingestion.write(line({ type: "tool_execution_start", toolName: "read", args: { path: "file.ts" } }));
+			ingestion.write(line({ type: "tool_execution_end" }));
+
+			await expect(finish(ingestion)).rejects.toBe(rejection);
+			await flushMicrotasks();
+			expect(invoked).toEqual(["message"]);
+			expect(unhandled).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
 	});
 
 	it("runs the first update immediately, coalesces later updates, and cancels pending work at finish", async () => {

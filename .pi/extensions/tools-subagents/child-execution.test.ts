@@ -270,6 +270,34 @@ describe("Subagent child execution", () => {
 		await expect(promise).resolves.toMatchObject({ exitCode: 1, output: "Error: spawn failed", progress: { status: "failed", error: "spawn failed" } });
 	});
 
+	it("removes temporary resources when a progress consumer rejects after process close", async () => {
+		const root = tempRoot();
+		const rejection = new Error("progress persistence failed");
+		let promptPath = "";
+		const child = fakeProcess();
+		const execution = createSubagentChildExecution({
+			tempRoot: root,
+			spawnProcess: (_command, args) => {
+				promptPath = args[args.indexOf("--append-system-prompt") + 1];
+				queueMicrotask(() => child.emit("close", 0));
+				return child as any;
+			},
+		});
+
+		await expect(execution.execute({
+			agent: agent(),
+			task: "finish then reject",
+			cwd: "/workspace",
+			launch: { model: "openai/test-model" },
+			onProgress: async (event) => {
+				if (event.type === "completed") throw rejection;
+			},
+		})).rejects.toBe(rejection);
+		expect(promptPath).not.toBe("");
+		expect(existsSync(promptPath)).toBe(false);
+		expect(readdirSync(root)).toEqual([]);
+	});
+
 	it("removes temporary resources when launch preparation fails", async () => {
 		const root = tempRoot();
 		const execution = createSubagentChildExecution({ tempRoot: root });
