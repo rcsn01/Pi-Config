@@ -1,5 +1,6 @@
-import type { ApprovalMode, ExecPolicyConfig } from "../_shared/command-policy.ts";
+import type { ExecPolicyConfig } from "../_shared/command-policy.ts";
 import type { GuardianReviewResult } from "./guardian-runner.ts";
+import { approvalDisposition, type ApprovalMode } from "./mode-registry.ts";
 import { DEFAULT_MODE_STATE, type ModeState } from "./mode-store.ts";
 import { evaluateToolCall } from "./permission-policy.ts";
 import type { ApprovalResult, ToolCallInput } from "./policy-types.ts";
@@ -126,25 +127,17 @@ export function createPermissionEnforcementLifecycle<HostContext>(
 		message: string,
 		onAllowed: (source: "user") => void,
 	): Promise<ApprovalResult> {
-		switch (mode) {
-			case "read-only":
-				return Promise.resolve({ allowed: false, reason: "Read-only mode." });
-			case "auto-review":
-			case "full-access":
-				return Promise.resolve({ allowed: true });
-			case "default":
-				if (!environment.hasUI) {
-					return Promise.resolve({ allowed: false, reason: "No UI available for approval." });
-				}
-				return adapter.requestUserConfirmation(
-					environment.hostContext,
-					title,
-					`${message}\n\nProceed?`,
-				).then((allowed) => {
-					if (allowed) onAllowed("user");
-					return { allowed, reason: allowed ? undefined : "User declined." };
-				});
-		}
+		const disposition = approvalDisposition(mode, environment.hasUI);
+		if (disposition.kind === "decided") return Promise.resolve(disposition.result);
+		// Prompt path: only reachable for default mode with a UI.
+		return adapter.requestUserConfirmation(
+			environment.hostContext,
+			title,
+			`${message}\n\nProceed?`,
+		).then((allowed) => {
+			if (allowed) onAllowed("user");
+			return { allowed, reason: allowed ? undefined : "User declined." };
+		});
 	}
 
 	async function guardianReview(

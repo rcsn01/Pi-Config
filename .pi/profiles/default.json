@@ -2,10 +2,10 @@
   "uiModelSelector": {
     "profiles": {
       "normal": {
-        "provider": "ollama-cloud",
-        "modelId": "glm-5.3",
+        "provider": "openai-codex",
+        "modelId": "gpt-6-astra",
         "thinkingLevel": "max",
-        "contextWindow": 262144
+        "contextWindow": 272000
       },
       "plan": {
         "provider": "default",
@@ -17,9 +17,9 @@
   },
   "subagents": {
     "maxConcurrency": 4,
-    "defaultModel": "ollama-cloud/glm-5.3-flash",
+    "defaultModel": "openai-codex/gpt-5.6-sol",
     "agentModels": {},
-    "defaultThinkingLevel": "max",
+    "defaultThinkingLevel": "low",
     "agentThinkingLevels": {},
     "defaultContextWindow": "default",
     "agentContextWindows": {
@@ -34,9 +34,9 @@
     "active": "default"
   },
   "guardian": {
-    "provider": "ollama-cloud",
-    "modelId": "glm-5.3-flash",
-    "thinkingLevel": "max",
-    "contextWindow": 262144
+    "provider": "openai-codex",
+    "modelId": "gpt-5.6-luna",
+    "thinkingLevel": "low",
+    "contextWindow": 272000
   }
 }

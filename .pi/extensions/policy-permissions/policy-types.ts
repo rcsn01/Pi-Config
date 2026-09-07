@@ -1,7 +1,8 @@
 /**
  * Shared decision and context types for the Safety Permissions extension.
  */
-import type { ApprovalMode, ExecPolicyConfig } from "../_shared/command-policy.ts";
+import type { ExecPolicyConfig } from "../_shared/command-policy.ts";
+import type { ApprovalMode } from "./mode-registry.ts";
 
 /** A permission decision produced by `evaluateToolCall`. */
 export type PermissionDecision =

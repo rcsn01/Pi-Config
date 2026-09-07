@@ -10,11 +10,17 @@ import {
 	evaluateExecPolicy,
 	loadExecPolicy,
 	saveExecPolicy,
-	type ApprovalMode,
 	type ExecPolicyAction,
 	type ExecPolicyConfig,
 } from "../_shared/command-policy.ts";
 import { pickGuiOption } from "../_shared/gui-option-list.ts";
+import {
+	APPROVAL_MODES,
+	modePickerDescription,
+	modeSwitchConfirmation,
+	resolveModeInput,
+	type ApprovalMode,
+} from "./mode-registry.ts";
 import type { ModeState } from "./mode-store.ts";
 import type { ApprovalIssueOutcome } from "./permission-enforcement-lifecycle.ts";
 
@@ -25,31 +31,19 @@ export interface CommandService {
 	approveLastDenied(): ApprovalIssueOutcome;
 }
 
-const VALID_MODES: ApprovalMode[] = ["read-only", "default", "auto-review", "full-access"];
-
-const ALIAS_MAP: Record<string, ApprovalMode> = {
-	auto: "default",
-	full: "full-access",
-	ro: "read-only",
-	review: "auto-review",
-};
-
-const MODE_LABELS: Record<ApprovalMode, string> = {
-	"read-only": "Read-only browsing – read in current directory only",
-	default: "Default – read, edit, and run commands in workspace; approval for internet and external writes",
-	"auto-review": "Auto-review – full auto; only prompts you for edits outside the workspace",
-	"full-access": "Full Access – no restrictions, no approval prompts (use with caution)",
-};
+/** Comma-separated or-list over the canonical modes: "read-only, default, auto-review, or full-access". */
+function orList(modes: readonly ApprovalMode[]): string {
+	const last = modes[modes.length - 1];
+	return `${modes.slice(0, -1).join(", ")}, or ${last}`;
+}
 
 export function registerPermissionCommands(pi: ExtensionAPI, service: CommandService): void {
 	const { getMode, changeMode, updateStatus } = service;
 
 	async function switchMode(newMode: ApprovalMode, ctx: ExtensionContext): Promise<boolean> {
-		if (newMode === "full-access" && ctx.hasUI) {
-			const confirmed = await ctx.ui.confirm(
-				"⚠️ Full Access Mode",
-				"This removes ALL restrictions. The agent can run any command, write anywhere, and access the network without confirmation.\n\nExercise caution when using.\n\nAre you sure?",
-			);
+		const confirmation = modeSwitchConfirmation(newMode);
+		if (confirmation && ctx.hasUI) {
+			const confirmed = await ctx.ui.confirm(confirmation.title, confirmation.message);
 			if (!confirmed) return false;
 		}
 		const mode = { mode: newMode, setAt: Date.now() };
@@ -60,23 +54,23 @@ export function registerPermissionCommands(pi: ExtensionAPI, service: CommandSer
 	}
 
 	pi.registerCommand("permissions", {
-		description: "Switch approval mode: read-only | default | auto-review | full-access",
+		description: `Switch approval mode: ${APPROVAL_MODES.join(" | ")}`,
 		handler: async (args, ctx) => {
 			const trimmed = (args || "").trim().toLowerCase();
 			const current = getMode();
 
 			if (!trimmed) {
 				if (!ctx.hasUI) {
-					ctx.ui.notify(`Current mode: ${current.mode}. Use /permissions read-only|default|auto-review|full-access`, "info");
+					ctx.ui.notify(`Current mode: ${current.mode}. Use /permissions ${APPROVAL_MODES.join("|")}`, "info");
 					return;
 				}
 				const newMode = await pickGuiOption<ApprovalMode>(ctx, {
 					title: "Permission Mode:",
 					message: `Current mode: ${current.mode}`,
-					options: VALID_MODES.map((m) => ({
+					options: APPROVAL_MODES.map((m) => ({
 						label: m,
 						value: m,
-						description: MODE_LABELS[m],
+						description: modePickerDescription(m),
 						checked: m === current.mode,
 					})),
 				});
@@ -85,13 +79,12 @@ export function registerPermissionCommands(pi: ExtensionAPI, service: CommandSer
 				return;
 			}
 
-			// Resolve aliases
-			let requestedMode: ApprovalMode =
-				ALIAS_MAP[trimmed] ?? (VALID_MODES.includes(trimmed as ApprovalMode) ? trimmed as ApprovalMode : "" as ApprovalMode);
-			if (!VALID_MODES.includes(requestedMode)) {
-				ctx.ui.notify("Invalid mode. Use: read-only, default, auto-review, or full-access", "warning");
+			const resolution = resolveModeInput(trimmed);
+			if (!resolution.ok) {
+				ctx.ui.notify(`Invalid mode. Use: ${orList(APPROVAL_MODES)}`, "warning");
 				return;
 			}
+			const requestedMode = resolution.mode;
 			if (requestedMode === current.mode) {
 				ctx.ui.notify(`Already in ${current.mode} mode.`, "info");
 				return;

@@ -1,7 +1,7 @@
 /**
  * Unified Command Safety Extension
  *
- * Four approval modes:
+ * Four approval modes (vocabulary owned by ./mode-registry.ts):
  *   /permissions read-only    — Read-only browsing in current directory
  *   /permissions default      — Workspace-write with user approval prompts
  *   /permissions auto-review  — Full auto; only prompts you for edits outside the workspace
@@ -37,6 +37,7 @@ import {
 	type GuardianSettings,
 } from "./guardian-settings.ts";
 import { loadModeFromFile, saveModeToFile } from "./mode-store.ts";
+import { modeStatusLabel, modeSystemPrompt } from "./mode-registry.ts";
 import {
 	createPermissionEnforcementLifecycle,
 	permissionActionKey,
@@ -95,13 +96,7 @@ function installSafetyPermissions(
 	// ── Status display ─────────────────────────────────────────────────
 
 	function updateStatus(ctx: ExtensionContext) {
-		const modeLabels: Record<string, string> = {
-			"read-only": "read-only",
-			default: "default",
-			"auto-review": "auto-review",
-			"full-access": "full-access",
-		};
-		ctx.ui.setStatus("approval-mode", modeLabels[enforcement.mode.mode]);
+		ctx.ui.setStatus("approval-mode", modeStatusLabel(enforcement.mode.mode));
 	}
 
 	// ── Command adapter ────────────────────────────────────────────────
@@ -202,13 +197,12 @@ function installSafetyPermissions(
 		// current-turn assistant text cannot overwrite it before a tool_call fires.
 		precedingAssistantMessage = lastAssistantMessage;
 		lastUserPrompt = (event.prompt || "").slice(0, 500);
-		const modeInstructions: Record<string, string> = {
-			"read-only": `\n\n## Permission Mode: READ-ONLY\nYou are in read-only browsing mode, limited to the current directory.\n- You CAN read files, search code, list directories, and run read-only commands within ${event.systemPrompt.includes("cwd") ? "the workspace" : "the current directory"}.\n- You CANNOT modify files, run write commands, execute shell commands that change the system, or access the network.\n- Do NOT attempt to use write, edit, or bash for destructive operations.\n- Inform the user if a task requires write access. They can switch mode with /permissions default.`,
-			default: `\n\n## Permission Mode: DEFAULT\nYou may read, write, and edit files within the current workspace, and run commands.\nApproval is required to:\n- Access the internet (curl, fetch, package installs, git push/pull/clone, etc.)\n- Write or edit files outside the workspace\n- Run dangerous commands (sudo, rm -rf, curl piped to shell)\nPrefer safe alternatives when possible.`,
-			"auto-review": `\n\n## Permission Mode: AUTO-REVIEW\nFull auto — no restrictions on reading, writing within the workspace, web searches, or running commands.\nA guardian LLM reviews dangerous commands, network installs, and writes outside the workspace.\nSafe actions pass silently. Risky actions may trigger a user prompt.`,
-			"full-access": `\n\n## Permission Mode: FULL ACCESS\nNo restrictions. You have full access to read, write, and execute any command, including network access and writing outside the workspace.\nExercise caution and always inform the user of destructive operations.`,
+		return {
+			systemPrompt: event.systemPrompt + modeSystemPrompt(
+				enforcement.mode.mode,
+				event.systemPrompt.includes("cwd") ? "workspace" : "current-directory",
+			),
 		};
-		return { systemPrompt: event.systemPrompt + modeInstructions[enforcement.mode.mode] };
 	});
 
 	// ── Commands ────────────────────────────────────────────────────────
