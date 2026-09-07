@@ -8,12 +8,13 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
-import { reapplyThinkingBorder } from "../_shared/editor-border.ts";
 import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
-	installModelCommandHandler,
+	installSessionEditor,
+	registerModelCommandHandler,
+	removeSessionEditor,
 	ModelCommandRoutingEditor,
-} from "../_shared/model-command-routing.ts";
+} from "../_shared/editor-slot.ts";
 import {
 	applyModelSelection,
 	applyPickedModelSelection,
@@ -166,11 +167,12 @@ export function createModelSelectorExtension(
 							}
 						}
 					};
-					uninstallModelCommandHandler = installModelCommandHandler(handler);
-					ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-						const editor = new ModelCommandRoutingEditor(tui, theme, keybindings, handler);
-						reapplyThinkingBorder(ctx, editor, tui);
-						return editor;
+					uninstallModelCommandHandler = registerModelCommandHandler(handler);
+					installSessionEditor(ctx, {
+						id: "ui-model-selector",
+						priority: 10,
+						createEditor: (tui, theme, keybindings) =>
+							new ModelCommandRoutingEditor(tui, theme, keybindings, handler),
 					});
 
 					const hasConversationHistory = buildSessionContext(
@@ -196,7 +198,7 @@ export function createModelSelectorExtension(
 					if (activeLifecycle === lifecycle) activeLifecycle = undefined;
 					uninstallModelCommandHandler?.();
 					uninstallModelCommandHandler = undefined;
-					if (ctx.mode === "tui") ctx.ui.setEditorComponent(undefined);
+					if (ctx.mode === "tui") removeSessionEditor(ctx, "ui-model-selector");
 				},
 			},
 		);

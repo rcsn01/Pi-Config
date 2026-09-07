@@ -29,6 +29,21 @@ extension.
   that turns usage rows into tables; layout fallbacks live behind its two
   functions.
 
+## TUI editor slot
+
+- **Editor slot module** — the shared module in `_shared/editor-slot.ts` that
+  owns Pi's single TUI editor slot behind one interface: the silent `/model`
+  routing editor base class and grammar, the `/model` handler registry
+  (backed by a `globalThis` symbol key, because the extension loader gives
+  each extension its own copy of shared modules), and wave-coordinated
+  session editor installation — contributors register
+  `{id, priority, createEditor}` during the `session_start` wave and the
+  deferred flush mounts the highest-priority contributor's editor once,
+  reapplying the thinking border itself. ui-model-selector,
+  ui-message-history, and ui-steer-input are adapters at its seam. Transient
+  editor swaps (steer during streaming, Plan Review command submission)
+  stay in their adapters and restore whatever the module installed.
+
 ## Telemetry dashboards
 
 - **Usage dashboard** — the `/global-usage` dashboard: scans session files into

@@ -1,466 +1,365 @@
-# plan.md — Deepen the model-reference seam
+# plan.md — Deepen the Editor slot module
 
-Architecture-review candidate **#1** (Strong), finalized 2026-09-07. The user
-opted to have every grilling question answered with the recommended default;
-those decisions are recorded in §2 and are binding for the implementation.
+Candidate 1 of the 2026-09-07 architecture review (`/tmp/architecture-review-20260907-172814.html`),
+worked through the grilling loop with **recommended answers adopted for every decision**.
+Domain vocabulary lives in `CONTEXT.md` (new term: **Editor slot module**, added under
+"## TUI editor slot").
 
 ---
 
-## 1. Problem (from the architecture review)
+## 1. Problem
 
-"Resolve a model reference" is one concept with **six resolution sites and
-four parsing vocabularies**:
+Pi's TUI has exactly one input editor slot (`ctx.ui.setEditorComponent`). Four extensions
+touch it with no owner:
 
-| Site | Input shape | Registry face | Scope check | Refresh |
-|---|---|---|---|---|
-| `_shared/model-selection.ts` `resolveProfileModel` (:341) | structured `{provider, modelId}` | `ctx.modelRegistry` | ✅ enforce | ✅ `allowNetwork:false, [provider]` |
-| `tools-advisor/runner.ts` `resolveConfiguredModel` (:106) | flat `"provider/model"` | `ctx.modelRegistry` | ✅ enforce | ❌ |
-| `tools-advisor/index.ts` `resolveOptionalModel` (:305) + `splitModel` (:128) | flat string | `ctx.modelRegistry` | ❌ silently skipped | ❌ |
-| `policy-permissions/guardian-runner.ts` `resolveGuardianModel` (:244) | guardian.md spec, bare-id fallback | isolated `ModelRuntime.getModel` | ❌ n/a | ❌ |
-| `tools-subagents/model-commands.ts` `findCatalogueModel` (:382) | setting string (`main` → observed main model) | `ctx.modelRegistry` | ❌ silently skipped | ❌ |
-| `policy-permissions/index.ts` (~:229, `/guardian` picker seeding) | structured settings | `ctx.modelRegistry` | ❌ silently skipped | ❌ |
-
-Secondary duplication:
-
-- **Pi-native defaults access, 3 implementations.** `_shared/pi-defaults.ts`
-  owns the read; `workflows-plan/model-profile.ts` `createNormalDefaultsStore`
-  re-issues `SettingsManager` for capture *and* hand-rolls the write
-  (`setDefaultModelAndProvider` + `setDefaultThinkingLevel` + `flush` +
-  `drainErrors`); `guardian-runner.ts` re-derives the default provider.
-- **Thinking-level validation: 4 hand-rolled user-input membership checks** of
-  `MODEL_THINKING_LEVELS` with divergent error text: advisor
-  (`optionalThinkingLevel`), guardian-settings, subagents
-  (`normalizeThinkingLevel`), model-selection (`validateStoredThinkingLevel`).
-  Two further membership guards inside model-selection
-  (`mergeProjectModelSelection`'s write guard and `resolveStoredSelection`'s
-  Pi-native-defaults check) validate already-typed values with
-  selection-specific text; they are internal type guards, not user-input
-  validation, and stay in the selection domain.
-- **Context-window validation, 2 hand-rolled duplicates** (`model-selection.ts`
-  private `validateContextWindow`, `tools-subagents/config.ts`
-  `validateContextWindow`); three further inline positive-integer guards
-  (`mergeProjectModelSelection`, `model-selection-persistence.ts`,
-  `guardian-settings.ts`) are merge/persistence/domain assertions and stay.
-- **Model-reference parsing, 4 vocabularies**: picker `findExactModel`
-  (list match), advisor slash-split, subagents
-  `normalizeModelSetting`/`splitModelThinkingSetting` (strict, `main` symbolic,
-  `:thinking` suffix), guardian slash-split + bare-id fallback.
-
-The scoped-models invariant is enforced at only 2 of the 5 ctx-backed
-resolution sites (model-selection, advisor runner) and **silently skipped by
-the other 3**; the picker reads `ctx.scopedModels` too, but as its catalogue
-source, not as a check — a latent inconsistency, not just style.
-
-## 2. Grilling record — decisions (recommended answers, binding)
-
-1. **Where does the seam go?** → New deep module
-   `_shared/model-reference.ts`. `_shared/model-selection.ts` stays the
-   *selection* domain (stored selections, sentinels, apply/commit,
-   persistence); it delegates reference parse/resolve. Rationale: selection
-   meaning and reference resolution are different concepts; growing
-   model-selection.ts toward a god module would trade one locality problem for
-   another.
-2. **What sits behind the seam?** → Reference parsing vocabulary, resolution
-   against a model lookup (with refresh/scope policies), typed resolution
-   errors, and shared context-window validation. Plus two sibling
-   consolidations with existing homes: thinking-level validation moves into
-   `model-thinking.ts` (it already owns the closed vocabulary);
-   Pi-native-defaults **write** and provider-only **read** move into
-   `pi-defaults.ts` (it already owns the read).
-3. **What stays outside?** → Per-domain settings documents (advisor, guardian,
-   subagent namespaces keep owning their settings meaning and error text), the
-   Subagent assignment resolution module (owns `main` symbolism, precedence,
-   legacy migration), Model-selection lifecycle and persistence, the picker
-   TUI flow, and Plan's `NormalDefaultsStore` capture policy (partial-read
-   fallback semantics are plan-specific). `findExactModel` in model-picker.ts
-   stays — it is list-matching, not string parsing.
-4. **Dependency category?** → In-process. Registry access is injected as a
-   structural `RefreshableModelLookup`; `ctx` satisfies it directly, guardian
-   adapts its `ModelRuntime` with a 2-line adapter. Two adapters exist ⇒ real
-   seam. Pi settings access stays behind `pi-defaults.ts` (agentDir injectable
-   — already an internal seam for tests).
-5. **Error mode?** → `resolveModelReference` throws one typed
-   `ModelReferenceError` (`reason: "invalid" | "unavailable" | "out-of-scope" |
-   "aborted" | "refresh" | "no-provider"`). Adapters catch and render their own
-   user-facing text (the advisor-outcome pattern). `optional: true` resolves
-   `"unavailable"`/`"out-of-scope"` to `undefined` for best-effort callers;
-   `"invalid"`, `"no-provider"`, `"aborted"`, and `"refresh"` always throw,
-   even under `optional` (no current optional caller can produce them, but the
-   rule is pinned). Refresh abort/errors always throw regardless.
-6. **Scope policy?** → Default `"enforce"`. Explicit `"ignore"` at exactly
-   three call sites, each with a comment stating why: advisor picker-seeding
-   (marks a stored previous choice that may be out of current scope), subagents
-   catalogue fallback (the child Pi process enforces scope/auth at launch), and
-   `/guardian` picker-seeding (same as advisor). The invariant becomes
-   *declared once and explicitly waived where legitimate* instead of silently
-   divergent. No current behavior changes.
-7. **Do we unify the two "inherit" vocabularies** (subagents `main` vs
-   selection `default` sentinel)? → **No.** They resolve against genuinely
-   different sources (observed live Main model vs Pi native defaults); each
-   domain keeps its symbolic handling. YAGNI.
-8. **Error-text unification?** → Shared parse/validation errors get one
-   message form (`${label} must be "provider/model[:thinking]".` /
-   thinking-level list form). Domain-specific texts survive where the domain
-   re-renders (subagents config catches typed errors and re-throws its own
-   text; advisor/guardian catch and render). Direct assertions in
-   `config.test.ts` and the guardian tests stay green — the texts are
-   re-rendered or re-thrown, not unified; only new pinning tests are added
-   (§6).
-9. **Interface explored three ways (design-it-twice):**
-   - *A. Single `resolveModelRef(ctx, ref, opts)`* — max leverage per entry
-     point, but parsing/defaults don't need a registry; forces a wide options
-     object and fake `ctx` into pure-parse tests. Rejected.
-   - *B. Three-function reference module + extended defaults module* —
-     **chosen**: `parseModelReference` (pure), `resolveModelReference(lookup,
-     ref, opts)`, `validateContextWindow`; thinking validation in
-     `model-thinking.ts`; defaults read+write in `pi-defaults.ts`. Interface ≈
-     4 exports + 2 extended seams.
-   - *C. One selection-store facade object* — overlaps Model-selection
-     persistence, Model-selection lifecycle, and the Subagent assignment store;
-     wide shallow interface (that is candidate #2's territory). Rejected.
-
-## 3. The interface
-
-```ts
-// _shared/model-reference.ts — the deep module (new)
-
-import type { Model } from "@earendil-works/pi-ai";
-import type { SupportedModelThinkingLevel } from "./model-thinking.ts";
-
-/** One parsed model reference. Symbolic vocabularies ("main", "default")
- *  stay domain-owned; callers resolve them before or after parsing. */
-export type ParsedModelReference =
-  | { kind: "qualified"; provider: string; modelId: string;
-      thinkingLevel?: SupportedModelThinkingLevel }
-  | { kind: "bare-id"; modelId: string };
-
-/** Structural registry face: ExtensionContext satisfies it directly, because
- *  `find`/`refresh` are nested under `modelRegistry` here (not flat), matching
- *  ExtensionContext's actual shape — it has no top-level `find`/`refresh` of
- *  its own, only `ctx.modelRegistry.find`/`.refresh`, while `scopedModels` is
- *  flat on ctx. A flat `find`/`refresh` here would make `ctx` fail structural
- *  assignment, and the obvious compile-driven fix (passing `ctx.modelRegistry`
- *  instead of `ctx`) would silently drop `scopedModels` and disable scope
- *  enforcement — the exact invariant this module exists to make consistent.
- *  Guardian adapts ModelRuntime to it inline (find only; no refresh, no
- *  scopedModels — ModelRuntime has neither concept). */
-export interface RefreshableModelLookup {
-  modelRegistry: {
-    find(provider: string, modelId: string): Model<any> | undefined;
-    refresh?(options: { allowNetwork: false; providers: [string] }): Promise<{
-      aborted: boolean; errors: ReadonlyMap<string, Error>;
-    }>;
-    // ReadonlyMap, not Map: ModelRegistry.refresh returns ModelsRefreshResult
-    // whose errors is a ReadonlyMap; declaring Map fails structural assignment.
-  };
-  /** Present-but-empty means "no scoping configured" and must NOT enforce —
-   *  ExtensionContext.scopedModels is always a defined array, empty when the
-   *  session has no `--models`/`enabledModels` restriction. Enforcement keys
-   *  on non-empty, exactly like today's `ctx.scopedModels.length > 0 &&
-   *  !ctx.scopedModels.some(...)` at every existing site (model-selection.ts
-   *  resolveProfileModel, advisor runner.ts resolveConfiguredModel). Treating
-   *  "declares scopedModels" as merely non-undefined would make every
-   *  ctx-backed resolveModelReference call enforce scope unconditionally,
-   *  and an empty array would then fail `.some(...)` for every model —
-   *  breaking model resolution for any user without scoping configured. */
-  readonly scopedModels?: readonly { model: { provider: string; id: string } }[];
-}
-
-export class ModelReferenceError extends Error {
-  readonly reason: "invalid" | "unavailable" | "out-of-scope"
-    | "aborted" | "refresh" | "no-provider";
-  readonly label?: string;
-  readonly provider?: string;
-  readonly modelId?: string;
-  readonly cause?: unknown;
-}
-
-export interface ModelReferenceOptions {
-  /** Error-message prefix, e.g. "Advisor model", "Plan Mode profile". */
-  label?: string;
-  /** Accept "provider/model:thinking". Default false. */
-  allowThinkingSuffix?: boolean;
-  /** Accept a bare id (resolution needs bareIdFallback). Default false. */
-  allowBareId?: boolean;
-  /** Default "enforce" when the lookup's scopedModels is present AND
-   *  non-empty (see RefreshableModelLookup.scopedModels); present-but-empty
-   *  never enforces. */
-  scope?: "enforce" | "ignore";
-  /** Refresh the provider before lookup. Default false. */
-  refresh?: boolean;
-  /** For bare ids: supply a provider, or undefined to fail "no-provider".
-   *  Sync or async — guardian's readDefaultProvider() is synchronous; the
-   *  caller `await`s the result either way. */
-  bareIdFallback?: (modelId: string) => string | undefined | Promise<string | undefined>;
-  /** Resolve "unavailable"/"out-of-scope" to undefined. Default false. */
-  optional?: boolean;
-}
-
-/** Parse-relevant subset of ModelReferenceOptions. */
-export interface ModelReferenceParseOptions {
-  label?: string;
-  allowThinkingSuffix?: boolean;
-  allowBareId?: boolean;
-}
-
-/** Parse a qualified or bare-id reference; throws ModelReferenceError("invalid"). */
-export function parseModelReference(
-  value: string, options?: ModelReferenceParseOptions,
-): ParsedModelReference;
-
-/** Parse (when string) and resolve against the lookup. */
-export async function resolveModelReference(
-  lookup: RefreshableModelLookup,
-  reference: string | { provider: string; modelId: string },
-  options?: ModelReferenceOptions,
-): Promise<Model<any> | undefined>;
-
-/** Shared positive-integer context-window validation. */
-export function validateContextWindow(value: unknown, label?: string): number;
-```
-
-```ts
-// _shared/model-thinking.ts — +1 export
-export function normalizeThinkingLevel(
-  value: unknown, options: { label: string },
-): ModelThinkingLevel;   // trims, lowercases, membership; throws
-// `${label} must be one of: off, minimal, low, medium, high, xhigh, max.`
-```
-
-```ts
-// _shared/pi-defaults.ts — +2 exports
-export function readDefaultProvider(agentDir?: string): string | undefined;
-export async function writePiNativeDefaults(
-  agentDir: string | undefined,
-  defaults: { provider: string; modelId: string; thinkingLevel?: string },
-): Promise<void>;   // setDefaultModelAndProvider + setDefaultThinkingLevel
-                    // + flush + drainErrors → throws the joined drainErrors
-                    // message on error; the caller rewraps with its own prefix
-                    // (global-scope write, cwd-independent — hence no cwd
-                    // parameter; SettingsManager.create(process.cwd(), …))
-```
-
-Parsing semantics (lift verbatim where noted):
-- First `/` splits provider/modelId (modelId may contain further `/`); leading
-  or trailing `/`, whitespace, or empty segments are invalid.
-- Colons: lift `tools-subagents/config.ts` `THINKING_SUFFIX_PATTERN` verbatim
-  (including its `i` flag; an extracted level is lowercased). A suffix is
-  recognized **only** when the segment after the last `:` is a valid
-  `MODEL_THINKING_LEVELS` member. Any other colon is part of the model id —
-  pi-ai models may carry colon-suffixed ids (e.g. OpenRouter's
-  `deepseek-r1:free`), and today's advisor runner, guardian, and
-  catalogue-fallback sites pass those ids to the registry untouched. With
-  `allowThinkingSuffix: false` a *matched* suffix is not extracted either: the
-  whole `model:level` stays the model id, reproducing today's raw pass-through
-  at those sites.
-- Bare id only when `allowBareId`; whitespace still rejected.
-- Deliberate behavior change: guardian's current lenient `"/id"` (empty
-  provider) now parses as invalid instead of silently falling back to the
-  default provider.
-- **Not tightened** (checked and rejected as a false lead): subagents'
-  `normalizeModelSetting` currently accepts `provider/model:turbo` (an invalid
-  suffix level) by silently keeping it in the model id — garbage that only
-  fails later at the child launch. It is tempting to call this a second
-  tightening symmetric with guardian's `"/id"` case, but the Colons rule above
-  already forecloses it: `THINKING_SUFFIX_PATTERN` does not distinguish "an
-  attempted but misspelled level" from "a legitimately non-level colon
-  suffix" — `provider/model:turbo` and `openrouter/deepseek-r1:free` both fail
-  the level-alternation match identically (verified: neither matches the
-  lifted regex), so both stay in the model id whether or not
-  `allowThinkingSuffix` is set. The delegation therefore reproduces today's
-  pass-through unchanged; there is no config-parse-time rejection to pin.
-  Phase 4's pinning test asserts the pass-through, not a rejection.
-
-## 4. Caller migration table (file → disposition)
-
-| File | Current | After |
+| Extension | What it does today | Where |
 |---|---|---|
-| `_shared/model-selection.ts` | private `resolveProfileModel` | deleted; `applyModelSelection` calls `resolveModelReference(ctx, {provider, modelId}, {label, refresh: true})`; refresh-abort/error text preserved |
-| `_shared/model-selection.ts` | private `validateContextWindow` | deleted; delegates to `model-reference.ts` |
-| `_shared/model-selection.ts` | `validateStoredThinkingLevel`, `mergeProjectModelSelection` write-guard, `resolveStoredSelection` native-defaults check | **stay**: sentinel-aware / typed-internal with selection-specific text (`thinkingLevel is not supported.`, pinned by model-selection.test.ts); `model-thinking` owns user-input validation only |
-| `tools-advisor/runner.ts` | `resolveConfiguredModel` | deleted; `execute` calls `resolveModelReference(ctx, settings.model, {label: "Advisor model"})`, catches → `advisorFailure("Configured advisor model … is unavailable.")` (text unchanged) |
-| `tools-advisor/index.ts` | `splitModel`, `resolveOptionalModel` | deleted; picker seeding uses `parseModelReference`/`resolveModelReference(..., {optional: true, scope: "ignore"})` + `resolveModelContext` |
-| `tools-advisor/index.ts` | `optionalThinkingLevel` | body delegates to `normalizeThinkingLevel`, catch → re-throw the advisor sentence (text unchanged; no test pins it) |
-| `tools-advisor/index.ts` | `formatAdvisorStatus` `indexOf("/")` | **unchanged** — display-only shortening of an already-stored reference for the status line, not parsing; carving it out keeps the §8 grep honest (it renders the full string when there is no slash; a parse-based rewrite would change that) |
-| `policy-permissions/index.ts` | raw `find` for `/guardian` picker seeding | `resolveModelReference(..., {optional: true, scope: "ignore"})`; the surrounding `resolveModelContext` wrap stays |
-| `policy-permissions/guardian-runner.ts` | `resolveGuardianModel` | rewritten as a small adapter: runtime lookup adapter `{modelRegistry: {find: (p, id) => runtime.getModel(p, id)}}` (nested under `modelRegistry` per the `RefreshableModelLookup` shape — `ModelRuntime` has no refresh or scopedModels, both stay absent, so scope stays n/a), `allowBareId: true`, `bareIdFallback: () => readDefaultProvider(...)`, catch renders three guardian texts by `reason`: `unavailable` and `no-provider` keep their existing sentences; `invalid` is new (see Phase 3) and gets its own sentence since there is no prior text to preserve |
-| `policy-permissions/guardian-settings.ts` | inline thinking check | `normalizeThinkingLevel(value, {label: "guardian.thinkingLevel"})`, catch → re-throw the guardian sentence (test asserts `/thinkingLevel/`, stays green either way; re-throw keeps the user-facing text) |
-| `tools-subagents/config.ts` | `normalizeModelSetting` qualified branch; `splitModelThinkingSetting`; `normalizeThinkingLevel` body; `validateContextWindow` | keep exports + domain error text (catch typed error → re-throw subagent text); bodies delegate to `parseModelReference` (`allowThinkingSuffix: true` — stored settings may legitimately carry the suffix; without it the pinned `openai/explicit:high` cases would newly throw) / `normalizeThinkingLevel` / `validateContextWindow` (shared throws `` `${label} must be a positive integer.` ``; pass the `Subagent ${label}` prefix so config.test.ts stays green); the `normalizeModelSetting` delegation reconstructs `provider/model` + `:level` so the returned setting keeps its suffix (pinned by the `openai/global:high` edit test); `THINKING_SUFFIX_PATTERN` moves into `model-reference.ts` |
-| `tools-subagents/model-commands.ts` | `findCatalogueModel` slash fallback | list-match stays; fallback becomes `resolveModelReference(ctx, target, {optional: true, scope: "ignore"})` after `main` resolution (unchanged) |
-| `workflows-plan/model-profile.ts` | `createNormalDefaultsStore().restore` hand-rolls write | body becomes `writePiNativeDefaults(agentDir, …)`; restore catches the shared error and rewraps `Could not restore Pi's normal defaults: …` (text unchanged); `capture` stays (plan-specific partial-read fallback) |
-| `_shared/model-picker.ts` | `findExactModel`, `listSelectableModels` | **unchanged** (list-matching is picker concern) |
-| `_shared/model-thinking.ts` | vocabulary only | + `normalizeThinkingLevel` |
-| `_shared/pi-defaults.ts` | read only | + `readDefaultProvider`, `writePiNativeDefaults` |
+| `ui-model-selector` | Persistently installs `ModelCommandRoutingEditor` on `session_start` | `index.ts:170-174` |
+| `ui-message-history` | Persistently installs `PreviousMessageEditor`; **wins by a `setTimeout(0)` reclaim**; keeps `/model` routing alive by **constructing the other extension's editor and duck-reading its private `modelCommandHandler` field**; re-declares `parseModelCommand` locally | `index.ts:59-64, 312-322, 371-386` |
+| `ui-steer-input` | Transient swap at `agent_start`, restore at `agent_end`; reads the /model handler via `getModelCommandHandler()` | `index.ts:103-107, 142-145` |
+| `workflows-plan` | Transient swap of a submit bridge to capture `onSubmit` for `/plan-implement-fresh` | `plan-review.ts:112-131` |
 
-Not touched (explicitly out of scope): the SubagentConfigStore interface shape
-(candidate #2), `selectionModeFromEntries`, `applyModelSelection` commit
-semantics, `ModelSelectionPersistence`, the model-picker TUI, Plan Mode
-lifecycle seams (candidate #3), Profile deletion routing (candidate #4).
+**Live bug (confirmed):** the extension loader (`pi` 0.85.1,
+`dist/core/extensions/loader.js:416-427`) creates a **fresh jiti instance with
+`moduleCache: false` per extension**. Module state in `_shared/*` is therefore
+**per-extension** (empirically verified: two extensions importing one stateful `_shared`
+module see independent counters). Consequence: `installModelCommandHandler` sets the
+handler in ui-model-selector's copy, but `getModelCommandHandler()` in ui-steer-input's
+copy reads its own empty state — **silent `/model` routing is dead during streaming
+today**, and the queued-slash `/model` path degrades to Pi's generic command submit.
 
-## 5. Phases (each ends green: `pnpm typecheck` + targeted suites)
+**Friction in design terms:** the editor slot has no owner module; ownership is decided
+by timing (a `setTimeout` race), the /model grammar leaks (declared twice), and one
+consumer probes another's private field across the seam. The seam is real — three
+adapters already exist — it just has no interface.
 
-**Phase 0 — CONTEXT.md.** Add under *Settings & profiles* (before
-"Model-selection lifecycle"):
+## 2. Design decisions (grilling tree, recommended answers adopted)
 
-> **Model reference** — one designation of a model in qualified (`provider/model`),
-> bare-id, or `provider/model:thinking` shape. The Model reference module in
-> `_shared/model-reference.ts` owns parsing, resolution against a model lookup
-> with refresh and the scoped-models invariant (default enforce, explicitly
-> waivable), typed resolution errors, and shared context-window validation;
-> adapters render their own error text. Symbolic vocabularies (`main`,
-> `default` sentinels) stay domain-owned. Pi-native-defaults read/write live in
-> `pi-defaults.ts`.
+**Q1 — Scope.** Cover the three behavioral consumers: `ui-model-selector`,
+`ui-message-history`, `ui-steer-input`; absorb `_shared/model-command-routing.ts`.
+The `workflows-plan` submit bridge is a transient command-submission mechanism, not an
+editor behavior — leave untouched, record as follow-up (§7).
 
-Amend the *Settings & profiles* intro sentence for model-thinking/pi-defaults
-ownership only if the wording above conflicts. No other CONTEXT.md changes.
+**Q2 — Home and name.** New `_shared/editor-slot.ts`; CONTEXT.md term **Editor slot
+module**. `_shared` is where shared machinery lives; the three extensions become
+adapters at its seam.
 
-**Phase 1 — introduce the module (no callers).**
-- Write `_shared/model-reference.ts` per §3 (lift `THINKING_SUFFIX_PATTERN`
-  from `tools-subagents/config.ts`).
-- Write `_shared/model-reference.test.ts`: parse matrix (qualified, bare-id,
-  `:thinking` suffix, non-level colon ids like `deepseek-r1:free` staying in
-  the model id, matched-suffix extraction only under `allowThinkingSuffix`,
-  whitespace, empty/leading/trailing segment, invalid suffix level, labels in
-  errors) and resolve matrix (scope enforce/ignore ×
-  scopedModels absent / present-and-empty / present-and-non-empty — the
-  present-and-empty case must NOT enforce, matching today's
-  `ctx.scopedModels.length > 0` guard; this is the case the default test
-  harness hits since `createHarness`'s `scopedModels` defaults to `[]` — a
-  naive "enforce whenever declared" reading would fail nearly every existing
-  `applyModelSelection` test), refresh success/abort/error propagation,
-  `optional`, `bareIdFallback` hit/miss → "no-provider", structured input,
-  error `reason`/fields). Reuse the fake-ctx pattern from
-  `model-selection.test.ts` `createHarness` (:220).
-- Extend `model-thinking.ts` with `normalizeThinkingLevel` +
-  tests in `model-thinking.test.ts`.
-- Extend `pi-defaults.ts` with `readDefaultProvider`, `writePiNativeDefaults`
-  + tests (temp agentDir, following existing `pi-defaults.test.ts` injection).
-- Verify: `cd .pi && pnpm typecheck && pnpm test:shared`.
+**Q3 — Cross-extension state.** `globalThis` registry keyed
+`Symbol.for("pi-config.editor-slot.v1")`, mirroring `_shared/subagent-service.ts:127-167`
+(`Symbol.for` resolves to the same symbol across per-extension module copies — this is
+the in-repo precedent). Ownership-safe register/unregister like the subagent service.
 
-**Phase 2 — `_shared/model-selection.ts` delegates (deep core first).**
-- `resolveProfileModel` body → `resolveModelReference(ctx, {provider, modelId},
-  {label, refresh: true})`; delete the private function; keep error text
-  (`${label} model ${p}/${m} is unavailable.` /
-  `… is outside this session's model scope.` / `Refreshing ${p} was aborted.`)
-  by constructing it from `reason` — no adapter-visible change. For the
-  `"refresh"` reason, re-throw the `cause` so the raw provider error (message
-  and identity) survives exactly as today's raw re-throw.
-- Swap private `validateContextWindow` for the shared one.
-- `model-selection.test.ts` survives unchanged (interface-level tests);
-  out-of-scope is already asserted; add a refresh-abort assertion (missing).
-- Verify: `pnpm test:shared && pnpm test:profiles && pnpm test:plan && pnpm
-  test:features` (config-profiles, plan, ui-model-selector consume it).
+**Q4 — Interface shape (design-it-twice).**
+- *A. Wave-coordinated install + shared handler registry + shared base editor class* ✅ **chosen**
+- *B. Middleware behavior composition* (all key handling as registered behaviors in one
+  module-owned composite editor) — rejected: a speculative rewrite of subtle, working
+  key-handling (rollback draft restore, `setText` overrides, `CustomEditor` internals);
+  only one extension supplies rollback behavior, so a generic behavior registry is a
+  hypothetical seam.
+- *C. Registry only, keep the `setTimeout` reclaim* — rejected: leaves ownership to
+  timing luck; any future installer can clobber the slot.
 
-**Phase 3 — advisor + policy-permissions migrate.**
-- `tools-advisor/runner.ts`: delete `resolveConfiguredModel`; call the module;
-  catch → `advisorFailure` with the existing sentence. Runner tests: the
-  out-of-scope case already exists (`does not run when disabled, unavailable,
-  unauthenticated, or outside scope`) and stays green; keep unavailable case.
-- `tools-advisor/index.ts`: delete `splitModel`/`resolveOptionalModel`; picker
-  seeding via `parseModelReference` in try/catch (garbage → no previous
-  selection, preserving `{}` semantics) and `resolveModelReference(...,
-  {optional: true, scope: "ignore"})`.
-- `policy-permissions/index.ts` `/guardian` seeding: same optional pattern.
-- `guardian-settings.ts`: thinking check → `normalizeThinkingLevel`, catch →
-  re-throw the guardian sentence (per §4).
-- `guardian-runner.ts`: rewrite `resolveGuardianModel` over the module (lookup
-  adapter + `readDefaultProvider` fallback); map `reason` → three guardian
-  sentences. `"unavailable"` and `"no-provider"` keep their existing texts
-  (the `"unavailable"` text needs the resolved provider, which the error's
-  `provider`/`modelId` fields carry). `"invalid"` is newly reachable — the
-  `"/id"` tightening below turns what was a silent fallback into a parse
-  failure — and has no prior text to preserve, so render a third sentence in
-  the same style: `` guardian model "${spec}" is not a valid model
-  reference. `` (the adapter still has `spec` in closure; it does not need to
-  come off the error). Add a new pinning test for the `"/id"` tightening
-  asserting exactly that text — no existing test covers `resolveGuardianModel`'s
-  lenient empty-provider fallback, so this is an addition, not an edit.
-- Verify: `pnpm test:advisor && pnpm test:safety`.
+**Q5 — Winner semantics.** Contributors register `{id, priority, createEditor}` during
+the `session_start` wave; the module schedules **one** deferred flush (macrotask) and
+mounts exactly one editor — the **highest-priority** contributor's; ties break by latest
+registration. `ui-message-history` priority `20` (its editor is the composite: rollback
+behavior plus inherited `/model` routing), `ui-model-selector` priority `10`. Lower
+contributors' factories are never mounted; their contribution reaches the winner through
+the shared registry (handler) and the shared base class.
 
-**Phase 4 — tools-subagents migrate.**
-- `config.ts`: `normalizeModelSetting` (main/legacy branch stays) delegates the
-  qualified branch to `parseModelReference` with `allowThinkingSuffix: true`,
-  reconstructing `provider/model` + `:level` so the returned setting keeps its
-  suffix, catching `ModelReferenceError` and re-throwing the subagent text —
-  **config.test.ts assertions unchanged** (the pinned `openai/explicit:high`
-  cases prove the suffix path). Add one pinning test proving
-  `provider/model:turbo` still passes through unchanged (not a tightening —
-  see §3) and one for a colon id (`openrouter/deepseek-r1:free`) still parsing
-  as a plain model; both exercise the same unmatched-colon-stays-in-the-id
-  path and are expected to have identical (non-throwing) outcomes.
-  `splitModelThinkingSetting` delegates (suffix regex now imported);
-  `normalizeThinkingLevel` delegates to `model-thinking` (text: keep subagent
-  wording by re-throwing, or accept unified text — decision: re-throw with
-  `modelLabel(label)` text so its tests stay green); `validateContextWindow`
-  delegates.
-- `model-commands.ts`: `findCatalogueModel` fallback → shared resolve
-  (`optional`, `scope: "ignore"`, comment: child enforces scope at launch).
-- Delete `THINKING_SUFFIX_PATTERN` from config.ts (moved).
-- Verify: `pnpm test:subagents`.
+**Q6 — Steer integration.** `SteerEditor` keeps extending the shared
+`ModelCommandRoutingEditor` and receives the handler from the registry — the live bug
+disappears. Its transient swap semantics are unchanged: capture at `agent_start`,
+restore at `agent_end` restores exactly what the module installed.
 
-**Phase 5 — workflows-plan defaults write delegates.**
-- `model-profile.ts` `restore` → `writePiNativeDefaults`; keep
-  `NormalDefaultsStore` seam and capture policy untouched.
-- Verify: `pnpm test:plan`.
+**Q7 — History store testability.** In scope (same file being reworked): extract
+`ui-message-history/history-store.ts` as `createHistoryStore({ file })` with an injected
+path; the adapter wires `~/.pi/agent/previous-message-history.json`. Tests use a temp
+file (local-substitutable dependency).
 
-**Phase 6 — sweep & delete.**
-- Grep for dead locals: `rg -n "resolveConfiguredModel|splitModel\(|resolveOptionalModel|findCatalogueModel|THINKING_SUFFIX_PATTERN" .pi/extensions --glob '!**/update-skill/**'`.
-- Delete duplicated helper tests that asserted removed locals *only if* the
-  behavior is now covered at the new interface (per DEEPENING.md
-  replace-don't-layer); keep every behavior-level test.
-- Full gate: `cd .pi && pnpm typecheck && pnpm test` (the complete script).
+**Q8 — Test surface.** The module's interface is the test surface: registry ownership
+semantics, wave flush, editor routing/rollback behavior through fed key data, history
+store through a temp file. Deleted code (probe, local `parseModelCommand`, `setTimeout`
+hack) is untested today — nothing to migrate. `parseModelCommand` tests move from
+`ui-model-selector/index.test.ts:172-182` into the new module test.
 
-## 6. Test plan
+**Q9 — Ordering invariant.** Checked against the installed `pi` 0.85.1
+(`dist/core/extensions/runner.js:623-649`): `ExtensionRunner.emit()` walks
+`this.extensions` in load order and does `await handler(event, ctx)` **per extension,
+to full completion**, before calling the next extension's handler — there is no
+concurrent "wave"; it's a strict chain. `ui-model-selector`'s contribution
+(`registerSessionProfileBinding` → `wireSessionProfileBinding`'s own
+`pi.on("session_start", ...)`) registers early in its handler, right after the earlier
+`await activeLifecycle?.dispose()` (a no-op microtask on first start) and before
+`await lifecycle.initializeSession(...)`. But that same handler's later work —
+`applyStoredSelection` → `pi.setModel` → `checkAuth` plus a nested `model_select` emit
+across every loaded extension — very likely crosses a real macrotask boundary before
+the handler returns. Since `emit()` won't invoke `ui-message-history`'s handler until
+`ui-model-selector`'s handler's promise fully resolves, the module's `setTimeout(0)`
+flush scheduled at `ui-model-selector`'s registration typically fires — and mounts
+`ui-model-selector`'s editor alone — before `ui-message-history` even gets its turn to
+register.
+So the invariant that actually has to hold is not "both contributors register before
+any macrotask yield" (false in the common case — a returning user with a saved model
+selection). It's the weaker one already captured in §5's risk table: **late
+registration re-flushes and still wins by priority**. That path isn't a rare edge case
+("async initialize path changes upstream") — it's the *normal* one, which is exactly
+why today's `ui-message-history` already carries a defensive blind `setTimeout(0)`
+reclaim (§1) to win the slot regardless of order. The new design generalizes that same
+reclaim into the priority-ordered re-flush instead of removing the need for it.
+Net effect on correctness: unchanged — the final mounted editor is still the
+highest-priority registrant, just reached in two flushes (mount low-priority, then
+re-flush to the winner) rather than one, in the common case. Confirmed end-to-end by
+the manual check in Phase 5 step 5 (§4), which asserts the *final* editor after both
+extensions are enabled, not the timing that gets it there.
 
-**New:** `_shared/model-reference.test.ts` (parse + resolve matrices, error
-reasons/fields), additions to `model-thinking.test.ts` and
-`pi-defaults.test.ts`.
+**Q10 — Dispose semantics.** `removeSessionEditor(ctx, id)`: unregister; if no
+contributors remain, `ctx.ui.setEditorComponent(undefined)` (restore Pi's built-in
+editor — today's dispose behavior); otherwise re-flush so the remaining winner remounts
+(e.g. a Profile transition disposes `ui-model-selector` while `ui-message-history`
+stays).
 
-**Survives unchanged:** `model-selection.test.ts` (interface unchanged; only
-the Phase-2 refresh-abort assertion is added — out-of-scope is already
-covered), `config.test.ts` (subagent text preserved via catch-and-re-throw),
-advisor runner/index behavior tests (out-of-scope case already exists),
-guardian tests (the two guardian sentences are re-rendered by the adapter, so
-no text edits), `model-picker.test.ts`.
+## 3. Target architecture
 
-**Deliberate test edits:** a new guardian `"/id"` pinning test (replaces no
-existing case — none exists today) and the two new subagent pinning tests from
-Phase 4; any subagent assertions that bypassed to deleted helpers
-(`rg -n "THINKING_SUFFIX_PATTERN" extensions/tools-subagents/*.test.ts` —
-currently none; the sweep is precautionary). Guardian-settings and advisor
-thinking-level texts survive via catch-and-re-throw, so no test edits there.
+### Interface (`_shared/editor-slot.ts`)
 
-## 7. Risks & rollback
+```ts
+import { CustomEditor, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { EditorComponent, EditorTheme, KeybindingsManager, TUI } from "@earendil-works/pi-tui";
+import { reapplyThinkingBorder } from "./editor-border.ts";
 
-- **Error-text drift breaking tests**: mitigated by catch-and-re-throw at
-  domain edges; unified text only appears in the new module's own tests.
-- **`"/id"` guardian tightening** (the only deliberate parsing behavior change
-  in this pass — the subagent `:turbo` case is not tightened; see §3): pinned
-  with a new test; if it surfaces in practice, revert to permissive by
-  allowing empty provider + fallback (one flag). Its new `"invalid"`-reason
-  guardian sentence is also pinned (§4/Phase 3).
-- **Scope-policy mistakes**: the only allowed `"ignore"` sites are listed in
-  §2.6; a reviewer can grep `scope: "ignore"` and find exactly three.
-- **ModelRuntime adaptation**: if `getModel`'s return type differs structurally
-  from `Model<any>`, widen `RefreshableModelLookup.modelRegistry.find`'s
-  return to the guardian's model type via a minimal local alias rather than
-  changing Pi types.
-- Each phase is independently revertible (one module + per-domain edits); no
-  persisted-format changes anywhere (settings documents, session entries, and
-  profiles are untouched).
+export type EditorFactory = (
+  tui: TUI,
+  theme: EditorTheme,
+  keybindings: KeybindingsManager,
+) => EditorComponent;
 
-## 8. Definition of done
+export type ModelCommandHandler = (args: string) => Promise<void>;
 
-- Exactly one home for: qualified-reference parsing, registry resolution with
-  refresh/scope policy, user-input thinking-level validation
-  (`model-thinking.normalizeThinkingLevel`), the two migrated context-window
-  validators, and Pi-native-defaults read/write. Selection-internal guards
-  (`validateStoredThinkingLevel`, `mergeProjectModelSelection`,
-  `resolveStoredSelection`), the selection-persistence and guardian-settings
-  inline checks, and domain re-renders stay at their edges by design.
-- `rg "indexOf(\"/\")" .pi/extensions --glob '!**/update-skill/**'` returns only
-  the display-only shortening in `tools-advisor/index.ts` `formatAdvisorStatus`
-  (documented out of scope in §4); no reference *parsing* site remains outside
-  `_shared/model-reference.ts`.
-- `scope: "ignore"` appears at exactly the three documented call sites.
-- Full `pnpm typecheck && pnpm test` green; CONTEXT.md updated (Phase 0).
+/** Parse a standalone, single-line /model invocation without rewriting it. */
+export function parseModelCommand(text: string): string | undefined;
+
+/**
+ * Register the /model handler every editor routes to. Backed by a
+ * globalThis registry (per-extension module copies share through it).
+ * Ownership-safe: the returned unregister only removes this handler.
+ */
+export function registerModelCommandHandler(handler: ModelCommandHandler): () => void;
+export function getModelCommandHandler(): ModelCommandHandler | undefined;
+
+export interface SessionEditorContribution {
+  /** Stable contributor id ("ui-message-history", "ui-model-selector"); re-registering replaces. */
+  id: string;
+  /** Higher priority wins the flush. */
+  priority: number;
+  createEditor: EditorFactory;
+}
+
+/**
+ * Register this session's editor contributor and coordinate the
+ * session_start wave: one deferred flush mounts the highest-priority
+ * contributor's editor, reapplying the thinking border. The slot is
+ * written exactly once per wave — no caller-owned timing.
+ */
+export function installSessionEditor(ctx: ExtensionContext, contribution: SessionEditorContribution): void;
+
+/** Unregister a contributor; re-flush or restore the built-in editor when none remain. */
+export function removeSessionEditor(ctx: ExtensionContext, id: string): void;
+
+/**
+ * Editor that silently intercepts /model before Pi's built-in command path.
+ * `modelCommandHandler` becomes `protected` and mutable — NOT the current `private
+ * readonly` (constructor-only) field. `PreviousMessageEditor` constructs its base with
+ * no handler and assigns one later via `attach()` (Phase 3); a private readonly field
+ * set only in the constructor cannot receive that assignment through inheritance
+ * (TypeScript rejects both the private access and the readonly write from a subclass).
+ * Routing logic itself is otherwise unchanged.
+ */
+export class ModelCommandRoutingEditor extends CustomEditor {
+  protected modelCommandHandler: ModelCommandHandler | undefined;
+}
+```
+
+### What moves where
+
+| From | To | Notes |
+|---|---|---|
+| `_shared/model-command-routing.ts`: `parseModelCommand`, `ModelCommandHandler`, `ModelCommandRoutingEditor` | `_shared/editor-slot.ts` | Logic unchanged; file deleted |
+| `_shared/model-command-routing.ts`: `installModelCommandHandler` / `getModelCommandHandler` module state | `globalThis` registry in `editor-slot.ts` | `installModelCommandHandler` deleted (its state was per-extension and read by nobody); replaced by `registerModelCommandHandler` |
+| `ui-message-history`: `probeModelCommandHandler`, local `parseModelCommand`, `capturedPreviousFactory`, `setTimeout` reclaim, direct `setEditorComponent`, `reapplyThinkingBorder` call | deleted | Handler comes from the registry; install through `installSessionEditor` |
+| `ui-message-history`: inline /model routing block in `PreviousMessageEditor.handleInput` | deleted | `PreviousMessageEditor extends ModelCommandRoutingEditor`; routing lives in the base class |
+| `ui-model-selector`'s and `ui-message-history`'s `reapplyThinkingBorder(ctx, editor, tui)` calls | inside `installSessionEditor`'s flush | Those two callers stop repeating it; `ui-steer-input` keeps calling it directly (its transient swap never goes through `installSessionEditor`, per Q6); `_shared/editor-border.ts` unchanged (still has its own tests) |
+
+### Composition after (class hierarchy per extension copy, state shared via registry)
+
+```
+ui-model-selector adapter ──registerModelCommandHandler(handler)──┐
+                                                                  │ globalThis registry
+ui-message-history adapter                                        │ (Symbol.for)
+  PreviousMessageEditor                                           │
+    extends ModelCommandRoutingEditor ◄────────────────────────────┘
+      rollback ↑/↓ + Ctrl+C record + inherited /model routing
+
+ui-steer-input adapter (transient swap at agent_start/end)
+  SteerEditor extends ModelCommandRoutingEditor
+    handler = getModelCommandHandler()   ← NOW ACTUALLY WORKS
+```
+
+Flush order for one `session_start` wave: `ui-message-history` (20) wins; its editor
+inherits routing from the shared base; the handler arrives through the registry.
+
+## 4. Implementation phases (replace, don't layer — test-first)
+
+### Phase 1 — Create the module, migrate importers, delete the old file
+1. **Red:** add `extensions/_shared/editor-slot.test.ts` with: registry tests
+   (register/get, ownership-safe unregister removes only its own handler,
+   re-register replaces), `parseModelCommand` cases (moved from
+   `ui-model-selector/index.test.ts:172-182`), `ModelCommandRoutingEditor` routing
+   behavior (submit key + `/model args` routes silently and clears the text;
+   non-`/model` submit falls through; multiline is not parsed), wave-flush tests
+   (two contributors, priorities 20/10, same tick → one `setEditorComponent` call with
+   the winner's editor and border reapplied; same-id re-registration replaces; tie
+   breaks by latest registration; **a lower-priority contributor registers, its flush
+   fires and mounts it, then a higher-priority contributor registers on a later tick —
+   a second flush fires and replaces the mount with the higher-priority contributor's
+   editor**). That last case is not the rare path — per Q9, it's the one that actually
+   runs in production whenever `ui-model-selector` crosses a macrotask before
+   `ui-message-history` gets its turn — so it needs direct unit coverage, not just the
+   manual end-state check in Phase 5 step 5.
+2. **Green:** implement `_shared/editor-slot.ts` to the interface in §3
+   (registry: `const REGISTRY_KEY = Symbol.for("pi-config.editor-slot.v1")`; flush:
+   `setTimeout(0)`, winner's `ctx`, `reapplyThinkingBorder` inside the factory wrapper).
+3. Update importers to the new path (behavior-identical in this phase):
+   - `ui-model-selector/index.ts:13-16` → import from `editor-slot.ts`; keep
+     `installModelCommandHandler` → rename to `registerModelCommandHandler` (Phase 2
+     semantics, same call shape) — do it here to avoid two touches.
+   - `ui-model-selector/index.test.ts:4-8` → update import; remove migrated
+     `parseModelCommand` cases (lines 171-183) **and** the "does not let stale cleanup
+     remove a newer active handler" test (lines 185-194). That test exercises
+     `installModelCommandHandler`/`getModelCommandHandler` ownership semantics directly
+     — both symbols are renamed in this same step, so left in place it references a
+     deleted export and fails to compile. The same ownership semantics are already
+     covered by `editor-slot.test.ts`'s registry tests (Red, step 1 above). **Also
+     rename the surviving call site outside those two deleted ranges:** the file-level
+     `afterEach` at lines 12-15 calls `installModelCommandHandler(async () => {})`
+     directly as cleanup; update it to `registerModelCommandHandler` too, or the file
+     won't compile even after the two test blocks above are removed.
+   - `ui-steer-input/index.ts:16-20` → update import.
+   - `ui-message-history/index.ts` → import `parseModelCommand` +
+     `ModelCommandRoutingEditor` from `editor-slot.ts`; delete the local copy (deletion
+     test passes: the local mirror only duplicated the shared grammar).
+4. **Delete** `_shared/model-command-routing.ts`.
+5. Run `pnpm test:shared test:features test:steer` → green.
+
+### Phase 2 — Registry adoption (fixes the live steer bug)
+1. **Red:** in `ui-steer-input/index.test.ts`, add: register a model handler through
+   `editor-slot`, drive `agent_start`, feed Enter with `/model <args>` text through the
+   installed `SteerEditor`, assert the handler was called and the editor cleared; also
+   assert the queued-slash path routes `/model` to the handler (`run`) instead of the
+   generic submit.
+2. **Green:** no production change expected beyond Phase 1's registry (that is the
+   point — the test pins the fixed behavior). If anything still reads dead module
+   state, fix it here.
+3. `ui-model-selector/index.ts`: dispose path (`index.ts:197-198`) keeps the
+   ownership-safe unregister (already returned by `registerModelCommandHandler`).
+4. Run `pnpm test:steer test:features` → green.
+
+### Phase 3 — Wave-coordinated install; delete the timing hack and the probe
+1. **Red:** add wave tests to `editor-slot.test.ts` if not already in Phase 1:
+   `removeSessionEditor` with no contributors → `setEditorComponent(undefined)`;
+   with a remaining contributor → re-flush remounts it; unknown id → no-op.
+2. **Green:** no change needed if Phase 1 covered it.
+3. `ui-message-history/index.ts`:
+   - Delete: `capturedPreviousFactory`, `probeModelCommandHandler`, the
+     `EditorFactoryLike` type, the `setTimeout` reclaim block, the direct
+     `ctx.ui.setEditorComponent(...)` call, the `reapplyThinkingBorder` import/call,
+     the inline routing block in `PreviousMessageEditor.handleInput`, the local
+     `ModelCommandHandler` type (import it).
+   - `ModelCommandRoutingEditor.modelCommandHandler` changes from `private readonly` to
+     `protected` (mutable) — see §3's revised class comment. This is what lets
+     `attach()` assign it after construction.
+   - `PreviousMessageEditor extends ModelCommandRoutingEditor`; `handleInput` keeps
+     rollback/`app.clear` logic and delegates everything else to `super` (routing runs
+     in the base before the built-in submit — order preserved because the subclass
+     exits rollback before delegating). `attach()` keeps its existing 3-arg shape
+     (`entries`, `onRecord`, `modelCommandHandler`) and assigns
+     `this.modelCommandHandler = modelCommandHandler` directly — legal now that the
+     field is `protected`.
+   - Replace `installEditor(ctx)` with:
+     ```ts
+     installSessionEditor(ctx, {
+       id: "ui-message-history",
+       priority: 20,
+       createEditor: (tui, theme, keybindings) => {
+         const editor = new PreviousMessageEditor(tui, theme, keybindings);
+         editor.attach(entries, (text) => store.record(currentCwd, text), getModelCommandHandler());
+         return editor;
+       },
+     });
+     ```
+   - Rewrite the file header design notes (ownership now delegated to the module).
+4. `ui-model-selector/index.ts`:
+   - Replace `ctx.ui.setEditorComponent(...)` (`index.ts:170-174`) with
+     `installSessionEditor(ctx, { id: "ui-model-selector", priority: 10, createEditor })`.
+   - Replace dispose's `ctx.ui.setEditorComponent(undefined)` (`index.ts:199`) with
+     `removeSessionEditor(ctx, "ui-model-selector")`.
+5. Run `pnpm test:features test:steer test:message-history` (script added in Phase 4) → green.
+
+### Phase 4 — History store as its own module
+1. **Red:** `extensions/ui-message-history/history-store.test.ts` with a temp `file`:
+   record dedupes consecutive entries, re-submitting an older entry moves it to the
+   top, `MAX_ENTRIES` cap, merge-on-save preserves entries written by another instance,
+   debounced save coalesces, `flush()` persists pending debounce.
+2. **Green:** extract the `store` object (`ui-message-history/index.ts:77-150`,
+   including `flush()` at 143-149 — don't stop at `saveNow`) into
+   `ui-message-history/history-store.ts` as
+   `createHistoryStore({ file }: { file: string })` returning
+   `{ load, listFor, record, flush }` (merge-on-write and debounce semantics unchanged);
+   `index.ts` wires the default path via `historyFile()` and keeps `session_shutdown → flush`.
+3. `package.json` (in `.pi/`): add `"test:message-history": "vitest run extensions/ui-message-history"`
+   and insert it into the `test` chain next to `test:steer`.
+4. Run `pnpm test:message-history` → green.
+
+### Phase 5 — Full verification
+1. `cd .pi && pnpm typecheck`
+2. Targeted: `pnpm test:shared test:features test:steer test:message-history`
+3. Full suite: `pnpm test`
+4. Manual TUI checklist (`pi` in a scratch project):
+   - ↑ recalls previous message; walks back/forward; past-newest restores the draft;
+     first edit exits rollback
+   - Ctrl+C on non-empty text records into history; history persists across restart
+   - `/model <query>` at idle opens the selector silently (no builtin `/model` flash)
+   - `/model <query>` **while the agent streams** routes to the selector — the fixed bug
+   - Tab queues a follow-up and a slash command while streaming
+   - thinking border colors track the live thinking level after install and after the
+     steer swap-back
+   - Profile switch (`/profile`): editor restores (model-selector dispose →
+     `removeSessionEditor` re-flush or built-in)
+   - `/plan` review → `/plan-implement-fresh` still submits (bridge untouched)
+5. Wave-invariant spot check: start `pi` with only `ui-model-selector` enabled
+   (move the other out temporarily) — editor must be the routing editor; then with
+   both enabled — editor must be the rollback editor. Confirms priority, not timing,
+   decides the winner.
+
+## 5. Risks & mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Per-extension module copies make cross-extension sharing untestable in vitest (one module registry per test process) | The registry is `Symbol.for`-keyed `globalThis` — same-string symbols resolve identically across module copies; semantics are unit-tested, the mechanism is JS-guaranteed. Manual checklist step 5 proves it end-to-end. |
+| A contributor registers after the flush — the common case, not an edge case: `ExtensionRunner.emit()` awaits each extension's session_start handler to full completion before the next one runs (§2 Q9), and `ui-model-selector`'s handler routinely crosses a real macrotask boundary (`checkAuth`, nested `model_select` emit) after registering but before returning | Flush is re-triggerable: any late `installSessionEditor` schedules a new flush, so a late registration still wins by priority — degraded to "late install", never "lost install". This is the same outcome today's blind `setTimeout(0)` reclaim in `ui-message-history` produces, generalized. |
+| `CustomEditor`/editor types differ between repo devDeps (0.84.4) and the global pi (0.85.1) | Typecheck and test against the repo's pinned devDeps; manual verification runs against the globally installed `pi`. |
+| Transient swappers (steer, plan-review) interacting with the flush | They never register; they capture/restore whatever the module mounted. Tests pin restore-exactness in `ui-steer-input/index.test.ts`. |
+| Model-selector's editor stops being mounted directly | Intended: its routing contribution reaches the winner via the shared base class + registry. If only it is registered, it still wins the flush — nothing is lost. |
+
+## 6. Wins (glossary terms)
+
+- **Locality:** editor ownership, /model grammar, and install ordering concentrate in one module; bugs fix once.
+- **Leverage:** one interface, three adapter extensions; adding an editor behavior means registering, not racing.
+- **Interface shrinks; implementation absorbs** the probe, the reclaim, and the border reapplication.
+- **Live bug fixed:** `/model` routing during streaming works again (per-extension module state bypassed).
+- **Deletion:** `probeModelCommandHandler`, local `parseModelCommand`, `setTimeout` hack, `capturedPreviousFactory`, `installModelCommandHandler`, the entire `model-command-routing.ts` file.
+
+## 7. Out of scope (recorded, not re-litigated)
+
+- `workflows-plan/plan-review.ts` submitEditorCommand bridge — a workaround for Pi lacking a submit-command capability; revisit if pi ships one.
+- Architecture-review candidates 2–6: workflow run-state deepening, child-tool manifest, worktree result envelope, telemetry weekly bucketing, exec-policy split.
