@@ -4,7 +4,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ApprovalMode } from "../_shared/command-policy.ts";
+import { isApprovalMode, type ApprovalMode } from "./mode-registry.ts";
 import { projectStatePath } from "../_shared/state-paths.ts";
 
 export interface ModeState {
@@ -14,8 +14,6 @@ export interface ModeState {
 
 const MODE_FILE = "approval-mode.json";
 const LEGACY_MODE_FILE = path.join(".pi", MODE_FILE);
-
-const VALID_MODES: ApprovalMode[] = ["read-only", "default", "auto-review", "full-access"];
 
 export const DEFAULT_MODE_STATE: ModeState = { mode: "default", setAt: Date.now() };
 
@@ -37,7 +35,7 @@ export function loadModeFromFile(cwd: string): ModeState | null {
 		}
 		if (fs.existsSync(filePath)) {
 			const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-			if (raw?.mode && VALID_MODES.includes(raw.mode)) {
+			if (raw?.mode && isApprovalMode(raw.mode)) {
 				return { mode: raw.mode, setAt: raw.setAt || Date.now() };
 			}
 		}

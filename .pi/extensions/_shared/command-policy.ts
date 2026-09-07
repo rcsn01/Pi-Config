@@ -4,7 +4,6 @@ import * as os from "node:os";
 import { dangerousCommandReason } from "./security.ts";
 
 export type ExecPolicyAction = "allow" | "prompt" | "block";
-export type ApprovalMode = "read-only" | "default" | "auto-review" | "full-access";
 
 export interface ExecPolicyRule {
 	id: string;

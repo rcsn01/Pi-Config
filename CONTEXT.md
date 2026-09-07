@@ -311,3 +311,15 @@ extension.
   `policy-permissions/` that owns permission mode, decision ordering, prompted
   denials, one-shot retry approvals, Guardian fallback, and verdict persistence
   policy. Pi event capture, rendering, and concrete host calls stay outside.
+- **Permission-mode registry** — the pure in-process vocabulary module in
+  `policy-permissions/mode-registry.ts` that owns the `ApprovalMode` union, its
+  canonical order, command aliases and input resolution, persisted-mode
+  validation (exact canonical ids only), status-line labels, `/permissions`
+  picker descriptions, per-mode system-prompt instructions (the read-only
+  workspace/current-directory phrasing is a typed parameter the adapter
+  computes), the per-mode approval disposition (`deny`/`allow`/`prompt` with its
+  no-UI reason), and the full-access switch confirmation. `/permissions`, the
+  Permission enforcement lifecycle, status display, the system-prompt builder,
+  and Permission-mode persistence are adapters at its seam; prose composition
+  stays adapter-side, and trigger-level classification stays in
+  permission-policy.
