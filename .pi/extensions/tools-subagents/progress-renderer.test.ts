@@ -92,7 +92,7 @@ describe("subagent progress rendering", () => {
 	it("renders mixed parallel summaries and errors", () => {
 		const failed = agentResult({
 			agent: "explorer",
-			exitCode: 2,
+			exitCode: 0,
 			progress: { ...agentResult().progress, agent: "explorer", status: "failed", error: "boom" },
 		});
 		const rendered = output(renderSubagentResult({
@@ -101,6 +101,21 @@ describe("subagent progress rendering", () => {
 		}, { expanded: false }, theme(), () => 100));
 		expect(rendered).toContain("✗ parallel 1/2 completed");
 		expect(rendered).toContain("Error: boom");
+	});
+
+	it("uses completed status for row and aggregate state despite diagnostic disagreement", () => {
+		const completed = agentResult({
+			exitCode: 2,
+			progress: { ...agentResult().progress, status: "completed", error: "diagnostic text" },
+		});
+		const rendered = output(renderSubagentResult({
+			content: [{ type: "text", text: "done" }],
+			details: { mode: "parallel", results: [completed] },
+		}, { expanded: false }, theme(), () => 100));
+		expect(rendered).toContain("✓ parallel 1/1 completed");
+		expect(rendered).toContain("✓ worker");
+		expect(rendered).toContain("Error: diagnostic text");
+		expect(rendered).not.toContain("✗ parallel");
 	});
 
 	it("keeps pending parallel work in the pending state", () => {

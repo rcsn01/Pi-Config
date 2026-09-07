@@ -270,7 +270,7 @@ export class WorkflowRun {
 					cacheAffinitySeed: this.commandCtx.sessionManager.getSessionId(),
 					onProgress: async (event) => this.recordAgentProgress(options.key, event),
 				});
-				if (result.exitCode !== 0 || result.progress?.error) {
+				if (result.progress.status === "failed") {
 					throw new Error(result.progress?.error || result.output || `Subagent ${options.agent} failed`);
 				}
 				let returned: unknown = options.output === "json" ? parseJsonOutput(result.output) : result.output;

@@ -90,12 +90,17 @@ describe("Subagent invocation adapter", () => {
 	});
 
 	it.each([
-		["exit code", agentResult({ exitCode: 2 })],
-		["failed status", agentResult({ progress: { ...agentResult().progress, status: "failed" } })],
-		["progress error", agentResult({ progress: { ...agentResult().progress, error: "boom" } })],
-	] as const)("applies the failure rule to a single result's %s", async (_label, failed) => {
+		["failed status", agentResult({
+			exitCode: 0,
+			progress: { ...agentResult().progress, status: "failed", error: undefined },
+		}), true],
+		["completed status despite diagnostic disagreement", agentResult({
+			exitCode: 2,
+			progress: { ...agentResult().progress, status: "completed", error: "boom" },
+		}), undefined],
+	] as const)("uses %s as the single-result outcome", async (_label, agentResultFixture, expectedIsError) => {
 		const adapter = createSubagentInvocationAdapter({
-			batch: { runBatch: vi.fn(async () => [failed]) },
+			batch: { runBatch: vi.fn(async () => [agentResultFixture]) },
 		});
 
 		const result = await adapter.execute(
@@ -103,7 +108,7 @@ describe("Subagent invocation adapter", () => {
 			{ cwd: "/workspace" },
 		);
 
-		expect(result.isError).toBe(true);
+		expect(result.isError).toBe(expectedIsError);
 	});
 
 	it("flushes terminal parallel progress and cancels a stale throttled update", async () => {

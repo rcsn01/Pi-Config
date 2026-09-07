@@ -30,7 +30,7 @@ export interface SubagentInvocationAdapter {
 }
 
 export function isFailedSubagentResult(result: AgentResult): boolean {
-	return result.exitCode !== 0 || result.progress.status === "failed" || Boolean(result.progress.error);
+	return result.progress.status === "failed";
 }
 
 function createCancellableThrottle(callback: () => void, delayMs: number) {

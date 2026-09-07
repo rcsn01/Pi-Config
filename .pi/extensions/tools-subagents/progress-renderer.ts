@@ -41,14 +41,11 @@ export function renderAgentProgress(
 	const c = new Container();
 	const prog = r.progress;
 	const isRunning = prog.status === "running";
-	const isPending = prog.status === "pending";
-	const state = isRunning
-		? "running"
-		: isPending
-			? "pending"
-			: prog.status === "failed" || r.exitCode !== 0 || Boolean(prog.error)
-				? "error"
-				: "success";
+	const state = prog.status === "completed"
+		? "success"
+		: prog.status === "failed"
+			? "error"
+			: prog.status;
 
 	// Header: icon + agent + stats (always one line, truncated)
 	const icon = toolStateMarker(theme, state);
@@ -193,14 +190,10 @@ export function renderSubagentResult(
 	const container = new Container();
 
 	if (details.mode === "parallel") {
-		const completed = details.results.filter((agentResult) =>
-			agentResult.exitCode === 0 && agentResult.progress?.status !== "failed" && !agentResult.progress?.error,
-		).length;
-		const running = details.results.filter((agentResult) => agentResult.progress?.status === "running").length;
-		const pending = details.results.filter((agentResult) => agentResult.progress?.status === "pending").length;
-		const failed = details.results.some((agentResult) =>
-			agentResult.progress?.status === "failed" || agentResult.exitCode !== 0,
-		);
+		const completed = details.results.filter((agentResult) => agentResult.progress.status === "completed").length;
+		const running = details.results.filter((agentResult) => agentResult.progress.status === "running").length;
+		const pending = details.results.filter((agentResult) => agentResult.progress.status === "pending").length;
+		const failed = details.results.some((agentResult) => agentResult.progress.status === "failed");
 		const state = running > 0 ? "running" : pending > 0 ? "pending" : failed ? "error" : "success";
 		const icon = toolStateMarker(theme, state);
 		const duration = Math.max(...details.results.map((agentResult) => agentResult.progress?.durationMs || 0));
