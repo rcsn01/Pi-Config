@@ -236,17 +236,25 @@ extension.
   snapshot, whole-request-set agent validation, task normalization, model and thinking
   resolution exactly once, and cache-affinity identity derivation; scheduling and child
   process lifetime stay outside.
+- **Subagent result status** — the authoritative `AgentProgress.status` meaning
+  shared across Subagent execution, invocation, rendering, and workflow adapters.
+  `pending` and `running` are nonterminal; `completed` and `failed` are terminal.
+  The Child event ingestion module computes terminal status from the process
+  outcome and captured error. Consumers read status instead of inferring outcome
+  from `exitCode` or `progress.error`, which remain diagnostics.
 - **Subagent child execution module** — the deep process-lifetime module for one
   resolved Subagent launch. It owns private prompt and task files, child
   observation setup, process spawning and termination, and cleanup on every exit
   path. Its private Child event ingestion module owns stdout framing, JSON event
-  meaning, progress and usage state, timing input, output selection, truncation,
-  and terminal result construction. It receives prepared requests; Pi result
-  rendering stays in the invocation adapter.
+  meaning, progress and usage state, terminal Subagent result status, timing
+  input, output selection, truncation, and terminal result construction. It
+  receives prepared requests; Pi result rendering stays in the invocation
+  adapter.
 - **Subagent invocation adapter** — the Pi-facing deep module for one `subagent`
   tool call: selects single or parallel mode, publishes immutable live snapshots,
-  formats final text and details, and applies one failure rule. The Subagent
-  execution module owns scheduling and calls child execution directly.
+  formats final text and details, and reads authoritative Subagent result status
+  when applying Pi's error flag. The Subagent execution module owns scheduling
+  and calls child execution directly.
 - **Subagent execution module** — the deep in-process module for one-task and
   bounded batch execution. It owns launch preparation dispatch, configured or
   caller-selected concurrency, ordered results, and immutable task-state

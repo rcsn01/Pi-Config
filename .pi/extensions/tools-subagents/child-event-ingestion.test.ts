@@ -221,10 +221,12 @@ describe("Subagent child event ingestion", () => {
 
 	it("applies message-end errors even when the child exits successfully", async () => {
 		for (const eventType of ["message_update", "message_end"]) {
-			const { ingestion } = createRecorder();
+			const { ingestion, events } = createRecorder();
 			ingestion.write(line({ type: eventType, message: { role: "assistant", content: "partial", errorMessage: `${eventType} failed` } }));
 			const result = await finish(ingestion);
+			expect(result.exitCode).toBe(0);
 			expect(result.progress).toMatchObject({ status: "failed", error: `${eventType} failed` });
+			expect(events.at(-1)).toMatchObject({ type: "failed", result });
 		}
 	});
 

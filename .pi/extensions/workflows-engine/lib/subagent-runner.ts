@@ -77,7 +77,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<AgentRes
 				void options.onProgress?.({ type: "message", agent: agent.name, message: lastMessage, tokens: progress.tokens }, progress);
 			}
 		} });
-		if (result.exitCode === 0 && !result.progress?.error) {
+		if (result.progress.status === "completed") {
 			await options.onProgress?.({ type: "completed", agent: agent.name, result }, result.progress);
 		} else {
 			await options.onProgress?.({ type: "failed", agent: agent.name, result, error: result.progress?.error || result.output || `Subagent ${agent.name} failed` }, result.progress);
@@ -99,7 +99,7 @@ export async function runSubagentsParallel(options: RunSubagentsParallelOptions)
 		maxOutputBytes: options.maxOutputBytes,
 		cacheAffinitySeed: options.cacheAffinitySeed,
 		onUpdate: (index, result) => {
-			void options.onProgress?.(index, { type: result.exitCode === 0 ? "completed" : "failed", agent: result.agent, result, error: result.progress?.error || result.output } as any, result.progress);
+			void options.onProgress?.(index, { type: result.progress.status === "completed" ? "completed" : "failed", agent: result.agent, result, error: result.progress?.error || result.output } as any, result.progress);
 		},
 	});
 }

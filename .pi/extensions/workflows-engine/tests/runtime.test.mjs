@@ -16,6 +16,7 @@ const registry = await import('../lib/registry.ts');
 const approval = await import('../lib/approval.ts');
 const runStore = await import('../lib/run-store.ts');
 const runner = await import('../lib/runner.ts');
+const workflowSubagentRunner = await import('../lib/subagent-runner.ts');
 const subagentService = await import('../../_shared/subagent-service.ts');
 const fanOutWorkflow = (await import('../bundled/fan-out-and-synthesize.ts')).default;
 const verificationWorkflow = (await import('../bundled/deep-verification.ts')).default;
@@ -70,6 +71,52 @@ function registerFakeSubagents(respond) {
     async runSubagentsParallel() { throw new Error('not used by workflow runtime'); },
   });
   return { calls, unregister };
+}
+
+function failedStatusResult() {
+  return {
+    agent: 'worker',
+    task: 'report failure',
+    output: 'Subagent reported failure',
+    exitCode: 0,
+    progress: {
+      agent: 'worker',
+      status: 'failed',
+      task: 'report failure',
+      recentTools: [],
+      toolCount: 0,
+      tokens: 0,
+      durationMs: 1,
+      lastMessage: '',
+    },
+    model: 'test-model',
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+  };
+}
+
+function registerFailedStatusSubagents(result = failedStatusResult()) {
+  subagentService.clearSubagentService();
+  const unregister = subagentService.registerSubagentService({
+    id: 'workflow-status-test',
+    registerAgent() {},
+    unregisterAgent() {},
+    loadAgents: () => [{
+      name: 'worker',
+      description: 'worker test agent',
+      tools: [],
+      model: 'test-model',
+      systemPrompt: '',
+      filePath: 'worker.md',
+    }],
+    async runSubagent() {
+      return result;
+    },
+    async runSubagentsParallel(options) {
+      options.onUpdate?.(0, result);
+      return [result];
+    },
+  });
+  return { result, unregister };
 }
 
 async function runBundledWorkflow(cwd, runId, workflow) {
@@ -314,6 +361,85 @@ test('abort marks the run stopped and preserves completed keyed results', async 
     assert.equal(stopped.steps.completed.result, 'preserved');
     assert.equal(stopped.steps.waiting.status, 'failed');
   } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('single subagent adaptation emits failed from authoritative status', async () => {
+  const fake = registerFailedStatusSubagents();
+  const events = [];
+  try {
+    const result = await workflowSubagentRunner.runSubagent({
+      agent: 'worker',
+      prompt: 'report failure',
+      cwd: process.cwd(),
+      onProgress: (event) => events.push(event),
+    });
+    assert.equal(result, fake.result);
+    assert.equal(events.at(-1).type, 'failed');
+    assert.equal(events.at(-1).result, fake.result);
+    assert.equal(events.at(-1).error, 'Subagent reported failure');
+  } finally {
+    fake.unregister();
+  }
+});
+
+test('parallel subagent adaptation emits failed from authoritative status', async () => {
+  const fake = registerFailedStatusSubagents();
+  const events = [];
+  try {
+    const results = await workflowSubagentRunner.runSubagentsParallel({
+      tasks: [{ agent: 'worker', prompt: 'report failure' }],
+      cwd: process.cwd(),
+      onProgress: (index, event) => events.push({ index, event }),
+    });
+    assert.equal(results[0], fake.result);
+    assert.equal(events.at(-1).index, 0);
+    assert.equal(events.at(-1).event.type, 'failed');
+    assert.equal(events.at(-1).event.result, fake.result);
+    assert.equal(events.at(-1).event.error, 'Subagent reported failure');
+  } finally {
+    fake.unregister();
+  }
+});
+
+test('workflow runner rejects failed authoritative status', async () => {
+  const cwd = await tempProject();
+  const fake = registerFailedStatusSubagents();
+  const entry = {
+    name: 'status-failure',
+    trust: 'bundled',
+    description: 'status failure test',
+    cost: 'quick',
+    canEditFiles: false,
+    source: 'status failure test source',
+    sourceHash: registry.hash('status failure test source'),
+  };
+  const workflow = definition.defineWorkflow({
+    name: entry.name,
+    description: entry.description,
+    canEditFiles: false,
+    async run(ctx) {
+      return ctx.agent({ key: 'failed-agent', agent: 'worker', prompt: 'report failure' });
+    },
+  });
+  const store = new runStore.RunStore(cwd, 'run-status-failure');
+  const state = await store.initialize(entry, '', path.join(cwd, 'status-failure.ts'));
+  try {
+    await assert.rejects(
+      () => runner.runPreparedWorkflow(
+        {},
+        { cwd, signal: new AbortController().signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } },
+        { entry, workflow, store, state, resume: false },
+      ),
+      /Subagent reported failure/,
+    );
+    const events = await runStore.readEvents(store.paths.events);
+    assert.equal(events.some((event) => event.type === 'agent_completed' && event.key === 'failed-agent'), false);
+    const rebuilt = await runStore.rebuildStateFromEvents(store.paths.events);
+    assert.equal(rebuilt.agents['failed-agent'].status, 'failed');
+  } finally {
+    fake.unregister();
     await rm(cwd, { recursive: true, force: true });
   }
 });

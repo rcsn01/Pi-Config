@@ -11,6 +11,11 @@ export interface AgentConfig {
 
 export interface AgentProgress {
 	agent: string;
+	/**
+	 * Authoritative lifecycle and terminal outcome. `pending` and `running` are
+	 * nonterminal; `completed` and `failed` are terminal. Consumers must not
+	 * infer outcome from AgentResult.exitCode or error text.
+	 */
 	status: "pending" | "running" | "completed" | "failed";
 	task: string;
 	currentTool?: string;
@@ -102,7 +107,9 @@ export interface SubagentService {
 	registerAgent(config: AgentConfig): void;
 	unregisterAgent(name: string): void;
 	loadAgents(): AgentConfig[];
+	/** Resolves with a terminal result whose status is `completed` or `failed`. */
 	runSubagent(options: RunSubagentOptions): Promise<AgentResult>;
+	/** Resolves with terminal results whose statuses are `completed` or `failed`. */
 	runSubagentsParallel(options: RunSubagentsParallelOptions): Promise<AgentResult[]>;
 }
 
