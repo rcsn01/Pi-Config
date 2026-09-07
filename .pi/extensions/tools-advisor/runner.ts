@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { type ExtensionContext, type ToolInfo } from "@earendil-works/pi-coding-agent";
 import { resolveModelContext } from "../_shared/model-selection.ts";
+import { ModelReferenceError, resolveModelReference } from "../_shared/model-reference.ts";
 import { advisorFailure, advisorSuccess, type AdvisorResult } from "./outcome.ts";
 import { ADVISOR_SYSTEM_PROMPT } from "./prompt.ts";
 import { projectAdvisorContext } from "./transcript.ts";
@@ -59,8 +60,13 @@ export function createAdvisorRunner(dependencies: { complete?: CompleteAdvisor }
 			if (!input.settings.enabled || !input.settings.model) {
 				return advisorFailure("Advisor is disabled. Select a model with /advisor first.", modelName);
 			}
-			const model = resolveConfiguredModel(input.ctx, input.settings.model);
-			if (!model) return advisorFailure(`Configured advisor model ${modelName} is unavailable.`, modelName);
+			let model: Model<Api>;
+			try {
+				model = await resolveModelReference(input.ctx, input.settings.model, { label: "Advisor model" });
+			} catch (error) {
+				if (!(error instanceof ModelReferenceError)) throw error;
+				return advisorFailure(`Configured advisor model ${modelName} is unavailable.`, modelName);
+			}
 			if (!input.ctx.modelRegistry.hasConfiguredAuth(model)) {
 				return advisorFailure(`No authentication is configured for advisor model ${modelName}.`, modelName);
 			}
@@ -101,19 +107,6 @@ export function createAdvisorRunner(dependencies: { complete?: CompleteAdvisor }
 			}
 		},
 	};
-}
-
-function resolveConfiguredModel(ctx: ExtensionContext, reference: string): Model<Api> | undefined {
-	const slash = reference.indexOf("/");
-	if (slash <= 0 || slash === reference.length - 1) return undefined;
-	const provider = reference.slice(0, slash);
-	const id = reference.slice(slash + 1);
-	const model = ctx.modelRegistry.find(provider, id);
-	if (!model) return undefined;
-	if (ctx.scopedModels.length > 0 && !ctx.scopedModels.some(
-		(entry) => entry.model.provider === provider && entry.model.id === id,
-	)) return undefined;
-	return model;
 }
 
 async function completeWithRegistry(input: CompletionInput): Promise<AssistantMessage> {

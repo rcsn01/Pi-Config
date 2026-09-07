@@ -7,6 +7,7 @@ import {
 	appendChildModelArgument,
 	appendChildThinkingArgument,
 	createSubagentConfigStore,
+	normalizeModelSetting,
 	parseModelConfiguration,
 	resolveSubagentAssignment,
 	resolveSubagentAssignmentSelection,
@@ -176,6 +177,23 @@ describe("subagent model resolution", () => {
 		expect(splitModelThinkingSetting("openai/gpt-5.4:xhigh")).toEqual({
 			model: "openai/gpt-5.4",
 			thinkingLevel: "xhigh",
+		});
+	});
+});
+
+describe("stored colon-suffix pass-through", () => {
+	// A non-level colon suffix is not an attempted thinking level: the shared
+	// suffix vocabulary only extracts valid level words, so these settings pass
+	// through unchanged rather than being rejected at parse time.
+	it("keeps an invalid suffix level in the model id", () => {
+		expect(normalizeModelSetting("openai/model:turbo")).toBe("openai/model:turbo");
+		expect(splitModelThinkingSetting("openai/model:turbo")).toEqual({ model: "openai/model:turbo" });
+	});
+
+	it("keeps a legitimately colon-suffixed model id intact", () => {
+		expect(normalizeModelSetting("openrouter/deepseek-r1:free")).toBe("openrouter/deepseek-r1:free");
+		expect(splitModelThinkingSetting("openrouter/deepseek-r1:free")).toEqual({
+			model: "openrouter/deepseek-r1:free",
 		});
 	});
 });

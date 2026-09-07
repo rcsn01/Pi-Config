@@ -20,6 +20,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { formatTokenCount, modelKey, pickModelConfiguration } from "../_shared/model-picker.ts";
 import { resolveModelContext } from "../_shared/model-selection.ts";
+import { resolveModelReference } from "../_shared/model-reference.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { renderTranscriptCard } from "../_shared/transcript-card.ts";
 import { loadExecPolicy } from "../_shared/command-policy.ts";
@@ -225,8 +226,13 @@ function installSafetyPermissions(
 			const commandSettingsPath = guardianSettingsPath;
 			const commandSettings = guardianSettings;
 			const commandGeneration = profileBindingGeneration;
+			// Seeds the picker's current-model marker for a stored previous choice
+			// that may be outside the session's current scope.
 			const configuredModel = commandSettings
-				? ctx.modelRegistry.find(commandSettings.provider, commandSettings.modelId)
+				? await resolveModelReference(ctx, { provider: commandSettings.provider, modelId: commandSettings.modelId }, {
+					optional: true,
+					scope: "ignore",
+				})
 				: undefined;
 			try {
 				const selection = await pickModelConfiguration(ctx, {

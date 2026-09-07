@@ -6,6 +6,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { writePiNativeDefaults } from "../_shared/pi-defaults.ts";
 import {
 	validateConcreteModelSelection,
 	type ConcreteModelSelection,
@@ -43,11 +44,6 @@ export function profileFromCurrentSession(
 	};
 }
 
-function settingsErrorMessage(errors: ReturnType<SettingsManager["drainErrors"]>): string | undefined {
-	if (errors.length === 0) return undefined;
-	return errors.map(({ scope, error }) => `${scope}: ${error.message}`).join("; ");
-}
-
 export function createNormalDefaultsStore(agentDir = getAgentDir()): NormalDefaultsStore {
 	return {
 		async capture(cwd, fallback) {
@@ -65,12 +61,15 @@ export function createNormalDefaultsStore(agentDir = getAgentDir()): NormalDefau
 
 		async restore(cwd, profile) {
 			const validated = validateConcreteModelSelection(profile, "Normal global defaults");
-			const settings = SettingsManager.create(cwd, agentDir);
-			settings.setDefaultModelAndProvider(validated.provider, validated.modelId);
-			settings.setDefaultThinkingLevel(validated.thinkingLevel);
-			await settings.flush();
-			const error = settingsErrorMessage(settings.drainErrors());
-			if (error) throw new Error(`Could not restore Pi's normal defaults: ${error}`);
+			try {
+				await writePiNativeDefaults(agentDir, {
+					provider: validated.provider,
+					modelId: validated.modelId,
+					thinkingLevel: validated.thinkingLevel,
+				});
+			} catch (error) {
+				throw new Error(`Could not restore Pi's normal defaults: ${error instanceof Error ? error.message : String(error)}`);
+			}
 		},
 	};
 }

@@ -337,6 +337,26 @@ describe("applyModelSelection", () => {
 		})).rejects.toThrow("outside this session's model scope");
 	});
 
+	it("rejects with the abort message when the catalogue refresh is aborted", async () => {
+		const harness = createHarness();
+		harness.refresh.mockResolvedValue({ aborted: true, errors: new Map() });
+		const document = { uiModelSelector: { profiles: { normal: NORMAL_SELECTION } } };
+
+		await expect(applySelectionFromDocument(harness.pi, harness.ctx, document))
+			.rejects.toThrow("Refreshing ollama was aborted.");
+		expect(harness.setModel).not.toHaveBeenCalled();
+	});
+
+	it("re-throws the raw provider refresh error", async () => {
+		const harness = createHarness();
+		const cause = new Error("catalogue offline");
+		harness.refresh.mockResolvedValue({ aborted: false, errors: new Map([["ollama", cause]]) });
+		const document = { uiModelSelector: { profiles: { normal: NORMAL_SELECTION } } };
+
+		await expect(applySelectionFromDocument(harness.pi, harness.ctx, document)).rejects.toBe(cause);
+		expect(harness.setModel).not.toHaveBeenCalled();
+	});
+
 	it("sets the thinking level only when it differs", async () => {
 		const harness = createHarness({
 			model: { provider: "ollama", id: "other-model", contextWindow: 256000 },

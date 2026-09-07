@@ -9,7 +9,8 @@ import {
 } from "../_shared/settings-document.ts";
 import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { modelKey, pickModelAndThinking } from "../_shared/model-picker.ts";
-import { MODEL_THINKING_LEVELS } from "../_shared/model-thinking.ts";
+import { normalizeThinkingLevel } from "../_shared/model-thinking.ts";
+import { parseModelReference, resolveModelReference } from "../_shared/model-reference.ts";
 import { resolveModelContext } from "../_shared/model-selection.ts";
 import { registerToolErrorHandler, renderToolMarkdown, renderToolSummary } from "../_shared/tool-result-ui.ts";
 import {
@@ -46,10 +47,11 @@ function optionalBoolean(value: unknown): boolean | undefined {
 
 function optionalThinkingLevel(value: unknown): ModelThinkingLevel | undefined {
 	if (value === undefined) return undefined;
-	if (typeof value !== "string" || !MODEL_THINKING_LEVELS.includes(value as ModelThinkingLevel)) {
+	try {
+		return normalizeThinkingLevel(value, { label: "advisor.thinkingLevel" });
+	} catch {
 		throw new Error("advisor.thinkingLevel must be one of off, minimal, low, medium, high, xhigh, or max.");
 	}
-	return value as ModelThinkingLevel;
 }
 
 function positiveInteger(value: unknown, fallback: number): number {
@@ -123,13 +125,6 @@ async function disableAdvisorSettings(path: string): Promise<AdvisorSettings> {
 		return { ...document, advisor: serializedAdvisorSettings(next) };
 	});
 	return next;
-}
-
-function splitModel(reference?: string): { provider?: string; modelId?: string } {
-	if (!reference) return {};
-	const slash = reference.indexOf("/");
-	if (slash <= 0 || slash === reference.length - 1) return {};
-	return { provider: reference.slice(0, slash), modelId: reference.slice(slash + 1) };
 }
 
 export function formatAdvisorStatus(settings: Pick<AdvisorSettings, "enabled" | "model">): string | undefined {
@@ -280,14 +275,12 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 					notify(ctx, "The advisor picker requires TUI mode.", "error");
 					return;
 				}
-				const previous = splitModel(settings.model);
+				const previous = parseStoredReference(settings.model);
 				let selection;
 				try {
 					selection = await pickModelAndThinking(ctx, {
 						previous: { ...previous, thinkingLevel: settings.thinkingLevel },
-						currentModel: previous.provider && previous.modelId
-							? resolveOptionalModel(ctx, previous.provider, previous.modelId)
-							: undefined,
+						currentModel: previous ? await resolveStoredAdvisorModel(ctx, previous) : undefined,
 						modelTitle: "Select advisor model",
 					});
 				} catch (error) {
@@ -302,8 +295,24 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 	};
 }
 
-function resolveOptionalModel(ctx: ExtensionContext, provider: string, modelId: string): Model<Api> | undefined {
-	const model = ctx.modelRegistry.find(provider, modelId);
+function parseStoredReference(reference?: string): { provider: string; modelId: string } | undefined {
+	if (!reference) return undefined;
+	try {
+		const parsed = parseModelReference(reference);
+		return parsed.kind === "qualified" ? { provider: parsed.provider, modelId: parsed.modelId } : undefined;
+	} catch {
+		// A garbage stored reference seeds no previous selection.
+		return undefined;
+	}
+}
+
+async function resolveStoredAdvisorModel(
+	ctx: ExtensionContext,
+	previous: { provider: string; modelId: string },
+): Promise<Model<Api> | undefined> {
+	// A stored previous choice may legitimately be outside the session's
+	// current scope; the picker only needs a current-model marker.
+	const model = await resolveModelReference(ctx, previous, { optional: true, scope: "ignore" });
 	return model ? resolveModelContext(model) : undefined;
 }
 

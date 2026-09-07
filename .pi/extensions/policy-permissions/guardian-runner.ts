@@ -33,13 +33,14 @@ import {
 	ModelRuntime,
 	parseFrontmatter,
 	SessionManager,
-	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getObservabilityService, type ObservabilitySource } from "../_shared/observability.ts";
+import { ModelReferenceError, resolveModelReference, type RefreshableModelLookup } from "../_shared/model-reference.ts";
+import { readDefaultProvider } from "../_shared/pi-defaults.ts";
 import { guardianObserverExtension, runWithGuardianObservation } from "./guardian-observer.ts";
 import { GuardianSessionCache } from "./guardian-session-cache.ts";
 import type { GuardianSettings } from "./guardian-settings.ts";
@@ -238,25 +239,34 @@ function getRuntime(): Promise<ModelRuntime> {
 
 /**
  * Resolve a guardian.md `model:` frontmatter spec ("provider/id" or a bare id
- * that falls back to the configured default provider). An empty spec means
- * "use the settings default model" — handled by createAgentSession itself.
+ * that falls back to the configured default provider) through the shared
+ * model-reference module. An empty spec means "use the settings default
+ * model" — handled by createAgentSession itself.
+ *
+ * The ModelRuntime is adapted to the shared lookup face inline: it has no
+ * refresh and no scoped-models concept, so both stay absent and the
+ * scoped-models invariant is not applicable to the guardian session.
+ * @internal test seam: exported so the empty-provider tightening is pinnable.
  */
-async function resolveGuardianModel(spec: string): Promise<AnyModel> {
-	const runtime = await getRuntime();
-	const slash = spec.indexOf("/");
-	let provider = slash >= 0 ? spec.slice(0, slash) : undefined;
-	const id = slash >= 0 ? spec.slice(slash + 1) : spec;
-	if (!provider) {
-		provider = SettingsManager.create(process.cwd(), getAgentDir()).getDefaultProvider();
+export async function resolveGuardianModel(spec: string, runtime: ModelRuntime): Promise<AnyModel> {
+	const lookup: RefreshableModelLookup = {
+		modelRegistry: { find: (provider, modelId) => runtime.getModel(provider, modelId) },
+	};
+	try {
+		return await resolveModelReference(lookup, spec, {
+			allowBareId: true,
+			bareIdFallback: () => readDefaultProvider(getAgentDir()),
+		}) as AnyModel;
+	} catch (error) {
+		if (!(error instanceof ModelReferenceError)) throw error;
+		if (error.reason === "no-provider") {
+			throw new Error(`guardian model "${spec}" has no provider and no default provider is configured`);
+		}
+		if (error.reason === "invalid") {
+			throw new Error(`guardian model "${spec}" is not a valid model reference.`);
+		}
+		throw new Error(`guardian model not found: ${error.provider}/${error.modelId}`);
 	}
-	if (!provider) {
-		throw new Error(`guardian model "${spec}" has no provider and no default provider is configured`);
-	}
-	const model = runtime.getModel(provider, id);
-	if (!model) {
-		throw new Error(`guardian model not found: ${provider}/${id}`);
-	}
-	return model;
 }
 
 function guardianSessionKey(definition: GuardianDefinition, settings?: GuardianSettings): string {
@@ -302,9 +312,9 @@ async function createGuardianSession(
 		runtime.registerProvider(settings.provider, providerRegistration.config);
 	}
 	const configuredModel = settings
-		? await resolveGuardianModel(`${settings.provider}/${settings.modelId}`)
+		? await resolveGuardianModel(`${settings.provider}/${settings.modelId}`, runtime)
 		: definition.model
-			? await resolveGuardianModel(definition.model)
+			? await resolveGuardianModel(definition.model, runtime)
 			: undefined;
 	if (configuredModel && settings && settings.contextWindow > configuredModel.contextWindow) {
 		throw new Error(

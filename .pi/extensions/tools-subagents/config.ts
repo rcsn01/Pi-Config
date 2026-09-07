@@ -1,7 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { MODEL_THINKING_LEVELS } from "../_shared/model-thinking.ts";
+import {
+	parseModelReference,
+	THINKING_SUFFIX_PATTERN,
+	validateContextWindow as validateSharedContextWindow,
+	type ParsedModelReference,
+} from "../_shared/model-reference.ts";
+import { MODEL_THINKING_LEVELS, normalizeThinkingLevel as normalizeSharedThinkingLevel } from "../_shared/model-thinking.ts";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import type { AgentConfig } from "../_shared/subagent-service.ts";
 import { isRecord, mutateSettingsDocument, PROJECT_SETTINGS_PATH, readSettingsDocument } from "../_shared/settings-document.ts";
@@ -11,8 +17,6 @@ export const LEGACY_MAIN_MODEL_SETTING = "default";
 export const THINKING_LEVELS = MODEL_THINKING_LEVELS;
 
 const SUBAGENTS_SETTINGS_KEY = "subagents";
-
-const THINKING_SUFFIX_PATTERN = new RegExp(`^(.*):(${THINKING_LEVELS.join("|")})$`, "i");
 
 export type SubagentThinkingLevel = (typeof THINKING_LEVELS)[number];
 
@@ -155,31 +159,31 @@ export function normalizeModelSetting(value: unknown, label = "model setting"): 
 	if (setting.toLowerCase() === MAIN_MODEL_SETTING || setting.toLowerCase() === LEGACY_MAIN_MODEL_SETTING) {
 		return MAIN_MODEL_SETTING;
 	}
-	const segments = setting.split("/");
-	if (/\s/.test(setting) || segments.length < 2 || segments.some((segment) => !segment)) {
+	let parsed: ParsedModelReference;
+	try {
+		parsed = parseModelReference(setting, { allowThinkingSuffix: true });
+	} catch {
 		throw new Error(`${modelLabel(label)} must be "main" or a canonical "provider/model" identifier.`);
 	}
-	return setting;
+	if (parsed.kind !== "qualified") {
+		throw new Error(`${modelLabel(label)} must be "main" or a canonical "provider/model" identifier.`);
+	}
+	// Reconstruct so the returned setting keeps a legitimately stored :thinking suffix.
+	return `${parsed.provider}/${parsed.modelId}${parsed.thinkingLevel ? `:${parsed.thinkingLevel}` : ""}`;
 }
 
 /** Validate and canonicalize a configured thinking level. */
 export function normalizeThinkingLevel(value: unknown, label = "thinking level"): SubagentThinkingLevel {
-	if (typeof value !== "string") {
+	try {
+		return normalizeSharedThinkingLevel(value, { label: `Subagent ${label}` }) as SubagentThinkingLevel;
+	} catch {
 		throw new Error(`Subagent ${label} must be one of: ${THINKING_LEVELS.join(", ")}.`);
 	}
-	const normalized = value.trim().toLowerCase();
-	if (!THINKING_LEVELS.includes(normalized as SubagentThinkingLevel)) {
-		throw new Error(`Subagent ${label} must be one of: ${THINKING_LEVELS.join(", ")}.`);
-	}
-	return normalized as SubagentThinkingLevel;
 }
 
 /** Validate a configured context window (positive integer tokens). */
 function validateContextWindow(value: unknown, label = "context window"): number {
-	if (!Number.isInteger(value) || (value as number) <= 0) {
-		throw new Error(`Subagent ${label} must be a positive integer.`);
-	}
-	return value as number;
+	return validateSharedContextWindow(value, `Subagent ${label}`);
 }
 
 function parseConfiguredThinkingLevel(value: unknown, label: string): SubagentThinkingLevel | undefined {
