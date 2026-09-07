@@ -58,7 +58,7 @@ describe("Subagent execution", () => {
 		});
 
 		const promise = execution.runBatch([
-			{ agent: "slow", prompt: "first", cwd: "/one", model: "openai/one", thinkingLevel: "high" },
+			{ agent: "slow", task: "first", cwd: "/one", model: "openai/one", thinkingLevel: "high" },
 			{ agent: "fast", task: "second" },
 		], {
 			cwd: "/root",
@@ -224,7 +224,7 @@ describe("Subagent execution", () => {
 
 		const results = await execution.runSubagentsParallel({
 			cwd: "/root",
-			tasks: [{ agent: "worker", prompt: "first" }],
+			tasks: [{ agent: "worker", task: "first" }],
 			onProgress: (index, event) => { progress.push([index, event.type]); },
 			onUpdate: (index, result) => { updates.push([index, result.task]); },
 		});
@@ -234,7 +234,7 @@ describe("Subagent execution", () => {
 		expect(updates).toEqual([[0, "first"]]);
 	});
 
-	it("prepares a direct request before sending it to child execution", async () => {
+	it("prepares a direct request before sending it to child execution, keeping prompt-only compatibility", async () => {
 		const worker = agent();
 		const expectedResult = agentResult();
 		const execute = vi.fn(async () => expectedResult);
@@ -286,10 +286,177 @@ describe("Subagent execution", () => {
 			onUpdate,
 		});
 
-		expect(execute).toHaveBeenCalledWith(expect.objectContaining({ onProgress, onUpdate }));
+		// The repair layer wraps `onProgress`, but the original consumer still
+		// receives the event and `onUpdate` passes through unchanged.
+		expect(execute).toHaveBeenCalledWith(expect.objectContaining({ onUpdate }));
 		expect(onProgress).toHaveBeenCalledOnce();
 		expect(onProgress).toHaveBeenCalledWith(event, progress);
 		expect(onUpdate).toHaveBeenCalledOnce();
 		expect(onUpdate).toHaveBeenCalledWith(progress);
+	});
+
+	it("emits one synthetic failed event when child execution rejects before a terminal event", async () => {
+		const sentinel = "not-an-error";
+		const onProgress = vi.fn();
+		const execution = createSubagentExecution({
+			registry: memoryRegistry([agent({ name: "flaky" })]),
+			config: memoryConfigStore(),
+			childExecution: {
+				execute: async (request) => {
+					await request.onProgress?.({ type: "started", agent: "flaky", task: request.task });
+					throw sentinel;
+				},
+			},
+		});
+
+		await expect(execution.runSubagent({
+			agent: "flaky",
+			task: "inspect",
+			cwd: "/workspace",
+			onProgress,
+		})).rejects.toBe(sentinel);
+
+		expect(onProgress).toHaveBeenCalledTimes(2);
+		expect(onProgress).toHaveBeenLastCalledWith({
+			type: "failed",
+			agent: "flaky",
+			error: "not-an-error",
+		});
+	});
+
+	it("does not synthesize a failure after a terminal event was observed", async () => {
+		const executionError = new Error("late rejection");
+		const consumerError = new Error("consumer rejected after terminal");
+		const onProgress = vi.fn(async (event: any) => {
+			if (event.type === "completed") throw consumerError;
+		});
+		const execution = createSubagentExecution({
+			registry: memoryRegistry(),
+			config: memoryConfigStore(),
+			childExecution: {
+				execute: async (request) => {
+					await request.onProgress?.({ type: "completed", agent: "worker", result: agentResult() }, agentResult().progress);
+					throw executionError;
+				},
+			},
+		});
+
+		// The consumer rejection settles child execution first and keeps its identity.
+		await expect(execution.runSubagent({
+			agent: "worker",
+			task: "inspect",
+			cwd: "/workspace",
+			onProgress,
+		})).rejects.toBe(consumerError);
+
+		expect(onProgress).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not synthesize a failure after a failed terminal event was observed", async () => {
+		const failedResult = agentResult({ progress: { ...agentResult().progress, status: "failed", error: "boom" } });
+		const executionError = new Error("late rejection");
+		const onProgress = vi.fn();
+		const execution = createSubagentExecution({
+			registry: memoryRegistry(),
+			config: memoryConfigStore(),
+			childExecution: {
+				execute: async (request) => {
+					await request.onProgress?.({ type: "failed", agent: "worker", result: failedResult, error: "boom" }, failedResult.progress);
+					throw executionError;
+				},
+			},
+		});
+
+		await expect(execution.runSubagent({
+			agent: "worker",
+			task: "inspect",
+			cwd: "/workspace",
+			onProgress,
+		})).rejects.toBe(executionError);
+
+		expect(onProgress).toHaveBeenCalledOnce();
+	});
+
+	it("rethrows a progress-consumer rejection by identity without a synthetic failure", async () => {
+		const consumerError = new Error("store append failed");
+		const onProgress = vi.fn(async () => {
+			throw consumerError;
+		});
+		const execute = vi.fn(async (request: any) => {
+			await request.onProgress?.({ type: "started", agent: "worker", task: "inspect" });
+			return agentResult();
+		});
+		const execution = createSubagentExecution({
+			registry: memoryRegistry(),
+			config: memoryConfigStore(),
+			childExecution: { execute },
+		});
+
+		await expect(execution.runSubagent({
+			agent: "worker",
+			task: "inspect",
+			cwd: "/workspace",
+			onProgress,
+		})).rejects.toBe(consumerError);
+
+		expect(onProgress).toHaveBeenCalledOnce();
+	});
+
+	it("keeps the original rejection when the synthetic failure consumer rejects", async () => {
+		const executionError = new Error("launch exploded");
+		const observationError = new Error("event store unavailable");
+		const observed: any[] = [];
+		const execution = createSubagentExecution({
+			registry: memoryRegistry(),
+			config: memoryConfigStore(),
+			childExecution: {
+				execute: async () => {
+					throw executionError;
+				},
+			},
+		});
+
+		await expect(execution.runSubagent({
+			agent: "worker",
+			task: "inspect",
+			cwd: "/workspace",
+			onProgress: (event) => {
+				observed.push(event);
+				throw observationError;
+			},
+		})).rejects.toBe(executionError);
+
+		expect(observed).toEqual([{
+			type: "failed",
+			agent: "worker",
+			error: "launch exploded",
+		}]);
+	});
+
+	it("repairs missing terminal events through parallel execution too", async () => {
+		const sentinel = "parallel-child-sentinel";
+		const onProgress = vi.fn(async (_index: number, event: any) => {
+			if (event.type === "failed") throw new Error("synthetic consumer rejected");
+		});
+		const execution = createSubagentExecution({
+			registry: memoryRegistry(),
+			config: memoryConfigStore(),
+			childExecution: {
+				execute: async () => {
+					throw sentinel;
+				},
+			},
+		});
+
+		await expect(execution.runSubagentsParallel({
+			cwd: "/root",
+			tasks: [{ agent: "worker", task: "inspect" }],
+			onProgress,
+		})).rejects.toBe(sentinel);
+
+		const failure = onProgress.mock.calls.find(([, event]) => event.type === "failed");
+		expect(failure).toBeTruthy();
+		expect(failure![1]).toMatchObject({ type: "failed", agent: "worker", error: "parallel-child-sentinel" });
+		expect(onProgress.mock.calls.filter(([, event]) => event.type === "failed")).toHaveLength(1);
 	});
 });

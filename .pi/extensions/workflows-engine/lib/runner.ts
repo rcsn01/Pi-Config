@@ -9,7 +9,7 @@ import { approve, removeApproval } from "./approval.ts";
 import { RunStore, initialState, readRunState, runPaths, safeArtifactPath, type RunState } from "./run-store.ts";
 import { AbortError, Semaphore, throwIfAborted } from "./scheduler.ts";
 import { collectWorktreeArtifacts, type WorktreeInfo } from "./worktree-artifacts.ts";
-import { loadAgents, runSubagent, type AgentConfig, type AgentResult, type WorkflowSubagentProgressEvent } from "./subagent-runner.ts";
+import { requireSubagentService, type AgentResult, type SubagentProgressEvent } from "../../_shared/subagent-service.ts";
 const DEFAULT_MAX_AGENTS = 20;
 const DEFAULT_MAX_CONCURRENT = 4;
 
@@ -111,7 +111,6 @@ export async function prepareStateEntry(cwd: string, state: RunState, fallback?:
 }
 
 export class WorkflowRun {
-	private agentConfigs?: AgentConfig[];
 	private scheduler: Semaphore;
 	private state: RunState;
 	private pi: ExtensionAPI;
@@ -250,18 +249,18 @@ export class WorkflowRun {
 		return this.scheduler.withSlot(async () => {
 			await this.waitIfPaused();
 
-			const agentConfigs = this.agentConfigs ??= loadAgents();
-			const agent = agentConfigs.find((a) => a.name === options.agent);
-			if (!agent) throw new Error(`Unknown subagent '${options.agent}'. Available: ${agentConfigs.map((a) => a.name).join(", ") || "none"}`);
-
+			// `agent_started` records an admitted launch attempt. Subagent launch
+			// preflight (agent name and launch validation) runs inside the Subagent
+			// execution module after this point; a preflight rejection lands in the
+			// catch path below as `agent_failed`.
 			const runTarget = await this.prepareAgentTarget(options);
 			this.state = await this.store.append({ type: "agent_started", key: options.key, agent: options.agent, prompt: options.prompt, dependsOn: options.dependsOn, metadata: options.metadata, worktree: runTarget.worktree });
 			this.updateStatus();
 
 			try {
-				const result = await runSubagent({
-					agent,
-					prompt: options.prompt,
+				const result = await requireSubagentService().runSubagent({
+					agent: options.agent,
+					task: options.prompt,
 					cwd: runTarget.cwd,
 					signal: this.commandCtx.signal,
 					model: options.model,
@@ -343,7 +342,7 @@ export class WorkflowRun {
 		return rel;
 	}
 
-	private async recordAgentProgress(key: string, event: WorkflowSubagentProgressEvent): Promise<void> {
+	private async recordAgentProgress(key: string, event: SubagentProgressEvent): Promise<void> {
 		this.state = await this.store.append({ type: event.type === "tool_call" ? "agent_tool" : "agent_progress", key, event, tool: (event as any).tool, args: (event as any).args });
 		this.enforceTokenBudget();
 	}

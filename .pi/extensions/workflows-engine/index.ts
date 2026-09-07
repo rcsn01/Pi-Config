@@ -12,7 +12,6 @@ export type {
 	WorkflowParallelOptions,
 	WorkflowPhaseDefinition,
 } from "./lib/definition.ts";
-export { loadAgents, runSubagent, runSubagentsParallel } from "./lib/subagent-runner.ts";
 
 const CUSTOM_TYPE = "workflow-result";
 

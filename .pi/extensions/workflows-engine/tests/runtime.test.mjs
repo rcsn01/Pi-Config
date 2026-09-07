@@ -16,7 +16,7 @@ const registry = await import('../lib/registry.ts');
 const approval = await import('../lib/approval.ts');
 const runStore = await import('../lib/run-store.ts');
 const runner = await import('../lib/runner.ts');
-const workflowSubagentRunner = await import('../lib/subagent-runner.ts');
+const scheduler = await import('../lib/scheduler.ts');
 const subagentService = await import('../../_shared/subagent-service.ts');
 const fanOutWorkflow = (await import('../bundled/fan-out-and-synthesize.ts')).default;
 const verificationWorkflow = (await import('../bundled/deep-verification.ts')).default;
@@ -24,12 +24,6 @@ const gitHelper = await import('../../_shared/git.ts');
 
 async function tempProject() {
   return mkdtemp(path.join(os.tmpdir(), 'workflow-runtime-test-'));
-}
-
-function deferred() {
-  let resolve;
-  const promise = new Promise((settle) => { resolve = settle; });
-  return { promise, resolve };
 }
 
 const workflowTestAgent = {
@@ -41,13 +35,13 @@ const workflowTestAgent = {
   filePath: 'worker.md',
 };
 
-function registerAdapterSubagents({ runSubagent, runSubagentsParallel = async () => { throw new Error('not used'); } }) {
+function registerServiceSubagents({ loadAgents = () => [workflowTestAgent], runSubagent, runSubagentsParallel }) {
   subagentService.clearSubagentService();
   return subagentService.registerSubagentService({
-    id: 'workflow-adapter-test',
+    id: 'workflow-test-service',
     registerAgent() {},
     unregisterAgent() {},
-    loadAgents: () => [workflowTestAgent],
+    loadAgents,
     runSubagent,
     runSubagentsParallel,
   });
@@ -71,7 +65,7 @@ function registerFakeSubagents(respond) {
     loadAgents: () => agents,
     async runSubagent(options) {
       const agent = typeof options.agent === 'string' ? options.agent : options.agent.name;
-      const task = options.task || options.prompt || '';
+      const task = options.task || '';
       calls.push({ agent, task, cacheAffinitySeed: options.cacheAffinitySeed });
       await options.onProgress?.({ type: 'started', agent, task });
       const output = await respond({ agent, task, cwd: options.cwd, calls });
@@ -390,171 +384,168 @@ test('abort marks the run stopped and preserves completed keyed results', async 
   }
 });
 
-test('single subagent adaptation passes authoritative events through unchanged', async () => {
-  const progress = failedStatusResult().progress;
-  progress.status = 'completed';
-  const result = { ...failedStatusResult(), output: 'done', progress };
-  const authoritative = [
-    { type: 'started', agent: 'worker', task: 'inspect' },
-    { type: 'tool_call', agent: 'worker', tool: 'read', args: 'file.ts' },
-    { type: 'tool_result', agent: 'worker', tool: 'read', args: 'file.ts' },
-    { type: 'message', agent: 'worker', message: 'done', tokens: 4 },
-    { type: 'completed', agent: 'worker', result },
-  ];
-  const unregister = registerAdapterSubagents({
-    async runSubagent(options) {
-      const misleading = { ...progress, currentTool: 'ignored', lastMessage: 'ignored', recentTools: [{ tool: 'ignored', args: '' }] };
-      options.onUpdate?.(misleading);
-      options.onUpdate?.(misleading);
-      for (const event of authoritative) await options.onProgress?.(event, progress);
-      return result;
-    },
-  });
+test('workflow agent requests pass the name and canonical task through the registered service', async () => {
+  const cwd = await tempProject();
   const observed = [];
-  try {
-    assert.equal(await workflowSubagentRunner.runSubagent({
-      agent: 'worker',
-      prompt: 'inspect',
-      cwd: process.cwd(),
-      onProgress: (event) => observed.push(event),
-    }), result);
-    assert.deepEqual(observed, authoritative);
-  } finally {
-    unregister();
-  }
-});
-
-test('single subagent adaptation awaits asynchronous progress consumers', async () => {
-  const gate = deferred();
-  const delivered = [];
-  const result = { ...failedStatusResult(), output: 'done' };
-  result.progress.status = 'completed';
-  const unregister = registerAdapterSubagents({
+  subagentService.clearSubagentService();
+  const unregister = registerServiceSubagents({
     async runSubagent(options) {
-      await options.onProgress?.({ type: 'started', agent: 'worker', task: 'inspect' }, result.progress);
-      delivered.push('service-after-started');
+      observed.push({
+        agent: options.agent,
+        task: options.task,
+        prompt: options.prompt,
+        cacheAffinitySeed: options.cacheAffinitySeed,
+      });
+      await options.onProgress?.({ type: 'message', agent: 'worker', message: 'working', tokens: 2 });
+      const result = {
+        agent: 'worker',
+        task: options.task,
+        output: 'done',
+        exitCode: 0,
+        progress: { agent: 'worker', status: 'completed', task: options.task, recentTools: [], toolCount: 0, tokens: 10, durationMs: 1, lastMessage: 'done' },
+        model: 'test-model',
+        usage: { input: 4, output: 6, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+      };
       await options.onProgress?.({ type: 'completed', agent: 'worker', result }, result.progress);
       return result;
     },
   });
-  let settled = false;
   try {
-    const running = workflowSubagentRunner.runSubagent({
-      agent: 'worker',
-      prompt: 'inspect',
-      cwd: process.cwd(),
-      onProgress: async (event) => {
-        delivered.push(event.type);
-        if (event.type === 'started') await gate.promise;
+    const entry = {
+      name: 'task-mapping',
+      trust: 'bundled',
+      description: 'task mapping test',
+      cost: 'quick',
+      canEditFiles: false,
+      source: 'task mapping test source',
+      sourceHash: registry.hash('task mapping test source'),
+    };
+    const workflow = definition.defineWorkflow({
+      name: entry.name,
+      description: entry.description,
+      canEditFiles: false,
+      async run(ctx) {
+        return ctx.agent({ key: 'mapped-agent', agent: 'worker', prompt: 'inspect the module' });
       },
-    }).finally(() => { settled = true; });
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(delivered, ['started']);
-    assert.equal(settled, false);
-    gate.resolve();
-    await running;
-    assert.deepEqual(delivered, ['started', 'service-after-started', 'completed']);
-  } finally {
-    unregister();
-  }
-});
-
-test('authoritative failure is forwarded once and not reconstructed from the result', async () => {
-  const fake = registerFailedStatusSubagents();
-  const events = [];
-  try {
-    const result = await workflowSubagentRunner.runSubagent({
+    });
+    const store = new runStore.RunStore(cwd, 'run-task-mapping');
+    const state = await store.initialize(entry, '', path.join(cwd, 'task-mapping.ts'));
+    const result = await runner.runPreparedWorkflow(
+      {},
+      { cwd, signal: new AbortController().signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } },
+      { entry, workflow, store, state, resume: false },
+    );
+    assert.equal(result, 'done');
+    // The agent name passes through unresolved and `prompt` maps once to `task`.
+    assert.deepEqual(observed, [{
       agent: 'worker',
-      prompt: 'report failure',
-      cwd: process.cwd(),
-      onProgress: (event) => events.push(event),
+      task: 'inspect the module',
+      prompt: undefined,
+      cacheAffinitySeed: 'workflow-main-session',
+    }]);
+    const events = await runStore.readEvents(store.paths.events);
+    const progressEvents = events.filter((event) => event.type === 'agent_progress' && event.key === 'mapped-agent');
+    assert.equal(progressEvents.length, 2);
+    assert.deepEqual(progressEvents.map((event) => event.event.type), ['message', 'completed']);
+    assert.equal(events.some((event) => event.type === 'agent_completed' && event.key === 'mapped-agent'), true);
+  } finally {
+    unregister();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('execution rejection after admission appends agent_started then agent_failed', async () => {
+  const cwd = await tempProject();
+  const preflightError = new Error("Unknown agent: missing. Available agents: worker");
+  subagentService.clearSubagentService();
+  const unregister = registerServiceSubagents({
+    async runSubagent() { throw preflightError; },
+  });
+  try {
+    const entry = {
+      name: 'preflight-failure',
+      trust: 'bundled',
+      description: 'preflight failure test',
+      cost: 'quick',
+      canEditFiles: false,
+      source: 'preflight failure test source',
+      sourceHash: registry.hash('preflight failure test source'),
+    };
+    const workflow = definition.defineWorkflow({
+      name: entry.name,
+      description: entry.description,
+      canEditFiles: false,
+      async run(ctx) {
+        return ctx.agent({ key: 'rejected-agent', agent: 'missing-agent', prompt: 'never runs' });
+      },
     });
-    assert.equal(result, fake.result);
-    assert.deepEqual(events, [{ type: 'failed', agent: 'worker', result: fake.result, error: 'Subagent reported failure' }]);
-  } finally {
-    fake.unregister();
-  }
-});
-
-test('single subagent adaptation reports pre-terminal execution exceptions once', async () => {
-  const executionError = new Error('setup failed');
-  const unregister = registerAdapterSubagents({
-    async runSubagent() { throw executionError; },
-  });
-  const events = [];
-  try {
+    const store = new runStore.RunStore(cwd, 'run-preflight-failure');
+    const state = await store.initialize(entry, '', path.join(cwd, 'preflight-failure.ts'));
     await assert.rejects(
-      workflowSubagentRunner.runSubagent({
-        agent: 'worker',
-        prompt: 'inspect',
-        cwd: process.cwd(),
-        onProgress: (event) => events.push(event),
-      }),
-      (error) => error === executionError,
+      () => runner.runPreparedWorkflow(
+        {},
+        { cwd, signal: new AbortController().signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } },
+        { entry, workflow, store, state, resume: false },
+      ),
+      (error) => error === preflightError,
     );
-    assert.deepEqual(events, [{ type: 'failed', agent: 'worker', error: 'setup failed' }]);
+    const events = await runStore.readEvents(store.paths.events);
+    const agentEvents = events.filter((event) => event.key === 'rejected-agent').map((event) => event.type);
+    assert.deepEqual(agentEvents, ['agent_started', 'agent_failed']);
+    assert.equal(events.some((event) => event.type === 'agent_completed'), false);
+    const rebuilt = await runStore.rebuildStateFromEvents(store.paths.events);
+    assert.equal(rebuilt.agents['rejected-agent'].status, 'failed');
   } finally {
     unregister();
+    await rm(cwd, { recursive: true, force: true });
   }
 });
 
-test('single subagent adaptation propagates consumer rejection without a synthetic failure', async () => {
-  const consumerError = new Error('store append failed');
-  let callbacks = 0;
-  const unregister = registerAdapterSubagents({
-    async runSubagent(options) {
-      await options.onProgress?.({ type: 'started', agent: 'worker', task: 'inspect' });
-      return failedStatusResult();
-    },
+test('AbortError from subagent execution retains the stopped classification', async () => {
+  const cwd = await tempProject();
+  subagentService.clearSubagentService();
+  const unregister = registerServiceSubagents({
+    async runSubagent() { throw new scheduler.AbortError('child aborted'); },
   });
   try {
-    await assert.rejects(
-      workflowSubagentRunner.runSubagent({
-        agent: 'worker',
-        prompt: 'inspect',
-        cwd: process.cwd(),
-        onProgress: async () => {
-          callbacks++;
-          throw consumerError;
-        },
-      }),
-      (error) => error === consumerError,
-    );
-    assert.equal(callbacks, 1);
-  } finally {
-    unregister();
-  }
-});
-
-test('parallel subagent adaptation preserves indices and per-child event order', async () => {
-  const first = failedStatusResult();
-  first.progress.status = 'completed';
-  first.output = 'first';
-  const second = { ...failedStatusResult(), agent: 'explorer', output: 'second', progress: { ...failedStatusResult().progress, agent: 'explorer', status: 'completed' } };
-  const unregister = registerAdapterSubagents({
-    async runSubagent() { throw new Error('not used'); },
-    async runSubagentsParallel(options) {
-      options.onUpdate?.(0, first);
-      await options.onProgress?.(0, { type: 'started', agent: 'worker', task: 'first' }, first.progress);
-      await options.onProgress?.(1, { type: 'started', agent: 'explorer', task: 'second' }, second.progress);
-      await options.onProgress?.(0, { type: 'completed', agent: 'worker', result: first }, first.progress);
-      await options.onProgress?.(1, { type: 'completed', agent: 'explorer', result: second }, second.progress);
-      return [first, second];
-    },
-  });
-  const observed = [];
-  try {
-    const results = await workflowSubagentRunner.runSubagentsParallel({
-      tasks: [{ agent: 'worker', prompt: 'first' }, { agent: 'explorer', prompt: 'second' }],
-      cwd: process.cwd(),
-      onProgress: (index, event) => observed.push([index, event.type]),
+    const entry = {
+      name: 'abort-classification',
+      trust: 'bundled',
+      description: 'abort classification test',
+      cost: 'quick',
+      canEditFiles: false,
+      source: 'abort classification test source',
+      sourceHash: registry.hash('abort classification test source'),
+    };
+    const workflow = definition.defineWorkflow({
+      name: entry.name,
+      description: entry.description,
+      canEditFiles: false,
+      async run(ctx) {
+        return ctx.agent({ key: 'aborted-agent', agent: 'worker', prompt: 'get aborted' });
+      },
     });
-    assert.deepEqual(results, [first, second]);
-    assert.deepEqual(observed, [[0, 'started'], [1, 'started'], [0, 'completed'], [1, 'completed']]);
+    const store = new runStore.RunStore(cwd, 'run-abort-classification');
+    const state = await store.initialize(entry, '', path.join(cwd, 'abort-classification.ts'));
+    await assert.rejects(
+      () => runner.runPreparedWorkflow(
+        {},
+        { cwd, signal: new AbortController().signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } },
+        { entry, workflow, store, state, resume: false },
+      ),
+      /child aborted/,
+    );
+    const events = await runStore.readEvents(store.paths.events);
+    const failed = events.find((event) => event.type === 'agent_failed' && event.key === 'aborted-agent');
+    assert.equal(failed.stopped, true);
+    const stopped = await runStore.readRunState(cwd, store.runId);
+    assert.equal(stopped.status, 'stopped');
   } finally {
     unregister();
+    await rm(cwd, { recursive: true, force: true });
   }
 });
+
 
 test('workflow runner rejects failed authoritative status', async () => {
   const cwd = await tempProject();

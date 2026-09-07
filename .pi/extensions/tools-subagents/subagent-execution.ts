@@ -8,6 +8,7 @@ import { agentRegistry, type AgentRegistry } from "./agent-registry.ts";
 import {
 	createSubagentChildExecution,
 	type SubagentChildExecution,
+	type SubagentChildExecutionRequest,
 } from "./child-execution.ts";
 import { getDefaultSubagentConfig, type SubagentConfigStore } from "./config.ts";
 import { prepareSubagentLaunches } from "./launch-preparation.ts";
@@ -118,6 +119,41 @@ async function runOrdered<T, R>(
 	return results;
 }
 
+async function executePreparedSubagent(
+	request: SubagentChildExecutionRequest,
+	childExecution: SubagentChildExecution,
+): Promise<AgentResult> {
+	let terminalObserved = false;
+	let progressConsumerRejected = false;
+	const onProgress = async (
+		event: SubagentProgressEvent,
+		progress?: AgentResult["progress"],
+	): Promise<void> => {
+		if (event.type === "completed" || event.type === "failed") terminalObserved = true;
+		try {
+			await request.onProgress?.(event, progress);
+		} catch (error) {
+			progressConsumerRejected = true;
+			throw error;
+		}
+	};
+	try {
+		return await childExecution.execute({ ...request, onProgress });
+	} catch (error) {
+		if (terminalObserved || progressConsumerRejected) throw error;
+		try {
+			await request.onProgress?.({
+				type: "failed",
+				agent: request.agent.name,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		} catch {
+			// Observation failure must not replace the launch failure.
+		}
+		throw error;
+	}
+}
+
 export function createSubagentExecution(
 	dependencies: SubagentExecutionDependencies = {},
 ): SubagentExecution {
@@ -131,7 +167,7 @@ export function createSubagentExecution(
 
 	async function runSubagent(options: RunSubagentOptions): Promise<AgentResult> {
 		const [request] = prepare([options]);
-		return childExecution.execute(request);
+		return executePreparedSubagent(request, childExecution);
 	}
 
 	async function executeBatch(
@@ -189,7 +225,7 @@ export function createSubagentExecution(
 			};
 			publish(index, "started");
 
-			const result = await childExecution.execute(request);
+			const result = await executePreparedSubagent(request, childExecution);
 
 			liveResults[index] = result;
 			publish(index, "completed", latestEvents[index]);
