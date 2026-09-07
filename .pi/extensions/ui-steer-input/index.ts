@@ -17,7 +17,7 @@ import {
 	getModelCommandHandler,
 	ModelCommandRoutingEditor,
 	parseModelCommand,
-} from "../_shared/model-command-routing.ts";
+} from "../_shared/editor-slot.ts";
 import { reapplyThinkingBorder } from "../_shared/editor-border.ts";
 
 /**

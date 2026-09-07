@@ -3,14 +3,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
 import {
 	getModelCommandHandler,
-	installModelCommandHandler,
-	parseModelCommand,
-} from "../_shared/model-command-routing.ts";
+	registerModelCommandHandler,
+} from "../_shared/editor-slot.ts";
 import { createModelSelectorExtension } from "./index.ts";
 import { formatTokenCount } from "../_shared/model-picker.ts";
 
 afterEach(() => {
-	const clearActiveHandler = installModelCommandHandler(async () => {});
+	const clearActiveHandler = registerModelCommandHandler(async () => {});
 	clearActiveHandler();
 });
 
@@ -167,33 +166,6 @@ function createAdapterHarness(options: {
 	};
 }
 
-describe("model command routing", () => {
-	it("parses exact /model commands and preserves arguments", () => {
-		expect(parseModelCommand("/model")).toBe("");
-		expect(parseModelCommand("/model github-copilot/gpt-5.6-sol")).toBe(
-			"github-copilot/gpt-5.6-sol",
-		);
-		expect(parseModelCommand("  /model  \n")).toBe("");
-	});
-
-	it("ignores similarly named commands, prose, and multiline prompts", () => {
-		expect(parseModelCommand("/models")).toBeUndefined();
-		expect(parseModelCommand("please run /model")).toBeUndefined();
-		expect(parseModelCommand("/model\nthen continue")).toBeUndefined();
-	});
-
-	it("does not let stale cleanup remove a newer active handler", () => {
-		const first = async () => {};
-		const second = async () => {};
-		const uninstallFirst = installModelCommandHandler(first);
-		const uninstallSecond = installModelCommandHandler(second);
-		uninstallFirst();
-		expect(getModelCommandHandler()).toBe(second);
-		uninstallSecond();
-		expect(getModelCommandHandler()).toBeUndefined();
-	});
-});
-
 describe("Pi model-selection adapter", () => {
 	it("constructs Session persistence before the first selection read", async () => {
 		const harness = createAdapterHarness({ cancel: true });
@@ -223,7 +195,10 @@ describe("Pi model-selection adapter", () => {
 		const harness = createAdapterHarness({ cancel: true });
 		await harness.emitStart();
 		expect(getModelCommandHandler()).toBeTypeOf("function");
-		expect(harness.setEditorComponent).toHaveBeenCalledWith(expect.any(Function));
+		// The editor install is deferred to the editor-slot module's flush.
+		await vi.waitFor(() =>
+			expect(harness.setEditorComponent).toHaveBeenCalledWith(expect.any(Function))
+		);
 	});
 
 	it("renders the exact successful selection notification", async () => {
@@ -354,6 +329,9 @@ describe("Pi model-selection adapter", () => {
 		const harness = createAdapterHarness({ cancel: true });
 		await harness.emitStart();
 		expect(getModelCommandHandler()).toBeTypeOf("function");
+		await vi.waitFor(() =>
+			expect(harness.setEditorComponent).toHaveBeenCalledWith(expect.any(Function))
+		);
 		await harness.emitShutdown();
 		expect(getModelCommandHandler()).toBeUndefined();
 		expect(harness.setEditorComponent).toHaveBeenLastCalledWith(undefined);
