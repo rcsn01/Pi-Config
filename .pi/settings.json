@@ -1,0 +1,22 @@
+{
+  "defaultModel": "gpt-5.6-sol",
+  "defaultProvider": "github-copilot",
+  "defaultThinkingLevel": "medium",
+  "lastChangelogVersion": "0.85.1",
+  "outputPad": 1,
+  "packages": [],
+  "theme": "project-dark",
+  "extensions": [],
+  "tuiMode": "fullscreen",
+  "editorPaddingX": 0,
+  "compaction": {
+    "enabled": false,
+    "keepRecentTokens": 20000
+  },
+  "retry": {
+    "enabled": false
+  },
+  "configProfiles": {
+    "active": "openai"
+  }
+}

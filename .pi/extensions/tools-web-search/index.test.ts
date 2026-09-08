@@ -32,6 +32,25 @@ describe("Web Search tool", () => {
 		await expect(tool.execute("call", { query: `failed-${Date.now()}` }, undefined)).rejects.toThrow("HTTP 503");
 	});
 
+	it("parses highlighted DuckDuckGo snippets", async () => {
+		const tool = register();
+		vi.stubGlobal("fetch", vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			text: async () => `
+				<h2 class="result__title">
+					<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2F&amp;rut=test">Example result</a>
+				</h2>
+				<a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2F&amp;rut=test">A <b>useful</b> snippet.</a>
+			`,
+		})));
+		const result = await tool.execute("call", { query: `highlighted-${Date.now()}` }, undefined);
+		expect(result.details.resultCount).toBe(1);
+		expect(result.content[0].text).toContain("Example result");
+		expect(result.content[0].text).toContain("A useful snippet.");
+		expect(result.content[0].text).toContain("https://example.com/");
+	});
+
 	it("renders collapsed, expanded, partial, and error states", () => {
 		const tool = register();
 		const result = {

@@ -57,6 +57,36 @@ function withActiveProfile(document: Record<string, unknown>, name: string): Rec
 	return { ...document, [CONFIG_PROFILES_KEY]: { ...namespace, active: name } };
 }
 
+/**
+ * Pi reads compaction retention from the root settings document rather than
+ * Profile-aware extension paths. Project the Profile-owned value there while
+ * leaving every other compaction setting under its existing owner.
+ */
+function profileKeepRecentTokens(profile: Record<string, unknown>): number | undefined {
+	const compaction = profile.compaction;
+	if (!isRecord(compaction) || !Object.hasOwn(compaction, "keepRecentTokens")) return undefined;
+	const value = compaction.keepRecentTokens;
+	if (!Number.isInteger(value) || (value as number) < 0) {
+		throw new Error("Profile compaction.keepRecentTokens must be a non-negative integer.");
+	}
+	return value as number;
+}
+
+function activateProfileSettings(
+	settings: Record<string, unknown>,
+	profile: Record<string, unknown>,
+	name: string,
+): Record<string, unknown> {
+	const activated = withActiveProfile(settings, name);
+	const keepRecentTokens = profileKeepRecentTokens(profile);
+	if (keepRecentTokens === undefined) return activated;
+	const compaction = isRecord(activated.compaction) ? activated.compaction : {};
+	return {
+		...activated,
+		compaction: { ...compaction, keepRecentTokens },
+	};
+}
+
 export function createProfileStore(options: {
 	settingsPath: string;
 	profilesDirectory?: string;
@@ -106,10 +136,11 @@ export function createProfileStore(options: {
 					const sourceDocument = source === undefined
 						? settings
 						: readSettingsDocument(sourcePath, { missing: "throw" });
+					const activatedSettings = activateProfileSettings(settings, sourceDocument, name);
 					writeSettingsDocument(destinationPath, withActiveProfile(sourceDocument, name));
 
 					try {
-						writeSettingsDocument(settingsPath, withActiveProfile(settings, name));
+						writeSettingsDocument(settingsPath, activatedSettings);
 					} catch (error) {
 						try {
 							unlinkSync(destinationPath);
@@ -136,7 +167,7 @@ export function createProfileStore(options: {
 			return withFileMutationQueue(targetPath, async () => {
 				// Validate both documents before changing either file.
 				readSettingsDocument(targetPath, { missing: "throw" });
-				readSettingsDocument(replacementPath, { missing: "throw" });
+				const replacement = readSettingsDocument(replacementPath, { missing: "throw" });
 
 				return withFileMutationQueue(settingsPath, async () => {
 					const settings = readSettingsDocument(settingsPath, { missing: "throw" });
@@ -144,19 +175,22 @@ export function createProfileStore(options: {
 					const shouldReplaceMarker = options.replaceMarker === true || active === name;
 					const markerReplaced = shouldReplaceMarker && active !== DEFAULT_PROFILE_NAME;
 
-					if (markerReplaced) {
-						writeSettingsDocument(settingsPath, withActiveProfile(settings, DEFAULT_PROFILE_NAME));
+					if (shouldReplaceMarker) {
+						writeSettingsDocument(
+							settingsPath,
+							activateProfileSettings(settings, replacement, DEFAULT_PROFILE_NAME),
+						);
 					}
 
 					try {
 						unlinkSync(targetPath);
 					} catch (error) {
-						if (markerReplaced) {
+						if (shouldReplaceMarker) {
 							try {
 								writeSettingsDocument(settingsPath, settings);
 							} catch {
-								// The marker was already changed to a valid fallback. Do not
-								// replace the unlink error with a rollback error.
+								// The settings still reference a valid fallback. Do not replace
+								// the unlink error with a rollback error.
 							}
 						}
 						throw error;
@@ -176,12 +210,16 @@ export function createProfileStore(options: {
 			// Validate every input before the first mutation.
 			parseSettingsText(readFileSync(settingsPath, "utf-8"), settingsPath);
 			const destinationPath = profilePath(name);
-			parseSettingsText(readFileSync(destinationPath, "utf-8"), destinationPath);
+			const profile = parseSettingsText(readFileSync(destinationPath, "utf-8"), destinationPath);
+			const keepRecentTokens = profileKeepRecentTokens(profile);
 			let changed = false;
 			await mutateSettingsDocument(settingsPath, (settings) => {
-				if (parseActiveProfileName(settings) === name) return settings;
+				const compaction = isRecord(settings.compaction) ? settings.compaction : {};
+				const settingIsCurrent = keepRecentTokens === undefined ||
+					compaction.keepRecentTokens === keepRecentTokens;
+				if (parseActiveProfileName(settings) === name && settingIsCurrent) return settings;
 				changed = true;
-				return withActiveProfile(settings, name);
+				return activateProfileSettings(settings, profile, name);
 			});
 			return { changed, active: name };
 		},

@@ -1,9 +1,7 @@
-import { createHash } from "node:crypto";
-import type { AssistantMessage, Context, Message, Model, SimpleStreamOptions, Tool } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context, Model, SimpleStreamOptions, Tool } from "@earendil-works/pi-ai";
 import {
 	buildSessionContext,
 	convertToLlm,
-	estimateTokens,
 	sessionEntryToContextMessages,
 	type CompactionResult,
 	type ExtensionAPI,
@@ -44,54 +42,11 @@ Use this exact format:
 ## Critical Context
 - [Exact paths, symbols, errors, and facts needed to continue, or "(none)"]`;
 
-interface FingerprintSnapshot {
-	modelHash: string;
-	systemPromptHash: string;
-	toolsHash: string;
-	thinkingLevelHash: string;
-	sessionIdHash: string;
-	messageHashes: string[];
-	messageCount: number;
-}
-
-export interface CacheAwareCompactionState {
-	pending?: Readonly<FingerprintSnapshot>;
-	committed?: Readonly<FingerprintSnapshot>;
-	inFlight: boolean;
-}
-
 export interface CacheAwareCompactionController {
 	compact(
 		event: SessionBeforeCompactEvent,
 		ctx: ExtensionContext,
-	): Promise<{ compaction: CompactionResult } | undefined>;
-	getState(): CacheAwareCompactionState;
-	clear(): void;
-}
-
-function stableSerialize(value: unknown, seen = new WeakSet<object>()): string {
-	if (value === undefined) return '"$undefined"';
-	if (typeof value === "bigint") return JSON.stringify(`${value}n`);
-	if (typeof value === "number" && !Number.isFinite(value)) return JSON.stringify(String(value));
-	if (value === null || typeof value !== "object") return JSON.stringify(value);
-	if (seen.has(value)) return '"$circular"';
-	seen.add(value);
-	if (Array.isArray(value)) {
-		const result = `[${value.map((item) => stableSerialize(item, seen)).join(",")}]`;
-		seen.delete(value);
-		return result;
-	}
-	const record = value as Record<string, unknown>;
-	const result = `{${Object.keys(record)
-		.sort()
-		.map((key) => `${JSON.stringify(key)}:${stableSerialize(record[key], seen)}`)
-		.join(",")}}`;
-	seen.delete(value);
-	return result;
-}
-
-function hash(value: unknown): string {
-	return createHash("sha256").update(stableSerialize(value)).digest("hex");
+	): Promise<{ compaction?: CompactionResult; cancel?: true } | undefined>;
 }
 
 function activeTools(pi: ExtensionAPI): Tool[] {
@@ -102,46 +57,6 @@ function activeTools(pi: ExtensionAPI): Tool[] {
 			? [{ name: tool.name, description: tool.description, parameters: tool.parameters }]
 			: [];
 	});
-}
-
-function fingerprint(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	messages: readonly Message[],
-): FingerprintSnapshot | undefined {
-	if (!ctx.model) return undefined;
-	const tools = activeTools(pi);
-	return {
-		modelHash: hash(ctx.model),
-		systemPromptHash: hash(ctx.getSystemPrompt()),
-		toolsHash: hash(tools),
-		thinkingLevelHash: hash(ctx.thinkingLevel ?? pi.getThinkingLevel()),
-		sessionIdHash: hash(ctx.sessionManager.getSessionId()),
-		messageHashes: messages.map(hash),
-		messageCount: messages.length,
-	};
-}
-
-function snapshotsMatch(current: FingerprintSnapshot, committed: FingerprintSnapshot): boolean {
-	if (
-		current.modelHash !== committed.modelHash ||
-		current.systemPromptHash !== committed.systemPromptHash ||
-		current.toolsHash !== committed.toolsHash ||
-		current.thinkingLevelHash !== committed.thinkingLevelHash ||
-		current.sessionIdHash !== committed.sessionIdHash ||
-		current.messageHashes.length < committed.messageHashes.length
-	) {
-		return false;
-	}
-	return committed.messageHashes.every((messageHash, index) => current.messageHashes[index] === messageHash);
-}
-
-function containsImage(messages: readonly Message[]): boolean {
-	return messages.some((message) =>
-		"content" in message &&
-		Array.isArray(message.content) &&
-		message.content.some((block) => block.type === "image"),
-	);
 }
 
 function retainedProviderMessageCount(event: SessionBeforeCompactEvent): number | undefined {
@@ -163,24 +78,10 @@ function instructionText(event: SessionBeforeCompactEvent, retainedCount: number
 	return text;
 }
 
-function estimateProviderInputTokens(context: Context): number {
-	let tokens = Math.ceil((context.systemPrompt?.length ?? 0) / 4);
-	for (const message of context.messages) tokens += estimateTokens(message as never);
-	if (context.tools) tokens += Math.ceil(stableSerialize(context.tools).length / 4);
-	return tokens;
-}
-
-function summaryTokenLimit(
-	event: SessionBeforeCompactEvent,
-	model: Model<any>,
-	context: Context,
-): number | undefined {
-	const estimatedInput = Math.max(event.preparation.tokensBefore, estimateProviderInputTokens(context));
-	const headroom = model.contextWindow - estimatedInput;
+function summaryTokenLimit(event: SessionBeforeCompactEvent, model: Model<any>): number {
 	const reserveLimit = Math.floor(event.preparation.settings.reserveTokens * 0.8);
-	const modelLimit = model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY;
-	const maxTokens = Math.floor(Math.min(headroom, reserveLimit, modelLimit));
-	return maxTokens >= MIN_SUMMARY_TOKENS ? maxTokens : undefined;
+	const requested = Math.max(MIN_SUMMARY_TOKENS, reserveLimit);
+	return model.maxTokens > 0 ? Math.min(requested, model.maxTokens) : requested;
 }
 
 function fileMetadata(event: SessionBeforeCompactEvent): {
@@ -219,88 +120,58 @@ function summaryText(response: AssistantMessage): string | undefined {
 	return text || undefined;
 }
 
+function notifyNativeFallback(ctx: ExtensionContext, signal: AbortSignal, reason: string): void {
+	if (signal.aborted) return;
+	ctx.ui.notify(`Custom compaction unavailable (${reason}). Using Pi's native compaction.`, "warning");
+}
+
 export function createCacheAwareCompaction(pi: ExtensionAPI): CacheAwareCompactionController {
-	let pending: FingerprintSnapshot | undefined;
-	let committed: FingerprintSnapshot | undefined;
-	let inFlight = false;
-	let warned = false;
-
-	const clear = (): void => {
-		pending = undefined;
-		committed = undefined;
-		inFlight = false;
-		warned = false;
-	};
-
-	const warnFallback = (ctx: ExtensionContext, signal: AbortSignal): void => {
-		if (signal.aborted || warned) return;
-		warned = true;
-		ctx.ui.notify("Cache-aware summary unavailable. Using Pi's native compaction.", "warning");
-	};
-
-	pi.on("context", (event, ctx) => {
-		pending = fingerprint(pi, ctx, convertToLlm(event.messages));
-	});
-	pi.on("before_provider_request", () => {
-		if (!pending || inFlight) return;
-		committed = pending;
-		pending = undefined;
-	});
-	pi.on("session_start", clear);
-	pi.on("session_shutdown", clear);
-
 	return {
 		async compact(event, ctx) {
-			if (inFlight) return undefined;
-			inFlight = true;
+			if (event.signal.aborted) return { cancel: true };
+			const model = ctx.model;
+			if (!model) {
+				notifyNativeFallback(ctx, event.signal, "no active model");
+				return undefined;
+			}
+			const provider = ctx.modelRegistry.getProvider(model.provider);
+			if (!provider) {
+				notifyNativeFallback(ctx, event.signal, "provider unavailable");
+				return undefined;
+			}
+
 			try {
-				const model = ctx.model;
-				const provider = model ? ctx.modelRegistry.getProvider(model.provider) : undefined;
-				const sessionContext = buildSessionContext(event.branchEntries);
-				const messages = convertToLlm(sessionContext.messages);
-				const current = fingerprint(pi, ctx, messages);
-				const retainedCount = retainedProviderMessageCount(event);
-				if (
-					!model ||
-					!provider ||
-					!committed ||
-					!current ||
-					!snapshotsMatch(current, committed) ||
-					containsImage(messages) ||
-					retainedCount === undefined
-				) {
-					warnFallback(ctx, event.signal);
+				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+				if (event.signal.aborted) return { cancel: true };
+				if (!auth.ok) {
+					notifyNativeFallback(ctx, event.signal, "authentication unavailable");
 					return undefined;
 				}
 
-				const instruction = instructionText(event, retainedCount);
-				const tools = activeTools(pi);
+				const retainedCount = retainedProviderMessageCount(event);
+				if (retainedCount === undefined) {
+					notifyNativeFallback(ctx, event.signal, "invalid retained-message boundary");
+					return undefined;
+				}
+				const messages = convertToLlm(buildSessionContext(event.branchEntries).messages);
 				const context: Context = {
 					systemPrompt: ctx.getSystemPrompt(),
 					messages: [
 						...messages,
 						{
 							role: "user",
-							content: [{ type: "text", text: instruction }],
+							content: [{
+								type: "text",
+								text: instructionText(event, retainedCount),
+							}],
 							timestamp: Date.now(),
 						},
 					],
-					tools,
+					tools: activeTools(pi),
 				};
-				const maxTokens = summaryTokenLimit(event, model, context);
-				if (maxTokens === undefined) {
-					warnFallback(ctx, event.signal);
-					return undefined;
-				}
-
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-				if (!auth.ok) {
-					warnFallback(ctx, event.signal);
-					return undefined;
-				}
 				const effectiveModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
 				const options: SimpleStreamOptions = {
-					maxTokens,
+					maxTokens: summaryTokenLimit(event, model),
 					signal: event.signal,
 					apiKey: auth.apiKey,
 					headers: auth.headers,
@@ -311,9 +182,11 @@ export function createCacheAwareCompaction(pi: ExtensionAPI): CacheAwareCompacti
 				if (model.reasoning && thinkingLevel !== "off") options.reasoning = thinkingLevel;
 
 				const response = await provider.streamSimple(effectiveModel, context, options).result();
+				if (event.signal.aborted) return { cancel: true };
 				const summary = summaryText(response);
 				if (!summary) {
-					if (response.stopReason !== "aborted") warnFallback(ctx, event.signal);
+					if (response.stopReason === "aborted" || event.signal.aborted) return { cancel: true };
+					notifyNativeFallback(ctx, event.signal, `summarizer stopped with ${response.stopReason}`);
 					return undefined;
 				}
 				const files = fileMetadata(event);
@@ -327,23 +200,13 @@ export function createCacheAwareCompaction(pi: ExtensionAPI): CacheAwareCompacti
 					},
 				};
 			} catch (error) {
-				if (!(error instanceof Error && error.name === "AbortError")) {
-					warnFallback(ctx, event.signal);
+				if (event.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+					return { cancel: true };
 				}
+				const reason = error instanceof Error ? error.message : String(error);
+				notifyNativeFallback(ctx, event.signal, reason);
 				return undefined;
-			} finally {
-				pending = undefined;
-				committed = undefined;
-				inFlight = false;
 			}
 		},
-		getState() {
-			return {
-				pending: pending ? { ...pending, messageHashes: [...pending.messageHashes] } : undefined,
-				committed: committed ? { ...committed, messageHashes: [...committed.messageHashes] } : undefined,
-				inFlight,
-			};
-		},
-		clear,
 	};
 }
