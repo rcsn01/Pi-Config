@@ -1,0 +1,52 @@
+{
+  "uiModelSelector": {
+    "profiles": {
+      "normal": {
+        "provider": "github-copilot",
+        "modelId": "gpt-5.6-sol",
+        "thinkingLevel": "medium",
+        "contextWindow": 272000
+      },
+      "plan": {
+        "provider": "github-copilot",
+        "modelId": "gpt-5.6-sol",
+        "thinkingLevel": "high",
+        "contextWindow": 272000
+      }
+    }
+  },
+  "compaction": {
+    "enabled": false,
+    "keepRecentTokens": 20000
+  },
+  "subagents": {
+    "maxConcurrency": 4,
+    "defaultModel": "github-copilot/gpt-5.6-sol",
+    "agentModels": {},
+    "defaultThinkingLevel": "low",
+    "agentThinkingLevels": {},
+    "defaultContextWindow": 272000,
+    "agentContextWindows": {
+      "default": 272000,
+      "explorer": 272000,
+      "worker": 272000,
+      "researcher": 272000,
+      "judge": 272000
+    }
+  },
+  "configProfiles": {
+    "active": "work"
+  },
+  "advisor": {
+    "enabled": false,
+    "model": "github-copilot/gpt-5.6-sol",
+    "thinkingLevel": "max",
+    "maxTokens": 32768
+  },
+  "guardian": {
+    "provider": "github-copilot",
+    "modelId": "gpt-5.6-sol",
+    "thinkingLevel": "low",
+    "contextWindow": 272000
+  }
+}

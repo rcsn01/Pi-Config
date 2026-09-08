@@ -1,0 +1,52 @@
+{
+  "uiModelSelector": {
+    "profiles": {
+      "normal": {
+        "provider": "ollama",
+        "modelId": "qwen3.8:27b-mlx",
+        "thinkingLevel": "xhigh",
+        "contextWindow": 128000
+      },
+      "plan": {
+        "provider": "ollama",
+        "modelId": "qwen3.8:27b-mlx",
+        "thinkingLevel": "xhigh",
+        "contextWindow": 128000
+      }
+    }
+  },
+  "compaction": {
+    "enabled": false,
+    "keepRecentTokens": 20000
+  },
+  "subagents": {
+    "maxConcurrency": 4,
+    "defaultModel": "ollama-cloud/glm-5.3-flash",
+    "agentModels": {},
+    "defaultThinkingLevel": "max",
+    "agentThinkingLevels": {},
+    "defaultContextWindow": "default",
+    "agentContextWindows": {
+      "default": "default",
+      "explorer": "default",
+      "worker": "default",
+      "researcher": "default",
+      "judge": "default"
+    }
+  },
+  "configProfiles": {
+    "active": "local"
+  },
+  "guardian": {
+    "provider": "ollama-cloud",
+    "modelId": "glm-5.3-flash",
+    "thinkingLevel": "max",
+    "contextWindow": 262144
+  },
+  "advisor": {
+    "enabled": true,
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinkingLevel": "medium",
+    "maxTokens": 2048
+  }
+}

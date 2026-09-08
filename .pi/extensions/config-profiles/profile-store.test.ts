@@ -88,6 +88,50 @@ describe("profile store", () => {
 		});
 	});
 
+	it("applies a Profile's keepRecentTokens while preserving other core compaction settings", async () => {
+		const { store, writeProfile, read, settingsPath } = fixture({
+			compaction: { enabled: false, reserveTokens: 12_000, keepRecentTokens: 20_000 },
+			configProfiles: { active: "default" },
+		});
+		writeProfile("default", { compaction: { keepRecentTokens: 20_000 } });
+		writeProfile("focused", {
+			compaction: { enabled: true, reserveTokens: 1, keepRecentTokens: 4_000 },
+		});
+
+		await store.switchProfile("focused");
+
+		expect(read(settingsPath)).toEqual({
+			compaction: { enabled: false, reserveTokens: 12_000, keepRecentTokens: 4_000 },
+			configProfiles: { active: "focused" },
+		});
+	});
+
+	it("resynchronizes keepRecentTokens when the Profile marker is already active", async () => {
+		const { store, writeProfile, read, settingsPath } = fixture({
+			compaction: { enabled: false, keepRecentTokens: 20_000 },
+			configProfiles: { active: "focused" },
+		});
+		writeProfile("focused", { compaction: { keepRecentTokens: 4_000 } });
+
+		expect(await store.switchProfile("focused")).toEqual({ changed: true, active: "focused" });
+		expect(read(settingsPath).compaction).toEqual({ enabled: false, keepRecentTokens: 4_000 });
+	});
+
+	it.each([-1, 1.5, "20000"])(
+		"rejects invalid keepRecentTokens %j before changing the marker",
+		async (keepRecentTokens) => {
+			const { store, writeProfile, settingsPath } = fixture({
+				compaction: { enabled: false, keepRecentTokens: 20_000 },
+				configProfiles: { active: "default" },
+			});
+			writeProfile("focused", { compaction: { keepRecentTokens } });
+			const beforeSettings = readFileSync(settingsPath, "utf-8");
+
+			await expect(store.switchProfile("focused")).rejects.toThrow(/non-negative integer/);
+			expect(readFileSync(settingsPath, "utf-8")).toBe(beforeSettings);
+		},
+	);
+
 	it("validates the destination before changing the marker", async () => {
 		const { store, writeProfile, settingsPath, profilesDirectory } = fixture({
 			value: "edited",
@@ -111,22 +155,24 @@ describe("profile store", () => {
 
 	it("creates and activates a copy of a named profile", async () => {
 		const current = {
-			compaction: { enabled: true },
+			compaction: { enabled: true, reserveTokens: 12_000, keepRecentTokens: 20_000 },
 			configProfiles: { active: "default", metadata: "kept" },
 		};
 		const { store, writeProfile, read, settingsPath, profilesDirectory } = fixture(current);
 		writeProfile("default", {
 			model: "original",
+			compaction: { enabled: false, keepRecentTokens: 4_000 },
 			configProfiles: { active: "default", sourceMetadata: "kept" },
 		});
 
 		expect(await store.createProfile("focused", "default")).toEqual({ name: "focused", source: "default" });
 		expect(read(join(profilesDirectory, "focused.json"))).toEqual({
 			model: "original",
+			compaction: { enabled: false, keepRecentTokens: 4_000 },
 			configProfiles: { active: "focused", sourceMetadata: "kept" },
 		});
 		expect(read(settingsPath)).toEqual({
-			compaction: { enabled: true },
+			compaction: { enabled: true, reserveTokens: 12_000, keepRecentTokens: 4_000 },
 			configProfiles: { active: "focused", metadata: "kept" },
 		});
 	});
@@ -189,6 +235,41 @@ describe("profile store", () => {
 		});
 		expect(readdirSync(profilesDirectory)).toEqual(["default.json"]);
 		expect(read(settingsPath)).toEqual({ configProfiles: { active: "default" } });
+	});
+
+	it("applies the default Profile's keepRecentTokens when deleting the active Profile", async () => {
+		const { store, writeProfile, read, settingsPath } = fixture({
+			compaction: { enabled: false, keepRecentTokens: 4_000 },
+			configProfiles: { active: "focused" },
+		});
+		writeProfile("default", { compaction: { keepRecentTokens: 20_000 } });
+		writeProfile("focused", { compaction: { keepRecentTokens: 4_000 } });
+
+		await store.deleteProfile("focused");
+
+		expect(read(settingsPath)).toEqual({
+			compaction: { enabled: false, keepRecentTokens: 20_000 },
+			configProfiles: { active: "default" },
+		});
+	});
+
+	it("resynchronizes the fallback when deleting a session-bound Profile whose marker is already default", async () => {
+		const { store, writeProfile, read, settingsPath } = fixture({
+			compaction: { enabled: false, keepRecentTokens: 4_000 },
+			configProfiles: { active: "default" },
+		});
+		writeProfile("default", { compaction: { keepRecentTokens: 20_000 } });
+		writeProfile("focused", { compaction: { keepRecentTokens: 4_000 } });
+
+		expect(await store.deleteProfile("focused", { replaceMarker: true })).toEqual({
+			name: "focused",
+			replacement: "default",
+			markerReplaced: false,
+		});
+		expect(read(settingsPath)).toEqual({
+			compaction: { enabled: false, keepRecentTokens: 20_000 },
+			configProfiles: { active: "default" },
+		});
 	});
 
 	it("replaces the marker when the session profile is active but another profile is marked", async () => {

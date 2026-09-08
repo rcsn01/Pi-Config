@@ -1,0 +1,52 @@
+{
+  "uiModelSelector": {
+    "profiles": {
+      "normal": {
+        "provider": "ollama-cloud",
+        "modelId": "glm-5.3-flash",
+        "thinkingLevel": "max",
+        "contextWindow": 262144
+      },
+      "plan": {
+        "provider": "ollama-cloud",
+        "modelId": "glm-5.3",
+        "thinkingLevel": "max",
+        "contextWindow": 262144
+      }
+    }
+  },
+  "compaction": {
+    "enabled": false,
+    "keepRecentTokens": 20000
+  },
+  "subagents": {
+    "maxConcurrency": 4,
+    "defaultModel": "ollama-cloud/glm-5.3-flash",
+    "agentModels": {},
+    "defaultThinkingLevel": "max",
+    "agentThinkingLevels": {},
+    "defaultContextWindow": 256000,
+    "agentContextWindows": {
+      "default": 256000,
+      "explorer": 256000,
+      "worker": 256000,
+      "researcher": 256000,
+      "judge": 256000
+    }
+  },
+  "configProfiles": {
+    "active": "ollama"
+  },
+  "advisor": {
+    "enabled": true,
+    "model": "ollama-cloud/glm-5.3",
+    "thinkingLevel": "max",
+    "maxTokens": 32768
+  },
+  "guardian": {
+    "provider": "ollama-cloud",
+    "modelId": "glm-5.3-flash",
+    "thinkingLevel": "max",
+    "contextWindow": 262144
+  }
+}

@@ -3,9 +3,9 @@
     "profiles": {
       "normal": {
         "provider": "openai-codex",
-        "modelId": "gpt-6-astra",
+        "modelId": "gpt-5.3-codex-spark",
         "thinkingLevel": "low",
-        "contextWindow": 272000
+        "contextWindow": 256000
       },
       "plan": {
         "provider": "default",
@@ -14,6 +14,10 @@
         "contextWindow": "default"
       }
     }
+  },
+  "compaction": {
+    "enabled": false,
+    "keepRecentTokens": 20000
   },
   "subagents": {
     "maxConcurrency": 4,

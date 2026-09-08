@@ -1,0 +1,52 @@
+{
+  "uiModelSelector": {
+    "profiles": {
+      "normal": {
+        "provider": "openai-codex",
+        "modelId": "gpt-5.6-sol",
+        "thinkingLevel": "high",
+        "contextWindow": 272000
+      },
+      "plan": {
+        "provider": "openai-codex",
+        "modelId": "gpt-5.6-sol",
+        "thinkingLevel": "high",
+        "contextWindow": 272000
+      }
+    }
+  },
+  "compaction": {
+    "enabled": false,
+    "keepRecentTokens": 20000
+  },
+  "subagents": {
+    "maxConcurrency": 4,
+    "defaultModel": "openai-codex/gpt-5.6-luna",
+    "agentModels": {},
+    "defaultThinkingLevel": "max",
+    "agentThinkingLevels": {},
+    "defaultContextWindow": 256000,
+    "agentContextWindows": {
+      "default": 256000,
+      "explorer": 256000,
+      "worker": 256000,
+      "researcher": 256000,
+      "judge": 256000
+    }
+  },
+  "configProfiles": {
+    "active": "5.6sol"
+  },
+  "advisor": {
+    "enabled": false,
+    "model": "openai-codex/gpt-5.6-sol",
+    "thinkingLevel": "xhigh",
+    "maxTokens": 32768
+  },
+  "guardian": {
+    "provider": "github-copilot",
+    "modelId": "gpt-5.6-luna",
+    "thinkingLevel": "xhigh",
+    "contextWindow": 262500
+  }
+}

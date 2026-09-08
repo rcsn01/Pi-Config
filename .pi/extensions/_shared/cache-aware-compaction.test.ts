@@ -102,39 +102,33 @@ function makeHarness(options: {
 	providerError?: Error;
 	auth?: Record<string, unknown>;
 } = {}) {
-	const handlers = new Map<string, (event: any, ctx: any) => any>();
-	let currentModel = model();
-	let systemPrompt = "unchanged system prompt";
-	let thinkingLevel = "high";
-	let sessionId = "session-123";
-	let activeToolNames = ["second", "first"];
-	let allTools = [
+	const currentModel = model();
+	const systemPrompt = "unchanged system prompt";
+	const thinkingLevel = "high";
+	const sessionId = "session-123";
+	const activeToolNames = ["second", "first"];
+	const allTools = [
 		{ name: "first", description: "First tool", parameters: { type: "object", properties: {} }, sourceInfo: {} },
 		{ name: "second", description: "Second tool", parameters: { type: "object", properties: { value: { type: "string" } } }, sourceInfo: {} },
 	];
-	let resolveResponse: ((value: AssistantMessage) => void) | undefined;
-	let pendingResponse: Promise<AssistantMessage> | undefined;
 	const calls: Array<{ model: Model<any>; context: Context; options: SimpleStreamOptions }> = [];
 	const streamSimple = vi.fn((callModel: Model<any>, context: Context, streamOptions: SimpleStreamOptions) => {
 		calls.push({ model: callModel, context, options: streamOptions });
 		return {
 			result: async () => {
 				if (options.providerError) throw options.providerError;
-				if (pendingResponse) return pendingResponse;
 				return options.providerResponse ?? response();
 			},
 		};
 	});
 	const pi: any = {
-		on: vi.fn((name: string, handler: (event: any, ctx: any) => any) => handlers.set(name, handler)),
+		on: vi.fn(),
 		getActiveTools: vi.fn(() => [...activeToolNames]),
 		getAllTools: vi.fn(() => allTools),
 		getThinkingLevel: vi.fn(() => thinkingLevel),
 	};
 	const ctx: any = {
-		get model() {
-			return currentModel;
-		},
+		model: currentModel,
 		thinkingLevel,
 		getSystemPrompt: vi.fn(() => systemPrompt),
 		sessionManager: { getSessionId: vi.fn(() => sessionId) },
@@ -163,11 +157,6 @@ function makeHarness(options: {
 		signal: new AbortController().signal,
 	};
 
-	function recordProviderRequest(messages = buildSessionContext(entries).messages) {
-		handlers.get("context")?.({ type: "context", messages }, ctx);
-		handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
-	}
-
 	return {
 		pi,
 		ctx,
@@ -176,18 +165,6 @@ function makeHarness(options: {
 		calls,
 		streamSimple,
 		controller,
-		handlers,
-		recordProviderRequest,
-		setModel(next: Model<any>) { currentModel = next; },
-		setSystemPrompt(next: string) { systemPrompt = next; },
-		setThinkingLevel(next: string) { thinkingLevel = next; ctx.thinkingLevel = next; },
-		setSessionId(next: string) { sessionId = next; },
-		setActiveTools(next: string[]) { activeToolNames = next; },
-		setAllTools(next: any[]) { allTools = next; },
-		deferResponse() {
-			pendingResponse = new Promise((resolve) => { resolveResponse = resolve; });
-			return (value = response()) => resolveResponse?.(value);
-		},
 	};
 }
 
@@ -255,11 +232,10 @@ describe("provider-rendered cache prefix", () => {
 describe("cache-aware compaction", () => {
 	it("preserves the provider prefix and appends exactly one instruction", async () => {
 		const harness = makeHarness();
-		harness.recordProviderRequest();
 
 		const result = await harness.controller.compact(harness.event, harness.ctx);
 
-		expect(result?.compaction.summary).toContain("## Goal");
+		expect(result?.compaction?.summary).toContain("## Goal");
 		expect(harness.calls).toHaveLength(1);
 		const call = harness.calls[0];
 		expect(call.context.systemPrompt).toBe("unchanged system prompt");
@@ -273,7 +249,6 @@ describe("cache-aware compaction", () => {
 
 	it("preserves model, reasoning, session routing, auth, provider environment, and renderer cache policy", async () => {
 		const harness = makeHarness();
-		harness.recordProviderRequest();
 		await harness.controller.compact(harness.event, harness.ctx);
 
 		const call = harness.calls[0];
@@ -291,7 +266,6 @@ describe("cache-aware compaction", () => {
 
 	it("returns native-compatible metadata and file sections", async () => {
 		const harness = makeHarness();
-		harness.recordProviderRequest();
 		const result = await harness.controller.compact(harness.event, harness.ctx);
 
 		expect(result?.compaction).toMatchObject({
@@ -300,56 +274,19 @@ describe("cache-aware compaction", () => {
 			usage,
 			details: { readFiles: ["z.ts"], modifiedFiles: ["changed.ts", "new.ts"] },
 		});
-		expect(result?.compaction.summary).toContain("<read-files>\nz.ts\n</read-files>");
-		expect(result?.compaction.summary).toContain("<modified-files>\nchanged.ts\nnew.ts\n</modified-files>");
+		expect(result?.compaction?.summary).toContain("<read-files>\nz.ts\n</read-files>");
+		expect(result?.compaction?.summary).toContain("<modified-files>\nchanged.ts\nnew.ts\n</modified-files>");
 	});
 
-	it("uses the registered custom provider streamSimple", async () => {
+	it("uses the registered custom provider without requiring a prior request snapshot", async () => {
 		const harness = makeHarness();
-		harness.recordProviderRequest();
-		await harness.controller.compact(harness.event, harness.ctx);
+		expect(await harness.controller.compact(harness.event, harness.ctx)).toBeDefined();
 		expect(harness.ctx.modelRegistry.getProvider).toHaveBeenCalledWith("provider-1");
 		expect(harness.streamSimple).toHaveBeenCalledOnce();
+		expect(harness.ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
-	it("falls back without a committed provider snapshot", async () => {
-		const harness = makeHarness();
-		expect(await harness.controller.compact(harness.event, harness.ctx)).toBeUndefined();
-		expect(harness.streamSimple).not.toHaveBeenCalled();
-		expect(harness.ctx.ui.notify).toHaveBeenCalledOnce();
-	});
-
-	it.each(["model", "system", "tools", "thinking", "session"])(
-		"falls back when the %s fingerprint changes",
-		async (field) => {
-			const harness = makeHarness();
-			harness.recordProviderRequest();
-			if (field === "model") harness.setModel(model({ id: "model-2" }));
-			if (field === "system") harness.setSystemPrompt("changed prompt");
-			if (field === "tools") harness.setActiveTools(["first", "second"]);
-			if (field === "thinking") harness.setThinkingLevel("low");
-			if (field === "session") harness.setSessionId("other-session");
-
-			expect(await harness.controller.compact(harness.event, harness.ctx)).toBeUndefined();
-			expect(harness.streamSimple).not.toHaveBeenCalled();
-		},
-	);
-
-	it("falls back when the current messages do not extend the provider prefix", async () => {
-		const harness = makeHarness();
-		harness.recordProviderRequest([user("different request", 1)]);
-		expect(await harness.controller.compact(harness.event, harness.ctx)).toBeUndefined();
-		expect(harness.streamSimple).not.toHaveBeenCalled();
-	});
-
-	it("accepts messages appended after the committed provider prefix", async () => {
-		const harness = makeHarness();
-		harness.recordProviderRequest(buildSessionContext(harness.entries.slice(0, 2)).messages);
-		expect(await harness.controller.compact(harness.event, harness.ctx)).toBeDefined();
-		expect(harness.streamSimple).toHaveBeenCalledOnce();
-	});
-
-	it("falls back for image-containing contexts", async () => {
+	it("attempts custom compaction for image-containing contexts", async () => {
 		const entries = baseEntries();
 		entries[0] = entry("u1", null, {
 			role: "user",
@@ -357,9 +294,16 @@ describe("cache-aware compaction", () => {
 			timestamp: 1,
 		});
 		const harness = makeHarness({ entries });
-		harness.recordProviderRequest();
-		expect(await harness.controller.compact(harness.event, harness.ctx)).toBeUndefined();
-		expect(harness.streamSimple).not.toHaveBeenCalled();
+		expect(await harness.controller.compact(harness.event, harness.ctx)).toBeDefined();
+		expect(harness.streamSimple).toHaveBeenCalledOnce();
+	});
+
+	it("attempts custom compaction even when estimated output headroom is exhausted", async () => {
+		const harness = makeHarness();
+		harness.event.preparation.tokensBefore = 9_900;
+		expect(await harness.controller.compact(harness.event, harness.ctx)).toBeDefined();
+		expect(harness.streamSimple).toHaveBeenCalledOnce();
+		expect(harness.calls[0].options.maxTokens).toBe(800);
 	});
 
 	it.each([
@@ -369,29 +313,59 @@ describe("cache-aware compaction", () => {
 		["error", response({ stopReason: "error", errorMessage: "bad" })],
 		["tool use", response({ stopReason: "toolUse", content: [{ type: "toolCall", id: "1", name: "read", arguments: {} }] })],
 		["empty output", response({ content: [{ type: "text", text: "  " }] })],
-	] as const)("falls back on %s responses", async (label, providerResponse) => {
+	] as const)("uses native fallback only after an unusable %s response", async (label, providerResponse) => {
 		const harness = makeHarness({ providerResponse });
-		harness.recordProviderRequest();
-		expect(await harness.controller.compact(harness.event, harness.ctx)).toBeUndefined();
-		if (label === "abort") expect(harness.ctx.ui.notify).not.toHaveBeenCalled();
+		const result = await harness.controller.compact(harness.event, harness.ctx);
+		expect(harness.streamSimple).toHaveBeenCalledOnce();
+		if (label === "abort") {
+			expect(result).toEqual({ cancel: true });
+			expect(harness.ctx.ui.notify).not.toHaveBeenCalled();
+		} else {
+			expect(result).toBeUndefined();
+			expect(harness.ctx.ui.notify).toHaveBeenCalledOnce();
+		}
 	});
 
-	it("falls back on provider exceptions and suppresses warnings after abort", async () => {
-		const harness = makeHarness({ providerError: new Error("network down") });
-		const controller = new AbortController();
-		harness.event.signal = controller.signal;
-		harness.recordProviderRequest();
-		controller.abort();
+	it("uses native fallback when authentication is unavailable", async () => {
+		const harness = makeHarness({ auth: { ok: false } });
 		expect(await harness.controller.compact(harness.event, harness.ctx)).toBeUndefined();
+		expect(harness.streamSimple).not.toHaveBeenCalled();
+		expect(harness.ctx.ui.notify).toHaveBeenCalledOnce();
+	});
+
+	it("cancels rather than invoking native compaction after an abort", async () => {
+		const harness = makeHarness({ providerError: new DOMException("aborted", "AbortError") });
+		expect(await harness.controller.compact(harness.event, harness.ctx)).toEqual({ cancel: true });
 		expect(harness.ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
-	it("falls back without sending when output headroom is insufficient", async () => {
+	it("cancels when authentication completes after an abort", async () => {
 		const harness = makeHarness();
-		harness.event.preparation.tokensBefore = 9_900;
-		harness.recordProviderRequest();
-		expect(await harness.controller.compact(harness.event, harness.ctx)).toBeUndefined();
+		const abort = new AbortController();
+		harness.event.signal = abort.signal;
+		harness.ctx.modelRegistry.getApiKeyAndHeaders.mockImplementationOnce(async () => {
+			abort.abort();
+			return { ok: false };
+		});
+
+		expect(await harness.controller.compact(harness.event, harness.ctx)).toEqual({ cancel: true });
 		expect(harness.streamSimple).not.toHaveBeenCalled();
+		expect(harness.ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("cancels when a provider returns a summary after an abort", async () => {
+		const harness = makeHarness();
+		const abort = new AbortController();
+		harness.event.signal = abort.signal;
+		harness.streamSimple.mockImplementationOnce(() => ({
+			result: async () => {
+				abort.abort();
+				return response();
+			},
+		}));
+
+		expect(await harness.controller.compact(harness.event, harness.ctx)).toEqual({ cancel: true });
+		expect(harness.ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
 	it("counts a split-turn retained suffix from firstKeptEntryId", async () => {
@@ -407,12 +381,11 @@ describe("cache-aware compaction", () => {
 			messagesToSummarize: [],
 			turnPrefixMessages: [user("large turn", 1), assistant("early work", 2)],
 		});
-		harness.recordProviderRequest();
 		await harness.controller.compact(harness.event, harness.ctx);
 		expect(JSON.stringify(harness.calls[0].context.messages.at(-1))).toContain("2 trailing provider messages");
 	});
 
-	it("keeps previous compaction summaries in the unchanged prefix", async () => {
+	it("keeps previous compaction summaries in the provider prefix", async () => {
 		const entries: any[] = [
 			entry("u1", null, user("old", 1)),
 			entry("u2", "u1", user("kept before compact", 2)),
@@ -429,49 +402,15 @@ describe("cache-aware compaction", () => {
 		];
 		const harness = makeHarness({ entries });
 		harness.event.preparation = preparation("u3");
-		harness.recordProviderRequest();
 		await harness.controller.compact(harness.event, harness.ctx);
 		expect(JSON.stringify(harness.calls[0].context.messages.slice(0, -1))).toContain("PREVIOUS SUMMARY TEXT");
 	});
 
-	it("stores hashes rather than raw prompts, tools, or messages", () => {
+	it("rejects an invalid retained-message boundary", async () => {
 		const harness = makeHarness();
-		harness.handlers.get("context")?.(
-			{ type: "context", messages: [user("highly sensitive message", 1)] },
-			harness.ctx,
-		);
-		const serialized = JSON.stringify(harness.controller.getState());
-		expect(serialized).not.toContain("highly sensitive message");
-		expect(serialized).not.toContain("unchanged system prompt");
-		expect(serialized).not.toContain("First tool");
-		expect(harness.controller.getState().pending?.messageCount).toBe(1);
-	});
-
-	it("clears snapshots and the in-flight guard after success, failure, and shutdown", async () => {
-		const success = makeHarness();
-		success.recordProviderRequest();
-		await success.controller.compact(success.event, success.ctx);
-		expect(success.controller.getState()).toEqual({ pending: undefined, committed: undefined, inFlight: false });
-
-		const failure = makeHarness({ providerError: new Error("failed") });
-		failure.recordProviderRequest();
-		await failure.controller.compact(failure.event, failure.ctx);
-		expect(failure.controller.getState()).toEqual({ pending: undefined, committed: undefined, inFlight: false });
-
-		failure.recordProviderRequest();
-		failure.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "reload" }, failure.ctx);
-		expect(failure.controller.getState()).toEqual({ pending: undefined, committed: undefined, inFlight: false });
-	});
-
-	it("guards against duplicate in-flight summaries", async () => {
-		const harness = makeHarness();
-		const finish = harness.deferResponse();
-		harness.recordProviderRequest();
-		const first = harness.controller.compact(harness.event, harness.ctx);
-		await Promise.resolve();
+		harness.event.preparation.firstKeptEntryId = "missing";
 		expect(await harness.controller.compact(harness.event, harness.ctx)).toBeUndefined();
-		finish();
-		expect(await first).toBeDefined();
-		expect(harness.streamSimple).toHaveBeenCalledOnce();
+		expect(harness.streamSimple).not.toHaveBeenCalled();
+		expect(harness.ctx.ui.notify).toHaveBeenCalledOnce();
 	});
 });

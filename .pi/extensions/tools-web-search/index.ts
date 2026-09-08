@@ -47,7 +47,7 @@ function parseDDGResults(html: string, count: number): SearchResult[] {
 	const results: SearchResult[] = [];
 
 	// Simple regex-based parsing of DuckDuckGo HTML results
-	const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([^<]*)<\/a>/gi;
+	const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
 	let match;
 
 	while ((match = resultRegex.exec(html)) !== null && results.length < count) {
