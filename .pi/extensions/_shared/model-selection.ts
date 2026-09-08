@@ -281,8 +281,13 @@ export function selectionModeFromEntries(entries: readonly unknown[]): ModelSele
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index] as { type?: unknown; customType?: unknown; data?: unknown };
 		if (entry?.type !== "custom" || entry.customType !== PLAN_STATE_ENTRY_TYPE) continue;
-		const data = entry.data as { active?: unknown } | undefined;
-		return data?.active === true ? "plan" : "normal";
+		const data = entry.data as { mode?: unknown; active?: unknown } | undefined;
+		if (!data) return "normal";
+		// Current workflows-plan entries record the mode; legacy entries recorded
+		// a boolean. Read both so plan-mode picks land in the plan slot.
+		if (data.mode === "plan") return "plan";
+		if (data.mode === "default") return "normal";
+		return data.active === true ? "plan" : "normal";
 	}
 	return "normal";
 }
@@ -367,8 +372,10 @@ async function applyResolvedModelSelection(
  * and thinking level. The stored profile itself is not persisted.
  *
  * The context-window contract preserves legacy plan-mode reads: an explicit
- * sentinel resolves through the catalogue; a missing window inherits the
- * current model's window when the model already matches.
+ * sentinel resolves through the catalogue; a stored numeric window is applied
+ * verbatim (128000 is a legitimate user choice, not pi's undeclared-context
+ * sentinel — only catalogue values get that normalization); a missing window
+ * inherits the current model's window when the model already matches.
  */
 export async function applyModelSelection(
 	pi: ExtensionAPI,
@@ -394,10 +401,11 @@ export async function applyModelSelection(
 			// Legacy selections without a context: keep the current window.
 			model = currentModel;
 		} else {
-			const contextWindow = resolveContextWindow(context.value);
-			model = contextWindow === currentModel.contextWindow
+			// Stored context windows are explicit user choices — 128000 is a
+			// legitimate selection, not pi's undeclared-context sentinel.
+			model = context.value === currentModel.contextWindow
 				? currentModel
-				: { ...currentModel, contextWindow };
+				: { ...currentModel, contextWindow: context.value };
 		}
 	} else {
 		let catalogueModel: Model<any>;
@@ -414,12 +422,10 @@ export async function applyModelSelection(
 			}
 			throw error;
 		}
-		const contextWindow = context.kind === "catalogue"
-			? catalogueModel.contextWindow
-			: context.kind === "stored"
-				? resolveContextWindow(context.value)
-				: catalogueModel.contextWindow;
-		model = { ...resolveModelContext(catalogueModel), contextWindow };
+		const normalized = resolveModelContext(catalogueModel);
+		model = context.kind === "stored"
+			? { ...normalized, contextWindow: context.value }
+			: normalized;
 	}
 
 	return applyResolvedModelSelection(pi, ctx, model, resolved.thinkingLevel);

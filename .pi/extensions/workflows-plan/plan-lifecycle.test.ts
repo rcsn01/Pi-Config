@@ -4,6 +4,9 @@ import planModeExtension, {
 	PLAN_REVIEW_ACTIONS,
 } from "./index.ts";
 import type { ModeModelProfile } from "./model-profile.ts";
+import { selectionModeFromEntries } from "../_shared/model-selection.ts";
+import { PLAN_STATE_ENTRY_TYPE } from "../_shared/session-entries.ts";
+import { beginProfileModelApplication } from "../_shared/profile-model-application.ts";
 import {
 	activePlanningEntry,
 	createHarness,
@@ -168,6 +171,113 @@ describe("Plan Mode tool policy integration", () => {
 		expect(stores.createModelSelectionPersistence).toHaveBeenCalledTimes(2);
 		const [prompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
 		expect(prompt.systemPrompt).toContain("You are in **Plan Mode**");
+	});
+
+	it("ignores model changes driven by a profile application", async () => {
+		const stores = createProfileDependencies();
+		const harness = createHarness({
+			branch: [activePlanningEntry()],
+			model: normalModel,
+			availableModels: [normalModel],
+			dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		// A profile switch applies the target profile's model while the session
+		// is still bound to the previous profile: the change must not be
+		// recorded as a Plan selection in that profile's file.
+		const endApplication = beginProfileModelApplication();
+		await harness.emit("model_select", {
+			type: "model_select",
+			model: planModel,
+			previousModel: normalModel,
+			source: "set",
+		});
+		endApplication();
+
+		expect(stores.save).not.toHaveBeenCalled();
+		expect(stores.restore).not.toHaveBeenCalled();
+		expect(stores.getStored()).toBeUndefined();
+	});
+
+	it("keeps an explicit 128K Plan context across plan → normal → plan toggles", async () => {
+		const stores = createProfileDependencies();
+		// Simulates pi's undeclared-context model: the catalogue reports the 128K
+		// sentinel, which the picker normalizes to its 256K display default.
+		const undeclared = { ...normalModel, contextWindow: 128_000 };
+		const harness = createHarness({
+			branch: [],
+			model: undeclared,
+			availableModels: [undeclared],
+			dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		// Enter Plan Mode with no stored Plan profile: the current model is adopted.
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		expect(stores.getStored()).toMatchObject({ contextWindow: 128_000 });
+
+		// Producer/consumer contract: the entry this extension just appended must
+		// resolve back to plan mode, so model picks land in the plan slot.
+		const planEntry = harness.appendedEntries.find((entry) => entry.customType === PLAN_STATE_ENTRY_TYPE);
+		expect(selectionModeFromEntries([
+			{ type: "custom", customType: planEntry!.customType, data: planEntry!.data },
+		])).toBe("plan");
+
+		// The user explicitly picks 128K in the Plan Mode picker.
+		await harness.setModel({ ...undeclared, contextWindow: 128_000 });
+		expect(stores.getStored()).toMatchObject({ contextWindow: 128_000 });
+
+		// Switch back to normal mode, then re-enter Plan Mode.
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+
+		expect(harness.ctx.model?.contextWindow).toBe(128_000);
+		expect(stores.getStored()?.contextWindow).toBe(128_000);
+	});
+
+	it("restores the newly bound profile's normal selection on Plan exit after a profile switch", async () => {
+		const boundNormal = profileFor(planModel, "medium");
+		const stores = createProfileDependencies(undefined, boundNormal);
+		const harness = createHarness({
+			branch: [],
+			model: normalModel,
+			availableModels: [normalModel, planModel],
+			dependencies: stores.dependencies,
+		});
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		// Enter Plan Mode while bound to the unbound settings document.
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		expect(stores.getStored()).toMatchObject({ provider: normalModel.provider });
+
+		// Switch profiles mid-plan: the session reloads and binds to "focused".
+		// The persisted plan state carries the previous profile's captured
+		// normal model, exactly like a real session entry.
+		harness.setBranch([
+			{
+				type: "custom",
+				customType: PLAN_STATE_ENTRY_TYPE,
+				data: {
+					mode: "plan",
+					revision: 1,
+					changedAt: "2026-01-01T00:00:00.000Z",
+					normalProfile: profileFor(normalModel, "medium"),
+				},
+			},
+			{ type: "custom", customType: "configProfiles", data: { active: "focused" } },
+		]);
+		harness.setSessionId("next-session");
+		await harness.emit("session_start", { type: "session_start", reason: "reload" });
+
+		// Exiting Plan Mode must restore the newly bound profile's normal
+		// selection, not the previous profile's captured normal model.
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({
+			provider: boundNormal.provider,
+			id: boundNormal.modelId,
+			contextWindow: boundNormal.contextWindow,
+		}));
 	});
 
 	it("uses one monotonic runtime marker across repeated mode switches", async () => {

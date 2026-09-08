@@ -358,15 +358,13 @@ export function profileFor(model: typeof normalModel, thinkingLevel: ModelThinki
 	return { provider: model.provider, modelId: model.id, thinkingLevel, contextWindow: model.contextWindow };
 }
 
-export function createProfileDependencies(initial?: ModeModelProfile) {
+export function createProfileDependencies(initial?: ModeModelProfile, normal?: ModeModelProfile) {
 	let stored = initial;
-	const load = vi.fn(async (mode: "normal" | "plan") => {
-		if (mode !== "plan") throw new Error(`Unexpected model-selection mode: ${mode}`);
-		return stored;
-	});
+	let storedNormal = normal;
+	const load = vi.fn(async (mode: "normal" | "plan") => mode === "plan" ? stored : storedNormal);
 	const save = vi.fn(async (mode: "normal" | "plan", profile: ModeModelProfile) => {
-		if (mode !== "plan") throw new Error(`Unexpected model-selection mode: ${mode}`);
-		stored = profile;
+		if (mode === "plan") stored = profile;
+		else storedNormal = profile;
 	});
 	const capture = vi.fn(async (_cwd: string, fallback: ModeModelProfile) => fallback);
 	const restore = vi.fn(async () => {});

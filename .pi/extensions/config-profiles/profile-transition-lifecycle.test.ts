@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelSelectionSettings } from "../_shared/model-selection.ts";
 import {
+	isProfileModelApplicationInFlight,
+} from "../_shared/profile-model-application.ts";
+import {
 	createAndActivateProfile,
 	createProfileTransitionLifecycle,
 	deleteActiveProfile,
@@ -93,6 +96,26 @@ describe("ProfileTransitionLifecycle", () => {
 			activeProfile: "focused",
 			modelApplication: { kind: "applied", selection },
 		});
+	});
+
+	it("holds the profile-model-application marker while the model applies", async () => {
+		const harness = createHarness();
+		let inFlightDuringApply = false;
+		harness.adapter.applyProfileSelection = vi.fn(async () => {
+			inFlightDuringApply = isProfileModelApplicationInFlight();
+			return selection;
+		});
+
+		await harness.lifecycle.transition(switchProfile("focused"));
+
+		expect(inFlightDuringApply).toBe(true);
+		expect(isProfileModelApplicationInFlight()).toBe(false);
+	});
+
+	it("releases the marker when the model application fails", async () => {
+		const harness = createHarness({ applyError: new Error("nope") });
+		await harness.lifecycle.transition(switchProfile("focused"));
+		expect(isProfileModelApplicationInFlight()).toBe(false);
 	});
 
 	it("creates from the requested source before activation", async () => {
