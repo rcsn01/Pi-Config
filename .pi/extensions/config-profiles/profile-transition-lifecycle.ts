@@ -1,4 +1,5 @@
 import type { ModelSelectionSettings } from "../_shared/model-selection.ts";
+import { beginProfileModelApplication } from "../_shared/profile-model-application.ts";
 const DEFAULT_PROFILE_NAME = "default";
 
 export type ProfileTransitionRequest =
@@ -77,6 +78,10 @@ export function createProfileTransitionLifecycle(
 
 	async function applyProfileModel(profile: string): Promise<ProfileModelApplication> {
 		const previousModel = adapter.getCurrentModelKey();
+		// The applied model change is a profile application, not a user
+		// selection: hold the marker so observers (e.g. the Plan Mode
+		// lifecycle) do not persist it into the profile being switched from.
+		const endApplication = beginProfileModelApplication();
 		try {
 			const selection = await adapter.applyProfileSelection(adapter.readProfile(profile));
 			if (!selection) return { kind: "unchanged" };
@@ -87,6 +92,8 @@ export function createProfileTransitionLifecycle(
 		} catch (cause) {
 			adapter.reportNotice({ kind: "profile-model-apply-failed", cause });
 			return { kind: "failed", cause };
+		} finally {
+			endApplication();
 		}
 	}
 

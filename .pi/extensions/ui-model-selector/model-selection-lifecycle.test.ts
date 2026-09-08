@@ -93,6 +93,9 @@ function createHarness(options: {
 			calls.push("set-model");
 			return options.setModelResult ?? true;
 		}),
+		setThinkingLevel: vi.fn((level: ModelThinkingLevel) => {
+			calls.push(`set-thinking:${level}`);
+		}),
 		confirmContextReduction: vi.fn(async () => {
 			calls.push("confirm");
 			return options.confirm ?? true;
@@ -220,7 +223,7 @@ describe("ModelSelectionLifecycle session initialization", () => {
 		expect(harness.adapter.loadSelection).toHaveBeenCalledTimes(2);
 	});
 
-	it("synchronizes matching Profile context through context normalization", async () => {
+	it("synchronizes an explicit Profile context verbatim, even at pi's 128K sentinel", async () => {
 		const sentinelCurrent = { ...currentModel, contextWindow: 128_000 } as Model<Api>;
 		const profile = {
 			provider: sentinelCurrent.provider,
@@ -232,8 +235,80 @@ describe("ModelSelectionLifecycle session initialization", () => {
 		const outcome = await initialize(harness, { reason: "reload", mode: "plan" });
 		expect(outcome.kind).toBe("context-synchronized");
 		expect(harness.adapter.loadSelection).toHaveBeenCalledWith("plan");
+		expect(harness.adapter.setModel).toHaveBeenCalledWith(expect.objectContaining({ contextWindow: 128_000 }));
+		expect(harness.adapter.pick).not.toHaveBeenCalled();
+	});
+
+	it("synchronizes a default-sentinel Profile context through context normalization", async () => {
+		const sentinelCurrent = { ...currentModel, contextWindow: 128_000 } as Model<Api>;
+		const profile = {
+			provider: sentinelCurrent.provider,
+			modelId: sentinelCurrent.id,
+			thinkingLevel: "medium" as const,
+			contextWindow: DEFAULT_SENTINEL,
+		};
+		const harness = createHarness({ runtime: { model: sentinelCurrent }, selections: { plan: profile } });
+		const outcome = await initialize(harness, { reason: "reload", mode: "plan" });
+		expect(outcome.kind).toBe("context-synchronized");
+		expect(harness.adapter.loadSelection).toHaveBeenCalledWith("plan");
 		expect(harness.adapter.setModel).toHaveBeenCalledWith(expect.objectContaining({ contextWindow: 256_000 }));
 		expect(harness.adapter.pick).not.toHaveBeenCalled();
+	});
+
+	it("re-applies the profile's thinking level when the model sync clobbers it", async () => {
+		// pi's setModel imperatively applies per-model overrides or the global
+		// default: simulate the clobber in the adapter's setModel.
+		const runtime = { model: currentModel, thinkingLevel: "medium" as ModelThinkingLevel, usageTokens: 0 };
+		const profile = {
+			provider: currentModel.provider,
+			modelId: currentModel.id,
+			thinkingLevel: "high" as const,
+			contextWindow: 256_000,
+		};
+		const harness = createHarness({ runtime, selections: { normal: profile } });
+		harness.adapter.setModel = vi.fn(async (model: Model<Api>) => {
+			runtime.model = model;
+			runtime.thinkingLevel = "low"; // pi's model-switch default kicks in
+			return true;
+		});
+
+		const outcome = await initialize(harness, { reason: "reload" });
+
+		expect(outcome.kind).toBe("context-synchronized");
+		expect(harness.adapter.setThinkingLevel).toHaveBeenCalledWith("high");
+		expect(harness.calls).toContain("set-thinking:high");
+	});
+
+	it("re-applies the profile's thinking level even when the model already matches", async () => {
+		const profile = {
+			provider: currentModel.provider,
+			modelId: currentModel.id,
+			thinkingLevel: "xhigh" as const,
+			contextWindow: 1_000_000,
+		};
+		const harness = createHarness({ selections: { normal: profile } });
+
+		const outcome = await initialize(harness, { reason: "reload" });
+
+		expect(outcome.kind).toBe("context-synchronized");
+		expect(harness.adapter.setModel).not.toHaveBeenCalled();
+		expect(harness.adapter.setThinkingLevel).toHaveBeenCalledWith("xhigh");
+	});
+
+	it("keeps pi's thinking level for default-sentinel profile thinking", async () => {
+		const profile = {
+			provider: currentModel.provider,
+			modelId: currentModel.id,
+			thinkingLevel: DEFAULT_SENTINEL,
+			contextWindow: 1_000_000,
+		} as const;
+		const harness = createHarness({ selections: { normal: profile } });
+
+		expect(await initialize(harness, { reason: "reload" })).toEqual({
+			kind: "unchanged",
+			reason: "context-current",
+		});
+		expect(harness.adapter.setThinkingLevel).not.toHaveBeenCalled();
 	});
 
 	it("ignores mismatched Profile context and keeps a current normalized model unchanged", async () => {
@@ -259,7 +334,7 @@ describe("ModelSelectionLifecycle session initialization", () => {
 });
 
 describe("ModelSelectionLifecycle interactive selection", () => {
-	it("uses saved defaults for the active mode and resolves saved context", async () => {
+	it("uses saved defaults for the active mode and keeps the saved context window", async () => {
 		const normal = { provider: "normal", modelId: "model", thinkingLevel: "low" as const, contextWindow: 300_000 };
 		const plan = { provider: "plan", modelId: "model", thinkingLevel: "xhigh" as const, contextWindow: 128_000 };
 		const harness = createHarness({ selections: { normal, plan }, picked: undefined });
@@ -267,7 +342,7 @@ describe("ModelSelectionLifecycle interactive selection", () => {
 		expect(harness.adapter.loadSelection).toHaveBeenCalledWith("plan");
 		expect(harness.adapter.pick).toHaveBeenCalledWith(expect.objectContaining({
 			initialQuery: "query",
-			previous: { provider: "plan", modelId: "model", thinkingLevel: "xhigh", contextWindow: 256_000 },
+			previous: { provider: "plan", modelId: "model", thinkingLevel: "xhigh", contextWindow: 128_000 },
 		}));
 	});
 

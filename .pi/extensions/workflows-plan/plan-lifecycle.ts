@@ -27,6 +27,7 @@ import {
 	type ModelSelectionPersistence,
 } from "../_shared/model-selection-persistence.ts";
 import type { SessionProfileBinding } from "../_shared/session-profile-binding.ts";
+import { isProfileModelApplicationInFlight } from "../_shared/profile-model-application.ts";
 import {
 	sessionProfileTransfer,
 	type SessionProfileTransfer,
@@ -34,6 +35,7 @@ import {
 import { UI_GLYPHS } from "../_shared/ui-style.ts";
 import {
 	validateConcreteModelSelection,
+	type StoredModelSelectionSettings,
 } from "../_shared/model-selection.ts";
 import {
 	discardAssistantMessage,
@@ -283,6 +285,10 @@ export function createPlanLifecycle(
 	let planState: PlanState = createInitialPlanState();
 	let activePlanProfile: ModeModelProfile | undefined;
 	let normalGlobalDefaults: ModeModelProfile | undefined;
+	// The profile binding at Plan entry: exiting restores the bound profile's
+	// normal slot instead of the captured normal profile when it changed
+	// mid-plan (a profile switch must not leak the old profile's model).
+	let planEntrySettingsPath: string | undefined;
 	let profileEventQueue = Promise.resolve();
 	let lifecycleQueue = Promise.resolve();
 	let latestProposedPlan: string | undefined;
@@ -550,6 +556,7 @@ export function createPlanLifecycle(
 				normalGlobalDefaults = capturedDefaults;
 				planState = { ...planState, normalProfile, normalTools };
 				activePlanProfile = profile;
+				planEntrySettingsPath = session.binding.settingsPath;
 				clearPlanForEntry();
 				commitPlanState(ctx, "plan", prompt, normalTools);
 				warmPlanRuntime(ctx);
@@ -580,6 +587,26 @@ export function createPlanLifecycle(
 		}
 	}
 
+	async function resolveNormalExitTarget(
+		session: PlanSession,
+	): Promise<ModeModelProfile | StoredModelSelectionSettings | undefined> {
+		const captured = planState.normalProfile;
+		if (!captured) return undefined;
+		if (planEntrySettingsPath !== undefined && session.binding.settingsPath !== planEntrySettingsPath) {
+			// The profile switched while Plan Mode was active: the captured
+			// normal profile belongs to the previous profile. Restore the
+			// newly bound profile's normal selection instead.
+			try {
+				const boundNormal = await session.persistence.load("normal");
+				if (boundNormal) return boundNormal;
+			} catch {
+				// Fall back to the captured profile when the newly bound
+				// profile cannot be read.
+			}
+		}
+		return captured;
+	}
+
 	async function exitPlanModeInternal(ctx: ExtensionContext, session: PlanSession): Promise<boolean> {
 		if (!isPlanMode(planState)) return true;
 		const normalTools = planState.normalTools;
@@ -599,7 +626,7 @@ export function createPlanLifecycle(
 		}
 		if (!guard.isCurrent()) return false;
 
-		const normalProfile = planState.normalProfile;
+		const normalProfile = await resolveNormalExitTarget(session);
 		if (normalProfile) {
 			const outcome = await profileTransition.apply(ctx, session, {
 				target: normalProfile,
@@ -684,6 +711,10 @@ export function createPlanLifecycle(
 		event: PlanLifecycleModelChanged | PlanLifecycleThinkingLevelChanged,
 	): Promise<void> {
 		if (!isPlanMode(planState) || profileTransition.inTransition()) return Promise.resolve();
+		// A profile switch's model application is not a user selection: the
+		// session is still bound to the profile being switched from, so
+		// recording it would mix the target profile's model into that file.
+		if (isProfileModelApplicationInFlight()) return Promise.resolve();
 		if (event.type === "modelChanged" && event.source === "restore") return Promise.resolve();
 
 		let profile: ModeModelProfile;

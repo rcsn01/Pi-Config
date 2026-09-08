@@ -3,7 +3,6 @@ import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import { COMPACT_THRESHOLD, SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
 import {
 	ModelSelectionNotSavedError,
-	resolveContextWindow,
 	resolveModelContext,
 	type ModelSelectionMode,
 	type ModelSelectionSettings,
@@ -85,6 +84,7 @@ export interface ModelSelectionLifecycleAdapter {
 		mode: ModelSelectionMode,
 	): Promise<ModelSelectionSettings>;
 	setModel(model: Model<Api>): Promise<boolean>;
+	setThinkingLevel(level: ModelThinkingLevel): void;
 	confirmContextReduction(reduction: ContextReduction): Promise<boolean>;
 	isIdle(): boolean;
 	requestCompaction(customInstructions: string): void;
@@ -127,7 +127,7 @@ function pickerPreviousSelection(
 		modelId: profile.modelId,
 		thinkingLevel: profile.thinkingLevel !== DEFAULT_SENTINEL ? profile.thinkingLevel : thinkingLevel,
 		contextWindow: typeof profile.contextWindow === "number"
-			? resolveContextWindow(profile.contextWindow)
+			? profile.contextWindow
 			: undefined,
 	};
 }
@@ -229,22 +229,43 @@ export function createModelSelectionLifecycle(
 	async function synchronizeContext(
 		input: ModelSelectionSessionInput,
 	): Promise<ModelSelectionLifecycleOutcome> {
-		const currentModel = adapter.getRuntimeState().model;
+		const runtime = adapter.getRuntimeState();
+		const currentModel = runtime.model;
 		if (!currentModel) return { kind: "unchanged", reason: "no-current-model" };
 
 		const restoredModel = resolveModelContext(currentModel);
 		const profile = await adapter.loadSelection(input.mode);
-		const profileContext = profile && profile.contextWindow !== DEFAULT_SENTINEL &&
-			profile.contextWindow !== undefined &&
-			currentModel.provider === profile.provider && currentModel.id === profile.modelId
-			? resolveContextWindow(profile.contextWindow)
+		const profileContext = profile && typeof profile.contextWindow === "number" &&
+				currentModel.provider === profile.provider && currentModel.id === profile.modelId
+			? // Stored context windows are explicit user choices; apply them
+				// verbatim instead of re-resolving pi's 128K undeclared-context
+				// sentinel, which would silently rewrite a 128K selection to 256K.
+				profile.contextWindow
 			: restoredModel.contextWindow;
 		const targetModel = profileContext !== restoredModel.contextWindow
 			? { ...restoredModel, contextWindow: profileContext }
 			: restoredModel;
-		if (targetModel === currentModel) return { kind: "unchanged", reason: "context-current" };
+		// A concrete profile thinking level must survive the model sync: pi's
+		// setModel imperatively applies per-model overrides or the global
+		// default, which would otherwise win over the profile's effort level.
+		const profileThinkingLevel = profile && profile.thinkingLevel !== DEFAULT_SENTINEL
+			? profile.thinkingLevel
+			: undefined;
+		if (targetModel === currentModel) {
+			if (profileThinkingLevel !== undefined && runtime.thinkingLevel !== undefined &&
+					runtime.thinkingLevel !== profileThinkingLevel) {
+				adapter.setThinkingLevel(profileThinkingLevel);
+				return { kind: "context-synchronized", model: currentModel };
+			}
+			return { kind: "unchanged", reason: "context-current" };
+		}
 		if (!(await adapter.setModel(targetModel))) {
 			throw new Error(`No configured authentication for ${targetModel.provider}/${targetModel.id}`);
+		}
+		const afterModel = adapter.getRuntimeState();
+		if (profileThinkingLevel !== undefined && afterModel.thinkingLevel !== undefined &&
+				afterModel.thinkingLevel !== profileThinkingLevel) {
+			adapter.setThinkingLevel(profileThinkingLevel);
 		}
 		return { kind: "context-synchronized", model: targetModel };
 	}

@@ -107,6 +107,7 @@ function createPiModelSelectionLifecycleAdapter(
 			{ mode, persistence },
 		),
 		setModel: (model) => pi.setModel(model),
+		setThinkingLevel: (level) => pi.setThinkingLevel(level),
 		confirmContextReduction: (reduction: ContextReduction) => ctx.ui.confirm(
 			"Context window reduction",
 			`This session uses about ${formatTokenCount(reduction.usageTokens)} tokens, at or above the auto-compact threshold of the ${formatTokenCount(reduction.contextWindow)} window. Apply the selection and compact now?`,

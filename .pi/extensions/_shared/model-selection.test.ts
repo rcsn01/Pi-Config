@@ -53,6 +53,30 @@ describe("selectionModeFromEntries", () => {
 		])).toBe("plan");
 	});
 
+	it("returns plan mode for the current mode-shaped entries", () => {
+		expect(selectionModeFromEntries([
+			{ type: "custom", customType: "plan-mode-state", data: { mode: "plan", revision: 3 } },
+		])).toBe("plan");
+		expect(selectionModeFromEntries([
+			{ type: "custom", customType: "plan-mode-state", data: { mode: "default", revision: 4 } },
+		])).toBe("normal");
+	});
+
+	it("uses the latest plan-mode-state entry across both shapes", () => {
+		expect(selectionModeFromEntries([
+			{ type: "custom", customType: "plan-mode-state", data: { active: true } },
+			{ type: "custom", customType: "plan-mode-state", data: { mode: "default", revision: 2 } },
+		])).toBe("normal");
+		expect(selectionModeFromEntries([
+			{ type: "custom", customType: "plan-mode-state", data: { mode: "plan", revision: 1 } },
+			{ type: "custom", customType: "plan-mode-state", data: { active: false } },
+		])).toBe("normal");
+		expect(selectionModeFromEntries([
+			{ type: "custom", customType: "plan-mode-state", data: { mode: "default", revision: 1 } },
+			{ type: "custom", customType: "plan-mode-state", data: { mode: "plan", revision: 2 } },
+		])).toBe("plan");
+	});
+
 	it("returns normal mode when plan-mode-state is inactive", () => {
 		expect(selectionModeFromEntries([
 			{ type: "custom", customType: "plan-mode-state", data: { active: false } },
@@ -293,6 +317,38 @@ describe("applyModelSelection", () => {
 			id: "gpt-5.6-sol",
 			contextWindow: 131072,
 		}));
+	});
+
+	it("applies an explicit 128K stored context window verbatim", async () => {
+		const harness = createHarness({
+			model: { provider: "ollama", id: "gpt-5.6-sol", contextWindow: 256000 },
+		});
+
+		const result = await applyModelSelection(harness.pi, harness.ctx, {
+			...NORMAL_SELECTION,
+			contextWindow: 128_000,
+		}, {
+			label: "Normal profile",
+		});
+
+		expect(harness.refresh).not.toHaveBeenCalled();
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({ contextWindow: 128_000 }));
+		expect(result.contextWindow).toBe(128_000);
+	});
+
+	it("applies an explicit 128K stored context verbatim through a refreshed catalogue lookup", async () => {
+		const harness = createHarness({
+			model: { provider: "ollama", id: "different-model", contextWindow: 256000 },
+		});
+
+		await applyModelSelection(harness.pi, harness.ctx, {
+			...NORMAL_SELECTION,
+			contextWindow: 128_000,
+		}, {
+			label: "Normal profile",
+		});
+
+		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({ contextWindow: 128_000 }));
 	});
 
 	it("inherits the current window for legacy selections without a context", async () => {
