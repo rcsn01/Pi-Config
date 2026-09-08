@@ -4,7 +4,7 @@
       "normal": {
         "provider": "openai-codex",
         "modelId": "gpt-6-astra",
-        "thinkingLevel": "max",
+        "thinkingLevel": "low",
         "contextWindow": 272000
       },
       "plan": {
