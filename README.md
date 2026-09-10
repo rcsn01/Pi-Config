@@ -18,6 +18,17 @@ pnpm typecheck
 pnpm test
 ```
 
+## Saved prompts
+
+The `config-prompts` extension loads Markdown files from `.pi/extensions/config-prompts/prompts/` and registers each one as `/prompt:<name>`. A file named `name.md` becomes `/prompt:name`; optional YAML `description` frontmatter supplies its autocomplete description. Submit the command to send its prompt to the agent.
+
+This repository includes:
+
+- `/prompt:explore` explores option 1 from the current conversation and asks the agent to write a finalized, detailed implementation plan to the repository-root `plan.md`.
+- `/prompt:evaluate-plan` checks the repository-root `plan.md` against the code, fixes defects and unnecessary architectural complexity, and reports its verification and edits.
+
+Run `/reload` after adding or editing a prompt. Projects linked to this repository's `.pi` directory share these prompts. Prompt filenames may contain lowercase letters, numbers, underscores, and hyphens, and must start with a letter or number. Choose names that do not collide with other `/prompt:` commands.
+
 ## Codex credential slots
 
 The `provider-codex` extension adds named slots for OpenAI Codex OAuth credentials while leaving Pi's canonical `openai-codex` provider unchanged. The active slot is shared by every Pi process that uses the same agent directory.

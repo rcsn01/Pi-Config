@@ -9,9 +9,9 @@
       },
       "plan": {
         "provider": "github-copilot",
-        "modelId": "gpt-5.6-sol",
-        "thinkingLevel": "high",
-        "contextWindow": 272000
+        "modelId": "gpt-6-astra",
+        "thinkingLevel": "low",
+        "contextWindow": 262500
       }
     }
   },

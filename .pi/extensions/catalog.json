@@ -15,6 +15,13 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"config-prompts": {
+			"displayName": "Saved Prompts",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"config-system-prompt": {
 			"displayName": "System Prompt",
 			"pack": "core",

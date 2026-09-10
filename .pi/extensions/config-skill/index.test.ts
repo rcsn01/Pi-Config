@@ -162,10 +162,11 @@ async function materializeCache(git: FakeGit, root: string, skill: TrackedSkill)
 describe("manifest", () => {
 	it("maps every tracked skill path to a unique install basename", () => {
 		const names = listTrackedSkills().map((s) => s.name);
-		expect(names).toHaveLength(21);
-		expect(new Set(names).size).toBe(21);
+		expect(names).toHaveLength(22);
+		expect(new Set(names).size).toBe(22);
 		expect(names).toContain("code-review");
 		expect(names).toContain("unslop");
+		expect(names).toContain("diagram-design");
 		for (const skill of listTrackedSkills()) {
 			expect(skill.name).not.toContain("/");
 		}
@@ -189,7 +190,7 @@ describe("checkAll", () => {
 		const { checks, ok } = await checkAll(git, root, state);
 
 		expect(ok).toBe(true);
-		expect(checks).toHaveLength(21);
+		expect(checks).toHaveLength(22);
 		for (const check of checks) {
 			expect(check.status).toBe("not-installed");
 			expect(check.head).toBe(HEAD);
@@ -434,7 +435,7 @@ describe("runUpdateSkillFlow", () => {
 		const root = tmpRoot();
 		const git = new FakeGit();
 		const state = loadState(stateDirFor(root));
-		const ui = fakeUi(["* Update all (21)", "Cancel"]);
+		const ui = fakeUi(["* Update all (22)", "Cancel"]);
 
 		await runUpdateSkillFlow(git, root, state, ui);
 
@@ -516,7 +517,7 @@ describe("runUpdateSkillFlow", () => {
 		await runUpdateSkillFlow(git, root, state, ui);
 
 		const fetches = git.calls.filter((c) => c.startsWith("fetch"));
-		expect(fetches).toHaveLength(4); // initial (2 sources) + check-now (2 sources)
+		expect(fetches).toHaveLength(6); // initial (3 sources) + check-now (3 sources)
 	});
 
 	it("escaping the menu does nothing", async () => {
@@ -572,7 +573,7 @@ describe("updateSkillExtension", () => {
 		updateSkillExtension(pi);
 		expect(pi.registerCommand).toHaveBeenCalledWith(
 			"update-skill",
-			expect.objectContaining({ description: expect.stringContaining("mattpocock") }),
+			expect.objectContaining({ description: expect.stringContaining("curated upstream skills") }),
 		);
 	});
 

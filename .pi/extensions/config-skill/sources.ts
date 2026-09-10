@@ -53,6 +53,12 @@ export const SOURCES: readonly SkillSource[] = [
 		branch: "main",
 		skills: ["pstack/skills/unslop"],
 	},
+	{
+		id: "diagram-design",
+		url: "https://github.com/cathrynlavery/diagram-design",
+		branch: "main",
+		skills: ["skills/diagram-design"],
+	},
 ];
 
 export interface TrackedSkill {
