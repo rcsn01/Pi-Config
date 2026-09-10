@@ -4,10 +4,9 @@
  * Installs the tracked skills, including `unslop` and `diagram-design`, into
  * `.pi/skills/<name>/`, checks upstream once per day (session start, 24h
  * cooldown, never on every session), notifies when updates exist, and
- * `/update-skill` first offers an upstream check, then drives a menu: pick a
- * skill → see what the update is (commit messages + diff stat + bounded
- * SKILL.md preview) → confirm →
- * apply. Updates are never automatic.
+ * `/update-skill` lists local skills immediately, keeps that list visible
+ * during optional upstream checks, and gives each skill an install or
+ * update/uninstall action menu. Updates are never automatic.
  *
  * Design notes:
  * - Tracking is commit-based per skill path on the source's `main`, mirroring
@@ -43,15 +42,41 @@ import {
 	type UpdateSkillState,
 } from "./state.ts";
 import { listTrackedSkills, type TrackedSkill } from "./sources.ts";
+import { createUpdateSkillUI } from "./ui.ts";
 
 /** Background checks run at most once per 24h per project. */
 const CHECK_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 /** The subset of `ctx.ui` update-skill uses (fully typed, easy to fake). */
+export interface UpdateSkillMenuRefresh {
+	entries: MenuEntry[];
+	status: string;
+}
+
+export interface UpdateSkillActionSelection {
+	action: string | undefined;
+	checkResult?: CheckAllResult;
+}
+
 export interface UpdateSkillUI {
 	select(title: string, options: string[]): Promise<string | undefined>;
 	confirm(title: string, message: string): Promise<boolean>;
 	notify(message: string, type?: "info" | "warning" | "error"): void;
+	/** Fallback progress display for hosts without a persistent selector. */
+	setWidget?(id: string, lines: string[] | undefined): void;
+	/** TUI selector that refreshes its own rows without closing during checks. */
+	selectPersistent?(
+		title: string,
+		entries: MenuEntry[],
+		refresh: () => Promise<UpdateSkillMenuRefresh>,
+	): Promise<string | undefined>;
+	/** Keep a skill action menu mounted while Update or Install checks upstream. */
+	selectActionPersistent?(
+		title: string,
+		options: string[],
+		checkAction: string,
+		check: () => Promise<CheckAllResult>,
+	): Promise<UpdateSkillActionSelection>;
 }
 
 /** Result of one skill's status evaluation. */
@@ -282,6 +307,10 @@ export interface MenuEntry {
 }
 
 const CHECK_NOW_LABEL = "* Check now (fetch upstream)";
+const INSTALL_LABEL = "Install";
+const UPDATE_LABEL = "Update";
+const UNINSTALL_LABEL = "Uninstall";
+const BACK_LABEL = "Back";
 const CANCEL_LABEL = "Cancel";
 
 /** Skills an "Update all" would touch, in apply order: behind (alpha), then not-installed (alpha). */
@@ -343,6 +372,31 @@ export function buildLocalMenu(projectRoot: string): MenuEntry[] {
 	return entries;
 }
 
+function skillActionLabels(installed: boolean): string[] {
+	return installed ? [UPDATE_LABEL, UNINSTALL_LABEL, BACK_LABEL] : [INSTALL_LABEL, BACK_LABEL];
+}
+
+async function checkWithVisibleProgress(
+	git: Git,
+	projectRoot: string,
+	state: UpdateSkillState,
+	ui: UpdateSkillUI,
+	visibleEntries: MenuEntry[],
+	extensionDir: string,
+): Promise<CheckAllResult> {
+	ui.setWidget?.("update-skill", [
+		"update-skill",
+		...visibleEntries.map((entry) => `  ${entry.label}`),
+		"",
+		"Checking upstream...",
+	]);
+	try {
+		return await checkAll(git, projectRoot, state, extensionDir);
+	} finally {
+		ui.setWidget?.("update-skill", undefined);
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Background check (session start)
 // ---------------------------------------------------------------------------
@@ -384,9 +438,9 @@ export async function runBackgroundCheck(
 
 /**
  * The `/update-skill` flow. Shows local installation state without network
- * access, then checks upstream only when requested. After checking, loops on
- * the actionable skill menu so several skills can be updated in one session.
- * `ui` is `ctx.ui` in production, a fake in tests.
+ * access, preserves the visible list while checking upstream, and exposes
+ * install or update/uninstall actions according to local state. `ui` is
+ * `ctx.ui` in production, a fake in tests.
  */
 export async function runUpdateSkillFlow(
 	git: Git,
@@ -395,49 +449,55 @@ export async function runUpdateSkillFlow(
 	ui: UpdateSkillUI,
 	extensionDir: string = projectRoot,
 ): Promise<void> {
-	for (;;) {
-		const entries = buildLocalMenu(projectRoot);
-		const label = await ui.select("update-skill — local skills", entries.map((entry) => entry.label));
-		if (label === undefined) return;
-		const action = findAction(entries, label);
-		if (action === undefined || action.kind === "cancel") return;
-		if (action.kind === "check-now") break;
-		if (action.kind === "skill") {
-			ui.notify(`update-skill: check upstream before installing or updating ${action.name}`, "info");
+	let checks: SkillCheck[] | null = null;
+
+	const refresh = async (
+		visibleEntries: MenuEntry[],
+		showFallbackProgress: boolean,
+	): Promise<CheckAllResult> => {
+		const fresh = showFallbackProgress
+			? await checkWithVisibleProgress(
+				git,
+				projectRoot,
+				state,
+				ui,
+				visibleEntries,
+				extensionDir,
+			)
+			: await checkAll(git, projectRoot, state, extensionDir);
+		if (fresh.ok) {
+			state.lastCheckedAt = new Date().toISOString();
+			saveState(stateDirFor(extensionDir), state);
+		} else {
+			ui.notify("update-skill: upstream check failed — showing last known status", "warning");
 		}
-	}
-
-	const { checks, ok } = await checkAll(git, projectRoot, state, extensionDir);
-	if (ok) {
-		state.lastCheckedAt = new Date().toISOString();
-		saveState(stateDirFor(extensionDir), state);
-	} else {
-		ui.notify("update-skill: upstream check failed — showing last known status", "warning");
-	}
-
-	const byName = new Map(checks.map((c) => [c.skill.name, c]));
+		return fresh;
+	};
 
 	for (;;) {
-		const entries = buildMenu(checks);
-		const label = await ui.select("update-skill — which skill?", entries.map((e) => e.label));
+		const entries: MenuEntry[] = checks === null ? buildLocalMenu(projectRoot) : buildMenu(checks);
+		const title = "update-skill — which skill?";
+		const label = ui.selectPersistent
+			? await ui.selectPersistent(title, entries, async () => {
+				const fresh = await refresh(entries, false);
+				checks = fresh.checks;
+				return {
+					entries: buildMenu(fresh.checks),
+					status: fresh.ok ? "Upstream check complete." : "Check finished with warnings.",
+				};
+			})
+			: await ui.select(title, entries.map((entry) => entry.label));
 		if (label === undefined) return; // escaped
 		const action = findAction(entries, label);
 		if (action === undefined) return;
 
 		if (action.kind === "cancel") return;
 		if (action.kind === "check-now") {
-			const fresh = await checkAll(git, projectRoot, state, extensionDir);
-			if (fresh.ok) {
-				state.lastCheckedAt = new Date().toISOString();
-				saveState(stateDirFor(extensionDir), state);
-			}
-			for (const check of fresh.checks) {
-				const slot = byName.get(check.skill.name);
-				if (slot) Object.assign(slot, check);
-			}
+			checks = (await refresh(entries, true)).checks;
 			continue;
 		}
 		if (action.kind === "update-all") {
+			if (checks === null) continue;
 			const pending = updateAllOrder(checks);
 			const list = pending
 				.map((c) => `  ${c.skill.name} (${statusLabel(c.status, c.commitsBehind)})`)
@@ -449,7 +509,9 @@ export async function runUpdateSkillFlow(
 			if (!okAll) continue;
 			const done: string[] = [];
 			for (const check of pending) {
-				if (await tryApply(git, projectRoot, state, check, ui)) done.push(check.skill.name);
+				if (await tryApply(git, projectRoot, state, check, ui, extensionDir)) {
+					done.push(check.skill.name);
+				}
 			}
 			if (done.length > 0) {
 				ui.notify(`update-skill: ${done.join(", ")} updated`, "info");
@@ -457,59 +519,88 @@ export async function runUpdateSkillFlow(
 			continue;
 		}
 
-		// Single skill.
-		const check = byName.get(action.name);
+		const tracked = listTrackedSkills().find((skill) => skill.name === action.name);
+		if (!tracked) continue;
+		const installed = existsSync(join(skillsDirFor(projectRoot), tracked.name));
+		const actionLabels = skillActionLabels(installed);
+		let skillAction: string | undefined;
+		if (checks === null && ui.selectActionPersistent) {
+			const selection = await ui.selectActionPersistent(
+				`${tracked.name} — action`,
+				actionLabels,
+				installed ? UPDATE_LABEL : INSTALL_LABEL,
+				() => refresh(entries, false),
+			);
+			skillAction = selection.action;
+			if (selection.checkResult) checks = selection.checkResult.checks;
+		} else {
+			skillAction = await ui.select(`${tracked.name} — action`, actionLabels);
+		}
+		if (skillAction === undefined || skillAction === BACK_LABEL) continue;
+
+		if (skillAction === UNINSTALL_LABEL) {
+			const uninstall = await ui.confirm(
+				`Uninstall ${tracked.name}?`,
+				`Delete the local copy at .pi/skills/${tracked.name}/?`,
+			);
+			if (!uninstall) continue;
+			removeSkill(projectRoot, state, tracked, extensionDir);
+			const check = checks?.find((candidate) => candidate.skill.name === tracked.name);
+			if (check) {
+				check.status = "not-installed";
+				check.pinned = null;
+			}
+			ui.notify(`update-skill: uninstalled ${tracked.name}`, "info");
+			continue;
+		}
+
+		if (checks === null) checks = (await refresh(entries, true)).checks;
+		const check = checks.find((candidate) => candidate.skill.name === tracked.name);
 		if (!check) continue;
-		switch (check.status) {
-			case "up-to-date":
-				ui.notify(`update-skill: ${check.skill.name} is already up to date`, "info");
-				continue;
-			case "removed": {
-				const remove = await ui.confirm(
-					`${check.skill.name} was removed upstream`,
-					`Delete the local copy at .pi/skills/${check.skill.name}/?`,
-				);
-				if (remove) {
-					removeSkill(projectRoot, state, check.skill);
-					check.status = "not-installed";
-					check.pinned = null;
-					ui.notify(`update-skill: removed ${check.skill.name}`, "info");
-				}
+
+		if (skillAction === INSTALL_LABEL) {
+			if (check.status === "removed") {
+				ui.notify(`update-skill: ${tracked.name} no longer exists upstream`, "error");
 				continue;
 			}
-			case "not-installed": {
-				const alreadyThere = existsSync(join(skillsDirFor(projectRoot), check.skill.name));
-				const install = await ui.confirm(
-					`Install ${check.skill.name}?`,
-					`Copy ${check.skill.path} from ${check.skill.sourceId} into .pi/skills/${check.skill.name}/${
-						alreadyThere ? " — existing files will be replaced" : ""
-					}`,
-				);
-				if (!install) continue;
-				await tryApply(git, projectRoot, state, check, ui);
+			const install = await ui.confirm(
+				`Install ${tracked.name}?`,
+				`Copy ${tracked.path} from ${tracked.sourceId} into .pi/skills/${tracked.name}/`,
+			);
+			if (install) await tryApply(git, projectRoot, state, check, ui, extensionDir);
+			continue;
+		}
+
+		if (skillAction === UPDATE_LABEL) {
+			if (check.status === "removed") {
+				ui.notify(`update-skill: ${tracked.name} was removed upstream; uninstall it instead`, "warning");
 				continue;
 			}
-			case "behind": {
-				let preview: string;
+			if (check.status === "up-to-date") {
+				ui.notify(`update-skill: ${tracked.name} is already up to date`, "info");
+				continue;
+			}
+			let preview = `Replace the local copy with ${tracked.sourceId}'s latest ${tracked.branch} version.`;
+			if (check.status === "behind") {
 				try {
-					preview = await buildSkillPreview(git, projectRoot, check);
+					preview = await buildSkillPreview(git, projectRoot, check, extensionDir);
 				} catch (error) {
 					ui.notify(
-						`update-skill: could not build the preview for ${check.skill.name} (${String(error)})`,
+						`update-skill: could not build the preview for ${tracked.name} (${String(error)})`,
 						"error",
 					);
 					continue;
 				}
-				const okUpdate = await ui.confirm(
-					`Update ${check.skill.name}? (${check.commitsBehind} commit${
-						check.commitsBehind === 1 ? "" : "s"
-					} behind)`,
-					preview,
-				);
-				if (!okUpdate) continue;
-				await tryApply(git, projectRoot, state, check, ui);
-				continue;
 			}
+			const update = await ui.confirm(
+				`Update ${tracked.name}?${
+					check.status === "behind"
+						? ` (${check.commitsBehind} commit${check.commitsBehind === 1 ? "" : "s"} behind)`
+						: ""
+				}`,
+				preview,
+			);
+			if (update) await tryApply(git, projectRoot, state, check, ui, extensionDir);
 		}
 	}
 }
@@ -525,9 +616,10 @@ async function tryApply(
 	state: UpdateSkillState,
 	check: SkillCheck,
 	ui: UpdateSkillUI,
+	extensionDir: string,
 ): Promise<boolean> {
 	try {
-		const result = await applySkill(git, projectRoot, state, check.skill);
+		const result = await applySkill(git, projectRoot, state, check.skill, extensionDir);
 		check.status = "up-to-date";
 		check.commitsBehind = 0;
 		check.head = result.head;
@@ -607,7 +699,7 @@ export default function updateSkillExtension(
 				gitFactory(),
 				ctx.cwd,
 				loadState(stateDirFor(extensionDir)),
-				ctx.ui,
+				createUpdateSkillUI(ctx),
 				extensionDir,
 			);
 		},
