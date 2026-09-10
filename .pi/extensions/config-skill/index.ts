@@ -4,8 +4,9 @@
  * Installs the tracked skills, including `unslop` and `diagram-design`, into
  * `.pi/skills/<name>/`, checks upstream once per day (session start, 24h
  * cooldown, never on every session), notifies when updates exist, and
- * `/update-skill` drives a menu: pick a skill → see what the update is
- * (commit messages + diff stat + bounded SKILL.md preview) → confirm →
+ * `/update-skill` first offers an upstream check, then drives a menu: pick a
+ * skill → see what the update is (commit messages + diff stat + bounded
+ * SKILL.md preview) → confirm →
  * apply. Updates are never automatic.
  *
  * Design notes:
@@ -309,9 +310,10 @@ export function buildMenu(checks: SkillCheck[]): MenuEntry[] {
 	}
 
 	const sorted = [...checks].sort((a, b) => a.skill.name.localeCompare(b.skill.name));
+	const nameWidth = Math.max(0, ...sorted.map((check) => check.skill.name.length));
 	for (const check of sorted) {
 		entries.push({
-			label: skillMenuLabel(check.skill.name, check.status, check.commitsBehind),
+			label: skillMenuLabel(check.skill.name, check.status, check.commitsBehind, nameWidth),
 			action: { kind: "skill", name: check.skill.name },
 		});
 	}
@@ -323,6 +325,22 @@ export function buildMenu(checks: SkillCheck[]): MenuEntry[] {
 
 export function findAction(entries: MenuEntry[], label: string): MenuAction | undefined {
 	return entries.find((e) => e.label === label)?.action;
+}
+
+/** Build an immediate menu from local installation state without running Git. */
+export function buildLocalMenu(projectRoot: string): MenuEntry[] {
+	const skillsDir = skillsDirFor(projectRoot);
+	const skills = listTrackedSkills().sort((a, b) => a.name.localeCompare(b.name));
+	const nameWidth = Math.max(0, ...skills.map((skill) => skill.name.length));
+	const entries = skills.map((skill): MenuEntry => ({
+		label: `${skill.name.padEnd(nameWidth)}  ${
+			existsSync(join(skillsDir, skill.name)) ? "installed locally" : "not installed"
+		}`,
+		action: { kind: "skill", name: skill.name },
+	}));
+	entries.push({ label: CHECK_NOW_LABEL, action: { kind: "check-now" } });
+	entries.push({ label: CANCEL_LABEL, action: { kind: "cancel" } });
+	return entries;
 }
 
 // ---------------------------------------------------------------------------
@@ -365,8 +383,10 @@ export async function runBackgroundCheck(
 // ---------------------------------------------------------------------------
 
 /**
- * The `/update-skill` flow. Loops on the menu so several skills can be
- * updated in one session. `ui` is `ctx.ui` in production, a fake in tests.
+ * The `/update-skill` flow. Shows local installation state without network
+ * access, then checks upstream only when requested. After checking, loops on
+ * the actionable skill menu so several skills can be updated in one session.
+ * `ui` is `ctx.ui` in production, a fake in tests.
  */
 export async function runUpdateSkillFlow(
 	git: Git,
@@ -375,6 +395,18 @@ export async function runUpdateSkillFlow(
 	ui: UpdateSkillUI,
 	extensionDir: string = projectRoot,
 ): Promise<void> {
+	for (;;) {
+		const entries = buildLocalMenu(projectRoot);
+		const label = await ui.select("update-skill — local skills", entries.map((entry) => entry.label));
+		if (label === undefined) return;
+		const action = findAction(entries, label);
+		if (action === undefined || action.kind === "cancel") return;
+		if (action.kind === "check-now") break;
+		if (action.kind === "skill") {
+			ui.notify(`update-skill: check upstream before installing or updating ${action.name}`, "info");
+		}
+	}
+
 	const { checks, ok } = await checkAll(git, projectRoot, state, extensionDir);
 	if (ok) {
 		state.lastCheckedAt = new Date().toISOString();

@@ -7,6 +7,7 @@ import { skillMenuLabel } from "./diff.ts";
 import { GitError, type Git } from "./git.ts";
 import {
 	applySkill,
+	buildLocalMenu,
 	buildMenu,
 	buildSkillPreview,
 	cacheDirFor,
@@ -25,6 +26,15 @@ import { listTrackedSkills, installDirFor, type TrackedSkill } from "./sources.t
 import { loadState, saveState, getPinned, type UpdateSkillState } from "./state.ts";
 
 const HEAD = "abcdef0123456789";
+const TRACKED_NAME_WIDTH = Math.max(...listTrackedSkills().map((skill) => skill.name.length));
+
+function trackedLabel(name: string, status: SkillCheck["status"], behind = 0): string {
+	return skillMenuLabel(name, status, behind, TRACKED_NAME_WIDTH);
+}
+
+function localLabel(name: string, status: "installed locally" | "not installed"): string {
+	return `${name.padEnd(TRACKED_NAME_WIDTH)}  ${status}`;
+}
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -392,8 +402,8 @@ describe("buildMenu / updateAllOrder", () => {
 		const menu = buildMenu(checks);
 		expect(menu.map((e) => e.label)).toEqual([
 			"* Update all (1)",
-			"alpha — 2 commits behind",
-			"done — up to date",
+			"alpha  2 commits behind",
+			"done   up to date",
 			"* Check now (fetch upstream)",
 			"Cancel",
 		]);
@@ -402,6 +412,22 @@ describe("buildMenu / updateAllOrder", () => {
 	it("no Update all entry when nothing is pending", () => {
 		const entries = buildMenu([check("done", "up-to-date")]);
 		expect(entries.some((e) => e.action.kind === "update-all")).toBe(false);
+	});
+
+	it("local menu lists every skill without requiring upstream status", () => {
+		const root = tmpRoot();
+		installOnDisk(root, "code-review");
+
+		const labels = buildLocalMenu(root).map((entry) => entry.label);
+
+		expect(labels).toContain(localLabel("code-review", "installed locally"));
+		expect(labels).toContain(localLabel("diagram-design", "not installed"));
+		const statusColumns = labels.slice(0, -2).map((label) =>
+			label.indexOf(label.endsWith("installed locally") ? "installed locally" : "not installed"),
+		);
+		expect(new Set(statusColumns).size).toBe(1);
+		expect(labels.at(-2)).toBe("* Check now (fetch upstream)");
+		expect(labels.at(-1)).toBe("Cancel");
 	});
 });
 
@@ -435,7 +461,7 @@ describe("runUpdateSkillFlow", () => {
 		const root = tmpRoot();
 		const git = new FakeGit();
 		const state = loadState(stateDirFor(root));
-		const ui = fakeUi(["* Update all (22)", "Cancel"]);
+		const ui = fakeUi(["* Check now (fetch upstream)", "* Update all (22)", "Cancel"]);
 
 		await runUpdateSkillFlow(git, root, state, ui);
 
@@ -444,8 +470,8 @@ describe("runUpdateSkillFlow", () => {
 			expect(getPinned(state, skill.name)).toBe(HEAD);
 		}
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("updated"), "info");
-		// The menu after the update has no pending entry; Cancel ends the loop.
-		expect(ui.select).toHaveBeenCalledTimes(2);
+		// Initial check prompt, update menu, then Cancel after the update.
+		expect(ui.select).toHaveBeenCalledTimes(3);
 	});
 
 	it("single behind skill: preview confirm then update", async () => {
@@ -457,8 +483,8 @@ describe("runUpdateSkillFlow", () => {
 		git.repo(cacheDirFor(root, "mattpocock")).behind.set("skills/engineering/code-review", 3);
 
 		const { checks } = await checkAll(git, root, state);
-		const label = skillMenuLabel("code-review", findCheck(checks, "code-review").status, 3);
-		const ui = fakeUi([label, "Cancel"]);
+		const label = trackedLabel("code-review", findCheck(checks, "code-review").status, 3);
+		const ui = fakeUi(["* Check now (fetch upstream)", label, "Cancel"]);
 
 		await runUpdateSkillFlow(git, root, state, ui);
 
@@ -477,13 +503,13 @@ describe("runUpdateSkillFlow", () => {
 		const root = tmpRoot();
 		const git = new FakeGit();
 		const state = loadState(stateDirFor(root));
-		const label = "unslop — not installed";
+		const label = trackedLabel("unslop", "not-installed");
 
-		const cancelled = fakeUi([label, "Cancel"], false);
+		const cancelled = fakeUi(["* Check now (fetch upstream)", label, "Cancel"], false);
 		await runUpdateSkillFlow(git, root, state, cancelled);
 		expect(existsSync(join(skillsDirFor(root), "unslop"))).toBe(false);
 
-		const ui = fakeUi([label, "Cancel"], true);
+		const ui = fakeUi(["* Check now (fetch upstream)", label, "Cancel"], true);
 		await runUpdateSkillFlow(git, root, state, ui);
 		expect(existsSync(join(skillsDirFor(root), "unslop", "SKILL.md"))).toBe(true);
 		expect(ui.notify).toHaveBeenCalledWith("update-skill: installed unslop", "info");
@@ -498,8 +524,8 @@ describe("runUpdateSkillFlow", () => {
 		git.removed.add("pstack/skills/unslop");
 
 		const { checks } = await checkAll(git, root, state);
-		const label = skillMenuLabel("unslop", findCheck(checks, "unslop").status, 0);
-		const ui = fakeUi([label, "Cancel"]);
+		const label = trackedLabel("unslop", findCheck(checks, "unslop").status);
+		const ui = fakeUi(["* Check now (fetch upstream)", label, "Cancel"]);
 
 		await runUpdateSkillFlow(git, root, state, ui);
 
@@ -512,24 +538,39 @@ describe("runUpdateSkillFlow", () => {
 		const root = tmpRoot();
 		const git = new FakeGit();
 		const state = loadState(stateDirFor(root));
-		const ui = fakeUi(["* Check now (fetch upstream)", "Cancel"]);
+		const ui = fakeUi([
+			"* Check now (fetch upstream)",
+			"* Check now (fetch upstream)",
+			"Cancel",
+		]);
 
 		await runUpdateSkillFlow(git, root, state, ui);
 
 		const fetches = git.calls.filter((c) => c.startsWith("fetch"));
-		expect(fetches).toHaveLength(6); // initial (3 sources) + check-now (3 sources)
+		expect(fetches).toHaveLength(6); // requested initial check + requested refresh
 	});
 
-	it("escaping the menu does nothing", async () => {
+	it("canceling or escaping the initial menu does not fetch upstream", async () => {
 		const root = tmpRoot();
 		const git = new FakeGit();
 		const state = loadState(stateDirFor(root));
-		const ui = fakeUi([undefined]);
+		const cancelled = fakeUi(["Cancel"]);
+		const escaped = fakeUi([undefined]);
 
-		await runUpdateSkillFlow(git, root, state, ui);
+		await runUpdateSkillFlow(git, root, state, cancelled);
+		await runUpdateSkillFlow(git, root, state, escaped);
 
-		expect(ui.confirm).not.toHaveBeenCalled();
-		expect(ui.notify).not.toHaveBeenCalled();
+		const initialOptions = (cancelled.select as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string[];
+		expect(cancelled.select).toHaveBeenCalledWith("update-skill — local skills", initialOptions);
+		expect(initialOptions).toContain(localLabel("code-review", "not installed"));
+		expect(initialOptions).toContain(localLabel("diagram-design", "not installed"));
+		expect(initialOptions.at(-2)).toBe("* Check now (fetch upstream)");
+		expect(initialOptions.at(-1)).toBe("Cancel");
+		expect(git.calls.some((call) => call.startsWith("fetch"))).toBe(false);
+		expect(cancelled.confirm).not.toHaveBeenCalled();
+		expect(cancelled.notify).not.toHaveBeenCalled();
+		expect(escaped.confirm).not.toHaveBeenCalled();
+		expect(escaped.notify).not.toHaveBeenCalled();
 	});
 
 	it("apply failures notify an error and keep the menu loop alive", async () => {
@@ -537,7 +578,7 @@ describe("runUpdateSkillFlow", () => {
 		const git = new FakeGit();
 		git.checkoutThrows = true;
 		const state = loadState(stateDirFor(root));
-		const ui = fakeUi(["unslop — not installed", "Cancel"]);
+		const ui = fakeUi(["* Check now (fetch upstream)", trackedLabel("unslop", "not-installed"), "Cancel"]);
 
 		await runUpdateSkillFlow(git, root, state, ui);
 
@@ -547,7 +588,7 @@ describe("runUpdateSkillFlow", () => {
 			"error",
 		);
 		expect(existsSync(join(skillsDirFor(root), "unslop"))).toBe(false);
-		expect(ui.select).toHaveBeenCalledTimes(2); // menu again after the error
+		expect(ui.select).toHaveBeenCalledTimes(3); // initial check, skill menu, then menu again after the error
 	});
 });
 

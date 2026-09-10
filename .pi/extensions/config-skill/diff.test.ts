@@ -66,9 +66,10 @@ describe("statusLabel / skillMenuLabel", () => {
 		expect(statusLabel("behind", 4)).toBe("4 commits behind");
 	});
 
-	it("menu labels combine name and status", () => {
-		expect(skillMenuLabel("tdd", "behind", 2)).toBe("tdd — 2 commits behind");
-		expect(skillMenuLabel("unslop", "up-to-date", 0)).toBe("unslop — up to date");
+	it("menu labels combine name and status in an aligned column", () => {
+		expect(skillMenuLabel("tdd", "behind", 2)).toBe("tdd  2 commits behind");
+		expect(skillMenuLabel("unslop", "up-to-date", 0)).toBe("unslop  up to date");
+		expect(skillMenuLabel("tdd", "behind", 2, 6)).toBe("tdd     2 commits behind");
 	});
 });
 

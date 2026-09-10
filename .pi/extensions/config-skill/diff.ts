@@ -57,9 +57,14 @@ export function statusLabel(status: SkillStatus, commitsBehind: number): string 
 	}
 }
 
-/** Menu label for a skill, e.g. `code-review — 2 commits behind`. */
-export function skillMenuLabel(name: string, status: SkillStatus, commitsBehind: number): string {
-	return `${name} — ${statusLabel(status, commitsBehind)}`;
+/** Menu label with status aligned to `nameWidth`, e.g. `tdd          2 commits behind`. */
+export function skillMenuLabel(
+	name: string,
+	status: SkillStatus,
+	commitsBehind: number,
+	nameWidth: number = name.length,
+): string {
+	return `${name.padEnd(nameWidth)}  ${statusLabel(status, commitsBehind)}`;
 }
 
 const PREVIEW_MAX_LINES = 30;
