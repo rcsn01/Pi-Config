@@ -3,9 +3,9 @@
  *
  * Every operation is a single `git` invocation through the shared git
  * executor (`_shared/git.ts`), against a private cache clone per source
- * under `.pi/update-skill/cache/<sourceId>/`. Clones are full (mattpocock is
- * small, cursor/plugins ~5.5 MB) so `git log <pinned>..origin/main -- <path>`
- * and diffs against old pinned commits always work without shallow-boundary
+ * under `.pi/update-skill/cache/<sourceId>/`. Clones are full so
+ * `git log <pinned>..origin/main -- <path>` and diffs against old pinned
+ * commits always work without shallow-boundary
  * surprises.
  *
  * The `Git` interface is the seam tests fake: the menu/apply logic in

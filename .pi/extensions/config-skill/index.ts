@@ -1,7 +1,7 @@
 /**
- * update-skill — manage the mattpocock + pstack skills from this repo.
+ * update-skill — manage the curated upstream skills used by this repo.
  *
- * Installs the 20 tracked mattpocock skills and `unslop` into
+ * Installs the tracked skills, including `unslop` and `diagram-design`, into
  * `.pi/skills/<name>/`, checks upstream once per day (session start, 24h
  * cooldown, never on every session), notifies when updates exist, and
  * `/update-skill` drives a menu: pick a skill → see what the update is
@@ -569,7 +569,7 @@ export default function updateSkillExtension(
 	});
 
 	pi.registerCommand("update-skill", {
-		description: "Check and update the mattpocock + pstack skills installed from this repo",
+		description: "Check and update the curated upstream skills installed from this repo",
 		handler: async (_args, ctx) => {
 			await runUpdateSkillFlow(
 				gitFactory(),
