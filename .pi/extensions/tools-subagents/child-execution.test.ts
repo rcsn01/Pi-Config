@@ -51,6 +51,7 @@ describe("Subagent child execution", () => {
 			"--model", "openai/test-model", "--thinking", "minimal", "Task: Inspect code",
 		]));
 		expect(args.some((value) => value.endsWith("tools/safe-bash.ts"))).toBe(true);
+		expect(args.filter((value) => value.endsWith("session-compaction/index.ts"))).toHaveLength(1);
 		expect(options.cwd).toBe("/workspace");
 		expect(result).toMatchObject({ output: "Finished", exitCode: 0, progress: { status: "completed" } });
 		expect(progress[0]).toMatchObject({ type: "started" });
@@ -134,6 +135,7 @@ describe("Subagent child execution", () => {
 		expect(args).not.toContain("--no-tools");
 		expect(args.filter((value) => value.endsWith("tools-web-search/index.ts"))).toHaveLength(1);
 		expect(args.filter((value) => value.endsWith("tools-web-fetch/index.ts"))).toHaveLength(1);
+		expect(args.filter((value) => value.endsWith("session-compaction/index.ts"))).toHaveLength(1);
 		spawn.processes[0].emit("close", 0);
 		await promise;
 	});
