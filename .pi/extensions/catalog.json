@@ -29,6 +29,13 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"provider-headroom": {
+			"displayName": "Headroom Tool Output Reduction",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"config-personality": {
 			"displayName": "Personality",
 			"pack": "extras",

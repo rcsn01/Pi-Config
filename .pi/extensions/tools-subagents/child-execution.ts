@@ -22,6 +22,9 @@ const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const TOOLS_DIR = path.join(EXT_DIR, "tools");
 export const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
 export const EXT_BASE = path.dirname(EXT_DIR);
+export const CHILD_RUNTIME_EXTENSIONS = [
+	path.join(EXT_BASE, "session-compaction", "index.ts"),
+] as const;
 export const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 	ddg_search: path.join(EXT_BASE, "tools-web-search", "index.ts"),
 	ddg_fetch: path.join(EXT_BASE, "tools-web-fetch", "index.ts"),
@@ -89,7 +92,7 @@ async function buildPiArgs(
 		if (sessionId) args.push("--session-id", sessionId);
 
 		const enabledTools: string[] = [];
-		const extensionPaths = new Set<string>();
+		const extensionPaths = new Set<string>(CHILD_RUNTIME_EXTENSIONS);
 		for (const tool of agent.tools) {
 			if (BUILTIN_TOOLS.has(tool)) {
 				enabledTools.push(tool);

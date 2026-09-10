@@ -192,7 +192,7 @@ Children are started with:
 
 `--model` selects the model used by that child. `--thinking` applies the configured thinking level; it is omitted for Pi-default behavior. Pi's separate `--models` option only scopes the catalogue used for model cycling; it does not select the child model.
 
-Child processes use `--no-extensions` and then load only the extensions required by the agent's declared tools. A provider that exists only in an extension not loaded by the child is therefore unavailable even if it appears in the main session.
+Child processes use `--no-extensions`, explicitly load the shared `session-compaction` extension, and then load only the extensions required by the agent's declared tools. This gives ephemeral children the same 80% compaction threshold and overflow recovery as the main session without enabling unrelated extension discovery. A provider that exists only in an extension not loaded by the child is still unavailable even if it appears in the main session.
 
 ## UI
 
