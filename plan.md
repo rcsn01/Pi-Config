@@ -2,7 +2,7 @@
 
 ## Status
 
-Ready for implementation. This plan records the finalized design for architecture-review candidate 1.
+Implemented. This plan records the finalized design for architecture-review candidate 1.
 
 ## Goal
 
@@ -54,7 +54,8 @@ Included:
 - Reuse the same historical projection for normal `context` events and custom compaction.
 - Preserve all current environment variables, defaults, tool policy, metadata keys, marker syntax, and reduction rules.
 - Keep retention fail-open at each Pi adapter call. A failed fresh rewrite leaves the result unchanged; a failed historical projection leaves the request or compaction input unchanged. Do not add per-block exception handling inside deterministic policy code, because it would hide programming defects without covering a current failure mode.
-- Add explicit Session and active-branch lifecycle plus cross-extension registration.
+- Add explicit Session and active-branch lifecycle plus cross-extension registration. Rebuilding on `session_tree` preserves the current retrieve-time hydration of the selected branch and intentionally stops stale originals from an abandoned branch remaining retrievable.
+- Make the existing "exact duplicate" contract literal by checking full text after the 96-bit digest lookup. This changes only the collision case.
 - Add Subagent regression coverage at the generic tool-result seam.
 
 Excluded:
@@ -98,7 +99,7 @@ Target files:
 .pi/extensions/_shared/cache-aware-compaction.test.ts
 ```
 
-This avoids a dependency from `_shared/` back into one extension. The shared registry knows the interface, not the implementation. `provider-headroom/tool-output-retention.ts` may import `reducer.ts`; custom compaction may not.
+This avoids a dependency from `_shared/` back into one extension. The shared registry knows the interface, not the implementation. `provider-headroom/tool-output-retention.ts` imports `reducer.ts`; custom compaction does not.
 
 ### 4. Cross-extension discovery
 
@@ -219,7 +220,7 @@ Use one adapter helper for both `session_start` and `session_tree`. It must:
    - a configuration resolver that preserves current environment behavior;
    - the guarded Session host;
    - the current branch for initial hydration.
-4. Hydrate `provider-headroom-ccr` custom entries and `__headroom_ccr` entries from tool-result details using the current format exactly: version `1`; a lowercase 24-hex-character hash; string `original`, `toolName`, and `strategy`; and numeric `omitted`, `createdAt`, and `blockIndex`. Preserve the current acceptance of any numeric value and extra object fields. Do not start recomputing hashes or tightening numeric ranges in this refactor.
+4. Hydrate `provider-headroom-ccr` custom entries and `__headroom_ccr` entries from every branch message entry's `details`, without filtering by message role, in branch and metadata-array order, so the last accepted record for a repeated hash remains the stored value. Use the current format exactly: version `1`; a lowercase 24-hex-character hash; string `original`, `toolName`, and `strategy`; and numeric `omitted`, `createdAt`, and `blockIndex`. Preserve the current acceptance of any numeric value and extra object fields. Do not recompute hashes or tighten numeric ranges in this refactor.
 5. Ignore records that fail that shape or use an unknown version.
 6. Activate `headroom_retrieve` only if Headroom is enabled, CCR is enabled, and the hydrated store contains at least one accepted entry. Otherwise remove it while preserving the order of every unrelated active tool.
 7. Register the module.
@@ -251,7 +252,7 @@ Historical `context` path:
 
 - Project messages without rewriting old Session message entries.
 - When a previously unprocessed historical result gets a lossy CCR marker, append one `provider-headroom-ccr` custom entry through the Session host.
-- Mark a hash persisted before or atomically with the append attempt according to current best-effort semantics, so repeated provider requests do not flood the Session with duplicate custom entries.
+- Mark a hash persisted before calling `appendEntry`, matching current best-effort semantics. A failed append is not retried until a new module is hydrated, so repeated requests in one branch do not flood the Session.
 - Keep the current rule that persistence failure does not fail the provider request.
 
 Custom compaction path:
@@ -283,10 +284,10 @@ For each fresh text block:
 4. Preserve the exact current taxonomy: normalized `read`, `write`, `edit`, `websearch`, `webfetch`, `web_search`, `web_fetch`, and `headroom_retrieve`; names matched by the current read-like regex; `grep`, `find`, and `ls` as lossless-only; normalized `bash` and `powershell` policy for commands matched by the current `cat|head|tail|nl|less|more|sed -n` regex, including its optional `cd ... &&` prefix; source-like shell output; and errors of at most 4,000 characters. Do not broaden shell parsing during this refactor. Preserve the fresh-marker asymmetry: only exact lowercase built-in names receive `__headroom_protected`; an uppercase custom tool name such as `BASH` gets protected by policy but does not receive that details marker.
 5. Run `reduceToolOutput` with the current limits and latest user query.
 6. Pass through when no candidate is smaller.
-7. For lossy output with CCR enabled, create and store the original, then decorate the result with the current marker.
-8. If marker overhead removes the saving, fall back to the smaller safe lossless result or the original.
-9. Add CCR metadata without altering unrelated details.
-10. Activate retrieval only after an owned CCR entry exists.
+7. For lossy output with CCR enabled, create a candidate entry and decorate the result with the current marker, but do not store or persist it yet.
+8. If marker overhead removes the saving, discard that candidate entry and fall back to the smaller safe lossless result or the original.
+9. Only after the decorated result passes the size check, store the CCR entry and add metadata without altering unrelated details. Historical projection then marks and appends that entry through the host; fresh rewriting relies only on tool-result metadata.
+10. Activate retrieval only after an accepted CCR entry is in the module's store.
 
 For historical projection:
 
@@ -300,14 +301,14 @@ For historical projection:
 8. Run cross-turn deduplication after per-block reduction.
 9. Record an earliest-copy dedupe anchor only when that complete text block remained unchanged during per-block projection.
 10. Replace a later projected text block when it exactly matches an anchor, is a single text block, meets `dedupeMinChars`, has no pre-existing CCR metadata for block `0`, has no Headroom marker, and is neither protected nor lossless-only. The later block need not have remained unchanged: current code may losslessly rewrite it and then dedupe it against an unchanged earlier anchor. The current code keys only by a 96-bit truncated SHA-256 digest even though its contract says exact. Store the anchor text with the digest and compare the text before replacement; this collision check is an intentional safety fix, not a policy expansion.
-11. Preserve message count, order, role, ids, timestamps, usage, error state, non-text blocks, and unrelated details.
-12. Return the original message array on a no-op when type constraints permit. Otherwise return an equivalent shallow copy and use `changed` as the authoritative signal.
+11. Preserve message count, order, roles, timestamps, and every untouched message field. For tool results this includes `toolCallId`, `toolName`, `usage`, `addedToolNames`, `isError`, unrelated details, image blocks, and unchanged text-block fields.
+12. Return the original message array on a no-op. The verified common message type makes this possible; `changed` remains the authoritative adapter signal.
 
 ### 10. Failure semantics
 
 Recommended decision: fail open at adapter calls. The deterministic module itself should not catch and suppress its own programming errors.
 
-- Invalid configuration values use the current defaults.
+- Invalid positive-integer environment values use the current defaults. Boolean and mode environment values retain the exact permissive rules above; typed extension option values are not newly validated.
 - Invalid branch entries and metadata are ignored.
 - Branch access failure starts with an empty CCR store.
 - The `tool_result` adapter catches an unexpected `rewriteFresh` exception and returns no patch.
@@ -374,7 +375,7 @@ Create `.pi/extensions/_shared/tool-output-retention.ts`.
 
 Implementation tasks:
 
-1. Define the three-method `ToolOutputRetention` interface and the smallest structural input/output types.
+1. Define the three-method `ToolOutputRetention` interface using the verified `SessionContext`, `TextContent`, and `ImageContent`-derived types above.
 2. Add the versioned `globalThis` registry.
 3. Implement replacement registration with identity-safe unregister.
 4. Implement retrieval of the active module.
@@ -401,17 +402,17 @@ Create `.pi/extensions/provider-headroom/tool-output-retention.ts`.
 
 Move these responsibilities from `index.ts` into the new module:
 
-- all default constants and tool-policy sets;
-- `HeadroomConfig` and environment parsing;
+- all default constants and tool-policy sets; export the four existing compatibility constants from this module and re-export them from `index.ts`;
+- `HeadroomConfig`, the exported `HeadroomExtensionOptions`, and environment parsing;
 - option resolution;
 - `isRecord` where it is retention-specific;
-- hash generation;
+- hash generation as the first 24 lowercase hex characters of SHA-256 over the original UTF-8 text, plus direct `Date.now()` capture for the existing `createdAt` field;
 - content text extraction used by projection;
 - latest user query extraction from message lists: scan backward for the latest non-empty `user` text, join array text blocks with `\n`, ignore other roles and non-text blocks, and keep the final 8,000 UTF-16 code units;
 - stored CCR entry and metadata validation;
 - metadata extraction and additive metadata/protection helpers;
 - `CcrStore` and persisted-hash tracking;
-- hydration from the active Session branch's custom entries and tool-result message details;
+- hydration from the active Session branch's custom entries and every message entry's details, without a role filter;
 - `isReadCommand`, `isReadLikeTool`, and `toolPolicy`;
 - JSON marker insertion and loss descriptions;
 - marker decoration and no-expansion fallback;
@@ -431,7 +432,7 @@ Keep these in `reducer.ts`:
 - reduction result construction;
 - Headroom marker recognition.
 
-Do not split the new module further during this refactor. The deletion test should show that removing it would force policy, CCR, and ordering back into both adapters.
+Do not split the new module further during this refactor. The deletion test must show that removing it would force policy, CCR, and ordering back into both adapters.
 
 ### Phase 3: test the module through its interface
 
@@ -481,15 +482,16 @@ Test categories:
 
 #### Historical projection
 
-- valid message metadata hydrates retrieval;
-- valid custom entries hydrate retrieval;
+- accepted message metadata hydrates retrieval for both `toolResult` and non-`toolResult` roles, preserving constructor hydration's current role-agnostic scan;
+- accepted custom entries hydrate retrieval;
+- hydration follows branch and metadata-array order, with the last accepted repeated hash winning while any accepted custom entry marks that hash persisted;
 - malformed entries and unknown versions are ignored, while accepted numeric fields and extra fields retain the current permissive validation;
 - old eligible output is projected without mutating the input message;
 - new historical CCR originals append once per hash;
 - append failure remains fail-open;
 - protected metadata survives repeated projection;
 - repeated projection is idempotent;
-- message order, roles, timestamps, ids, usage, error state, and non-text blocks remain unchanged.
+- message order, roles, timestamps, and all untouched fields remain unchanged, including tool-result `toolCallId`, `toolName`, `usage`, `addedToolNames`, `isError`, unrelated details, image blocks, and unchanged text-block fields.
 
 #### Deduplication
 
@@ -529,8 +531,7 @@ Refactor `.pi/extensions/provider-headroom/index.ts`.
 
 Keep only:
 
-- exported compatibility constants used by tests or other modules;
-- the existing exported `HeadroomExtensionOptions` and four compatibility constants;
+- the existing exported `HeadroomExtensionOptions` and four compatibility constants, re-exported from the implementation module;
 - latest-user-query extraction from `ctx.sessionManager.buildContextEntries()` for a fresh result;
 - the guarded Session host implementation;
 - retrieval tool registration and Pi result formatting;
@@ -684,7 +685,7 @@ No ADR is required. The plan does not contradict an existing ADR, and this check
 - Tool policy, fresh rewriting, historical projection, dedupe, CCR state, and retrieval have locality in one deep module.
 - The external interface has exactly three behavioral operations.
 - Custom compaction depends only on the shared interface and registry, never on Provider Headroom implementation files.
-- Disabling Provider Headroom leaves custom compaction behavior unchanged.
+- Moving the Provider Headroom extension to `extensions-disabled/` leaves custom compaction behavior unchanged; `PI_HEADROOM_ENABLED=0` leaves a registered no-op module.
 - The registry follows Session start, active-branch changes, and shutdown through explicit registration and identity-safe cleanup.
 
 ### Behavior
@@ -726,7 +727,7 @@ pnpm test
 Why this order:
 
 1. Registry failures are cheapest to diagnose first.
-2. The deep module contract should pass before Pi adapters.
+2. The deep module contract runs before Pi adapters so failures stay localized.
 3. Provider Headroom tests verify behavior parity.
 4. Compaction tests verify the new caller.
 5. Shared and Subagent suites catch registry and opaque-details regressions.

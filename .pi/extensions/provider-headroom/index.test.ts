@@ -1,36 +1,44 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ToolResultMessage } from "@earendil-works/pi-ai";
+import {
+	clearToolOutputRetention,
+	getToolOutputRetention,
+} from "../_shared/tool-output-retention.ts";
 import {
 	CCR_ENTRY_TYPE,
-	CCR_METADATA_KEY,
 	RETRIEVE_TOOL_NAME,
 	createHeadroomExtension,
 } from "./index.ts";
 
 type Handler = (...args: any[]) => Promise<any> | any;
 
-interface TestHarness {
-	pi: ExtensionAPI;
-	handlers: Map<string, Handler>;
-	tools: Map<string, any>;
-	active: string[];
-	appended: Array<{ type: string; data: unknown }>;
+function storedEntry(original: string, hash = "abcdefabcdefabcdefabcdef") {
+	return {
+		version: 1,
+		hash,
+		original,
+		toolName: "bash",
+		strategy: "log_sample",
+		omitted: 10,
+		createdAt: 1,
+		blockIndex: 0,
+	};
 }
 
-function makeHarness(branch: unknown[] = []): TestHarness {
+function makeHarness(initialBranch: unknown[] = []) {
 	const handlers = new Map<string, Handler>();
 	const tools = new Map<string, any>();
-	let active = ["bash"];
 	const appended: Array<{ type: string; data: unknown }> = [];
+	let active = ["second", "bash", "first"];
+	let branch = initialBranch;
 	const sessionManager = {
-		getBranch: () => branch,
-		buildContextEntries: () => branch,
+		getBranch: vi.fn(() => branch),
+		buildContextEntries: vi.fn(() => branch),
 	};
 	const pi = {
 		on: vi.fn((event: string, handler: Handler) => handlers.set(event, handler)),
 		registerTool: vi.fn((definition: any) => tools.set(definition.name, definition)),
-		getActiveTools: vi.fn(() => active),
+		getActiveTools: vi.fn(() => [...active]),
 		setActiveTools: vi.fn((names: string[]) => {
 			active = [...names];
 		}),
@@ -39,267 +47,161 @@ function makeHarness(branch: unknown[] = []): TestHarness {
 			return `entry-${appended.length}`;
 		}),
 	} as unknown as ExtensionAPI;
-
+	const ctx = { sessionManager };
 	return {
 		pi,
+		ctx,
 		handlers,
 		tools,
-		get active() {
-			return active;
-		},
 		appended,
+		setBranch(next: unknown[]) { branch = next; },
+		get active() { return active; },
 	};
 }
 
-function sessionContext(branch: unknown[] = []) {
-	return {
-		sessionManager: {
-			getBranch: () => branch,
-			buildContextEntries: () => branch,
-		},
-	};
-}
-
-function largeLog(count: number): string {
+function largeLog(count = 24): string {
 	return Array.from({ length: count }, (_item, index) =>
-		index === Math.floor(count / 2)
-			? `2026-01-01T00:${String(index).padStart(2, "0")} ERROR database timeout`
-			: `2026-01-01T00:${String(index).padStart(2, "0")} INFO ordinary progress record ${index}`,
+		index === 12 ? `2026-01-01T00:12 ERROR database timeout` : `2026-01-01T00:${String(index).padStart(2, "0")} INFO progress ${index}`,
 	).join("\n");
 }
 
-describe("provider-headroom extension", () => {
-	it("rewrites fresh lossy results, persists CCR metadata, and exposes retrieval", async () => {
+afterEach(clearToolOutputRetention);
+
+describe("provider-headroom adapter", () => {
+	it("registers its tool and five lifecycle adapters", () => {
 		const harness = makeHarness();
-		createHeadroomExtension({ minChars: 100, maxLines: 6 })(harness.pi);
-		const handler = harness.handlers.get("tool_result")!;
-		const original = largeLog(24);
-
-		const result = await handler(
-			{
-				type: "tool_result",
-				toolCallId: "call-1",
-				toolName: "bash",
-				input: { command: "npm test" },
-				content: [{ type: "text", text: original }],
-				isError: false,
-				details: { truncation: { truncated: false } },
-			},
-			sessionContext(),
-		);
-
-		expect(result.content[0].text).toContain("Retrieve original: hash=");
-		expect(result.content[0].text.length).toBeLessThan(original.length);
-		const metadata = result.details[CCR_METADATA_KEY];
-		expect(metadata.entries).toHaveLength(1);
-		expect(metadata.entries[0].original).toBe(original);
-		expect(harness.active).toContain(RETRIEVE_TOOL_NAME);
-
-		const retrieved = await harness.tools.get(RETRIEVE_TOOL_NAME).execute(
-			"retrieve-1",
-			{ hash: metadata.entries[0].hash },
-			undefined,
-			undefined,
-			sessionContext(),
-		);
-		expect(retrieved.content).toEqual([{ type: "text", text: original }]);
+		createHeadroomExtension()(harness.pi);
+		expect([...harness.tools]).toEqual([[RETRIEVE_TOOL_NAME, expect.any(Object)]]);
+		expect([...harness.handlers.keys()]).toEqual([
+			"session_start",
+			"session_tree",
+			"session_shutdown",
+			"tool_result",
+			"context",
+		]);
 	});
 
-	it("leaves exact read results untouched", async () => {
+	it("fails open before session start and formats a missing retrieval", async () => {
 		const harness = makeHarness();
-		createHeadroomExtension({ minChars: 50, maxLines: 2 })(harness.pi);
-		const original = [
-			"export function one() { return 1; }",
-			"export function two() { return 2; }",
-			"export function three() { return 3; }",
-		].join("\n");
-
-		const result = await harness.handlers.get("tool_result")!(
-			{
-				type: "tool_result",
-				toolCallId: "call-read",
-				toolName: "read",
-				input: { path: "src/example.ts" },
-				content: [{ type: "text", text: original }],
-				isError: false,
-				details: undefined,
-			},
-			sessionContext(),
-		);
-
-		expect(result).toBeUndefined();
-		const contextResult = await harness.handlers.get("context")!(
-			{
-				type: "context",
-				messages: [
-					{
-						role: "toolResult",
-						toolCallId: "first-read",
-						toolName: "read",
-						content: [{ type: "text", text: original }],
-						isError: false,
-						timestamp: 1,
-					},
-					{
-						role: "toolResult",
-						toolCallId: "second-read",
-						toolName: "read",
-						content: [{ type: "text", text: original }],
-						isError: false,
-						timestamp: 2,
-					},
-				],
-			},
-			sessionContext(),
-		);
-		expect(contextResult).toBeUndefined();
+		createHeadroomExtension()(harness.pi);
+		expect(await harness.handlers.get("tool_result")!({ toolName: "bash" }, harness.ctx)).toBeUndefined();
+		const result = await harness.tools.get(RETRIEVE_TOOL_NAME).execute("call", { hash: " HASH=ABC " });
+		expect(result).toEqual({
+			content: [{ type: "text", text: "No Headroom content is available for hash abc." }],
+			details: { headroomRetrieve: true, hash: "abc", found: false },
+		});
 	});
 
-	it("leaves shell reads untouched and remembers the protection in history", async () => {
-		const harness = makeHarness();
-		createHeadroomExtension({ minChars: 50, maxLines: 2 })(harness.pi);
-		const original = [
-			"import { readFile } from 'node:fs/promises';",
-			"export function load(path: string) {",
-			"\treturn readFile(path, 'utf8');",
-			"}",
-		].join("\n");
+	it("maps fresh and context events through the registered module", async () => {
+		const branch = [{ type: "message", message: { role: "user", content: "latest query", timestamp: 1 } }];
+		const harness = makeHarness(branch);
+		createHeadroomExtension()(harness.pi);
+		await harness.handlers.get("session_start")!({ type: "session_start" }, harness.ctx);
+		const retention = getToolOutputRetention()!;
+		const rewriteFresh = vi.fn(() => ({ changed: true, content: [{ type: "text" as const, text: "rewritten" }], details: { kept: true } }));
+		const projectHistory = vi.fn((messages) => ({ changed: true, messages: [...messages] }));
+		retention.rewriteFresh = rewriteFresh;
+		retention.projectHistory = projectHistory;
 
-		const result = await harness.handlers.get("tool_result")!(
-			{
-				type: "tool_result",
-				toolCallId: "call-shell-read",
-				toolName: "bash",
-				input: { command: "cat src/example.ts" },
-				content: [{ type: "text", text: original }],
-				isError: false,
-				details: undefined,
-			},
-			sessionContext(),
-		);
-
-		expect(result.content[0].text).toBe(original);
-		expect(result.details.__headroom_protected.verbatim).toBe(true);
-
-		const historical = await harness.handlers.get("context")!(
-			{
-				type: "context",
-				messages: [
-					{
-						role: "toolResult",
-						toolCallId: "call-shell-read",
-						toolName: "bash",
-						content: [{ type: "text", text: original }],
-						details: result.details,
-						isError: false,
-						timestamp: 1,
-					},
-				],
-			},
-			sessionContext(),
-		);
-		expect(historical).toBeUndefined();
-	});
-
-	it("rewrites historical results in the context hook and persists their originals", async () => {
-		const harness = makeHarness();
-		createHeadroomExtension({ minChars: 100, maxItems: 5 })(harness.pi);
-		const original = JSON.stringify(
-			Array.from({ length: 30 }, (_item, index) => ({ id: index, value: `row ${index}` })),
-			null,
-			2,
-		);
-		const toolMessage: ToolResultMessage = {
-			role: "toolResult",
-			toolCallId: "call-history",
-			toolName: "bash",
-			content: [{ type: "text", text: original }],
-			isError: false,
-			timestamp: 2,
-		};
 		const event = {
-			type: "context",
-			messages: [
-				{ role: "user", content: "inspect the result", timestamp: 1 },
-				toolMessage,
-			],
+			type: "tool_result",
+			toolCallId: "call-1",
+			toolName: "bash",
+			input: { command: "npm test" },
+			content: [{ type: "text", text: "original" }],
+			isError: true,
+			details: { original: true },
+			usage: { totalTokens: 10 },
 		};
+		expect(await harness.handlers.get("tool_result")!(event, harness.ctx)).toEqual({
+			content: [{ type: "text", text: "rewritten" }],
+			details: { kept: true },
+		});
+		expect(rewriteFresh).toHaveBeenCalledWith({
+			toolName: "bash",
+			input: event.input,
+			isError: true,
+			content: event.content,
+			details: event.details,
+			query: "latest query",
+		});
 
-		const result = await harness.handlers.get("context")!(event, sessionContext());
-		const rewritten = result.messages[1].content[0].text;
-
-		expect(rewritten).toContain("_headroom_retrieve");
-		expect(rewritten.length).toBeLessThan(original.length);
-		expect(harness.appended).toHaveLength(1);
-		expect(harness.appended[0].type).toBe(CCR_ENTRY_TYPE);
-		expect((harness.appended[0].data as any).original).toBe(original);
-		expect(harness.active).toContain(RETRIEVE_TOOL_NAME);
-
-		const restoredBranch = [{ type: "custom", customType: CCR_ENTRY_TYPE, data: harness.appended[0].data }];
-		const restored = makeHarness(restoredBranch);
-		createHeadroomExtension({ minChars: 100, maxItems: 5 })(restored.pi);
-		await restored.handlers.get("session_start")!({ type: "session_start" }, sessionContext(restoredBranch));
-		expect(restored.active).toContain(RETRIEVE_TOOL_NAME);
-		const restoredResult = await restored.tools.get(RETRIEVE_TOOL_NAME).execute(
-			"retrieve-restored",
-			{ hash: (harness.appended[0].data as any).hash },
-			undefined,
-			undefined,
-			sessionContext(restoredBranch),
-		);
-		expect(restoredResult.content[0].text).toBe(original);
+		const messages = [{ role: "user", content: "request", timestamp: 1 }];
+		expect(await harness.handlers.get("context")!({ type: "context", messages }, harness.ctx)).toEqual({ messages });
+		expect(projectHistory).toHaveBeenCalledWith(messages);
 	});
 
-	it("deduplicates an identical later tool result while keeping the first copy", async () => {
+	it("hydrates retrieval on start without disturbing active-tool order", async () => {
+		const entry = storedEntry("full original");
+		const branch = [{ type: "custom", customType: CCR_ENTRY_TYPE, data: entry }];
+		const harness = makeHarness(branch);
+		createHeadroomExtension()(harness.pi);
+		await harness.handlers.get("session_start")!({ type: "session_start" }, harness.ctx);
+		expect(harness.active).toEqual(["second", "bash", "first", RETRIEVE_TOOL_NAME]);
+		const result = await harness.tools.get(RETRIEVE_TOOL_NAME).execute("call", { hash: entry.hash.toUpperCase() });
+		expect(result).toEqual({
+			content: [{ type: "text", text: "full original" }],
+			details: { headroomRetrieve: true, hash: entry.hash, found: true },
+		});
+	});
+
+	it("rebuilds on tree navigation and drops abandoned-branch retrieval", async () => {
+		const abandoned = storedEntry("abandoned", "aaaaaaaaaaaaaaaaaaaaaaaa");
+		const selected = storedEntry("selected", "bbbbbbbbbbbbbbbbbbbbbbbb");
+		const harness = makeHarness([{ type: "custom", customType: CCR_ENTRY_TYPE, data: abandoned }]);
+		createHeadroomExtension()(harness.pi);
+		await harness.handlers.get("session_start")!({ type: "session_start" }, harness.ctx);
+		harness.setBranch([{ type: "custom", customType: CCR_ENTRY_TYPE, data: selected }]);
+		await harness.handlers.get("session_tree")!({ type: "session_tree" }, harness.ctx);
+
+		const tool = harness.tools.get(RETRIEVE_TOOL_NAME);
+		expect((await tool.execute("call", { hash: abandoned.hash })).details.found).toBe(false);
+		expect((await tool.execute("call", { hash: selected.hash })).content[0].text).toBe("selected");
+	});
+
+	it("unregisters on shutdown without allowing stale cleanup to remove a replacement", async () => {
+		const first = makeHarness();
+		createHeadroomExtension()(first.pi);
+		await first.handlers.get("session_start")!({ type: "session_start" }, first.ctx);
+		const second = makeHarness();
+		createHeadroomExtension()(second.pi);
+		await second.handlers.get("session_start")!({ type: "session_start" }, second.ctx);
+		const replacement = getToolOutputRetention();
+		await first.handlers.get("session_shutdown")!({ type: "session_shutdown" }, first.ctx);
+		expect(getToolOutputRetention()).toBe(replacement);
+		await second.handlers.get("session_shutdown")!({ type: "session_shutdown" }, second.ctx);
+		expect(getToolOutputRetention()).toBeUndefined();
+	});
+
+	it("keeps module and host failures out of Pi event handling", async () => {
 		const harness = makeHarness();
-		createHeadroomExtension({ minChars: 50, dedupeMinChars: 20 })(harness.pi);
-		const output = "2026-01-01T00:00 INFO " + "same result ".repeat(20);
-		const messages = [
-			{ role: "user", content: "run it", timestamp: 1 },
-			{
+		(harness.pi.getActiveTools as any).mockImplementation(() => { throw new Error("tools unavailable"); });
+		(harness.pi.appendEntry as any).mockImplementation(() => { throw new Error("session unavailable"); });
+		createHeadroomExtension({ minChars: 1, maxLines: 2 })(harness.pi);
+		await harness.handlers.get("session_start")!({ type: "session_start" }, harness.ctx);
+		const retention = getToolOutputRetention()!;
+		retention.rewriteFresh = () => { throw new Error("rewrite failed"); };
+		retention.projectHistory = () => { throw new Error("projection failed"); };
+		expect(await harness.handlers.get("tool_result")!({ toolName: "bash" }, harness.ctx)).toBeUndefined();
+		expect(await harness.handlers.get("context")!({ messages: [] }, harness.ctx)).toBeUndefined();
+	});
+
+	it("historical persistence failure still returns a projection", async () => {
+		const harness = makeHarness();
+		(harness.pi.appendEntry as any).mockImplementation(() => { throw new Error("disk full"); });
+		createHeadroomExtension({ minChars: 100, maxLines: 4 })(harness.pi);
+		await harness.handlers.get("session_start")!({ type: "session_start" }, harness.ctx);
+		const result = await harness.handlers.get("context")!({
+			type: "context",
+			messages: [{ role: "user", content: "inspect", timestamp: 1 }, {
 				role: "toolResult",
-				toolCallId: "first",
+				toolCallId: "call",
 				toolName: "bash",
-				content: [{ type: "text", text: output }],
+				content: [{ type: "text", text: largeLog() }],
 				isError: false,
 				timestamp: 2,
-			},
-			{
-				role: "toolResult",
-				toolCallId: "second",
-				toolName: "bash",
-				content: [{ type: "text", text: output }],
-				isError: false,
-				timestamp: 3,
-			},
-		];
-
-		const result = await harness.handlers.get("context")!({ type: "context", messages }, sessionContext());
-
-		expect(result.messages[1].content[0].text).toBe(output);
-		expect(result.messages[2].content[0].text).toContain("identical to an earlier tool result");
-	});
-
-	it("can run without CCR and leaves retrieval inactive", async () => {
-		const harness = makeHarness();
-		createHeadroomExtension({ minChars: 100, maxLines: 4, ccr: false })(harness.pi);
-		const original = largeLog(20);
-		const result = await harness.handlers.get("tool_result")!(
-			{
-				type: "tool_result",
-				toolCallId: "call-no-ccr",
-				toolName: "bash",
-				input: { command: "npm test" },
-				content: [{ type: "text", text: original }],
-				isError: false,
-				details: undefined,
-			},
-			sessionContext(),
-		);
-
-		expect(result.content[0].text).toContain("Headroom omitted");
-		expect(result.content[0].text).not.toContain("Retrieve original: hash=");
-		expect(harness.active).not.toContain(RETRIEVE_TOOL_NAME);
-		expect(result.details).toBeUndefined();
+			}],
+		}, harness.ctx);
+		expect(result.messages[1].content[0].text).toContain("Retrieve original: hash=");
 	});
 });

@@ -2,8 +2,13 @@ import type { AssistantMessage, Context, Model, SimpleStreamOptions } from "@ear
 import { streamSimple as codexStreamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { streamSimple as completionsStreamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCacheAwareCompaction } from "./cache-aware-compaction.ts";
+import {
+	clearToolOutputRetention,
+	registerToolOutputRetention,
+	type ToolOutputRetention,
+} from "./tool-output-retention.ts";
 
 const usage = {
 	input: 700,
@@ -96,6 +101,14 @@ function preparation(firstKeptEntryId = "u2", overrides: Record<string, unknown>
 	};
 }
 
+function retention(projectHistory: ToolOutputRetention["projectHistory"]): ToolOutputRetention {
+	return {
+		rewriteFresh: vi.fn((input) => ({ changed: false, content: input.content, details: input.details })),
+		projectHistory,
+		retrieve: vi.fn((hash) => ({ found: false as const, hash })),
+	};
+}
+
 function makeHarness(options: {
 	entries?: any[];
 	providerResponse?: AssistantMessage;
@@ -168,6 +181,8 @@ function makeHarness(options: {
 	};
 }
 
+afterEach(clearToolOutputRetention);
+
 describe("provider-rendered cache prefix", () => {
 	it.each([
 		["openai-codex-responses", codexStreamSimple],
@@ -230,6 +245,44 @@ describe("provider-rendered cache prefix", () => {
 });
 
 describe("cache-aware compaction", () => {
+	it("projects canonical history before provider conversion and leaves the instruction last", async () => {
+		const harness = makeHarness();
+		const canonical = buildSessionContext(harness.entries).messages;
+		const projected = canonical.map((message, index) => index === 0 ? user("projected old request", message.timestamp) : message);
+		const projectHistory = vi.fn(() => ({ changed: true, messages: projected }));
+		registerToolOutputRetention(retention(projectHistory));
+
+		await harness.controller.compact(harness.event, harness.ctx);
+
+		expect(projectHistory).toHaveBeenCalledOnce();
+		expect(projectHistory).toHaveBeenCalledWith(canonical);
+		expect(harness.calls[0].context.messages.slice(0, -1)).toEqual(convertToLlm(projected));
+		expect(harness.calls[0].context.messages.at(-1)?.role).toBe("user");
+		expect(JSON.stringify(harness.calls[0].context.messages.at(-1))).toContain("1 trailing provider message");
+	});
+
+	it("discovers retention registered after controller construction", async () => {
+		const harness = makeHarness();
+		const projectHistory = vi.fn((messages) => ({ changed: false, messages }));
+		registerToolOutputRetention(retention(projectHistory));
+		await harness.controller.compact(harness.event, harness.ctx);
+		expect(projectHistory).toHaveBeenCalledOnce();
+	});
+
+	it("uses canonical history unchanged when no retention module is registered", async () => {
+		const harness = makeHarness();
+		await harness.controller.compact(harness.event, harness.ctx);
+		expect(harness.calls[0].context.messages.slice(0, -1)).toEqual(convertToLlm(buildSessionContext(harness.entries).messages));
+	});
+
+	it("fails open to canonical history when retention projection throws", async () => {
+		const harness = makeHarness();
+		registerToolOutputRetention(retention(() => { throw new Error("projection failed"); }));
+		await harness.controller.compact(harness.event, harness.ctx);
+		expect(harness.calls[0].context.messages.slice(0, -1)).toEqual(convertToLlm(buildSessionContext(harness.entries).messages));
+		expect(harness.ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
 	it("preserves the provider prefix and appends exactly one instruction", async () => {
 		const harness = makeHarness();
 

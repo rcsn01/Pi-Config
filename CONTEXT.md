@@ -28,6 +28,24 @@ extension.
 - **Usage table** — the bordered TUI renderer in `ui-context/usage-tables.ts`
   that turns usage rows into tables; layout fallbacks live behind its two
   functions.
+- **Tool-output retention module** — the deep in-process module beside Provider
+  Headroom that owns configuration, tool eligibility, fresh-result rewriting,
+  historical provider projection, cross-turn deduplication, CCR state and
+  retrieval, and their ordering. Provider Headroom's Pi hooks and custom
+  compaction are adapters at its shared registry seam. The Session transcript
+  remains authoritative: fresh patches persist with the tool result, while
+  historical and compaction projections do not rewrite old Session messages.
+- **CCR entry** — a versioned, hash-addressed original tool output stored either
+  in fresh tool-result details or as a custom Session entry for a historical
+  projection. Retrieval state is rebuilt from the active branch only.
+- **Historical projection** — a non-mutating provider view of canonical Session
+  messages after eligible old tool outputs are reduced and exact later copies
+  are deduplicated. Normal context requests and custom compaction use the same
+  projection.
+- **Custom compaction** — the cache-aware summarizer request assembled from a
+  fixed Session branch snapshot. It applies optional Tool-output retention
+  before provider conversion without changing the retained boundary or Session
+  entries.
 
 ## TUI editor slot
 
