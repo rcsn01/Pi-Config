@@ -8,6 +8,10 @@ import {
 	type ExtensionContext,
 	type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
+import {
+	getToolOutputRetention,
+	type RetentionMessage,
+} from "./tool-output-retention.ts";
 
 const MIN_SUMMARY_TOKENS = 256;
 
@@ -68,6 +72,16 @@ function retainedProviderMessageCount(event: SessionBeforeCompactEvent): number 
 		.slice(firstKeptIndex)
 		.flatMap((entry) => sessionEntryToContextMessages(entry));
 	return convertToLlm(retainedMessages).length;
+}
+
+function safeProjectHistory(messages: RetentionMessage[]): RetentionMessage[] {
+	const retention = getToolOutputRetention();
+	if (!retention) return messages;
+	try {
+		return retention.projectHistory(messages).messages;
+	} catch {
+		return messages;
+	}
 }
 
 function instructionText(event: SessionBeforeCompactEvent, retainedCount: number): string {
@@ -153,7 +167,8 @@ export function createCacheAwareCompaction(pi: ExtensionAPI): CacheAwareCompacti
 					notifyNativeFallback(ctx, event.signal, "invalid retained-message boundary");
 					return undefined;
 				}
-				const messages = convertToLlm(buildSessionContext(event.branchEntries).messages);
+				const canonicalMessages = buildSessionContext(event.branchEntries).messages;
+				const messages = convertToLlm(safeProjectHistory(canonicalMessages));
 				const context: Context = {
 					systemPrompt: ctx.getSystemPrompt(),
 					messages: [
