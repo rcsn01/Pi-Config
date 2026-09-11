@@ -21,15 +21,21 @@ function largeJson(count = 30): string {
 	return JSON.stringify(Array.from({ length: count }, (_item, index) => ({ id: index, value: `row ${index}` })), null, 2);
 }
 
-function createHarness(branch: unknown[] = [], overrides: HeadroomExtensionOptions = {}) {
+function createHarness(
+	branch: unknown[] = [],
+	overrides: HeadroomExtensionOptions = {},
+	contextEntries: readonly unknown[] = [{ type: "message", message: { role: "user", content: "database timeout" } }],
+) {
 	const appended: Array<{ type: string; data: unknown }> = [];
 	const availability: boolean[] = [];
 	const host: ToolOutputRetentionHost = {
 		appendEntry: vi.fn((type, data) => appended.push({ type, data })),
 		setRetrievalAvailable: vi.fn((available) => availability.push(available)),
 	};
+	const retention = createToolOutputRetention({ overrides, host, branch });
 	return {
-		retention: createToolOutputRetention({ overrides, host, branch }),
+		retention,
+		rewriteFresh: (input: Parameters<typeof retention.rewriteFresh>[0]) => retention.rewriteFresh(input, contextEntries),
 		host,
 		appended,
 		availability,
@@ -43,7 +49,6 @@ function fresh(text: string, overrides: Record<string, unknown> = {}) {
 		isError: false,
 		content: [{ type: "text" as const, text }],
 		details: undefined,
-		query: "database timeout",
 		...overrides,
 	};
 }
@@ -100,7 +105,7 @@ describe("tool-output retention", () => {
 	it("rewrites a fresh lossy result and retrieves its exact original", () => {
 		const harness = createHarness([], { minChars: 100, maxLines: 6 });
 		const original = largeLog();
-		const rewritten = harness.retention.rewriteFresh(fresh(original, {
+		const rewritten = harness.rewriteFresh(fresh(original, {
 			details: { truncation: { truncated: false } },
 		}));
 
@@ -126,7 +131,7 @@ describe("tool-output retention", () => {
 		nested.results[0]!.output = original;
 		const content = [{ type: "text" as const, text: original }, image];
 		const harness = createHarness([], { minChars: 100, maxLines: 6 });
-		const rewritten = harness.retention.rewriteFresh(fresh(original, {
+		const rewritten = harness.rewriteFresh(fresh(original, {
 			toolName: "subagent",
 			content,
 			details: nested,
@@ -144,7 +149,7 @@ describe("tool-output retention", () => {
 	it("protects shell reads with an additive details marker", () => {
 		const details = { existing: { value: 1 } };
 		const harness = createHarness([], { minChars: 1, maxLines: 1 });
-		const result = harness.retention.rewriteFresh(fresh("plain data\nline two", {
+		const result = harness.rewriteFresh(fresh("plain data\nline two", {
 			input: { command: " cd src && SeD -n '1,2p' file.txt" },
 			details,
 		}));
@@ -155,13 +160,13 @@ describe("tool-output retention", () => {
 	});
 
 	it("preserves non-record shell details and the uppercase tool-name marker asymmetry", () => {
-		const lower = createHarness([], { minChars: 1 }).retention.rewriteFresh(fresh("plain", {
+		const lower = createHarness([], { minChars: 1 }).rewriteFresh(fresh("plain", {
 			input: { command: "cat file.txt" },
 			details: "opaque",
 		}));
 		expect(lower.details).toMatchObject({ originalDetails: "opaque", [PROTECTION_METADATA_KEY]: { verbatim: true } });
 
-		const upper = createHarness([], { minChars: 1 }).retention.rewriteFresh(fresh("plain", {
+		const upper = createHarness([], { minChars: 1 }).rewriteFresh(fresh("plain", {
 			toolName: "BASH",
 			input: { command: "cat file.txt" },
 			details: "opaque",
@@ -172,14 +177,14 @@ describe("tool-output retention", () => {
 	it.each(["read", "WRITE", " edit ", "websearch", "webfetch", "web_search", "web_fetch", "headroom_retrieve", "file_read", "repo-read-file"])(
 		"keeps protected tool %s verbatim",
 		(toolName) => {
-			const result = createHarness([], { minChars: 1, maxLines: 1 }).retention.rewriteFresh(fresh(largeLog(), { toolName }));
+			const result = createHarness([], { minChars: 1, maxLines: 1 }).rewriteFresh(fresh(largeLog(), { toolName }));
 			expect(result.changed).toBe(false);
 		},
 	);
 
 	it.each(["grep", "FIND", " ls "])("allows only lossless changes for %s", (toolName) => {
 		const text = `${Array.from({ length: 20 }, () => "same").join("\n")}\n${"x".repeat(200)}`;
-		const result = createHarness([], { minChars: 1, maxLines: 1 }).retention.rewriteFresh(fresh(text, { toolName }));
+		const result = createHarness([], { minChars: 1, maxLines: 1 }).rewriteFresh(fresh(text, { toolName }));
 		expect(result.changed).toBe(true);
 		expect(JSON.stringify(result.content)).not.toContain("Headroom omitted");
 		expect(result.details).toBeUndefined();
@@ -187,14 +192,14 @@ describe("tool-output retention", () => {
 
 	it("keeps errors at 4000 characters and allows larger eligible errors", () => {
 		const harness = createHarness([], { minChars: 1, maxLines: 2, maxChars: 20 });
-		expect(harness.retention.rewriteFresh(fresh("x".repeat(4_000), { isError: true })).changed).toBe(false);
+		expect(harness.rewriteFresh(fresh("x".repeat(4_000), { isError: true })).changed).toBe(false);
 		const largeError = Array.from({ length: 24 }, (_, i) => i === 12 ? `ERROR ${"x".repeat(220)}` : `INFO ${i} ${"x".repeat(220)}`).join("\n");
-		expect(harness.retention.rewriteFresh(fresh(largeError, { isError: true })).changed).toBe(true);
+		expect(harness.rewriteFresh(fresh(largeError, { isError: true })).changed).toBe(true);
 	});
 
 	it("coalesces identical block metadata by hash while retaining the later block index", () => {
 		const original = largeLog();
-		const result = createHarness([], { minChars: 100, maxLines: 6 }).retention.rewriteFresh(fresh(original, {
+		const result = createHarness([], { minChars: 100, maxLines: 6 }).rewriteFresh(fresh(original, {
 			content: [{ type: "text", text: original }, { type: "text", text: original }],
 		}));
 		const entries = (result.details as any)[CCR_METADATA_KEY].entries;
@@ -315,12 +320,12 @@ describe("tool-output retention", () => {
 	it("resolves environment configuration on every operation with option precedence", () => {
 		process.env.PI_HEADROOM_ENABLED = " false ";
 		const harness = createHarness([], { enabled: true, minChars: 1, maxLines: 2 });
-		expect(harness.retention.rewriteFresh(fresh(largeLog())).changed).toBe(true);
+		expect(harness.rewriteFresh(fresh(largeLog())).changed).toBe(true);
 		process.env.PI_HEADROOM_ENABLED = "0";
 		const dynamic = createHarness([], { minChars: 1, maxLines: 2 });
-		expect(dynamic.retention.rewriteFresh(fresh(largeLog())).changed).toBe(false);
+		expect(dynamic.rewriteFresh(fresh(largeLog())).changed).toBe(false);
 		process.env.PI_HEADROOM_ENABLED = "unexpected";
-		expect(dynamic.retention.rewriteFresh(fresh(largeLog())).changed).toBe(true);
+		expect(dynamic.rewriteFresh(fresh(largeLog())).changed).toBe(true);
 	});
 
 	it("uses exact mode and minimum-size environment semantics", () => {
@@ -328,11 +333,11 @@ describe("tool-output retention", () => {
 		process.env.PI_HEADROOM_MAX_LINES = "5";
 		process.env.PI_HEADROOM_MODE = "lossless";
 		const harness = createHarness();
-		expect(harness.retention.rewriteFresh(fresh(largeLog())).changed).toBe(false);
+		expect(harness.rewriteFresh(fresh(largeLog())).changed).toBe(false);
 		process.env.PI_HEADROOM_MODE = "LOSSLESS";
-		expect(harness.retention.rewriteFresh(fresh(largeLog())).changed).toBe(true);
+		expect(harness.rewriteFresh(fresh(largeLog())).changed).toBe(true);
 		process.env.PI_HEADROOM_MIN_CHARS = "10000";
-		expect(harness.retention.rewriteFresh(fresh(largeLog())).changed).toBe(false);
+		expect(harness.rewriteFresh(fresh(largeLog())).changed).toBe(false);
 	});
 
 	it("uses line, item, search-match, and character limit environment variables", () => {
@@ -340,10 +345,10 @@ describe("tool-output retention", () => {
 		process.env.PI_HEADROOM_CCR = "0";
 		process.env.PI_HEADROOM_MAX_LINES = "5";
 		process.env.PI_HEADROOM_MAX_CHARS = "100";
-		expect(createHarness().retention.rewriteFresh(fresh(largeLog())).changed).toBe(true);
+		expect(createHarness().rewriteFresh(fresh(largeLog())).changed).toBe(true);
 
 		process.env.PI_HEADROOM_MAX_ITEMS = "4";
-		const json = createHarness().retention.rewriteFresh(fresh(largeJson(10)));
+		const json = createHarness().rewriteFresh(fresh(largeJson(10)));
 		expect(JSON.stringify(json.content)).toContain("_headroom_omitted");
 
 		process.env.PI_HEADROOM_MAX_SEARCH_MATCHES = "4";
@@ -351,7 +356,7 @@ describe("tool-output retention", () => {
 			? `src/error.ts:${index + 1}:ERROR connection refused`
 			: `src/file-${index % 3}.ts:${index + 1}:ordinary match ${index}`
 		).join("\n");
-		expect(createHarness().retention.rewriteFresh(fresh(search, { toolName: "search" })).changed).toBe(true);
+		expect(createHarness().rewriteFresh(fresh(search, { toolName: "search" })).changed).toBe(true);
 	});
 
 	it("uses dedupe minimum from the environment", () => {
@@ -366,24 +371,102 @@ describe("tool-output retention", () => {
 
 	it.each(["0", "false", " NO ", "Off"])("treats %j as a false boolean environment value", (value) => {
 		process.env.PI_HEADROOM_ENABLED = value;
-		expect(createHarness([], { minChars: 1, maxLines: 2 }).retention.rewriteFresh(fresh(largeLog())).changed).toBe(false);
+		expect(createHarness([], { minChars: 1, maxLines: 2 }).rewriteFresh(fresh(largeLog())).changed).toBe(false);
 	});
 
 	it.each(["0", "-1", "1.5", "9007199254740992", "", "nope"])("falls back for invalid positive integer %j", (value) => {
 		process.env.PI_HEADROOM_MIN_CHARS = value;
 		const output = `${Array.from({ length: 20 }, () => "same").join("\n")}\nend`;
-		expect(createHarness([], { maxLines: 1 }).retention.rewriteFresh(fresh(output)).changed).toBe(false);
+		expect(createHarness([], { maxLines: 1 }).rewriteFresh(fresh(output)).changed).toBe(false);
 	});
 
 	it("keeps CCR and dedupe disabled when their environment flags are false", () => {
 		process.env.PI_HEADROOM_CCR = "off";
 		process.env.PI_HEADROOM_DEDUPE = "NO";
 		const harness = createHarness([], { minChars: 100, maxLines: 3, dedupeMinChars: 20 });
-		const rewritten = harness.retention.rewriteFresh(fresh(largeLog()));
+		const rewritten = harness.rewriteFresh(fresh(largeLog()));
 		expect(JSON.stringify(rewritten.content)).not.toContain("Retrieve original");
 		expect(rewritten.details).toBeUndefined();
 		const output = "same result ".repeat(30);
 		expect(harness.retention.projectHistory([toolMessage(output), toolMessage(output)]).changed).toBe(false);
 		expect(harness.availability).not.toContain(true);
+	});
+
+	const rankingLog = JSON.stringify(Array.from({ length: 30 }, (_, index) => ({
+		value: index === 9 ? "alphaquery uniquely relevant" : index === 20 ? "omegaquery uniquely relevant" : `ordinary filler record ${index}`,
+	})));
+	const reducedText = (entries: readonly unknown[]) => JSON.stringify(
+		createHarness([], { minChars: 1, maxItems: 4, ccr: false }, entries).rewriteFresh(fresh(rankingLog)).content,
+	);
+	const historicalText = (messages: readonly any[]) => {
+		const projected = createHarness([], { minChars: 1, maxItems: 4, ccr: false }).retention.projectHistory([...messages, toolMessage(rankingLog)]).messages;
+		return JSON.stringify((projected.at(-1) as ToolResultMessage).content);
+	};
+
+	it("derives fresh queries from the last truthy user entry by array order and exact content extraction", () => {
+		const user = (content: unknown, timestamp = 0) => ({ type: "message", message: { role: "user", content, timestamp } });
+		expect(reducedText([user("omegaquery", 99), user("alphaquery", 1)])).toContain("alphaquery");
+		expect(reducedText([user("alphaquery"), user([{ type: "image" }, { type: "text", text: "omegaquery" }])])).toContain("omegaquery");
+		for (const content of ["", [], [{ type: "image" }], 42, [{ type: "text" }]])
+			expect(reducedText([user("alphaquery"), user(content)])).toContain("alphaquery");
+		for (const content of ["   ", [{ type: "text", text: "" }, { type: "text", text: "" }]])
+			expect(reducedText([user("alphaquery"), user(content)])).not.toContain("alphaquery uniquely");
+	});
+
+	it("filters fresh Session entries and all non-user message roles", () => {
+		const entries: any[] = [{ type: "message", message: { role: "user", content: "alphaquery" } }];
+		for (const type of ["thinking_level_change", "model_change", "compaction", "branch_summary", "custom", "custom_message", "label", "session_info"])
+			entries.push({ type, message: { role: "user", content: "omegaquery" } });
+		entries.push(null, {}, { type: "message" }, { type: "message", message: null });
+		for (const role of ["assistant", "toolResult", "bashExecution", "custom", "branchSummary", "compactionSummary"])
+			entries.push({ type: "message", message: { role, content: "omegaquery" } });
+		expect(reducedText(entries)).toContain("alphaquery");
+	});
+
+	it("fails fresh query extraction open for throwing records and non-iterable entries", () => {
+		for (const property of ["type", "message", "role", "content", "text"]) {
+			const throwing: any = property === "text"
+				? { type: "message", message: { role: "user", content: [{ type: "text", get text() { throw new Error("bad"); } }] } }
+				: property === "content"
+					? { type: "message", message: { role: "user", get content() { throw new Error("bad"); } } }
+					: property === "role"
+						? { type: "message", message: { get role() { throw new Error("bad"); } } }
+						: property === "message"
+						? { type: "message", get message() { throw new Error("bad"); } }
+						: { get type() { throw new Error("bad"); } };
+			const text = reducedText([{ type: "message", message: { role: "user", content: "alphaquery" } }, throwing, { type: "message", message: { role: "user", content: "omegaquery" } }]);
+			expect(text, property).not.toContain("alphaquery uniquely");
+			expect(text, property).not.toContain("omegaquery uniquely");
+		}
+		expect(reducedText(42 as any)).toContain("Headroom omitted");
+	});
+
+	it("tails fresh queries at 8,000 UTF-16 code units", () => {
+		const query = `alphaquery${"😀".repeat(4_001)}omegaquery`;
+		const text = reducedText([{ type: "message", message: { role: "user", content: query } }]);
+		expect(text).toContain("omegaquery uniquely");
+		expect(text).not.toContain("alphaquery uniquely");
+	});
+
+	it("derives historical queries in reverse array order with exact filtering and extraction", () => {
+		const user = (content: unknown, timestamp = 0) => ({ role: "user", content, timestamp });
+		expect(historicalText([user("omegaquery", 99), user("alphaquery", 1)])).toContain("alphaquery uniquely");
+		expect(historicalText([user("alphaquery"), user([{ type: "image" }, { type: "text", text: "omegaquery" }])])).toContain("omegaquery uniquely");
+		const ignored = ["assistant", "toolResult", "bashExecution", "custom", "branchSummary", "compactionSummary"].map((role) => ({ role, content: "omegaquery", toolName: "bash", isError: false }));
+		expect(historicalText([user("alphaquery"), user(""), user([]), user(42), ...ignored])).toContain("alphaquery uniquely");
+		for (const content of [" ", [{ type: "text", text: "" }, { type: "text", text: "" }]])
+			expect(historicalText([user("alphaquery"), user(content)])).not.toContain("alphaquery uniquely");
+	});
+
+	it("tails historical queries at 8,000 UTF-16 code units", () => {
+		const text = historicalText([{ role: "user", content: `alphaquery${"😀".repeat(4_001)}omegaquery` }]);
+		expect(text).toContain("omegaquery uniquely");
+		expect(text).not.toContain("alphaquery uniquely");
+	});
+
+	it("keeps the historical walker short-circuit and propagation failure boundary", () => {
+		const throwing = { role: "user", get content() { throw new Error("bad history"); } };
+		expect(() => historicalText([throwing, { role: "user", content: "alphaquery" }])).not.toThrow();
+		expect(() => historicalText([{ role: "user", content: "alphaquery" }, throwing])).toThrow("bad history");
 	});
 });
