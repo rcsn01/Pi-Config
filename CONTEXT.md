@@ -29,12 +29,16 @@ extension.
   that turns usage rows into tables; layout fallbacks live behind its two
   functions.
 - **Tool-output retention module** — the deep in-process module beside Provider
-  Headroom that owns configuration, tool eligibility, fresh-result rewriting,
-  historical provider projection, cross-turn deduplication, CCR state and
-  retrieval, and their ordering. Provider Headroom's Pi hooks and custom
-  compaction are adapters at its shared registry seam. The Session transcript
-  remains authoritative: fresh patches persist with the tool result, while
-  historical and compaction projections do not rewrite old Session messages.
+  Headroom that owns configuration, tool eligibility, query derivation,
+  fresh-result rewriting, historical provider projection, cross-turn
+  deduplication, CCR state and retrieval, and their ordering. Reduction ranking
+  derives its query in the module: the fresh query from the live Session context
+  entries the Pi adapter supplies as a raw parameter per rewrite,
+  and the historical query from the projected messages themselves; no interface
+  carries a query. Provider Headroom's Pi hooks and custom compaction are
+  adapters at its shared registry seam. The Session transcript remains
+  authoritative: fresh patches persist with the tool result, while historical
+  and compaction projections do not rewrite old Session messages.
 - **CCR entry** — a versioned, hash-addressed original tool output stored either
   in fresh tool-result details or as a custom Session entry for a historical
   projection. Retrieval state is rebuilt from the active branch only.

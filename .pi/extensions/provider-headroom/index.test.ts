@@ -123,12 +123,28 @@ describe("provider-headroom adapter", () => {
 			isError: true,
 			content: event.content,
 			details: event.details,
-			query: "latest query",
-		});
+		}, branch);
+		expect(harness.ctx.sessionManager.buildContextEntries).toHaveBeenCalledTimes(1);
 
 		const messages = [{ role: "user", content: "request", timestamp: 1 }];
 		expect(await harness.handlers.get("context")!({ type: "context", messages }, harness.ctx)).toEqual({ messages });
 		expect(projectHistory).toHaveBeenCalledWith(messages);
+	});
+
+	it("still rewrites with empty entries when building live context throws", async () => {
+		const harness = makeHarness();
+		createHeadroomExtension()(harness.pi);
+		await harness.handlers.get("session_start")!({ type: "session_start" }, harness.ctx);
+		const retention = getToolOutputRetention()!;
+		const rewriteFresh = vi.fn(() => ({ changed: true, content: [{ type: "text" as const, text: "rewritten" }], details: undefined }));
+		retention.rewriteFresh = rewriteFresh;
+		harness.ctx.sessionManager.buildContextEntries.mockImplementation(() => { throw new Error("context unavailable"); });
+		const event = { toolName: "bash", input: {}, isError: false, content: [{ type: "text", text: "original" }], details: null };
+		expect(await harness.handlers.get("tool_result")!(event, harness.ctx)).toEqual({ content: [{ type: "text", text: "rewritten" }], details: undefined });
+		expect(rewriteFresh).toHaveBeenCalledWith({
+			toolName: "bash", input: {}, isError: false, content: event.content, details: null,
+		}, []);
+		expect(harness.ctx.sessionManager.buildContextEntries).toHaveBeenCalledTimes(1);
 	});
 
 	it("hydrates retrieval on start without disturbing active-tool order", async () => {

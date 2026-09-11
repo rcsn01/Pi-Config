@@ -10,6 +10,7 @@ import type {
 	ToolResultContent,
 } from "../_shared/tool-output-retention.ts";
 import {
+	REDUCTION_DEFAULTS,
 	hasHeadroomMarker,
 	looksLikeSourceCode,
 	reduceToolOutput,
@@ -23,10 +24,6 @@ export const PROTECTION_METADATA_KEY = "__headroom_protected";
 export const CCR_ENTRY_TYPE = "provider-headroom-ccr";
 
 const DEFAULT_MIN_CHARS = 500;
-const DEFAULT_MAX_LINES = 120;
-const DEFAULT_MAX_ITEMS = 20;
-const DEFAULT_MAX_SEARCH_MATCHES = 40;
-const DEFAULT_MAX_CHARS = 12_000;
 const DEFAULT_DEDUPE_MIN_CHARS = 240;
 const SMALL_ERROR_MAX_CHARS = 4_000;
 
@@ -122,12 +119,12 @@ function resolveConfig(overrides: HeadroomExtensionOptions): HeadroomConfig {
 		dedupe: overrides.dedupe ?? envBoolean("PI_HEADROOM_DEDUPE", true),
 		mode,
 		minChars: overrides.minChars ?? envPositiveInteger("PI_HEADROOM_MIN_CHARS", DEFAULT_MIN_CHARS),
-		maxLines: overrides.maxLines ?? envPositiveInteger("PI_HEADROOM_MAX_LINES", DEFAULT_MAX_LINES),
-		maxItems: overrides.maxItems ?? envPositiveInteger("PI_HEADROOM_MAX_ITEMS", DEFAULT_MAX_ITEMS),
+		maxLines: overrides.maxLines ?? envPositiveInteger("PI_HEADROOM_MAX_LINES", REDUCTION_DEFAULTS.maxLines),
+		maxItems: overrides.maxItems ?? envPositiveInteger("PI_HEADROOM_MAX_ITEMS", REDUCTION_DEFAULTS.maxItems),
 		maxSearchMatches:
 			overrides.maxSearchMatches ??
-			envPositiveInteger("PI_HEADROOM_MAX_SEARCH_MATCHES", DEFAULT_MAX_SEARCH_MATCHES),
-		maxChars: overrides.maxChars ?? envPositiveInteger("PI_HEADROOM_MAX_CHARS", DEFAULT_MAX_CHARS),
+			envPositiveInteger("PI_HEADROOM_MAX_SEARCH_MATCHES", REDUCTION_DEFAULTS.maxSearchMatches),
+		maxChars: overrides.maxChars ?? envPositiveInteger("PI_HEADROOM_MAX_CHARS", REDUCTION_DEFAULTS.maxChars),
 		dedupeMinChars:
 			overrides.dedupeMinChars ?? envPositiveInteger("PI_HEADROOM_DEDUPE_MIN_CHARS", DEFAULT_DEDUPE_MIN_CHARS),
 	};
@@ -146,15 +143,29 @@ function textFromContent(content: unknown): string {
 		.join("\n");
 }
 
-function textFromMessage(message: RetentionMessage): string {
-	if (message.role !== "user") return "";
+function textFromMessage(message: unknown): string {
+	if (!isRecord(message) || message.role !== "user") return "";
 	return textFromContent(message.content);
+}
+
+function queryTail(text: string): string {
+	return text.slice(-8_000);
+}
+
+function latestUserQueryFromEntries(entries: readonly unknown[]): string {
+	let latest = "";
+	for (const entry of entries) {
+		if (!isRecord(entry) || entry.type !== "message" || !isRecord(entry.message)) continue;
+		const text = textFromMessage(entry.message);
+		if (text) latest = text;
+	}
+	return queryTail(latest);
 }
 
 function latestUserQuery(messages: readonly RetentionMessage[]): string {
 	for (let index = messages.length - 1; index >= 0; index--) {
 		const text = textFromMessage(messages[index]!);
-		if (text) return text.slice(-8_000);
+		if (text) return queryTail(text);
 	}
 	return "";
 }
@@ -397,7 +408,13 @@ export function createToolOutputRetention({
 	};
 
 	return {
-		rewriteFresh(input: FreshToolOutput): FreshToolOutputRewrite {
+		rewriteFresh(input: FreshToolOutput, contextEntries: readonly unknown[]): FreshToolOutputRewrite {
+			let query = "";
+			try {
+				query = latestUserQueryFromEntries(contextEntries);
+			} catch {
+				// Malformed live context must not prevent reduction.
+			}
 			const config = resolveConfig(overrides);
 			if (!config.enabled) return { changed: false, content: input.content, details: input.details };
 			let content = input.content;
@@ -416,7 +433,7 @@ export function createToolOutputRetention({
 					input.input,
 					input.isError,
 					blockIndex,
-					input.query,
+					query,
 					config,
 					store,
 					() => {},

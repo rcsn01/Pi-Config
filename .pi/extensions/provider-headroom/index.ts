@@ -1,4 +1,4 @@
-import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { registerToolOutputRetention, type ToolOutputRetention } from "../_shared/tool-output-retention.ts";
 import {
@@ -18,40 +18,6 @@ export {
 	RETRIEVE_TOOL_NAME,
 	type HeadroomExtensionOptions,
 } from "./tool-output-retention.ts";
-
-type PiAgentMessage = ContextEvent["messages"][number];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function textFromContent(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.filter((block): block is { type: "text"; text: string } => isRecord(block) && block.type === "text" && typeof block.text === "string")
-		.map((block) => block.text)
-		.join("\n");
-}
-
-function textFromMessage(message: PiAgentMessage): string {
-	if (message.role !== "user") return "";
-	return textFromContent(message.content);
-}
-
-function latestUserQueryFromSession(ctx: { sessionManager: { buildContextEntries(): unknown[] } }): string {
-	let latest = "";
-	try {
-		for (const entry of ctx.sessionManager.buildContextEntries()) {
-			if (!isRecord(entry) || entry.type !== "message" || !isRecord(entry.message)) continue;
-			const text = textFromMessage(entry.message as unknown as PiAgentMessage);
-			if (text) latest = text;
-		}
-	} catch {
-		return "";
-	}
-	return latest.slice(-8_000);
-}
 
 function normalizedHash(hash: string): string {
 	return hash.trim().replace(/^hash=/i, "").toLowerCase();
@@ -142,14 +108,22 @@ export function createHeadroomExtension(overrides: HeadroomExtensionOptions = {}
 		pi.on("tool_result", async (event, ctx) => {
 			if (!retention || event.toolName === RETRIEVE_TOOL_NAME) return;
 			try {
-				const rewritten = retention.rewriteFresh({
-					toolName: event.toolName,
-					input: event.input,
-					isError: event.isError,
-					content: event.content,
-					details: event.details,
-					query: latestUserQueryFromSession(ctx),
-				});
+				let contextEntries: readonly unknown[] = [];
+				try {
+					contextEntries = ctx.sessionManager.buildContextEntries();
+				} catch {
+					// Live context is optional; reduction must still run without it.
+				}
+				const rewritten = retention.rewriteFresh(
+					{
+						toolName: event.toolName,
+						input: event.input,
+						isError: event.isError,
+						content: event.content,
+						details: event.details,
+					},
+					contextEntries,
+				);
 				return rewritten.changed ? { content: rewritten.content, details: rewritten.details } : undefined;
 			} catch {
 				return undefined;

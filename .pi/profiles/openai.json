@@ -3,8 +3,8 @@
     "profiles": {
       "normal": {
         "provider": "openai-codex",
-        "modelId": "gpt-5.6-luna",
-        "thinkingLevel": "max",
+        "modelId": "gpt-5.6-sol",
+        "thinkingLevel": "medium",
         "contextWindow": 272000
       },
       "plan": {

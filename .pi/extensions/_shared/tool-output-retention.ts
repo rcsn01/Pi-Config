@@ -10,7 +10,6 @@ export interface FreshToolOutput {
 	isError: boolean;
 	content: ToolResultContent;
 	details: unknown;
-	query: string;
 }
 
 export interface FreshToolOutputRewrite {
@@ -29,7 +28,8 @@ export type RetentionRetrieval =
 	| { found: false; hash: string };
 
 export interface ToolOutputRetention {
-	rewriteFresh(input: FreshToolOutput): FreshToolOutputRewrite;
+	/** Raw material for the fresh query is supplied as live Session context entries. */
+	rewriteFresh(input: FreshToolOutput, contextEntries: readonly unknown[]): FreshToolOutputRewrite;
 	projectHistory(messages: readonly RetentionMessage[]): HistoryProjection;
 	retrieve(hash: string): RetentionRetrieval;
 }

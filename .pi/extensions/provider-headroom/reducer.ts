@@ -39,10 +39,12 @@ const CODE_KEYWORD_RE =
 	/\b(?:import|export|from|function|class|interface|type|const|let|var|def|async|await|return|package|func|fn|struct|impl|public|private)\b/;
 const CODE_PUNCTUATION_RE = /[{};][ \t]*(?:$|\/\/|#)/;
 
-const DEFAULT_MAX_LINES = 120;
-const DEFAULT_MAX_ITEMS = 20;
-const DEFAULT_MAX_SEARCH_MATCHES = 40;
-const DEFAULT_MAX_CHARS = 12_000;
+export const REDUCTION_DEFAULTS = {
+	maxLines: 120,
+	maxItems: 20,
+	maxSearchMatches: 40,
+	maxChars: 12_000,
+} as const;
 
 function unchanged(text: string, kind: ReductionKind, strategy = "passthrough"): ReductionResult {
 	return {
@@ -227,7 +229,7 @@ function reduceJson(
 		};
 	}
 
-	const maxItems = Math.max(4, options.maxItems ?? DEFAULT_MAX_ITEMS);
+	const maxItems = Math.max(4, options.maxItems ?? REDUCTION_DEFAULTS.maxItems);
 	if (value.length <= maxItems) {
 		return {
 			text: base,
@@ -337,7 +339,7 @@ function reduceSearch(
 	rows: SearchRow[],
 	options: ReductionOptions,
 ): ReductionResult {
-	const limit = Math.max(1, options.maxSearchMatches ?? DEFAULT_MAX_SEARCH_MATCHES);
+	const limit = Math.max(1, options.maxSearchMatches ?? REDUCTION_DEFAULTS.maxSearchMatches);
 	if (rows.length <= limit || options.allowLossy === false || options.mode === "lossless") {
 		return {
 			text: base,
@@ -440,8 +442,11 @@ function reduceLines(
 	options: ReductionOptions,
 ): ReductionResult {
 	const lines = base.split("\n");
-	const limit = kind === "search" ? options.maxSearchMatches ?? DEFAULT_MAX_SEARCH_MATCHES : options.maxLines ?? DEFAULT_MAX_LINES;
-	const tooLong = lines.length > limit || base.length > (options.maxChars ?? DEFAULT_MAX_CHARS);
+	const limit =
+		kind === "search"
+			? options.maxSearchMatches ?? REDUCTION_DEFAULTS.maxSearchMatches
+			: options.maxLines ?? REDUCTION_DEFAULTS.maxLines;
+	const tooLong = lines.length > limit || base.length > (options.maxChars ?? REDUCTION_DEFAULTS.maxChars);
 	if (!tooLong || options.allowLossy === false || options.mode === "lossless") {
 		return {
 			text: base,
