@@ -39,7 +39,7 @@
 		"test:features": "vitest run extensions/config-feature-flag/catalog.test.ts extensions/config-feature-flag/index.test.ts extensions/ui-model-selector/index.test.ts extensions/ui-model-selector/model-selection-lifecycle.test.ts extensions/ui-context/context-model.test.ts extensions/ui-context/index.test.ts extensions/ui-context/usage-tables.test.ts",
 		"test:profiles": "vitest run extensions/config-profiles",
 		"test:clear": "vitest run extensions/ui-clear",
-		"test:config-skill": "vitest run extensions/config-skill/index.test.ts extensions/config-skill/state.test.ts extensions/config-skill/diff.test.ts extensions/config-skill/git.test.ts",
+		"test:config-skill": "vitest run extensions/config-skill/index.test.ts extensions/config-skill/skill-update-lifecycle.test.ts extensions/config-skill/ui.test.ts extensions/config-skill/state.test.ts extensions/config-skill/diff.test.ts extensions/config-skill/git.test.ts",
 		"test:provider-codex": "vitest run extensions/provider-codex",
 		"test:provider-ollama": "vitest run extensions/provider-ollama",
 		"test:headroom": "vitest run extensions/provider-headroom",

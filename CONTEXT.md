@@ -224,6 +224,15 @@ extension.
   mode's model selection, constructed from an immutable Session profile binding;
   it preserves other modes and unrelated Settings document fields.
 
+## Skill management
+
+- **Skill update lifecycle**: the deep in-process module in `config-skill/` that
+  owns local and upstream Skill state, refresh and apply ordering, snapshot
+  replacement, confirmation requirements, persistence timing, and expected
+  failure outcomes for background checks and `/update-skill`. Pi command and TUI
+  rendering stay in the interaction adapter; Git process execution stays behind
+  an internal seam.
+
 ## Advisor tooling
 
 - **Advisor execution outcome** — the structured result of one Advisor run:

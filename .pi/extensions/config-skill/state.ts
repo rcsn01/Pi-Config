@@ -42,25 +42,6 @@ export function getPinned(state: UpdateSkillState, name: string): string | undef
 	return state.skills[name]?.commit;
 }
 
-export function setPinned(state: UpdateSkillState, name: string, commit: string): void {
-	state.skills[name] = { commit };
-}
-
-export function unpin(state: UpdateSkillState, name: string): void {
-	delete state.skills[name];
-}
-
-/**
- * Whether a background check should run now: never ran, or the last one is
- * older than `cooldownMs`. Manual `/update-skill` always checks regardless.
- */
-export function shouldCheck(state: UpdateSkillState, now: number, cooldownMs: number): boolean {
-	if (state.lastCheckedAt === null) return true;
-	const last = Date.parse(state.lastCheckedAt);
-	if (Number.isNaN(last)) return true;
-	return now - last > cooldownMs;
-}
-
 function isState(value: unknown): value is UpdateSkillState {
 	if (typeof value !== "object" || value === null) return false;
 	const record = value as Record<string, unknown>;
