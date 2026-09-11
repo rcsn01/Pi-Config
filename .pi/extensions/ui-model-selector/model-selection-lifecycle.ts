@@ -2,12 +2,14 @@ import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import { COMPACT_THRESHOLD, SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
 import {
-	resolveModelContext,
 	type ModelSelectionMode,
 	type ModelSelectionSettings,
 	type StoredModelSelectionSettings,
 } from "../_shared/model-selection.ts";
-import { ModelSelectionNotSavedError } from "../_shared/model-selection-runtime.ts";
+import {
+	ModelSelectionNotSavedError,
+	type ModelSelectionRuntime,
+} from "../_shared/model-selection-runtime.ts";
 import {
 	type ModelPickerOptions,
 	type ModelPickerSelection,
@@ -75,16 +77,6 @@ export interface ModelSelectionLifecycleAdapter {
 	loadSelection(mode: ModelSelectionMode): Promise<StoredModelSelectionSettings | undefined>;
 	getRuntimeState(): ModelSelectionRuntimeState;
 	pick(options: ModelPickerOptions): Promise<ModelPickerSelection | undefined>;
-	applyStoredSelection(
-		selection: StoredModelSelectionSettings,
-		label: string,
-	): Promise<ModelSelectionSettings>;
-	applyPickedSelection(
-		selection: ModelPickerSelection,
-		mode: ModelSelectionMode,
-	): Promise<ModelSelectionSettings>;
-	setModel(model: Model<Api>): Promise<boolean>;
-	setThinkingLevel(level: ModelThinkingLevel): void;
 	confirmContextReduction(reduction: ContextReduction): Promise<boolean>;
 	isIdle(): boolean;
 	requestCompaction(customInstructions: string): void;
@@ -132,9 +124,19 @@ function pickerPreviousSelection(
 	};
 }
 
+export interface ModelSelectionLifecycleDependencies {
+	/** Session facts and policies: profile reads, picker, reduction confirmation,
+	 *  compaction, notices, and outcomes. */
+	adapter: ModelSelectionLifecycleAdapter;
+	/** The model-selection runtime module: owns the stored→runtime mapping and
+	 *  the runtime commits this lifecycle decides when to run. */
+	runtime: ModelSelectionRuntime;
+}
+
 export function createModelSelectionLifecycle(
-	adapter: ModelSelectionLifecycleAdapter,
+	dependencies: ModelSelectionLifecycleDependencies,
 ): ModelSelectionLifecycle {
+	const { adapter, runtime: modelRuntime } = dependencies;
 	let phase: "active" | "disposing" | "disposed" = "active";
 	const operations = new Set<Promise<unknown>>();
 	let disposal: Promise<void> | undefined;
@@ -174,10 +176,10 @@ export function createModelSelectionLifecycle(
 	async function selectInteractivelyCore(
 		input: InteractiveModelSelectionInput,
 	): Promise<ModelSelectionLifecycleOutcome> {
-		const runtime = adapter.getRuntimeState();
+		const state = adapter.getRuntimeState();
 		let previous: ModelPickerPreviousSelection | undefined;
 		try {
-			previous = pickerPreviousSelection(await adapter.loadSelection(input.mode), runtime.thinkingLevel);
+			previous = pickerPreviousSelection(await adapter.loadSelection(input.mode), state.thinkingLevel);
 		} catch (cause) {
 			adapter.reportNotice({ kind: "saved-selection-read-failed", cause });
 		}
@@ -185,29 +187,31 @@ export function createModelSelectionLifecycle(
 		const picked = await adapter.pick({
 			initialQuery: input.initialQuery.trim(),
 			previous: previous ?? {
-				provider: runtime.model?.provider,
-				modelId: runtime.model?.id,
-				thinkingLevel: runtime.thinkingLevel,
+				provider: state.model?.provider,
+				modelId: state.model?.id,
+				thinkingLevel: state.thinkingLevel,
 			},
-			currentModel: runtime.model,
+			currentModel: state.model,
 		});
 		if (!picked) return { kind: "unchanged", reason: "picker-cancelled" };
 
-		const isReduction = runtime.model !== undefined &&
-			picked.model.contextWindow < runtime.model.contextWindow;
+		const isReduction = state.model !== undefined &&
+			picked.model.contextWindow < state.model.contextWindow;
 		const needsCompaction = isReduction &&
-			runtime.usageTokens !== null && runtime.usageTokens !== undefined &&
-			runtime.usageTokens >= picked.model.contextWindow * COMPACT_THRESHOLD;
+			state.usageTokens !== null && state.usageTokens !== undefined &&
+			state.usageTokens >= picked.model.contextWindow * COMPACT_THRESHOLD;
 		if (needsCompaction) {
 			const approved = await adapter.confirmContextReduction({
-				usageTokens: runtime.usageTokens!,
+				usageTokens: state.usageTokens!,
 				contextWindow: picked.model.contextWindow,
 			});
 			if (!approved) return { kind: "unchanged", reason: "context-reduction-declined" };
 		}
 
 		try {
-			const selection = await adapter.applyPickedSelection(picked, input.mode);
+			const selection = await modelRuntime.applyPicked(picked.model, picked.thinkingLevel, {
+				mode: input.mode,
+			});
 			return {
 				kind: "interactive-applied",
 				selection,
@@ -229,45 +233,14 @@ export function createModelSelectionLifecycle(
 	async function synchronizeContext(
 		input: ModelSelectionSessionInput,
 	): Promise<ModelSelectionLifecycleOutcome> {
-		const runtime = adapter.getRuntimeState();
-		const currentModel = runtime.model;
+		const state = adapter.getRuntimeState();
+		const currentModel = state.model;
 		if (!currentModel) return { kind: "unchanged", reason: "no-current-model" };
 
-		const restoredModel = resolveModelContext(currentModel);
 		const profile = await adapter.loadSelection(input.mode);
-		const profileContext = profile && typeof profile.contextWindow === "number" &&
-				currentModel.provider === profile.provider && currentModel.id === profile.modelId
-			? // Stored context windows are explicit user choices; apply them
-				// verbatim instead of re-resolving pi's 128K undeclared-context
-				// sentinel, which would silently rewrite a 128K selection to 256K.
-				profile.contextWindow
-			: restoredModel.contextWindow;
-		const targetModel = profileContext !== restoredModel.contextWindow
-			? { ...restoredModel, contextWindow: profileContext }
-			: restoredModel;
-		// A concrete profile thinking level must survive the model sync: pi's
-		// setModel imperatively applies per-model overrides or the global
-		// default, which would otherwise win over the profile's effort level.
-		const profileThinkingLevel = profile && profile.thinkingLevel !== DEFAULT_SENTINEL
-			? profile.thinkingLevel
-			: undefined;
-		if (targetModel === currentModel) {
-			if (profileThinkingLevel !== undefined && runtime.thinkingLevel !== undefined &&
-					runtime.thinkingLevel !== profileThinkingLevel) {
-				adapter.setThinkingLevel(profileThinkingLevel);
-				return { kind: "context-synchronized", model: currentModel };
-			}
-			return { kind: "unchanged", reason: "context-current" };
-		}
-		if (!(await adapter.setModel(targetModel))) {
-			throw new Error(`No configured authentication for ${targetModel.provider}/${targetModel.id}`);
-		}
-		const afterModel = adapter.getRuntimeState();
-		if (profileThinkingLevel !== undefined && afterModel.thinkingLevel !== undefined &&
-				afterModel.thinkingLevel !== profileThinkingLevel) {
-			adapter.setThinkingLevel(profileThinkingLevel);
-		}
-		return { kind: "context-synchronized", model: targetModel };
+		const result = await modelRuntime.synchronize(currentModel, profile);
+		if (result.kind === "unchanged") return { kind: "unchanged", reason: "context-current" };
+		return { kind: "context-synchronized", model: result.model };
 	}
 
 	async function initializeSession(
@@ -277,7 +250,7 @@ export function createModelSelectionLifecycle(
 			try {
 				const normalProfile = await adapter.loadSelection("normal");
 				if (normalProfile) {
-					const selection = await adapter.applyStoredSelection(normalProfile, "Normal profile");
+					const selection = await modelRuntime.applyStored(normalProfile, { label: "Normal profile" });
 					return { kind: "startup-profile-applied", selection };
 				}
 			} catch (cause) {

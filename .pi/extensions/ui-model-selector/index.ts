@@ -89,7 +89,6 @@ function createPiModelSelectionLifecycleAdapter(
 	ctx: ExtensionContext,
 	persistence: ModelSelectionPersistence,
 ): ModelSelectionLifecycleAdapter {
-	const runtime = createPiModelRuntime(pi, ctx, { saver: persistence });
 	return {
 		loadSelection: (mode) => persistence.load(mode),
 		getRuntimeState: () => ({
@@ -98,14 +97,6 @@ function createPiModelSelectionLifecycleAdapter(
 			usageTokens: ctx.getContextUsage()?.tokens,
 		}),
 		pick: (options) => pickModelConfiguration(ctx, options),
-		applyStoredSelection: (selection, label) => runtime.applyStored(selection, { label }),
-		applyPickedSelection: (selection, mode) => runtime.applyPicked(
-			selection.model,
-			selection.thinkingLevel,
-			{ mode },
-		),
-		setModel: (model) => pi.setModel(model),
-		setThinkingLevel: (level) => pi.setThinkingLevel(level),
 		confirmContextReduction: (reduction: ContextReduction) => ctx.ui.confirm(
 			"Context window reduction",
 			`This session uses about ${formatTokenCount(reduction.usageTokens)} tokens, at or above the auto-compact threshold of the ${formatTokenCount(reduction.contextWindow)} window. Apply the selection and compact now?`,
@@ -150,9 +141,10 @@ export function createModelSelectorExtension(
 					const persistence = persistenceFactory(binding.settingsPath);
 					if (ctx.mode !== "tui") return;
 
-					const lifecycle = createModelSelectionLifecycle(
-						createPiModelSelectionLifecycleAdapter(pi, ctx, persistence),
-					);
+					const lifecycle = createModelSelectionLifecycle({
+						adapter: createPiModelSelectionLifecycleAdapter(pi, ctx, persistence),
+						runtime: createPiModelRuntime(pi, ctx, { saver: persistence }),
+					});
 					activeLifecycle = lifecycle;
 					const handler = async (args: string): Promise<void> => {
 						try {
