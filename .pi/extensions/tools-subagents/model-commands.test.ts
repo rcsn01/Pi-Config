@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSubagentsCommand } from "./model-commands.ts";
+import { createSubagentsCommand as createSubagentsCommandImplementation } from "./model-commands.ts";
 import { agent, memoryConfigStore, memoryRegistry } from "./test-harness.ts";
 
 const gpt = {
@@ -64,6 +64,15 @@ function context(options: ContextOptions = {}) {
 }
 
 /** Capture the rendered lines of every select screen while driving scripted selections. */
+function createSubagentsCommand(
+	dependencies: Parameters<typeof createSubagentsCommandImplementation>[0] = {},
+) {
+	return createSubagentsCommandImplementation({
+		...dependencies,
+		childExecution: dependencies.childExecution ?? { inspectTools: vi.fn(() => []) },
+	});
+}
+
 function screenCustom(selections: Array<string | undefined>) {
 	const queue = [...selections];
 	const screens: string[] = [];
@@ -93,6 +102,63 @@ describe("subagents model command", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Subagents status:"), "info");
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Max concurrency: 2"), "info");
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("model: main → anthropic/main"), "info");
+	});
+
+	it("renders structured child-tool diagnostics without command-side policy", async () => {
+		const workerTools = ["read", "unknown", "safe_bash"];
+		const inspectTools = vi.fn(() => [
+			{ kind: "unmapped-tool" as const, tool: "unknown" },
+			{ kind: "missing-tool-extension" as const, tool: "safe_bash", path: "/extensions/safe-bash.ts" },
+			{ kind: "missing-runtime-extension" as const, extension: "session-compaction", path: "/extensions/session-compaction.ts" },
+		]);
+		const command = createSubagentsCommand({
+			registry: memoryRegistry([agent({ tools: workerTools })]),
+			config: memoryConfigStore({ maxConcurrency: 3 }),
+			childExecution: { inspectTools },
+		});
+		const ctx = context();
+
+		await command.handler("status", ctx);
+
+		const message = ctx.ui.notify.mock.calls.at(-1)?.[0] as string;
+		expect(inspectTools).toHaveBeenCalledOnce();
+		expect(inspectTools).toHaveBeenCalledWith(workerTools);
+		expect(message).toContain("Max concurrency: 3");
+		expect(message).toContain("model: openai/test-model");
+		expect(message).toContain("thinking: Pi default");
+		expect(message).toContain("context: Pi default");
+		expect(message).toContain("tools: read, unknown, safe_bash");
+		expect(message).toContain("  missing: unknown (unmapped), safe_bash (/extensions/safe-bash.ts), session-compaction (/extensions/session-compaction.ts)");
+		expect(message).not.toContain("Extensions dir:");
+	});
+
+	it("omits missing diagnostics when child tools are available", async () => {
+		const inspectTools = vi.fn(() => []);
+		const command = createSubagentsCommand({
+			registry: memoryRegistry([agent()]),
+			config: memoryConfigStore(),
+			childExecution: { inspectTools },
+		});
+		const ctx = context();
+
+		await command.handler("status", ctx);
+
+		expect(ctx.ui.notify.mock.calls.at(-1)?.[0]).not.toContain("missing:");
+	});
+
+	it("inspects each displayed agent's declared tool array once", async () => {
+		const worker = agent();
+		const explorer = agent({ name: "explorer", tools: ["read", "repo_query"] });
+		const inspectTools = vi.fn(() => []);
+		const command = createSubagentsCommand({
+			registry: memoryRegistry([worker, explorer]),
+			config: memoryConfigStore(),
+			childExecution: { inspectTools },
+		});
+
+		await command.handler("status", context());
+
+		expect(inspectTools.mock.calls).toEqual([[worker.tools], [explorer.tools]]);
 	});
 
 	it("shows Pi defaults without leaking undefined values", async () => {

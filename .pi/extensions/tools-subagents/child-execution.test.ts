@@ -1,12 +1,18 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getObservabilityService, resetObservabilityServiceForTests } from "../_shared/observability.ts";
+import { loadAgents } from "./agent-registry.ts";
 import { createSubagentChildExecution } from "./child-execution.ts";
 import { agent, emitProcessResult, fakeProcess, spawnHarness } from "./test-harness.ts";
 
 const tempRoots: string[] = [];
+const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const EXT_BASE = path.dirname(EXT_DIR);
+const SAFE_BASH_PATH = path.join(EXT_DIR, "tools", "safe-bash.ts");
+const SESSION_COMPACTION_PATH = path.join(EXT_BASE, "session-compaction", "index.ts");
 
 function tempRoot(): string {
 	const directory = mkdtempSync(path.join(os.tmpdir(), "subagent-child-execution-test-"));
@@ -18,6 +24,10 @@ async function waitForProcess(processes: unknown[]): Promise<void> {
 	await vi.waitFor(() => expect(processes).toHaveLength(1));
 }
 
+function extensionArguments(args: readonly string[]): string[] {
+	return args.flatMap((value, index) => value === "--extension" ? [args[index + 1]!] : []);
+}
+
 beforeEach(() => resetObservabilityServiceForTests());
 
 afterEach(() => {
@@ -26,6 +36,211 @@ afterEach(() => {
 });
 
 describe("Subagent child execution", () => {
+	it("inspects the complete known tool vocabulary", () => {
+		const execution = createSubagentChildExecution({ pathExists: () => true });
+
+		expect(execution.inspectTools([
+			"read", "write", "edit", "bash", "grep", "find", "ls",
+			"ddg_search", "ddg_fetch", "safe_bash", "repo_query",
+		])).toEqual([]);
+	});
+
+	it("finds every bundled agent declaration launchable in this checkout", () => {
+		const execution = createSubagentChildExecution();
+
+		expect(loadAgents()).toHaveLength(5);
+		for (const bundled of loadAgents()) {
+			expect(execution.inspectTools(bundled.tools), bundled.name).toEqual([]);
+		}
+	});
+
+	it("rejects an unmapped tool with the same inspection meaning before child lifetime", async () => {
+		const root = tempRoot();
+		const spawn = spawnHarness();
+		const progress = vi.fn();
+		const execution = createSubagentChildExecution({
+			pathExists: () => true,
+			spawnProcess: spawn.spawnProcess,
+			tempRoot: root,
+		});
+		const tools = ["read", "unknown_tool"];
+
+		expect(execution.inspectTools(tools)).toEqual([
+			{ kind: "unmapped-tool", tool: "unknown_tool" },
+		]);
+		await expect(execution.execute({
+			agent: agent({ tools }),
+			task: "inspect",
+			cwd: "/workspace",
+			launch: { model: "openai/test-model" },
+			onProgress: progress,
+		})).rejects.toThrow("Subagent worker cannot launch: tool unknown_tool is unmapped");
+		expect(spawn.spawnProcess).not.toHaveBeenCalled();
+		expect(progress).not.toHaveBeenCalled();
+		expect(readdirSync(root)).toEqual([]);
+	});
+
+	it("matches unknown tool names exactly without inherited object properties", () => {
+		const execution = createSubagentChildExecution({ pathExists: () => true });
+		const tools = ["", " read", "READ", "toString", "constructor", "__proto__"];
+
+		expect(execution.inspectTools(tools)).toEqual([
+			{ kind: "unmapped-tool", tool: "" },
+			{ kind: "unmapped-tool", tool: " read" },
+			{ kind: "unmapped-tool", tool: "READ" },
+			{ kind: "unmapped-tool", tool: "toString" },
+			{ kind: "unmapped-tool", tool: "constructor" },
+			{ kind: "unmapped-tool", tool: "__proto__" },
+		]);
+	});
+
+	it("rejects a missing mapped extension before spawn or private files", async () => {
+		const root = tempRoot();
+		const spawn = spawnHarness();
+		const execution = createSubagentChildExecution({
+			pathExists: (candidate) => candidate !== SAFE_BASH_PATH,
+			spawnProcess: spawn.spawnProcess,
+			tempRoot: root,
+		});
+
+		expect(execution.inspectTools(["safe_bash"])).toEqual([{
+			kind: "missing-tool-extension",
+			tool: "safe_bash",
+			path: SAFE_BASH_PATH,
+		}]);
+		await expect(execution.execute({
+			agent: agent({ tools: ["safe_bash"] }),
+			task: "inspect",
+			cwd: "/workspace",
+			launch: { model: "openai/test-model" },
+		})).rejects.toThrow(`tool safe_bash extension is missing: ${SAFE_BASH_PATH}`);
+		expect(spawn.spawnProcess).not.toHaveBeenCalled();
+		expect(readdirSync(root)).toEqual([]);
+	});
+
+	it("rejects a missing mandatory runtime extension before spawn", async () => {
+		const spawn = spawnHarness();
+		const execution = createSubagentChildExecution({
+			pathExists: (candidate) => candidate !== SESSION_COMPACTION_PATH,
+			spawnProcess: spawn.spawnProcess,
+		});
+
+		expect(execution.inspectTools([])).toEqual([{
+			kind: "missing-runtime-extension",
+			extension: "session-compaction",
+			path: SESSION_COMPACTION_PATH,
+		}]);
+		await expect(execution.execute({
+			agent: agent({ tools: [] }),
+			task: "inspect",
+			cwd: "/workspace",
+			launch: { model: "openai/test-model" },
+		})).rejects.toThrow(`runtime extension session-compaction is missing: ${SESSION_COMPACTION_PATH}`);
+		expect(spawn.spawnProcess).not.toHaveBeenCalled();
+	});
+
+	it("preserves runtime-first and requested-tool diagnostic order", async () => {
+		const execution = createSubagentChildExecution({
+			pathExists: (candidate) => candidate !== SESSION_COMPACTION_PATH && candidate !== SAFE_BASH_PATH,
+		});
+		const tools = ["unknown_tool", "safe_bash"];
+		const diagnostics = [
+			{ kind: "missing-runtime-extension", extension: "session-compaction", path: SESSION_COMPACTION_PATH },
+			{ kind: "unmapped-tool", tool: "unknown_tool" },
+			{ kind: "missing-tool-extension", tool: "safe_bash", path: SAFE_BASH_PATH },
+		] as const;
+
+		expect(execution.inspectTools(tools)).toEqual(diagnostics);
+		await expect(execution.execute({
+			agent: agent({ tools }),
+			task: "inspect",
+			cwd: "/workspace",
+			launch: { model: "openai/test-model" },
+		})).rejects.toThrow(
+			`Subagent worker cannot launch: runtime extension session-compaction is missing: ${SESSION_COMPACTION_PATH}; tool unknown_tool is unmapped; tool safe_bash extension is missing: ${SAFE_BASH_PATH}`,
+		);
+	});
+
+	it("reports every repeated missing custom declaration", () => {
+		const execution = createSubagentChildExecution({
+			pathExists: (candidate) => candidate !== SAFE_BASH_PATH,
+		});
+		const diagnostic = { kind: "missing-tool-extension", tool: "safe_bash", path: SAFE_BASH_PATH };
+
+		expect(execution.inspectTools(["safe_bash", "safe_bash"])).toEqual([
+			diagnostic,
+			diagnostic,
+		]);
+	});
+
+	it("propagates path-check failures by identity before child lifetime", async () => {
+		const root = tempRoot();
+		const spawn = spawnHarness();
+		const sentinel = new Error("filesystem unavailable");
+		const execution = createSubagentChildExecution({
+			pathExists: () => { throw sentinel; },
+			spawnProcess: spawn.spawnProcess,
+			tempRoot: root,
+		});
+
+		let inspectionError: unknown;
+		try {
+			execution.inspectTools(["read"]);
+		} catch (error) {
+			inspectionError = error;
+		}
+		expect(inspectionError).toBe(sentinel);
+		await expect(execution.execute({
+			agent: agent({ tools: ["read"] }),
+			task: "inspect",
+			cwd: "/workspace",
+			launch: { model: "openai/test-model" },
+		})).rejects.toBe(sentinel);
+		expect(spawn.spawnProcess).not.toHaveBeenCalled();
+		expect(readdirSync(root)).toEqual([]);
+	});
+
+	it("launches an empty tool plan with only the mandatory runtime extension", async () => {
+		const spawn = spawnHarness();
+		const execution = createSubagentChildExecution({ spawnProcess: spawn.spawnProcess, tempRoot: tempRoot() });
+		const promise = execution.execute({
+			agent: agent({ tools: [] }),
+			task: "inspect",
+			cwd: "/workspace",
+			launch: { model: "openai/test-model" },
+		});
+		await waitForProcess(spawn.processes);
+		const [, args] = spawn.spawnProcess.mock.calls[0];
+		expect(args).toContain("--no-extensions");
+		expect(args).toContain("--no-tools");
+		expect(args).not.toContain("--tools");
+		expect(extensionArguments(args)).toEqual([SESSION_COMPACTION_PATH]);
+		spawn.processes[0].emit("close", 0);
+		await promise;
+	});
+
+	it("preserves repeated tool order while deduplicating extension paths", async () => {
+		const spawn = spawnHarness();
+		const execution = createSubagentChildExecution({ spawnProcess: spawn.spawnProcess, tempRoot: tempRoot() });
+		const tools = ["safe_bash", "read", "safe_bash", "repo_query", "read"];
+		const promise = execution.execute({
+			agent: agent({ tools }),
+			task: "inspect",
+			cwd: "/workspace",
+			launch: { model: "openai/test-model" },
+		});
+		await waitForProcess(spawn.processes);
+		const [, args] = spawn.spawnProcess.mock.calls[0];
+		expect(args[args.indexOf("--tools") + 1]).toBe(tools.join(","));
+		expect(extensionArguments(args)).toEqual([
+			SESSION_COMPACTION_PATH,
+			SAFE_BASH_PATH,
+			path.join(EXT_DIR, "tools", "repo-query.ts"),
+		]);
+		spawn.processes[0].emit("close", 0);
+		await promise;
+	});
+
 	it("builds the child command and returns output from split stdout chunks", async () => {
 		const spawn = spawnHarness();
 		const execution = createSubagentChildExecution({ spawnProcess: spawn.spawnProcess, tempRoot: tempRoot() });

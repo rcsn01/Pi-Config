@@ -111,7 +111,11 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		wireSessionProfileBinding(pi, profileInitialization);
 		pi.on("model_select", (event) => configStore.rememberMainModel(event.model));
 
-		pi.registerCommand("subagents", createSubagentsCommand({ registry, config: configStore }));
+		pi.registerCommand("subagents", createSubagentsCommand({
+			registry,
+			config: configStore,
+			childExecution,
+		}));
 
 		pi.registerTool({
 		name: "subagent",
