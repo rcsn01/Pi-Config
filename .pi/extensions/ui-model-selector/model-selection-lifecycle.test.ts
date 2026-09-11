@@ -229,11 +229,11 @@ describe("ModelSelectionLifecycle session initialization", () => {
 		expect(harness.adapter.loadSelection).toHaveBeenCalledTimes(2);
 	});
 
-	it("delegates synchronization with the current model and the mode's Profile", async () => {
+	it("delegates synchronization with the current model, the mode's Profile, and the pre-read thinking level", async () => {
 		const plan = { provider: "plan", modelId: "model", thinkingLevel: "low" as const, contextWindow: 128_000 };
 		const harness = createHarness({ selections: { plan } });
 		await initialize(harness, { reason: "reload", mode: "plan" });
-		expect(harness.runtime.synchronize).toHaveBeenCalledWith(currentModel, plan);
+		expect(harness.runtime.synchronize).toHaveBeenCalledWith(currentModel, plan, "medium");
 		expect(harness.calls).toEqual(["runtime", "load:plan", "synchronize"]);
 		expect(harness.runtime.applyStored).not.toHaveBeenCalled();
 	});

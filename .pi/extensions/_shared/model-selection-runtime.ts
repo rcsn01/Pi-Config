@@ -39,7 +39,6 @@ import {
 } from "./model-reference.ts";
 
 type StoredThinkingLevel = SupportedModelThinkingLevel;
-type StoredProfileValue = typeof DEFAULT_SENTINEL;
 
 /** Narrow port for the runtime facts the stored→runtime mapping commits to. */
 export interface ModelRuntimeFacts {
@@ -91,13 +90,18 @@ export interface ModelSelectionRuntime {
 	/** Sync path: reconcile the given current model with a stored profile. The derived target
 	 *  always shares provider/modelId with `currentModel` (setModel still runs whenever the
 	 *  derived target object differs), never queries the catalogue, and treats absent or sentinel
-	 *  profile fields as "keep current". The current model is a parameter, not a port read: the
-	 *  lifecycle has already read it for its `no-current-model` guard, and reusing that snapshot
-	 *  keeps today's single read — taken *before* the profile load — and leaves the no-model case
-	 *  with the caller, where it lives today. */
+	 *  profile fields as "keep current". The current model and `preReadThinkingLevel` are
+	 *  parameters, not port reads: the lifecycle has already read both in its single
+	 *  `getRuntimeState` snapshot — taken *before* the profile load — and reusing that snapshot
+	 *  keeps today's read pattern (one pre-load read, one fresh level read after `setModel`)
+	 *  and leaves the no-model case with the caller, where it lives today. */
 	synchronize(
 		currentModel: Model<Api>,
 		stored: StoredModelSelectionSettings | undefined,
+		/** The caller's pre-read runtime level — the snapshot taken before the
+		 *  profile load. Used verbatim when the derived target already matches;
+		 *  the module re-reads through the port only after setModel. */
+		preReadThinkingLevel: StoredThinkingLevel | undefined,
 	): Promise<ModelSynchronizationResult>;
 }
 
@@ -252,6 +256,7 @@ export function createModelSelectionRuntime(deps: {
 	async function synchronize(
 		currentModel: Model<Api>,
 		profile: StoredModelSelectionSettings | undefined,
+		preReadThinkingLevel: StoredThinkingLevel | undefined,
 	): Promise<ModelSynchronizationResult> {
 		const restoredModel = resolveModelContext(currentModel);
 		const profileContext = profile && typeof profile.contextWindow === "number" &&
@@ -271,9 +276,8 @@ export function createModelSelectionRuntime(deps: {
 			? profile.thinkingLevel
 			: undefined;
 		if (targetModel === currentModel) {
-			const currentThinkingLevel = facts.currentThinkingLevel();
-			if (profileThinkingLevel !== undefined && currentThinkingLevel !== undefined &&
-					currentThinkingLevel !== profileThinkingLevel) {
+			if (profileThinkingLevel !== undefined && preReadThinkingLevel !== undefined &&
+					preReadThinkingLevel !== profileThinkingLevel) {
 				facts.setThinkingLevel(profileThinkingLevel);
 				return { kind: "synchronized", model: currentModel };
 			}
