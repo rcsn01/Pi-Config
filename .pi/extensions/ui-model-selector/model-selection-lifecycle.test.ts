@@ -7,7 +7,11 @@ import {
 	type ModelSelectionSettings,
 	type StoredModelSelectionSettings,
 } from "../_shared/model-selection.ts";
-import { ModelSelectionNotSavedError } from "../_shared/model-selection-runtime.ts";
+import {
+	ModelSelectionNotSavedError,
+	type ModelSelectionRuntime,
+	type ModelSynchronizationResult,
+} from "../_shared/model-selection-runtime.ts";
 import type { ModelPickerSelection } from "../_shared/model-picker.ts";
 import {
 	createModelSelectionLifecycle,
@@ -54,7 +58,8 @@ function createHarness(options: {
 	appliedSelection?: ModelSelectionSettings;
 	confirm?: boolean;
 	idle?: boolean;
-	setModelResult?: boolean;
+	synchronizeResult?: ModelSynchronizationResult;
+	synchronizeError?: unknown;
 } = {}) {
 	const calls: string[] = [];
 	const notices: ModelSelectionLifecycleNotice[] = [];
@@ -78,24 +83,6 @@ function createHarness(options: {
 			calls.push("pick");
 			return Object.hasOwn(options, "picked") ? options.picked : picked;
 		}),
-		applyStoredSelection: vi.fn(async () => {
-			calls.push("apply-stored");
-			if (options.applyStoredError) throw options.applyStoredError;
-			return options.appliedSelection ?? applied;
-		}),
-		applyPickedSelection: vi.fn(async () => {
-			calls.push("apply-live");
-			if (options.applyPickedError) throw options.applyPickedError;
-			calls.push("persist");
-			return options.appliedSelection ?? applied;
-		}),
-		setModel: vi.fn(async () => {
-			calls.push("set-model");
-			return options.setModelResult ?? true;
-		}),
-		setThinkingLevel: vi.fn((level: ModelThinkingLevel) => {
-			calls.push(`set-thinking:${level}`);
-		}),
 		confirmContextReduction: vi.fn(async () => {
 			calls.push("confirm");
 			return options.confirm ?? true;
@@ -105,12 +92,31 @@ function createHarness(options: {
 		reportNotice: vi.fn((notice) => notices.push(notice)),
 		reportOutcome: vi.fn((outcome) => outcomes.push(outcome)),
 	};
+	const runtime: ModelSelectionRuntime = {
+		applyStored: vi.fn(async () => {
+			calls.push("apply-stored");
+			if (options.applyStoredError) throw options.applyStoredError;
+			return options.appliedSelection ?? applied;
+		}),
+		applyPicked: vi.fn(async () => {
+			calls.push("apply-live");
+			if (options.applyPickedError) throw options.applyPickedError;
+			calls.push("persist");
+			return options.appliedSelection ?? applied;
+		}),
+		synchronize: vi.fn(async (): Promise<ModelSynchronizationResult> => {
+			calls.push("synchronize");
+			if (options.synchronizeError) throw options.synchronizeError;
+			return options.synchronizeResult ?? { kind: "unchanged" };
+		}),
+	};
 	return {
 		adapter,
+		runtime,
 		calls,
 		notices,
 		outcomes,
-		lifecycle: createModelSelectionLifecycle(adapter),
+		lifecycle: createModelSelectionLifecycle({ adapter, runtime }),
 	};
 }
 
@@ -178,7 +184,7 @@ describe("ModelSelectionLifecycle session initialization", () => {
 		expect(harness.adapter.loadSelection).toHaveBeenCalledOnce();
 		expect(harness.adapter.loadSelection).toHaveBeenCalledWith("normal");
 		expect(harness.adapter.pick).not.toHaveBeenCalled();
-		expect(harness.adapter.applyPickedSelection).not.toHaveBeenCalled();
+		expect(harness.runtime.applyPicked).not.toHaveBeenCalled();
 	});
 
 	it("applies the normal Profile silently, even when Plan Mode is active", async () => {
@@ -188,7 +194,7 @@ describe("ModelSelectionLifecycle session initialization", () => {
 		const outcome = await initialize(harness, { mode: "plan" });
 		expect(outcome.kind).toBe("startup-profile-applied");
 		expect(harness.adapter.loadSelection).toHaveBeenCalledWith("normal");
-		expect(harness.adapter.applyStoredSelection).toHaveBeenCalledWith(normal, "Normal profile");
+		expect(harness.runtime.applyStored).toHaveBeenCalledWith(normal, { label: "Normal profile" });
 		expect(harness.adapter.pick).not.toHaveBeenCalled();
 	});
 
@@ -223,113 +229,46 @@ describe("ModelSelectionLifecycle session initialization", () => {
 		expect(harness.adapter.loadSelection).toHaveBeenCalledTimes(2);
 	});
 
-	it("synchronizes an explicit Profile context verbatim, even at pi's 128K sentinel", async () => {
-		const sentinelCurrent = { ...currentModel, contextWindow: 128_000 } as Model<Api>;
-		const profile = {
-			provider: sentinelCurrent.provider,
-			modelId: sentinelCurrent.id,
-			thinkingLevel: "medium" as const,
-			contextWindow: 128_000,
-		};
-		const harness = createHarness({ runtime: { model: sentinelCurrent }, selections: { plan: profile } });
-		const outcome = await initialize(harness, { reason: "reload", mode: "plan" });
-		expect(outcome.kind).toBe("context-synchronized");
-		expect(harness.adapter.loadSelection).toHaveBeenCalledWith("plan");
-		expect(harness.adapter.setModel).toHaveBeenCalledWith(expect.objectContaining({ contextWindow: 128_000 }));
-		expect(harness.adapter.pick).not.toHaveBeenCalled();
+	it("delegates synchronization with the current model and the mode's Profile", async () => {
+		const plan = { provider: "plan", modelId: "model", thinkingLevel: "low" as const, contextWindow: 128_000 };
+		const harness = createHarness({ selections: { plan } });
+		await initialize(harness, { reason: "reload", mode: "plan" });
+		expect(harness.runtime.synchronize).toHaveBeenCalledWith(currentModel, plan);
+		expect(harness.calls).toEqual(["runtime", "load:plan", "synchronize"]);
+		expect(harness.runtime.applyStored).not.toHaveBeenCalled();
 	});
 
-	it("synchronizes a default-sentinel Profile context through context normalization", async () => {
-		const sentinelCurrent = { ...currentModel, contextWindow: 128_000 } as Model<Api>;
-		const profile = {
-			provider: sentinelCurrent.provider,
-			modelId: sentinelCurrent.id,
-			thinkingLevel: "medium" as const,
-			contextWindow: DEFAULT_SENTINEL,
-		};
-		const harness = createHarness({ runtime: { model: sentinelCurrent }, selections: { plan: profile } });
-		const outcome = await initialize(harness, { reason: "reload", mode: "plan" });
-		expect(outcome.kind).toBe("context-synchronized");
-		expect(harness.adapter.loadSelection).toHaveBeenCalledWith("plan");
-		expect(harness.adapter.setModel).toHaveBeenCalledWith(expect.objectContaining({ contextWindow: 256_000 }));
-		expect(harness.adapter.pick).not.toHaveBeenCalled();
-	});
-
-	it("re-applies the profile's thinking level when the model sync clobbers it", async () => {
-		// pi's setModel imperatively applies per-model overrides or the global
-		// default: simulate the clobber in the adapter's setModel.
-		const runtime = { model: currentModel, thinkingLevel: "medium" as ModelThinkingLevel, usageTokens: 0 };
-		const profile = {
-			provider: currentModel.provider,
-			modelId: currentModel.id,
-			thinkingLevel: "high" as const,
-			contextWindow: 256_000,
-		};
-		const harness = createHarness({ runtime, selections: { normal: profile } });
-		harness.adapter.setModel = vi.fn(async (model: Model<Api>) => {
-			runtime.model = model;
-			runtime.thinkingLevel = "low"; // pi's model-switch default kicks in
-			return true;
-		});
-
-		const outcome = await initialize(harness, { reason: "reload" });
-
-		expect(outcome.kind).toBe("context-synchronized");
-		expect(harness.adapter.setThinkingLevel).toHaveBeenCalledWith("high");
-		expect(harness.calls).toContain("set-thinking:high");
-	});
-
-	it("re-applies the profile's thinking level even when the model already matches", async () => {
-		const profile = {
-			provider: currentModel.provider,
-			modelId: currentModel.id,
-			thinkingLevel: "xhigh" as const,
-			contextWindow: 1_000_000,
-		};
-		const harness = createHarness({ selections: { normal: profile } });
-
-		const outcome = await initialize(harness, { reason: "reload" });
-
-		expect(outcome.kind).toBe("context-synchronized");
-		expect(harness.adapter.setModel).not.toHaveBeenCalled();
-		expect(harness.adapter.setThinkingLevel).toHaveBeenCalledWith("xhigh");
-	});
-
-	it("keeps pi's thinking level for default-sentinel profile thinking", async () => {
-		const profile = {
-			provider: currentModel.provider,
-			modelId: currentModel.id,
-			thinkingLevel: DEFAULT_SENTINEL,
-			contextWindow: 1_000_000,
-		} as const;
-		const harness = createHarness({ selections: { normal: profile } });
-
+	it("maps the runtime's unchanged result to context-current", async () => {
+		const harness = createHarness();
 		expect(await initialize(harness, { reason: "reload" })).toEqual({
 			kind: "unchanged",
 			reason: "context-current",
 		});
-		expect(harness.adapter.setThinkingLevel).not.toHaveBeenCalled();
+		expect(harness.runtime.synchronize).toHaveBeenCalledOnce();
 	});
 
-	it("ignores mismatched Profile context and keeps a current normalized model unchanged", async () => {
-		const mismatch = { provider: "other", modelId: "model", thinkingLevel: "medium" as const, contextWindow: 256_000 };
-		const harness = createHarness({ selections: { normal: mismatch } });
-		expect(await initialize(harness, { reason: "reload" })).toEqual({ kind: "unchanged", reason: "context-current" });
-		expect(harness.adapter.setModel).not.toHaveBeenCalled();
+	it("maps the runtime's synchronized model into context-synchronized", async () => {
+		const synchronizedModel = pickedModel;
+		const harness = createHarness({
+			synchronizeResult: { kind: "synchronized", model: synchronizedModel },
+		});
+		expect(await initialize(harness, { reason: "reload" })).toEqual({
+			kind: "context-synchronized",
+			model: synchronizedModel,
+		});
+	});
+
+	it("propagates runtime synchronize failures", async () => {
+		const failure = new Error("no configured authentication");
+		const harness = createHarness({ synchronizeError: failure });
+		await expect(initialize(harness, { reason: "resume" })).rejects.toBe(failure);
 	});
 
 	it("returns no-current-model without loading preferences", async () => {
 		const harness = createHarness({ runtime: {} });
 		expect(await initialize(harness, { reason: "resume" })).toEqual({ kind: "unchanged", reason: "no-current-model" });
 		expect(harness.adapter.loadSelection).not.toHaveBeenCalled();
-	});
-
-	it("rejects failed synchronized authentication with the established message", async () => {
-		const profile = { provider: currentModel.provider, modelId: currentModel.id, thinkingLevel: "medium" as const, contextWindow: 500_000 };
-		const harness = createHarness({ selections: { normal: profile }, setModelResult: false });
-		await expect(initialize(harness, { reason: "reload" })).rejects.toThrow(
-			"No configured authentication for current-provider/current-model",
-		);
+		expect(harness.runtime.synchronize).not.toHaveBeenCalled();
 	});
 });
 
@@ -369,7 +308,7 @@ describe("ModelSelectionLifecycle interactive selection", () => {
 		const harness = createHarness({ picked: undefined });
 		expect(await harness.lifecycle.selectInteractively({ initialQuery: "", mode: "normal" }))
 			.toEqual({ kind: "unchanged", reason: "picker-cancelled" });
-		expect(harness.adapter.applyPickedSelection).not.toHaveBeenCalled();
+		expect(harness.runtime.applyPicked).not.toHaveBeenCalled();
 		expect(harness.adapter.requestCompaction).not.toHaveBeenCalled();
 	});
 
@@ -377,7 +316,7 @@ describe("ModelSelectionLifecycle interactive selection", () => {
 		const harness = createHarness({ runtime: { model: currentModel, usageTokens: 400_000 } });
 		const outcome = await harness.lifecycle.selectInteractively({ initialQuery: "", mode: "plan" });
 		expect(harness.calls).toEqual(["runtime", "load:plan", "pick", "confirm", "apply-live", "persist", "compact"]);
-		expect(harness.adapter.applyPickedSelection).toHaveBeenCalledWith(picked, "plan");
+		expect(harness.runtime.applyPicked).toHaveBeenCalledWith(picked.model, picked.thinkingLevel, { mode: "plan" });
 		expect(harness.adapter.requestCompaction).toHaveBeenCalledWith(SEMANTIC_COMPACTION_FOCUS);
 		expect(outcome).toEqual(expect.objectContaining({ kind: "interactive-applied", compaction: "started" }));
 	});
@@ -403,7 +342,7 @@ describe("ModelSelectionLifecycle interactive selection", () => {
 		const harness = createHarness({ runtime: { model: currentModel, usageTokens: 400_000 }, confirm: false });
 		expect(await harness.lifecycle.selectInteractively({ initialQuery: "", mode: "normal" }))
 			.toEqual({ kind: "unchanged", reason: "context-reduction-declined" });
-		expect(harness.adapter.applyPickedSelection).not.toHaveBeenCalled();
+		expect(harness.runtime.applyPicked).not.toHaveBeenCalled();
 	});
 
 	it("returns Pi's effective thinking level while retaining the requested level", async () => {
@@ -493,9 +432,9 @@ describe("ModelSelectionLifecycle Session operation ownership", () => {
 	it("waits for pending application and persistence before disposal completes", async () => {
 		const applying = deferred<ModelSelectionSettings>();
 		const harness = createHarness();
-		harness.adapter.applyPickedSelection = vi.fn(() => applying.promise);
+		harness.runtime.applyPicked = vi.fn(() => applying.promise);
 		const selection = harness.lifecycle.selectInteractively({ initialQuery: "", mode: "normal" });
-		await vi.waitFor(() => expect(harness.adapter.applyPickedSelection).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(harness.runtime.applyPicked).toHaveBeenCalledOnce());
 		let disposed = false;
 		const disposal = harness.lifecycle.dispose().then(() => { disposed = true; });
 		expect(disposed).toBe(false);
@@ -518,7 +457,7 @@ describe("ModelSelectionLifecycle Session operation ownership", () => {
 		await expect(selection).resolves.toEqual({ kind: "unchanged", reason: "context-reduction-declined" });
 		await disposal;
 		expect(disposed).toBe(true);
-		expect(harness.adapter.applyPickedSelection).not.toHaveBeenCalled();
+		expect(harness.runtime.applyPicked).not.toHaveBeenCalled();
 	});
 
 	it("permanently suppresses adapter calls after disposal", async () => {
