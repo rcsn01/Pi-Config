@@ -6,8 +6,6 @@
  * (e.g. `skills/engineering/code-review` → `.pi/skills/code-review`).
  */
 
-import { join } from "node:path";
-
 export interface SkillSource {
 	/** Source id — also the name of the cache directory under the extension's `update-skill/cache/`. */
 	id: string;
@@ -91,13 +89,4 @@ export function listTrackedSkills(): TrackedSkill[] {
 export function basename(skillPath: string): string {
 	const parts = skillPath.split("/").filter(Boolean);
 	return parts[parts.length - 1] ?? skillPath;
-}
-
-/**
- * Install directory for a tracked skill: `.pi/skills/<basename>/`.
- * Basenames are unique across all sources today; if that ever changes,
- * this mapping is where the collision would surface.
- */
-export function installDirFor(root: string, name: string): string {
-	return join(root, name);
 }
