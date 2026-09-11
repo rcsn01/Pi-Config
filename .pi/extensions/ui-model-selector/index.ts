@@ -15,9 +15,8 @@ import {
 	removeSessionEditor,
 	ModelCommandRoutingEditor,
 } from "../_shared/editor-slot.ts";
+import { createPiModelRuntime } from "../_shared/model-selection-runtime.ts";
 import {
-	applyModelSelection,
-	applyPickedModelSelection,
 	currentSelectionMode,
 } from "../_shared/model-selection.ts";
 import {
@@ -90,6 +89,7 @@ function createPiModelSelectionLifecycleAdapter(
 	ctx: ExtensionContext,
 	persistence: ModelSelectionPersistence,
 ): ModelSelectionLifecycleAdapter {
+	const runtime = createPiModelRuntime(pi, ctx, { saver: persistence });
 	return {
 		loadSelection: (mode) => persistence.load(mode),
 		getRuntimeState: () => ({
@@ -98,13 +98,11 @@ function createPiModelSelectionLifecycleAdapter(
 			usageTokens: ctx.getContextUsage()?.tokens,
 		}),
 		pick: (options) => pickModelConfiguration(ctx, options),
-		applyStoredSelection: (selection, label) => applyModelSelection(pi, ctx, selection, { label }),
-		applyPickedSelection: (selection, mode) => applyPickedModelSelection(
-			pi,
-			ctx,
+		applyStoredSelection: (selection, label) => runtime.applyStored(selection, { label }),
+		applyPickedSelection: (selection, mode) => runtime.applyPicked(
 			selection.model,
 			selection.thinkingLevel,
-			{ mode, persistence },
+			{ mode },
 		),
 		setModel: (model) => pi.setModel(model),
 		setThinkingLevel: (level) => pi.setThinkingLevel(level),

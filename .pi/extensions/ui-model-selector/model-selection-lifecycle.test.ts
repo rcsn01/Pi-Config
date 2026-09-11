@@ -3,11 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import {
-	ModelSelectionNotSavedError,
 	type ModelSelectionMode,
 	type ModelSelectionSettings,
 	type StoredModelSelectionSettings,
 } from "../_shared/model-selection.ts";
+import { ModelSelectionNotSavedError } from "../_shared/model-selection-runtime.ts";
 import type { ModelPickerSelection } from "../_shared/model-picker.ts";
 import {
 	createModelSelectionLifecycle,

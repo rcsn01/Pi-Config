@@ -1,27 +1,20 @@
 /**
- * Project model selection — the canonical home for `uiModelSelector` parsing,
- * validation, merging, sentinel resolution, and runtime model commits.
+ * Project model selection — the stored format and its normalization: parsing,
+ * validation, and merging of `uiModelSelector` settings, value types, and the
+ * pure normalizers (`resolveContextWindow`, `resolveModelContext`,
+ * `applyFamilyThinkingLevel`, mode detection).
  *
- * Two focused entry points share one private runtime implementation:
- * - `applyModelSelection` resolves a stored Session/Plan profile without
- *   rewriting the stored selection.
- * - `applyPickedModelSelection` applies an already-refreshed picker model and
- *   persists the effective selection (including Pi's clamped thinking level).
- *
- * Stored selections preserve legacy context inheritance and default-sentinel
- * resolution. Picked selections trust the concrete model supplied by the
- * refreshed picker catalogue and never query the registry a second time.
+ * The runtime commits (sentinel resolution against Pi's native defaults, the
+ * Model reference lookup, the verbatim context-window contract, thinking
+ * survival across `setModel`, and the sync path) live in
+ * `model-selection-runtime.ts`, which imports this module's types.
  */
 
-import type { Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-	DEFAULT_SENTINEL,
-	readPiNativeDefaults,
-	type PiNativeDefaults,
-} from "./pi-defaults.ts";
+import type { ThinkingLevelMap } from "@earendil-works/pi-ai";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_SENTINEL } from "./pi-defaults.ts";
 import { matchFamily } from "./model-families.ts";
-import { ModelReferenceError, resolveModelReference, validateContextWindow } from "./model-reference.ts";
+import { validateContextWindow } from "./model-reference.ts";
 import { MODEL_THINKING_LEVELS, type SupportedModelThinkingLevel } from "./model-thinking.ts";
 import { PLAN_STATE_ENTRY_TYPE } from "./session-entries.ts";
 
@@ -51,25 +44,6 @@ export interface ModelSelectionSettings {
 	modelId: string;
 	thinkingLevel: StoredThinkingLevel;
 	contextWindow: number;
-}
-
-/** Narrow seam for persisting one mode's effective model selection. */
-interface ModelSelectionSaver {
-	save(mode: ModelSelectionMode, selection: ModelSelectionSettings): Promise<void>;
-}
-
-/** A picked selection was applied live, but its effective settings did not fully persist. */
-export class ModelSelectionNotSavedError extends Error {
-	readonly appliedSelection: ModelSelectionSettings;
-
-	constructor(appliedSelection: ModelSelectionSettings, cause: unknown) {
-		super(
-		`Model selection was applied, but settings were not fully saved: ${cause instanceof Error ? cause.message : String(cause)}`,
-		{ cause },
-		);
-		this.name = "ModelSelectionNotSavedError";
-		this.appliedSelection = appliedSelection;
-	}
 }
 
 /** A profile selection as stored on disk; fields may defer to Pi's defaults. */
@@ -296,183 +270,3 @@ export function currentSelectionMode(ctx: ExtensionContext): ModelSelectionMode 
 	return selectionModeFromEntries(ctx.sessionManager.getBranch());
 }
 
-type ResolvedContextWindow =
-	| { kind: "stored"; value: number }
-	| { kind: "catalogue" }
-	| { kind: "inherit" };
-
-type ResolvedModelSelection = {
-	provider: string;
-	modelId: string;
-	thinkingLevel: StoredThinkingLevel;
-	contextWindow: ResolvedContextWindow;
-};
-
-function resolveStoredSelection(
-	stored: StoredModelSelectionSettings,
-	fallbackThinkingLevel: StoredThinkingLevel,
-	nativeDefaults?: PiNativeDefaults,
-): ResolvedModelSelection {
-	const needsNativeDefaults = stored.provider === DEFAULT_SENTINEL ||
-		stored.modelId === DEFAULT_SENTINEL ||
-		stored.thinkingLevel === DEFAULT_SENTINEL;
-	const defaults = needsNativeDefaults ? (nativeDefaults ?? readPiNativeDefaults()) : undefined;
-	const thinkingLevel = stored.thinkingLevel === DEFAULT_SENTINEL
-		? defaults?.thinkingLevel ?? fallbackThinkingLevel
-		: stored.thinkingLevel;
-	if (!MODEL_THINKING_LEVELS.includes(thinkingLevel as StoredThinkingLevel)) {
-		throw new Error(`Pi's native defaultThinkingLevel is not supported: ${String(thinkingLevel)}.`);
-	}
-
-	return {
-		provider: stored.provider === DEFAULT_SENTINEL ? defaults!.provider : stored.provider,
-		modelId: stored.modelId === DEFAULT_SENTINEL ? defaults!.modelId : stored.modelId,
-		thinkingLevel: thinkingLevel as StoredThinkingLevel,
-		contextWindow: stored.contextWindow === DEFAULT_SENTINEL
-			? { kind: "catalogue" }
-			: stored.contextWindow === undefined
-				? { kind: "inherit" }
-				: { kind: "stored", value: stored.contextWindow },
-	};
-}
-
-async function applyResolvedModelSelection(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	model: Model<any>,
-	thinkingLevel: StoredThinkingLevel,
-): Promise<ModelSelectionSettings> {
-	const currentModel = ctx.model;
-	const modelChanged = currentModel?.provider !== model.provider ||
-		currentModel.id !== model.id ||
-		currentModel.contextWindow !== model.contextWindow;
-	if (modelChanged && !(await pi.setModel(model))) {
-		throw new Error(`No configured authentication for ${model.provider}/${model.id}.`);
-	}
-
-	const currentThinkingLevel = typeof pi.getThinkingLevel === "function"
-		? pi.getThinkingLevel() as StoredThinkingLevel
-		: undefined;
-	if (currentThinkingLevel !== thinkingLevel) pi.setThinkingLevel(thinkingLevel);
-	const effectiveThinkingLevel = typeof pi.getThinkingLevel === "function"
-		? pi.getThinkingLevel() as StoredThinkingLevel
-		: thinkingLevel;
-
-	return {
-		provider: model.provider,
-		modelId: model.id,
-		thinkingLevel: effectiveThinkingLevel,
-		contextWindow: model.contextWindow,
-	};
-}
-
-/**
- * Apply a stored selection to the live session: resolve default sentinels,
- * refresh and look up the model when needed, and commit the resolved model
- * and thinking level. The stored profile itself is not persisted.
- *
- * The context-window contract preserves legacy plan-mode reads: an explicit
- * sentinel resolves through the catalogue; a stored numeric window is applied
- * verbatim (128000 is a legitimate user choice, not pi's undeclared-context
- * sentinel — only catalogue values get that normalization); a missing window
- * inherits the current model's window when the model already matches.
- */
-export async function applyModelSelection(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	stored: StoredModelSelectionSettings,
-	options: {
-		/** Label used in error messages, e.g. "Normal profile" or "Plan Mode profile". */
-		label: string;
-		nativeDefaults?: PiNativeDefaults;
-	},
-): Promise<ModelSelectionSettings> {
-	const fallbackThinkingLevel = typeof pi.getThinkingLevel === "function"
-		? pi.getThinkingLevel() as StoredThinkingLevel
-		: "medium";
-	const resolved = resolveStoredSelection(stored, fallbackThinkingLevel, options.nativeDefaults);
-	const currentModel = ctx.model;
-	const sameModel = currentModel?.provider === resolved.provider && currentModel.id === resolved.modelId;
-	const context = resolved.contextWindow;
-
-	let model: Model<any>;
-	if (sameModel && context.kind !== "catalogue") {
-		if (context.kind === "inherit") {
-			// Legacy selections without a context: keep the current window.
-			model = currentModel;
-		} else {
-			// Stored context windows are explicit user choices — 128000 is a
-			// legitimate selection, not pi's undeclared-context sentinel.
-			model = context.value === currentModel.contextWindow
-				? currentModel
-				: { ...currentModel, contextWindow: context.value };
-		}
-	} else {
-		let catalogueModel: Model<any>;
-		try {
-			catalogueModel = await resolveModelReference(ctx, { provider: resolved.provider, modelId: resolved.modelId }, {
-				label: options.label,
-				refresh: true,
-			});
-		} catch (error) {
-			// The raw provider error (message and identity) survives exactly as the
-			// previous inline implementation's re-throw.
-			if (error instanceof ModelReferenceError && error.reason === "refresh" && error.cause instanceof Error) {
-				throw error.cause;
-			}
-			throw error;
-		}
-		const normalized = resolveModelContext(catalogueModel);
-		model = context.kind === "stored"
-			? { ...normalized, contextWindow: context.value }
-			: normalized;
-	}
-
-	return applyResolvedModelSelection(pi, ctx, model, resolved.thinkingLevel);
-}
-
-/**
- * Apply a concrete model selected from an already-refreshed picker catalogue,
- * then persist Pi's effective selection. Persistence failures happen after the
- * live commit, so they are surfaced as a typed partial failure without rolling
- * the runtime model back.
- */
-export async function applyPickedModelSelection(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	model: Model<any>,
-	thinkingLevel: StoredThinkingLevel,
-	options: {
-		mode: ModelSelectionMode;
-		persistence: ModelSelectionSaver;
-	},
-): Promise<ModelSelectionSettings> {
-	const selection = await applyResolvedModelSelection(pi, ctx, model, thinkingLevel);
-	try {
-		await options.persistence.save(options.mode, selection);
-	} catch (cause) {
-		throw new ModelSelectionNotSavedError(selection, cause);
-	}
-	return selection;
-}
-
-/**
- * Apply the model selection saved for the current mode (normal or plan) in a
- * settings document — typically the profile that was just switched to.
- * Returns the applied selection, or undefined when the document has no
- * selection for the current mode (the session model is kept unchanged).
- */
-export async function applySelectionFromDocument(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-	document: Record<string, unknown>,
-	nativeDefaults?: PiNativeDefaults,
-): Promise<ModelSelectionSettings | undefined> {
-	const mode = selectionModeFromEntries(ctx.sessionManager.getBranch());
-	const selection = parseProjectModelPreferences(document).profiles[mode];
-	if (!selection) return undefined;
-	return applyModelSelection(pi, ctx, selection, {
-		label: "Profile",
-		nativeDefaults,
-	});
-}

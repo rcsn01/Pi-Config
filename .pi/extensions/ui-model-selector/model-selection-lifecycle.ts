@@ -2,12 +2,12 @@ import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import { COMPACT_THRESHOLD, SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
 import {
-	ModelSelectionNotSavedError,
 	resolveModelContext,
 	type ModelSelectionMode,
 	type ModelSelectionSettings,
 	type StoredModelSelectionSettings,
 } from "../_shared/model-selection.ts";
+import { ModelSelectionNotSavedError } from "../_shared/model-selection-runtime.ts";
 import {
 	type ModelPickerOptions,
 	type ModelPickerSelection,
