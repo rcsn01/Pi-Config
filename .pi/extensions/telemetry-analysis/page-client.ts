@@ -24,8 +24,8 @@ let renderedFingerprint = null;
 const element = dashElement;
 const fmt = dashFormatInteger;
 
-function metric(label, value) {
-	const box = element('div', 'metric');
+function metric(label, value, tokenClass = '') {
+	const box = element('div', 'metric' + (tokenClass ? ' token-metric ' + tokenClass : ''));
 	box.append(element('div', 'muted', label), element('div', '', value));
 	return box;
 }
@@ -41,11 +41,11 @@ function usageBar(usage, className = '') {
 	}
 	const total = usage.input + usage.cacheRead + usage.cacheWrite + usage.output;
 	const segments = [
-		['uncached', 'Uncached input', usage.input],
-		['cache', 'Cache hit', usage.cacheRead],
-		['write', 'Cache write', usage.cacheWrite],
-		['output', 'Output', Math.max(0, usage.output - (usage.reasoning || 0))],
-		['reasoning', 'Reasoning output', usage.reasoning || 0],
+		['token-input', 'Input', usage.input],
+		['token-cache-input', 'Cache input', usage.cacheRead],
+		['token-cache-write', 'Cache write', usage.cacheWrite],
+		['token-output', 'Output', Math.max(0, usage.output - (usage.reasoning || 0))],
+		['token-reasoning', 'Reasoning output', usage.reasoning || 0],
 	];
 	const labels = [];
 	segments.forEach(([segmentClass, label, count]) => {
@@ -66,11 +66,11 @@ function usageView(usage) {
 	const box = element('div', '');
 	const grid = element('div', 'grid');
 	grid.append(
-		metric('Uncached input', fmt(usage.input)),
-		metric('Cache hit', fmt(usage.cacheRead)),
-		metric('Cache write', fmt(usage.cacheWrite)),
-		metric('Output', fmt(usage.output)),
-		metric('Reasoning, subset of output', usage.reasoning == null ? 'not reported' : fmt(usage.reasoning)),
+		metric('Input', fmt(usage.input), 'token-input'),
+		metric('Cache input', fmt(usage.cacheRead), 'token-cache-input'),
+		metric('Cache write', fmt(usage.cacheWrite), 'token-cache-write'),
+		metric('Output', fmt(usage.output), 'token-output'),
+		metric('Reasoning, subset of output', usage.reasoning == null ? 'not reported' : fmt(usage.reasoning), 'token-reasoning'),
 		metric('Total tokens', fmt(usage.totalTokens)),
 		metric('Total cost', '$' + Number(usage.cost.total || 0).toFixed(6)),
 	);
