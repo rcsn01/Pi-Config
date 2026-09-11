@@ -223,6 +223,16 @@ extension.
 - **Model-selection persistence** — fixed-path, Profile-aware storage of one
   mode's model selection, constructed from an immutable Session profile binding;
   it preserves other modes and unrelated Settings document fields.
+- **Model-selection runtime** — the deep in-process module in
+  `_shared/model-selection-runtime.ts` that owns the stored→runtime mapping: sentinel
+  resolution against Pi native defaults, the Model reference lookup, the verbatim
+  context-window contract (stored numeric windows commit verbatim; 128K→256K normalization
+  reaches only catalogue-resolved models on the apply path and the current model on the sync
+  path), thinking survival across `setModel`, the commit ordering and its read-back, the sync
+  path (reconcile the current model with a stored profile without changing provider/modelId or
+  touching the catalogue), and the no-auth error mode. Model-selection lifecycle decides when
+  to apply or synchronize and owns outcome semantics; Model-selection persistence stays the
+  Settings document seam.
 
 ## Skill management
 
