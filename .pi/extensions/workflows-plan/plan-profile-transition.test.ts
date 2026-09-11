@@ -3,12 +3,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { ModelSelectionPersistence } from "../_shared/model-selection-persistence.ts";
 import { DEFAULT_SENTINEL } from "../_shared/pi-defaults.ts";
 import type { ModelSelectionSettings, StoredModelSelectionSettings } from "../_shared/model-selection.ts";
-import { applyModelSelection } from "../_shared/model-selection.ts";
+import { applyModelSelection } from "../_shared/model-selection-runtime.ts";
 import { createPlanProfileTransition } from "./plan-profile-transition.ts";
 import { createPlanCurrency, type PlanSession } from "./plan-currency.ts";
 
-vi.mock("../_shared/model-selection.ts", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../_shared/model-selection.ts")>();
+vi.mock("../_shared/model-selection-runtime.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../_shared/model-selection-runtime.ts")>();
 	return { ...actual, applyModelSelection: vi.fn() };
 });
 

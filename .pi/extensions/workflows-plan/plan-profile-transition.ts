@@ -15,6 +15,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	applyModelSelection,
+} from "../_shared/model-selection-runtime.ts";
+import {
 	usesDefaultSentinel,
 	type ModelSelectionSettings,
 	type StoredModelSelectionSettings,

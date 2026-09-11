@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolve } from "node:path";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
-import { applySelectionFromDocument } from "../_shared/model-selection.ts";
+import { applySelectionFromDocument } from "../_shared/model-selection-runtime.ts";
 import {
 	CONFIG_PROFILES_ENTRY_TYPE,
 	sessionProfileName,
