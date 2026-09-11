@@ -26,6 +26,9 @@ describe("analysis page", () => {
 		expect(ANALYSIS_PAGE).toContain("Expand all");
 		expect(ANALYSIS_PAGE).toContain("Collapse all");
 		expect(ANALYSIS_PAGE).toContain("details.analysis-section[open]");
+		for (const tokenClass of ["token-input", "token-cache-input", "token-cache-write", "token-output", "token-reasoning"]) {
+			expect(ANALYSIS_PAGE).toContain(tokenClass);
+		}
 		const script = ANALYSIS_PAGE.match(/<script>([\s\S]*)<\/script>/)?.[1];
 		expect(() => new Function(script!)).not.toThrow();
 	});
@@ -63,10 +66,18 @@ describe("analysis page", () => {
 		const requestBars = Array.from(document.querySelectorAll<HTMLElement>(".request-usage-bar"));
 		expect(requestBars).toHaveLength(2);
 		expect(Array.from(requestBars[0]!.children, (segment) => [segment.className, segment.getAttribute("style")])).toEqual([
-			["uncached", "width:20%"], ["cache", "width:40%"], ["write", "width:10%"],
-			["output", "width:20%"], ["reasoning", "width:10%"],
+			["token-input", "width:20%"], ["token-cache-input", "width:40%"], ["token-cache-write", "width:10%"],
+			["token-output", "width:20%"], ["token-reasoning", "width:10%"],
 		]);
-		expect(requestBars[0]!.getAttribute("aria-label")).toContain("Cache hit: 20 tokens (40.0%)");
+		expect(requestBars[0]!.getAttribute("aria-label")).toContain("Cache input: 20 tokens (40.0%)");
+		const tokenMetrics = Array.from(document.querySelectorAll<HTMLElement>(".token-metric"));
+		expect(tokenMetrics.map((metric) => [metric.className, metric.firstElementChild?.textContent])).toEqual([
+			["metric token-metric token-input", "Input"],
+			["metric token-metric token-cache-input", "Cache input"],
+			["metric token-metric token-cache-write", "Cache write"],
+			["metric token-metric token-output", "Output"],
+			["metric token-metric token-reasoning", "Reasoning, subset of output"],
+		]);
 		expect(requestBars[1]!.classList.contains("usage-unavailable")).toBe(true);
 		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #2");
 

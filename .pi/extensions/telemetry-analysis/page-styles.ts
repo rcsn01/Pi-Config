@@ -1,6 +1,13 @@
 import { DASHBOARD_BASE_STYLES, DASHBOARD_CLIENT_STYLES } from "../_shared/dashboard-styles.ts";
 
 export const ANALYSIS_PAGE_STYLES = String.raw`${DASHBOARD_BASE_STYLES}${DASHBOARD_CLIENT_STYLES}
+:root {
+	--token-input: #63B3FF;
+	--token-cache-input: #55D68B;
+	--token-cache-write: #F5BE55;
+	--token-output: #C99AFF;
+	--token-reasoning: #FF7EB6;
+}
 h2 { margin: 0 0 14px; font-size: 1.1rem; font-weight: 570; }
 .muted { color: var(--page-text-muted); }
 .status { min-height: 0; padding: 0; border: 0; background: transparent; }
@@ -20,16 +27,20 @@ h2 { margin: 0 0 14px; font-size: 1.1rem; font-weight: 570; }
 .metric { min-width: 0; padding: 10px 0; background: transparent; }
 .metric .muted { margin-bottom: 3px; font-size: .78rem; }
 .metric > div:last-child { overflow-wrap: anywhere; color: var(--page-text); }
+.token-input { --token-color: var(--token-input); }
+.token-cache-input { --token-color: var(--token-cache-input); }
+.token-cache-write { --token-color: var(--token-cache-write); }
+.token-output { --token-color: var(--token-output); }
+.token-reasoning { --token-color: var(--token-reasoning); }
+.token-metric { border-top: 2px solid var(--token-color); }
+.token-metric > div:last-child { color: var(--token-color); font-weight: 600; }
 .bar { display: flex; height: 18px; margin: 10px 0; overflow: hidden; border: 1px solid var(--page-line); border-radius: 5px; background: var(--page-line); }
 .bar span { min-width: 1px; margin: 0; }
 .bar span + span { border-left: 1px solid var(--page-bg); }
 .request-usage-bar { height: 7px; margin: 8px -12px -11px; border-width: 1px 0 0; border-radius: 0 0 9px 9px; }
 .usage-unavailable { background: #5A5A5A; }
-.uncached { background: var(--page-text); }
-.cache { background: var(--page-text-soft); }
-.write { background: var(--page-text-muted); }
-.output { background: var(--page-accent); }
-.reasoning { background: #8A8A8A; }
+.bar .token-input, .bar .token-cache-input, .bar .token-cache-write,
+.bar .token-output, .bar .token-reasoning { background: var(--token-color); }
 .sections { margin: 22px 0 0; }
 .sections > .muted { margin: -6px 0 12px; }
 .section-controls { display: flex; gap: 8px; margin: 10px 0 16px; }
