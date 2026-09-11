@@ -17,6 +17,6 @@
     "enabled": false
   },
   "configProfiles": {
-    "active": "github"
+    "active": "openai"
   }
 }

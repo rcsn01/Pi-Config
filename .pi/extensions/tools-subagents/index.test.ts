@@ -51,11 +51,16 @@ function extensionHarness(
 			tools.set(tool.name, tool);
 		},
 	};
+	const inspectTools = vi.fn(() => []);
+	const childExecution = {
+		execute: executeChild as any,
+		inspectTools,
+	};
 	createSubagentsExtension({
 		settingsPath: options.settingsPath,
 		registry,
 		...(injectedConfig ? { config: injectedConfig } : {}),
-		childExecution: { execute: executeChild as any },
+		childExecution,
 	})(pi as any);
 	const ctx = {
 		cwd: "/workspace",
@@ -66,7 +71,17 @@ function extensionHarness(
 		modelRegistry: { refresh: vi.fn(), getAvailable: vi.fn(() => []), find: vi.fn() },
 		scopedModels: [],
 	} as any;
-	return { handlers, commands, tools, registrations, registry, config: injectedConfig ?? config, executeChild, ctx };
+	return {
+		handlers,
+		commands,
+		tools,
+		registrations,
+		registry,
+		config: injectedConfig ?? config,
+		executeChild,
+		inspectTools,
+		ctx,
+	};
 }
 
 describe("subagent extension interfaces", () => {
@@ -170,10 +185,16 @@ describe("subagent extension interfaces", () => {
 });
 
 describe("subagent tool wiring", () => {
-	it("routes direct service calls through prepared child execution", async () => {
+	it("routes status and direct service calls through one child execution module", async () => {
 		const expectedResult = agentResult({ task: "Direct work", output: "done" });
 		const executeChild = vi.fn(async () => expectedResult);
-		extensionHarness(executeChild);
+		const harness = extensionHarness(executeChild);
+
+		await harness.commands.get("subagents").handler("status", harness.ctx);
+		expect(harness.inspectTools.mock.calls).toEqual([
+			[harness.registry.load()[0]!.tools],
+			[harness.registry.load()[1]!.tools],
+		]);
 
 		const result = await requireSubagentService().runSubagent({
 			agent: "worker",

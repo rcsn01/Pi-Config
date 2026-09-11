@@ -44,10 +44,12 @@ export interface SubagentExecution {
 	runSubagentsParallel(options: RunSubagentsParallelOptions): Promise<AgentResult[]>;
 }
 
+type SubagentChildLauncher = Pick<SubagentChildExecution, "execute">;
+
 interface SubagentExecutionDependencies {
 	registry?: AgentRegistry;
 	config?: Pick<SubagentConfigStore, "load" | "resolveLaunch">;
-	childExecution?: SubagentChildExecution;
+	childExecution?: SubagentChildLauncher;
 }
 
 interface CompatibilityCallbacks {
@@ -121,7 +123,7 @@ async function runOrdered<T, R>(
 
 async function executePreparedSubagent(
 	request: SubagentChildExecutionRequest,
-	childExecution: SubagentChildExecution,
+	childExecution: SubagentChildLauncher,
 ): Promise<AgentResult> {
 	let terminalObserved = false;
 	let progressConsumerRejected = false;

@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -25,17 +24,34 @@ import {
 	type SubagentThinkingLevel,
 } from "./config.ts";
 import { formatContextWindow } from "./formatting.ts";
+import {
+	createSubagentChildExecution,
+	type SubagentChildExecution,
+	type SubagentChildToolDiagnostic,
+} from "./child-execution.ts";
 import { DEFAULT_MAX_CONCURRENCY } from "./subagent-execution.ts";
-import { BUILTIN_TOOLS, CUSTOM_TOOL_EXTENSIONS, EXT_BASE } from "./child-execution.ts";
 
 export interface ModelCommandDependencies {
 	registry?: AgentRegistry;
 	config?: SubagentConfigStore;
+	childExecution?: Pick<SubagentChildExecution, "inspectTools">;
+}
+
+function formatChildToolDiagnostic(diagnostic: SubagentChildToolDiagnostic): string {
+	switch (diagnostic.kind) {
+		case "unmapped-tool":
+			return `${diagnostic.tool} (unmapped)`;
+		case "missing-tool-extension":
+			return `${diagnostic.tool} (${diagnostic.path})`;
+		case "missing-runtime-extension":
+			return `${diagnostic.extension} (${diagnostic.path})`;
+	}
 }
 
 export function createSubagentsCommand(dependencies: ModelCommandDependencies = {}) {
 	const registry = dependencies.registry ?? agentRegistry;
 	const configStore = dependencies.config ?? getDefaultSubagentConfig();
+	const childExecution = dependencies.childExecution ?? createSubagentChildExecution();
 	const SUBAGENT_MODEL_USAGE = [
 		"Usage:",
 		"  /subagents",
@@ -116,16 +132,13 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		const config = configStore.load();
 		const lines = [
 			"Subagents status:",
-			`Extensions dir: ${EXT_BASE}`,
 			`Max concurrency: ${config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY}`,
 			`Main model: ${configStore.resolveMainModel()}`,
 			"",
 			"Agents:",
 		];
 		for (const agent of availableAgents) {
-			const missing = agent.tools
-				.filter((tool) => !BUILTIN_TOOLS.has(tool) && (!CUSTOM_TOOL_EXTENSIONS[tool] || !fs.existsSync(CUSTOM_TOOL_EXTENSIONS[tool])))
-				.map((tool) => `${tool}${CUSTOM_TOOL_EXTENSIONS[tool] ? ` (${CUSTOM_TOOL_EXTENSIONS[tool]})` : " (unmapped)"}`);
+			const missing = childExecution.inspectTools(agent.tools).map(formatChildToolDiagnostic);
 			const { assignment } = targetSelection(agent.name, availableAgents, { snapshot: config });
 			lines.push(`- ${agent.name}: ${agent.description || "(no description)"}`);
 			lines.push(`  model: ${modelDisplay(assignment.modelSetting, assignment.launch.model)}`);

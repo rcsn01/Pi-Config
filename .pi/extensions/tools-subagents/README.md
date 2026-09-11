@@ -171,7 +171,7 @@ Only model identity is inherited from `main`. Configure thinking separately in `
 - Selecting a target opens the searchable model picker, followed by a thinking-level picker tailored to the selected model.
 - Individual subagents offer model and thinking **Inherit** choices. **All subagents** offers **Pi default** thinking, which removes explicit thinking overrides.
 - After applying both selections, the refreshed menu stays open so more subagents can be adjusted; press Escape to close it. In non-TUI modes, bare `/subagents` falls back to status output.
-- `/subagents status` shows discovered agents, tools, missing tool extensions, effective models, and effective thinking levels.
+- `/subagents status` shows discovered agents, tools, missing tool extensions, missing mandatory runtime extensions, effective models, and effective thinking levels.
 - `/subagents models` shows global and individual model/thinking settings plus every effective assignment.
 - `/subagents model` opens the same interactive menu in TUI mode.
 - `model all <model>` sets `defaultModel` and clears individual model overrides.
@@ -192,7 +192,9 @@ Children are started with:
 
 `--model` selects the model used by that child. `--thinking` applies the configured thinking level; it is omitted for Pi-default behavior. Pi's separate `--models` option only scopes the catalogue used for model cycling; it does not select the child model.
 
-Child processes use `--no-extensions`, explicitly load the shared `session-compaction` extension, and then load only the extensions required by the agent's declared tools. This gives ephemeral children the same 80% compaction threshold and overflow recovery as the main session without enabling unrelated extension discovery. A provider that exists only in an extension not loaded by the child is still unavailable even if it appears in the main session.
+Child processes use `--no-extensions`, explicitly load the shared `session-compaction` extension, and then load only the extensions required by the agent's declared tools. Before starting a process, child execution validates every requested custom-tool extension and the mandatory compaction extension. Unknown requested tools and missing extension paths reject the launch; child execution does not silently omit them or pass a known-dead path to Pi.
+
+This gives ephemeral children the same 80% compaction threshold and overflow recovery as the main session without enabling unrelated extension discovery. A provider that exists only in an extension not loaded by the child is still unavailable even if it appears in the main session.
 
 ## UI
 
@@ -279,14 +281,15 @@ The central `agentModels` map resolves dynamically registered agents by name exa
 
 ### 3. Map custom tools
 
-Custom child tools must be mapped in `CUSTOM_TOOL_EXTENSIONS` in `child-execution.ts`:
+Custom child tools must be mapped in the private `CUSTOM_TOOL_EXTENSIONS` map in `child-execution.ts`:
 
 ```typescript
-const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
-  ddg_search: path.join(EXT_BASE, "tools-web-search", "index.ts"),
-  ddg_fetch: path.join(EXT_BASE, "tools-web-fetch", "index.ts"),
-  safe_bash: path.join(TOOLS_DIR, "safe-bash.ts"),
-};
+const CUSTOM_TOOL_EXTENSIONS: ReadonlyMap<string, string> = new Map([
+  ["ddg_search", path.join(EXT_BASE, "tools-web-search", "index.ts")],
+  ["ddg_fetch", path.join(EXT_BASE, "tools-web-fetch", "index.ts")],
+  ["safe_bash", path.join(TOOLS_DIR, "safe-bash.ts")],
+  ["repo_query", path.join(TOOLS_DIR, "repo-query.ts")],
+]);
 ```
 
 Built-in tools (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`) need no mapping.
@@ -299,7 +302,7 @@ tools-subagents/
 ├── agent-registry.ts        # Agent discovery, registration, and lookup
 ├── config.ts                # Configuration storage, validation, and launch resolution
 ├── launch-preparation.ts    # Agent validation and resolved child requests
-├── child-execution.ts       # Child command, process lifetime, observation, abort, and cleanup
+├── child-execution.ts       # Child tool admission, launch arguments, process lifetime, observation, abort, and cleanup
 ├── child-event-ingestion.ts # Stdout framing, event state, usage, timing input, and terminal results
 ├── subagent-execution.ts    # Direct execution, bounded scheduling, ordered results, and task-state snapshots
 ├── progress-renderer.ts     # Tool call and progress presentation

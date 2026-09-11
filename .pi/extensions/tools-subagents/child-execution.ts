@@ -20,17 +20,20 @@ import {
 
 const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const TOOLS_DIR = path.join(EXT_DIR, "tools");
-export const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
-export const EXT_BASE = path.dirname(EXT_DIR);
-export const CHILD_RUNTIME_EXTENSIONS = [
-	path.join(EXT_BASE, "session-compaction", "index.ts"),
+const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
+const EXT_BASE = path.dirname(EXT_DIR);
+const CHILD_RUNTIME_EXTENSIONS = [
+	{
+		name: "session-compaction",
+		path: path.join(EXT_BASE, "session-compaction", "index.ts"),
+	},
 ] as const;
-export const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
-	ddg_search: path.join(EXT_BASE, "tools-web-search", "index.ts"),
-	ddg_fetch: path.join(EXT_BASE, "tools-web-fetch", "index.ts"),
-	safe_bash: path.join(TOOLS_DIR, "safe-bash.ts"),
-	repo_query: path.join(TOOLS_DIR, "repo-query.ts"),
-};
+const CUSTOM_TOOL_EXTENSIONS: ReadonlyMap<string, string> = new Map([
+	["ddg_search", path.join(EXT_BASE, "tools-web-search", "index.ts")],
+	["ddg_fetch", path.join(EXT_BASE, "tools-web-fetch", "index.ts")],
+	["safe_bash", path.join(TOOLS_DIR, "safe-bash.ts")],
+	["repo_query", path.join(TOOLS_DIR, "repo-query.ts")],
+]);
 
 export type SpawnSubagentProcess = (
 	command: string,
@@ -51,13 +54,89 @@ export interface SubagentChildExecutionRequest {
 	onProgress?: RunSubagentOptions["onProgress"];
 }
 
+export type SubagentChildToolDiagnostic =
+	| { kind: "unmapped-tool"; tool: string }
+	| { kind: "missing-tool-extension"; tool: string; path: string }
+	| { kind: "missing-runtime-extension"; extension: string; path: string };
+
 export interface SubagentChildExecution {
+	inspectTools(tools: readonly string[]): readonly SubagentChildToolDiagnostic[];
 	execute(request: SubagentChildExecutionRequest): Promise<AgentResult>;
 }
 
 export interface SubagentChildExecutionDependencies {
 	spawnProcess?: SpawnSubagentProcess;
 	tempRoot?: string;
+	pathExists?: (path: string) => boolean;
+}
+
+interface ChildToolPlan {
+	enabledTools: readonly string[];
+	extensionPaths: readonly string[];
+}
+
+interface ChildToolResolution {
+	plan: ChildToolPlan;
+	diagnostics: readonly SubagentChildToolDiagnostic[];
+}
+
+function resolveChildTools(
+	requestedTools: readonly string[],
+	pathExists: (path: string) => boolean,
+): ChildToolResolution {
+	const enabledTools: string[] = [];
+	const extensionPaths = new Set<string>();
+	const diagnostics: SubagentChildToolDiagnostic[] = [];
+
+	for (const extension of CHILD_RUNTIME_EXTENSIONS) {
+		extensionPaths.add(extension.path);
+		if (!pathExists(extension.path)) {
+			diagnostics.push({
+				kind: "missing-runtime-extension",
+				extension: extension.name,
+				path: extension.path,
+			});
+		}
+	}
+
+	for (const tool of requestedTools) {
+		if (BUILTIN_TOOLS.has(tool)) {
+			enabledTools.push(tool);
+			continue;
+		}
+		const extensionPath = CUSTOM_TOOL_EXTENSIONS.get(tool);
+		if (extensionPath === undefined) {
+			diagnostics.push({ kind: "unmapped-tool", tool });
+			continue;
+		}
+		enabledTools.push(tool);
+		extensionPaths.add(extensionPath);
+		if (!pathExists(extensionPath)) {
+			diagnostics.push({ kind: "missing-tool-extension", tool, path: extensionPath });
+		}
+	}
+
+	return {
+		plan: { enabledTools, extensionPaths: [...extensionPaths] },
+		diagnostics,
+	};
+}
+
+function formatLaunchFailure(
+	agentName: string,
+	diagnostics: readonly SubagentChildToolDiagnostic[],
+): string {
+	const fragments = diagnostics.map((diagnostic) => {
+		switch (diagnostic.kind) {
+			case "unmapped-tool":
+				return `tool ${diagnostic.tool} is unmapped`;
+			case "missing-tool-extension":
+				return `tool ${diagnostic.tool} extension is missing: ${diagnostic.path}`;
+			case "missing-runtime-extension":
+				return `runtime extension ${diagnostic.extension} is missing: ${diagnostic.path}`;
+		}
+	});
+	return `Subagent ${agentName} cannot launch: ${fragments.join("; ")}`;
 }
 
 function resolvePiBinary(): { command: string; baseArgs: string[] } {
@@ -77,6 +156,7 @@ async function buildPiArgs(
 	agent: AgentConfig,
 	task: string,
 	launch: ResolvedLaunchConfiguration,
+	tools: ChildToolPlan,
 	sessionId: string | undefined,
 	tempRoot: string,
 ): Promise<{ args: string[]; tempDir: string }> {
@@ -91,21 +171,10 @@ async function buildPiArgs(
 		let args = [...piBin.baseArgs, "--mode", "json", "-p", "--no-session", "--no-skills"];
 		if (sessionId) args.push("--session-id", sessionId);
 
-		const enabledTools: string[] = [];
-		const extensionPaths = new Set<string>(CHILD_RUNTIME_EXTENSIONS);
-		for (const tool of agent.tools) {
-			if (BUILTIN_TOOLS.has(tool)) {
-				enabledTools.push(tool);
-			} else if (CUSTOM_TOOL_EXTENSIONS[tool]) {
-				enabledTools.push(tool);
-				extensionPaths.add(CUSTOM_TOOL_EXTENSIONS[tool]);
-			}
-		}
-
 		args.push("--no-extensions");
-		if (enabledTools.length > 0) args.push("--tools", enabledTools.join(","));
+		if (tools.enabledTools.length > 0) args.push("--tools", tools.enabledTools.join(","));
 		else args.push("--no-tools");
-		for (const extensionPath of extensionPaths) args.push("--extension", extensionPath);
+		for (const extensionPath of tools.extensionPaths) args.push("--extension", extensionPath);
 
 		args = appendChildModelArgument(args, launch.model);
 		args = appendChildThinkingArgument(args, launch.thinkingLevel);
@@ -157,15 +226,31 @@ function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number | 
 export function createSubagentChildExecution(
 	dependencies: SubagentChildExecutionDependencies = {},
 ): SubagentChildExecution {
+	const pathExists = dependencies.pathExists ?? fs.existsSync;
 	return {
+		inspectTools(tools) {
+			return resolveChildTools(tools, pathExists).diagnostics;
+		},
 		async execute(request) {
+			const resolution = resolveChildTools(request.agent.tools, pathExists);
+			if (resolution.diagnostics.length > 0) {
+				throw new Error(formatLaunchFailure(request.agent.name, resolution.diagnostics));
+			}
+
 			const { agent, task, launch } = request;
 			const timeout = withTimeoutSignal(request.signal, request.timeoutMs);
 			let tempDir: string | undefined;
 			let cancelProcessWait: () => void = () => undefined;
 			try {
 				await request.onProgress?.({ type: "started", agent: agent.name, task });
-				const prepared = await buildPiArgs(agent, task, launch, request.cacheSessionId, dependencies.tempRoot ?? os.tmpdir());
+				const prepared = await buildPiArgs(
+					agent,
+					task,
+					launch,
+					resolution.plan,
+					request.cacheSessionId,
+					dependencies.tempRoot ?? os.tmpdir(),
+				);
 				tempDir = prepared.tempDir;
 				const [command, ...spawnArgs] = prepared.args;
 				const childObservation = createChildObservation(getObservabilityService()).prepare(
