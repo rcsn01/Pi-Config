@@ -238,7 +238,7 @@ export function createModelSelectionLifecycle(
 		if (!currentModel) return { kind: "unchanged", reason: "no-current-model" };
 
 		const profile = await adapter.loadSelection(input.mode);
-		const result = await modelRuntime.synchronize(currentModel, profile);
+		const result = await modelRuntime.synchronize(currentModel, profile, state.thinkingLevel);
 		if (result.kind === "unchanged") return { kind: "unchanged", reason: "context-current" };
 		return { kind: "context-synchronized", model: result.model };
 	}

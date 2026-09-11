@@ -100,15 +100,14 @@ function createHarness(options: {
 
 function syncHarness(options: {
 	model?: { provider: string; id: string; contextWindow?: number; name?: string; reasoning?: boolean };
-	thinkingLevel?: string;
 	setModelResult?: boolean;
 	setModelClobber?: string;
 } = {}) {
 	const harness = createHarness({
 		model: options.model ?? { ...syncModel },
-		// The key is only distinguishable from an absent level when it is
-		// present-but-undefined: absent means pi has no level to report.
-		thinkingLevel: "thinkingLevel" in options ? options.thinkingLevel : "medium",
+		// The port always reports a readable level; the pre-read level travels
+		// into synchronize as an explicit third argument, so tests decide per call.
+		thinkingLevel: "medium",
 		setModelResult: options.setModelResult,
 		setModelClobber: options.setModelClobber,
 	});
@@ -431,12 +430,47 @@ describe("applyPicked", () => {
 		}));
 	});
 
+	it("falls back to the requested thinking level when Pi's read-back reports none", async () => {
+		const harness = createHarness({
+			model: { provider: "ollama", id: "old-model", contextWindow: 256_000 },
+			thinkingLevel: "medium",
+		});
+		// Pi exposes a thinking level but reports no value; the facts binding
+		// reads `pi` at call time, so this override is seen by the commit.
+		harness.pi.getThinkingLevel = vi.fn(() => undefined);
+
+		const result = await harness.runtime.applyPicked(pickedModel, "xhigh", { mode: "normal" });
+
+		expect(result.thinkingLevel).toBe("xhigh");
+		expect(harness.setThinkingLevel).toHaveBeenCalledWith("xhigh");
+		expect(harness.save).toHaveBeenCalledWith("normal", expect.objectContaining({
+			thinkingLevel: "xhigh",
+		}));
+	});
+
 	it.each(["normal", "plan"] as const)("persists effective selections in %s mode", async (mode) => {
 		const harness = createHarness({ model: pickedModel, thinkingLevel: "high" });
 
 		const result = await harness.runtime.applyPicked(pickedModel, "high", { mode });
 
 		expect(harness.save).toHaveBeenCalledWith(mode, result);
+	});
+
+	it("rejects before the live commit when no saver is injected", async () => {
+		const harness = createHarness({
+			model: { provider: "ollama", id: "old-model", contextWindow: 256_000 },
+			thinkingLevel: "medium",
+		});
+		const runtime = createModelSelectionRuntime({ facts: harness.facts, catalogue: harness.ctx });
+
+		const error = await runtime.applyPicked(pickedModel, "high", { mode: "normal" }).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+
+		expect((error as Error).message).toBe("applyPicked requires an injected ModelSelectionSaver.");
+		expect(harness.setModel).not.toHaveBeenCalled();
+		expect(harness.save).not.toHaveBeenCalled();
 	});
 
 	it("wraps post-apply save failures without rolling back the live selection", async () => {
@@ -502,7 +536,7 @@ describe("synchronize", () => {
 		const profile = { ...matchingProfile, thinkingLevel: "medium" as const, contextWindow: 128_000 };
 		const harness = syncHarness({ model: sentinelCurrent });
 
-		const result = await harness.runtime.synchronize(harness.currentModel, profile);
+		const result = await harness.runtime.synchronize(harness.currentModel, profile, "medium");
 
 		if (result.kind !== "synchronized") throw new Error("expected synchronized");
 		expect(result.model).toBe(harness.setModel.mock.calls[0]?.[0]);
@@ -514,7 +548,7 @@ describe("synchronize", () => {
 		const profile = { ...matchingProfile, thinkingLevel: "medium" as const, contextWindow: DEFAULT_SENTINEL };
 		const harness = syncHarness({ model: sentinelCurrent });
 
-		const result = await harness.runtime.synchronize(harness.currentModel, profile);
+		const result = await harness.runtime.synchronize(harness.currentModel, profile, "medium");
 
 		expect(result.kind).toBe("synchronized");
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({ contextWindow: 256_000 }));
@@ -525,7 +559,7 @@ describe("synchronize", () => {
 		const profile = { provider: syncModel.provider, modelId: syncModel.id, thinkingLevel: "medium" as const };
 		const harness = syncHarness({ model: sentinelCurrent });
 
-		const result = await harness.runtime.synchronize(harness.currentModel, profile);
+		const result = await harness.runtime.synchronize(harness.currentModel, profile, "medium");
 
 		expect(result).toEqual({ kind: "synchronized", model: expect.anything() });
 		expect(harness.setModel).toHaveBeenCalledWith(expect.objectContaining({ contextWindow: 256_000 }));
@@ -533,11 +567,12 @@ describe("synchronize", () => {
 
 	it("re-applies the profile's thinking level when the model sync clobbers it", async () => {
 		// pi's setModel imperatively applies per-model overrides or the global
-		// default: simulate the clobber in the setModel fake.
+		// default: simulate the clobber in the setModel fake. The pre-read level
+		// is ignored here; the fresh post-setModel read decides.
 		const profile = { ...matchingProfile, thinkingLevel: "high" as const, contextWindow: 256_000 };
 		const harness = syncHarness({ setModelClobber: "low" });
 
-		const result = await harness.runtime.synchronize(harness.currentModel, profile);
+		const result = await harness.runtime.synchronize(harness.currentModel, profile, "medium");
 
 		if (result.kind !== "synchronized") throw new Error("expected synchronized");
 		expect(result.model).toBe(harness.setModel.mock.calls[0]?.[0]);
@@ -548,7 +583,7 @@ describe("synchronize", () => {
 		const profile = { ...matchingProfile, thinkingLevel: "xhigh" as const, contextWindow: 1_000_000 };
 		const harness = syncHarness();
 
-		const result = await harness.runtime.synchronize(harness.currentModel, profile);
+		const result = await harness.runtime.synchronize(harness.currentModel, profile, "medium");
 
 		expect(result).toEqual({ kind: "synchronized", model: harness.currentModel });
 		expect(harness.setModel).not.toHaveBeenCalled();
@@ -559,22 +594,22 @@ describe("synchronize", () => {
 		const profile = { ...matchingProfile, thinkingLevel: DEFAULT_SENTINEL, contextWindow: 1_000_000 } as const;
 		const harness = syncHarness();
 
-		expect(await harness.runtime.synchronize(harness.currentModel, profile)).toEqual({ kind: "unchanged" });
+		expect(await harness.runtime.synchronize(harness.currentModel, profile, "medium")).toEqual({ kind: "unchanged" });
 		expect(harness.setThinkingLevel).not.toHaveBeenCalled();
 	});
 
 	it("does not apply profile thinking when the runtime level is unknown", async () => {
 		const profile = { ...matchingProfile, thinkingLevel: "xhigh" as const, contextWindow: 1_000_000 };
-		const harness = syncHarness({ thinkingLevel: undefined });
+		const harness = syncHarness();
 
-		expect(await harness.runtime.synchronize(harness.currentModel, profile)).toEqual({ kind: "unchanged" });
+		expect(await harness.runtime.synchronize(harness.currentModel, profile, undefined)).toEqual({ kind: "unchanged" });
 		expect(harness.setThinkingLevel).not.toHaveBeenCalled();
 	});
 
 	it("ignores mismatched Profile context and keeps a current normalized model unchanged", async () => {
 		const mismatch = { provider: "other", modelId: "model", thinkingLevel: "medium" as const, contextWindow: 256_000 };
 		const harness = syncHarness();
-		expect(await harness.runtime.synchronize(harness.currentModel, mismatch)).toEqual({ kind: "unchanged" });
+		expect(await harness.runtime.synchronize(harness.currentModel, mismatch, "medium")).toEqual({ kind: "unchanged" });
 		expect(harness.setModel).not.toHaveBeenCalled();
 	});
 
@@ -582,7 +617,7 @@ describe("synchronize", () => {
 		const mismatch = { provider: "other", modelId: "model", thinkingLevel: "xhigh" as const, contextWindow: 256_000 };
 		const harness = syncHarness();
 
-		const result = await harness.runtime.synchronize(harness.currentModel, mismatch);
+		const result = await harness.runtime.synchronize(harness.currentModel, mismatch, "medium");
 
 		expect(result).toEqual({ kind: "synchronized", model: harness.currentModel });
 		expect(harness.setModel).not.toHaveBeenCalled();
@@ -593,7 +628,7 @@ describe("synchronize", () => {
 		const profile = { ...matchingProfile, thinkingLevel: "high" as const, contextWindow: 500_000 };
 		const harness = syncHarness();
 
-		await harness.runtime.synchronize(harness.currentModel, profile);
+		await harness.runtime.synchronize(harness.currentModel, profile, "medium");
 
 		expect(harness.find).not.toHaveBeenCalled();
 		expect(harness.refresh).not.toHaveBeenCalled();
@@ -603,7 +638,7 @@ describe("synchronize", () => {
 		const profile = { ...matchingProfile, thinkingLevel: "medium" as const, contextWindow: 500_000 };
 		const harness = syncHarness({ setModelResult: false });
 
-		const error = await harness.runtime.synchronize(harness.currentModel, profile).then(
+		const error = await harness.runtime.synchronize(harness.currentModel, profile, "medium").then(
 			() => undefined,
 			(error: unknown) => error,
 		);
