@@ -265,6 +265,12 @@ extension.
   truncation state, and optional usage. The Advisor runner owns outcome meaning;
   one Pi adapter owns tool text, details, error flags, and legacy result reading.
 
+## Workflow runs
+
+- **Workflow run lifecycle** — `workflows-engine/lib/workflow-run.ts` owns one run's execution, pause and stop control, durable-key replay, agent admission, worktree result mapping, and lifecycle writes behind `WorkflowRunHandle`. `commands.ts` is a Pi adapter over that handle and typed read models. It does not read or mutate reducer state.
+- **Workflow run persistence** — `events.jsonl` is canonical and `state.json` is its materialized projection. `workflow-run-state.ts` owns reduction and read-model validation; `run-store.ts` performs file I/O only. A coordinator keyed by the canonical run storage root serializes in-process reads and writes and rejects a second active operation. It does not lock across Pi processes, so two processes writing one run directory remain unsupported.
+- **Workflow worktree policy** — the run lifecycle keeps its normalization, replay reuse, and preservation rules private. It shares the Git executor and artifact collector, but remains separate from `tools-worktree`.
+
 ## Git machinery
 
 - **Git executor** — the deep module in `_shared/git.ts` that owns bounded git

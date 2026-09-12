@@ -1,5 +1,5 @@
 import type { RegistryEntry } from "./registry.ts";
-import type { RunState } from "./run-store.ts";
+import type { WorkflowRunDetail, WorkflowRunSummary } from "./workflow-run.ts";
 
 function boolText(value: boolean | undefined): string {
 	return value === undefined ? "unknown until import" : value ? "may edit" : "read-only";
@@ -48,7 +48,7 @@ export function formatApprovalPlan(entry: RegistryEntry, args: string): string {
 	].join("\n");
 }
 
-export function formatRunList(states: RunState[]): string {
+export function formatRunList(states: readonly WorkflowRunSummary[]): string {
 	if (states.length === 0) return "No workflow runs found.";
 	return states.slice(0, 30).map((s) => {
 		const phase = s.currentPhase ? ` · phase: ${s.currentPhase}` : "";
@@ -58,10 +58,10 @@ export function formatRunList(states: RunState[]): string {
 	}).join("\n");
 }
 
-export function formatRunDetail(s: RunState, eventLogPath: string): string {
+export function formatRunDetail(s: WorkflowRunDetail): string {
 	const phaseLines = Object.entries(s.phases).map(([key, p]) => `- ${key}: ${p.status}${p.error ? ` — ${p.error}` : ""}`);
 	const stepLines = Object.entries(s.steps).map(([key, st]) => `- ${key}: ${st.status}${st.error ? ` — ${st.error}` : ""}`);
-	const agentLines = Object.entries(s.agents).map(([key, a]) => `- ${key}: ${a.agent} ${a.status}${a.error ? ` — ${a.error}` : ""}`);
+	const agentLines = Object.entries(s.agents).map(([key, a]) => `- ${key}: ${a.name} ${a.status}${a.error ? ` — ${a.error}` : ""}`);
 	const parallelLines = Object.entries(s.parallel).map(([key, p]) => `- ${key}: ${p.status}${p.count !== undefined ? ` (${p.count} items, concurrency ${p.concurrency || "?"})` : ""}${p.error ? ` — ${p.error}` : ""}`);
 	return [
 		`# Workflow Run ${s.runId}`,
@@ -83,6 +83,6 @@ export function formatRunDetail(s: RunState, eventLogPath: string): string {
 		s.artifacts.length ? `\n## Artifacts\n${s.artifacts.map((a) => `- ${a}`).join("\n")}` : undefined,
 		s.result !== undefined ? `\n## Final Output\n${typeof s.result === "string" ? s.result : JSON.stringify(s.result, null, 2)}` : undefined,
 		`\n## Controls\n- Resume: /workflow resume ${s.runId}\n- Restart a durable key: /workflow restart ${s.runId} <step-or-agent-key>\n- Stop active foreground run: /workflow stop ${s.runId}`,
-		`\n## Event Log\n${eventLogPath}`,
+		`\n## Event Log\n${s.eventLogPath}`,
 	].filter(Boolean).join("\n");
 }

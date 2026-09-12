@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { projectStatePath } from "../../_shared/state-paths.ts";
 import type { RegistryEntry } from "./registry.ts";
 import { ensureDir, entrySource, projectPathHash, slugify } from "./registry.ts";
@@ -33,7 +33,7 @@ export async function removeApproval(cwd: string, entry: RegistryEntry): Promise
 	await fs.promises.rm(approvalPath(cwd, entry), { force: true });
 }
 
-export async function approve(_pi: ExtensionAPI, ctx: ExtensionContext, entry: RegistryEntry, args: string): Promise<boolean> {
+export async function approve(ctx: ExtensionContext, entry: RegistryEntry, args: string): Promise<boolean> {
 	if (await hasApproval(ctx.cwd, entry)) return true;
 
 	const plan = formatApprovalPlan(entry, args);

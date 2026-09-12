@@ -1,68 +1,76 @@
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { declareStatus } from "../../_shared/status-registry.ts";
-import type { NormalizedWorkflowDefinition, WorkflowAgentOptions, WorkflowParallelOptions } from "./definition.ts";
-import { parsePorcelainStatus, runGit } from "../../_shared/git.ts";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { NormalizedWorkflowDefinition } from "./definition.ts";
 import type { RegistryEntry } from "./registry.ts";
 import { enrichEntryWithWorkflow, entrySource, loadWorkflowFromEntry, nowId, writeWorkflowSnapshot } from "./registry.ts";
 import { approve, removeApproval } from "./approval.ts";
-import { RunStore, initialState, readRunState, runPaths, safeArtifactPath, type RunState } from "./run-store.ts";
-import { AbortError, Semaphore, throwIfAborted } from "./scheduler.ts";
-import { collectWorktreeArtifacts, type WorktreeInfo } from "./worktree-artifacts.ts";
-import { requireSubagentService, type AgentResult, type SubagentProgressEvent } from "../../_shared/subagent-service.ts";
-const WORKFLOW_STATUS_ID = "workflow";
-declareStatus({ id: WORKFLOW_STATUS_ID, style: "accent", order: 60 });
-
-const DEFAULT_MAX_AGENTS = 20;
-const DEFAULT_MAX_CONCURRENT = 4;
-
-function parseJsonOutput(text: string): unknown {
-	const trimmed = text.trim();
-	try { return JSON.parse(trimmed); } catch {}
-	const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-	if (fenced) {
-		try { return JSON.parse(fenced[1].trim()); } catch {}
-	}
-	const firstObj = trimmed.indexOf("{");
-	const lastObj = trimmed.lastIndexOf("}");
-	if (firstObj >= 0 && lastObj > firstObj) {
-		try { return JSON.parse(trimmed.slice(firstObj, lastObj + 1)); } catch {}
-	}
-	const firstArr = trimmed.indexOf("[");
-	const lastArr = trimmed.lastIndexOf("]");
-	if (firstArr >= 0 && lastArr > firstArr) {
-		try { return JSON.parse(trimmed.slice(firstArr, lastArr + 1)); } catch {}
-	}
-	throw new Error("Agent did not return valid JSON");
-}
-
-function clone<T>(value: T): T {
-	if (value === undefined) return value;
-	return JSON.parse(JSON.stringify(value));
-}
+import { FileRunPersistence } from "./run-store.ts";
+import {
+	createWorkflowRun,
+	workflowRunModule,
+	type PreparedWorkflowRunOptions,
+	type WorkflowRunDetail,
+	type WorkflowRunHandle,
+	type WorkflowSubagentRequest,
+} from "./workflow-run.ts";
+import { requireSubagentService, type AgentResult } from "../../_shared/subagent-service.ts";
 
 export interface PreparedWorkflowRun {
 	entry: RegistryEntry;
-	workflow: NormalizedWorkflowDefinition;
-	store: RunStore;
-	state: RunState;
-	resume: boolean;
+	handle: WorkflowRunHandle;
 }
 
-export interface WorkflowRunControl {
-	pauseMode?: "after-current" | "now";
-	background?: boolean;
+function cacheAffinitySeed(ctx: ExtensionContext): string {
+	const manager = (ctx as ExtensionContext & { sessionManager?: { getSessionId?: () => string } }).sessionManager;
+	return manager?.getSessionId?.() || "";
+}
+
+function statusCallback(ctx: ExtensionContext): (status: string | undefined) => void {
+	return (status) => {
+		try { ctx.ui.setStatus?.("workflow", status); } catch {}
+	};
+}
+
+function productionSubagent(): (options: WorkflowSubagentRequest) => Promise<AgentResult> {
+	// The explicit callback is the composition seam. The deep module never
+	// reaches into the process-wide service registry itself.
+	return (options) => requireSubagentService().runSubagent(options);
+}
+
+function handleOptions(
+	ctx: ExtensionContext,
+	entry: RegistryEntry,
+	workflow: NormalizedWorkflowDefinition,
+	persistence: FileRunPersistence,
+	args: string,
+	runId: string,
+	resume: boolean,
+	sourceSnapshotPath: string | undefined,
+): PreparedWorkflowRunOptions {
+	return {
+		entry,
+		workflow,
+		runId,
+		resume,
+		args,
+		sourceSnapshotPath,
+		cwd: ctx.cwd,
+		parentSignal: ctx.signal,
+		cacheAffinitySeed: cacheAffinitySeed(ctx),
+		persistence,
+		runSubagent: productionSubagent(),
+		setStatus: statusCallback(ctx),
+	};
 }
 
 export async function prepareNewWorkflowRun(ctx: ExtensionContext, entry: RegistryEntry, args: string): Promise<PreparedWorkflowRun | undefined> {
-	const approved = await approve({} as ExtensionAPI, ctx, entry, args);
+	const approved = await approve(ctx, entry, args);
 	if (!approved) return undefined;
 
 	const runId = nowId(entry.name);
-	const store = new RunStore(ctx.cwd, runId);
-	const paths = store.paths;
-	const sourceSnapshotPath = await writeWorkflowSnapshot(paths.root, entry);
+	const persistence = new FileRunPersistence(ctx.cwd, runId);
+	const sourceSnapshotPath = await writeWorkflowSnapshot(persistence.paths().root, entry);
 	let workflow: NormalizedWorkflowDefinition;
 	try {
 		workflow = await loadWorkflowFromEntry(entry, entry.trust === "project" ? sourceSnapshotPath : undefined);
@@ -71,339 +79,41 @@ export async function prepareNewWorkflowRun(ctx: ExtensionContext, entry: Regist
 		throw error;
 	}
 	const enriched = enrichEntryWithWorkflow(entry, workflow);
-	const state = await store.initialize(enriched, args, sourceSnapshotPath);
-	return { entry: enriched, workflow, store, state, resume: false };
+	const handle = await createWorkflowRun(handleOptions(ctx, enriched, workflow, persistence, args, runId, false, sourceSnapshotPath));
+	return { entry: enriched, handle };
 }
 
-export async function prepareExistingWorkflowRun(ctx: ExtensionContext, entry: RegistryEntry, state: RunState): Promise<PreparedWorkflowRun> {
-	const store = new RunStore(ctx.cwd, state.runId);
-	if (!state.sourceSnapshotPath) throw new Error(`Run ${state.runId} cannot be replayed: missing workflow source snapshot`);
-	const workflow = await loadWorkflowFromEntry({ ...entry, sourceHash: state.sourceHash, source: entrySource(entry) }, state.trust === "project" ? state.sourceSnapshotPath : undefined);
-	const enriched = enrichEntryWithWorkflow({ ...entry, sourceHash: state.sourceHash }, workflow);
-	return { entry: enriched, workflow, store, state, resume: true };
+export async function prepareExistingWorkflowRun(ctx: ExtensionContext, entry: RegistryEntry, detail: WorkflowRunDetail): Promise<PreparedWorkflowRun> {
+	if (!detail.sourceSnapshotPath) throw new Error(`Run ${detail.runId} cannot be replayed: missing workflow source snapshot`);
+	const workflow = await loadWorkflowFromEntry(
+		{ ...entry, sourceHash: detail.sourceHash, source: entrySource(entry) },
+		detail.trust === "project" ? detail.sourceSnapshotPath : undefined,
+	);
+	const enriched = enrichEntryWithWorkflow({ ...entry, sourceHash: detail.sourceHash }, workflow);
+	const persistence = new FileRunPersistence(ctx.cwd, detail.runId);
+	const handle = await createWorkflowRun(handleOptions(ctx, enriched, workflow, persistence, detail.args, detail.runId, true, detail.sourceSnapshotPath));
+	return { entry: enriched, handle };
 }
 
-function safeWorktreeId(value: string): string {
-	const cleaned = value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
-	if (!cleaned) throw new Error(`Invalid worktree branch id: ${value}`);
-	return cleaned;
-}
-
-async function pathExists(file: string): Promise<boolean> {
-	try { await fsp.access(file); return true; } catch { return false; }
-}
-
-export async function prepareStateEntry(cwd: string, state: RunState, fallback?: RegistryEntry): Promise<RegistryEntry> {
-	if (state.trust === "project") {
-		if (!state.sourceSnapshotPath) throw new Error(`Run ${state.runId} cannot be replayed: missing source snapshot`);
-		const source = await fsp.readFile(state.sourceSnapshotPath, "utf-8").catch((error: any) => {
-			throw new Error(`Run ${state.runId} cannot be replayed: cannot read source snapshot ${state.sourceSnapshotPath}: ${error?.message || String(error)}`);
+export async function prepareStateEntry(cwd: string, detail: WorkflowRunDetail, fallback?: RegistryEntry): Promise<RegistryEntry> {
+	if (detail.trust === "project") {
+		if (!detail.sourceSnapshotPath) throw new Error(`Run ${detail.runId} cannot be replayed: missing source snapshot`);
+		const source = await fsp.readFile(detail.sourceSnapshotPath, "utf-8").catch((error: unknown) => {
+			throw new Error(`Run ${detail.runId} cannot be replayed: cannot read source snapshot ${detail.sourceSnapshotPath}: ${error instanceof Error ? error.message : String(error)}`);
 		});
 		return {
-			name: state.workflowName,
-			description: state.description || fallback?.description || "Project workflow snapshot",
+			name: detail.workflowName,
+			description: detail.description || fallback?.description || "Project workflow snapshot",
 			trust: "project",
-			cost: (state.costShape as any) || fallback?.cost || "unknown",
-			canEditFiles: state.canEditFiles ?? fallback?.canEditFiles,
-			extension: path.extname(state.sourceSnapshotPath) || ".js",
+			cost: (detail.costShape as RegistryEntry["cost"]) || fallback?.cost || "unknown",
+			canEditFiles: detail.canEditFiles ?? fallback?.canEditFiles,
+			extension: path.extname(detail.sourceSnapshotPath) || ".js",
 			source,
-			sourceHash: state.sourceHash,
+			sourceHash: detail.sourceHash,
 		};
 	}
-	if (!fallback) throw new Error(`Bundled workflow definition not found for ${state.workflowName}`);
+	if (!fallback) throw new Error(`Bundled workflow definition not found for ${detail.workflowName}`);
 	return fallback;
 }
 
-export class WorkflowRun {
-	private scheduler: Semaphore;
-	private state: RunState;
-	private pi: ExtensionAPI;
-	private commandCtx: ExtensionContext;
-	private entry: RegistryEntry;
-	private workflow: NormalizedWorkflowDefinition;
-	private store: RunStore;
-	private control: WorkflowRunControl;
-	private resume: boolean;
-
-	constructor(
-		pi: ExtensionAPI,
-		commandCtx: ExtensionContext,
-		entry: RegistryEntry,
-		workflow: NormalizedWorkflowDefinition,
-		store: RunStore,
-		state: RunState,
-		control: WorkflowRunControl = {},
-		resume = false,
-	) {
-		this.pi = pi;
-		this.commandCtx = commandCtx;
-		this.entry = entry;
-		this.workflow = workflow;
-		this.store = store;
-		this.control = control;
-		this.resume = resume;
-		this.state = state;
-		this.scheduler = new Semaphore(workflow.budget?.maxConcurrent || DEFAULT_MAX_CONCURRENT, commandCtx.signal);
-	}
-
-	get runId(): string { return this.state.runId; }
-
-	async execute(): Promise<unknown> {
-		this.state = await this.store.append({ type: this.resume ? "run_resumed" : "run_started" });
-		const runtimeCtx = this.buildContext();
-		try {
-			throwIfAborted(this.commandCtx.signal);
-			const result = await this.workflow.run(runtimeCtx as any);
-			this.state = await this.store.append({ type: "run_completed", result });
-			return result;
-		} catch (error: any) {
-			if (this.control.pauseMode) {
-				if (this.state.status !== "paused") this.state = await this.store.append({ type: "run_paused", error: error?.message || "Workflow paused" });
-			} else if (this.commandCtx.signal?.aborted || error instanceof AbortError || error?.name === "AbortError") {
-				this.state = await this.store.append({ type: "run_stopped", error: "Workflow stopped by abort signal" });
-			} else {
-				this.state = await this.store.append({ type: "run_failed", error: error?.message || String(error) });
-			}
-			throw error;
-		} finally {
-			this.commandCtx.ui.setStatus?.(WORKFLOW_STATUS_ID, undefined);
-		}
-	}
-
-	async requestPause(mode: "after-current" | "now" = "after-current"): Promise<void> {
-		this.control.pauseMode = mode;
-		this.state = await this.store.append({ type: "run_pausing", mode });
-		if (mode === "now") throw new AbortError("Workflow paused by user");
-	}
-
-	private async waitIfPaused(): Promise<void> {
-		throwIfAborted(this.commandCtx.signal);
-		if (this.control.pauseMode === "now") throw new AbortError("Workflow paused by user");
-		if (this.control.pauseMode === "after-current") {
-			this.state = await this.store.append({ type: "run_paused" });
-			throw new AbortError("Workflow paused by user");
-		}
-	}
-
-	private keyInvalidated(key: string): boolean {
-		return this.state.invalidatedKeys.includes(key);
-	}
-
-	private buildContext() {
-		return {
-			runId: this.state.runId,
-			args: this.state.args,
-			cwd: this.commandCtx.cwd,
-			signal: this.commandCtx.signal,
-			phase: async <T>(name: string, fn: () => Promise<T> | T): Promise<T> => {
-				await this.waitIfPaused();
-				this.state = await this.store.append({ type: "phase_started", name });
-				try {
-					const value = await fn();
-					this.state = await this.store.append({ type: "phase_completed", name });
-					return value;
-				} catch (error: any) {
-					this.state = await this.store.append({ type: "phase_failed", name, error: error?.message || String(error) });
-					throw error;
-				}
-			},
-			step: async <T>(key: string, fn: () => Promise<T> | T, options?: any): Promise<T> => this.step(key, fn, options),
-			agent: async <T>(options: WorkflowAgentOptions): Promise<T> => this.agent(options) as Promise<T>,
-			parallel: async <T, R>(items: T[], worker: (item: T, index: number) => Promise<R> | R, options: WorkflowParallelOptions): Promise<R[]> => this.parallel(items, worker, options),
-			artifact: async (artifactPath: string, data: unknown): Promise<string> => this.artifact(artifactPath, data),
-			log: async (message: string, details?: Record<string, unknown>): Promise<void> => {
-				this.state = await this.store.append({ type: "log", message, details });
-			},
-			fail: (message: string): never => { throw new Error(message); },
-		};
-	}
-
-	private async step<T>(key: string, fn: () => Promise<T> | T, options: { dependsOn?: string[]; metadata?: Record<string, unknown> } = {}): Promise<T> {
-		this.validateKey(key);
-		this.validateDependsOn(options.dependsOn);
-		await this.waitIfPaused();
-		const existing = this.state.steps[key];
-		if (existing?.status === "completed" && !this.keyInvalidated(key)) {
-			this.state = await this.store.append({ type: "step_reused", key });
-			return existing.result as T;
-		}
-		this.state = await this.store.append({ type: "step_started", key, dependsOn: options.dependsOn, metadata: options.metadata });
-		try {
-			const result = await fn();
-			this.state = await this.store.append({ type: "step_completed", key, result: clone(result) });
-			return result;
-		} catch (error: any) {
-			this.state = await this.store.append({ type: "step_failed", key, error: error?.message || String(error) });
-			throw error;
-		}
-	}
-
-	private async agent(options: WorkflowAgentOptions): Promise<unknown> {
-		this.validateKey(options.key);
-		this.validateDependsOn(options.dependsOn);
-		await this.waitIfPaused();
-		const existing = this.state.agents[options.key];
-		if (existing?.status === "completed" && !this.keyInvalidated(options.key)) {
-			this.state = await this.store.append({ type: "agent_reused", key: options.key, agent: existing.agent });
-			return existing.result;
-		}
-
-		const maxAgents = this.workflow.budget?.maxAgents ?? DEFAULT_MAX_AGENTS;
-		if (this.state.agentsStarted >= maxAgents) throw new Error(`Workflow budget exceeded: maxAgents=${maxAgents}`);
-		return this.scheduler.withSlot(async () => {
-			await this.waitIfPaused();
-
-			// `agent_started` records an admitted launch attempt. Subagent launch
-			// preflight (agent name and launch validation) runs inside the Subagent
-			// execution module after this point; a preflight rejection lands in the
-			// catch path below as `agent_failed`.
-			const runTarget = await this.prepareAgentTarget(options);
-			this.state = await this.store.append({ type: "agent_started", key: options.key, agent: options.agent, prompt: options.prompt, dependsOn: options.dependsOn, metadata: options.metadata, worktree: runTarget.worktree });
-			this.updateStatus();
-
-			try {
-				const result = await requireSubagentService().runSubagent({
-					agent: options.agent,
-					task: options.prompt,
-					cwd: runTarget.cwd,
-					signal: this.commandCtx.signal,
-					model: options.model,
-					timeoutMs: options.timeoutMs,
-					maxOutputBytes: options.maxOutputBytes,
-					cacheAffinitySeed: this.commandCtx.sessionManager.getSessionId(),
-					onProgress: async (event) => this.recordAgentProgress(options.key, event),
-				});
-				if (result.progress.status === "failed") {
-					throw new Error(result.progress?.error || result.output || `Subagent ${options.agent} failed`);
-				}
-				let returned: unknown = options.output === "json" ? parseJsonOutput(result.output) : result.output;
-				if (runTarget.worktree) {
-					const worktreeResult = await collectWorktreeArtifacts(
-						options.key,
-						runTarget.worktree as WorktreeInfo,
-						returned,
-						{ signal: this.commandCtx.signal, writeArtifact: this.artifact.bind(this) },
-					);
-					returned = typeof returned === "object" && returned !== null ? { ...(returned as any), worktree: worktreeResult } : { output: returned, worktree: worktreeResult };
-				}
-				this.state = await this.store.append({ type: "agent_completed", key: options.key, agent: options.agent, result: clone(returned), raw: result, usage: result.usage });
-				this.enforceTokenBudget();
-				this.updateStatus();
-				return returned;
-			} catch (error: any) {
-				this.state = await this.store.append({ type: "agent_failed", key: options.key, agent: options.agent, error: error?.message || String(error), stopped: error instanceof AbortError || error?.name === "AbortError" });
-				this.updateStatus();
-				throw error;
-			}
-		});
-	}
-
-	private async parallel<T, R>(items: T[], worker: (item: T, index: number) => Promise<R> | R, options: WorkflowParallelOptions): Promise<R[]> {
-		this.validateKey(options.key);
-		await this.waitIfPaused();
-		const budgetMax = this.workflow.budget?.maxConcurrent || DEFAULT_MAX_CONCURRENT;
-		const concurrency = Math.max(1, Math.min(options.concurrency || budgetMax, budgetMax));
-		const results: R[] = new Array(items.length);
-		let next = 0;
-		let firstError: unknown;
-		this.state = await this.store.append({ type: "parallel_started", key: options.key, count: items.length, concurrency });
-
-		const runWorker = async () => {
-			while (next < items.length) {
-				await this.waitIfPaused();
-				if (firstError && options.stopOnError !== false) return;
-				const index = next++;
-				try {
-					results[index] = await worker(items[index], index);
-				} catch (error) {
-					if (options.stopOnError === false) {
-						results[index] = { error: error instanceof Error ? error.message : String(error) } as R;
-					} else {
-						firstError = error;
-						return;
-					}
-				}
-			}
-		};
-
-		await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, runWorker));
-		if (firstError) {
-			this.state = await this.store.append({ type: "parallel_failed", key: options.key, error: firstError instanceof Error ? firstError.message : String(firstError) });
-			throw firstError;
-		}
-		this.state = await this.store.append({ type: "parallel_completed", key: options.key, count: items.length });
-		return results;
-	}
-
-	private async artifact(artifactPath: string, data: unknown): Promise<string> {
-		throwIfAborted(this.commandCtx.signal);
-		const target = safeArtifactPath(this.store.paths.artifacts, artifactPath);
-		await fsp.mkdir(path.dirname(target), { recursive: true });
-		const content = typeof data === "string" ? data : JSON.stringify(data, null, 2);
-		await fsp.writeFile(target, content, "utf-8");
-		const rel = path.relative(this.store.paths.root, target);
-		this.state = await this.store.append({ type: "artifact_written", path: rel });
-		return rel;
-	}
-
-	private async recordAgentProgress(key: string, event: SubagentProgressEvent): Promise<void> {
-		this.state = await this.store.append({ type: event.type === "tool_call" ? "agent_tool" : "agent_progress", key, event, tool: (event as any).tool, args: (event as any).args });
-		this.enforceTokenBudget();
-	}
-
-	private enforceTokenBudget(): void {
-		const maxTokens = this.workflow.budget?.maxTokens;
-		if (maxTokens && this.state.tokens > maxTokens) throw new Error(`Workflow budget exceeded: maxTokens=${maxTokens}`);
-	}
-
-	private updateStatus(): void {
-		this.commandCtx.ui.setStatus?.(WORKFLOW_STATUS_ID, `${this.entry.name} · ${this.state.currentPhase || "running"} · ${this.state.agentsCompleted}/${this.state.agentsStarted} agents`);
-	}
-
-	private async prepareAgentTarget(options: WorkflowAgentOptions): Promise<{ cwd: string; worktree?: unknown }> {
-		if (!options.worktree) return { cwd: options.cwd || this.commandCtx.cwd };
-		const opts = typeof options.worktree === "object" ? options.worktree as any : {};
-		const branchId = safeWorktreeId(opts.branchId || `workflow-${this.state.runId}-${options.key}`);
-		const branch = `fleet/${branchId}`;
-		const worktreePath = path.join(this.commandCtx.cwd, ".pi", "worktrees", branchId);
-		if (!(await pathExists(worktreePath))) {
-			await fsp.mkdir(path.dirname(worktreePath), { recursive: true });
-			await runGit(this.commandCtx.cwd, ["worktree", "add", "-b", branch, worktreePath, opts.baseRef || "HEAD"], {
-				signal: this.commandCtx.signal,
-			});
-		}
-		return { cwd: worktreePath, worktree: { path: worktreePath, branch, branchId, preserve: opts.preserve !== false, fileOwnership: opts.fileOwnership || [] } };
-	}
-
-	private validateDependsOn(dependsOn: string[] | undefined): void {
-		for (const dep of dependsOn || []) this.validateKey(dep);
-	}
-
-	private validateKey(key: string): void {
-		if (!key || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(key)) throw new Error(`Invalid durable key: ${key}`);
-	}
-}
-
-export async function invalidateKeyAndDependents(cwd: string, runId: string, key: string): Promise<RunState> {
-	let state = await readRunState(cwd, runId);
-	if (!state.steps[key] && !state.agents[key]) {
-		throw new Error(`Durable key not found in run ${runId}: ${key}`);
-	}
-	const queue = [key];
-	const seen = new Set<string>();
-	while (queue.length) {
-		const current = queue.shift()!;
-		if (seen.has(current)) continue;
-		seen.add(current);
-		state = await new RunStore(cwd, runId).append({ type: current === key ? "invalidated" : "dependency_invalidated", key: current, root: key });
-		for (const child of state.dependencies[current] || []) queue.push(child);
-	}
-	return state;
-}
-
-export async function runPreparedWorkflow(pi: ExtensionAPI, ctx: ExtensionContext, prepared: PreparedWorkflowRun, control: WorkflowRunControl = {}): Promise<unknown> {
-	const run = new WorkflowRun(pi, ctx, prepared.entry, prepared.workflow, prepared.store, prepared.state || initialState(prepared.store.runId, prepared.entry, ""), control, prepared.resume);
-	return run.execute();
-}
-
-export { readRunState, runPaths };
+export const productionWorkflowRunModule = workflowRunModule;
