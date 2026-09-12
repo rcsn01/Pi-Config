@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createPlanReviewController } from "./plan-review.ts";
+import { MODE_POLICY_PROMPT } from "./plan-prompt.ts";
+import { PLAN_MODE_CONTEXT_CUSTOM_TYPE } from "./index.ts";
 import {
 	actionLabels,
 	activePlanningEntry,
@@ -12,7 +14,7 @@ import {
 } from "./test-harness.ts";
 
 describe("simple plan review UI", () => {
-	it("makes reconstructed inactive state explicit in the system prompt", async () => {
+	it("keeps reconstructed inactive state in the request tail", async () => {
 		const harness = createHarness({
 			branch: [{
 				type: "custom",
@@ -23,10 +25,13 @@ describe("simple plan review UI", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "resume" });
 
 		const [result] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(result.systemPrompt).toContain("BASE");
-		expect(result.systemPrompt).toContain("The runtime mode marker reflects the mode at the start of this turn");
-		expect(result.systemPrompt).toContain('<runtime mode="default" revision="7"/>');
-		expect(result.systemPrompt).not.toContain("You are in **Plan Mode**");
+		expect(result.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		const [context] = await harness.emit("context", { type: "context", messages: [] });
+		expect(context.messages.at(-1)).toMatchObject({
+			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
+			content: expect.stringContaining('<runtime mode="default" revision="7"/>'),
+		});
+		expect(context.messages.at(-1).content).not.toContain("You are in **Plan Mode**");
 	});
 
 	it("ignores a stale persisted mode transition with a lower revision", async () => {
@@ -47,7 +52,9 @@ describe("simple plan review UI", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "resume" });
 
 		const [result] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(result.systemPrompt).toContain('<runtime mode="plan" revision="8"/>');
+		expect(result.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		const [context] = await harness.emit("context", { type: "context", messages: [] });
+		expect(context.messages.at(-1).content).toContain('<runtime mode="plan" revision="8"/>');
 		expect(harness.getActiveToolNames()).toContain("plan_bash");
 	});
 
@@ -68,7 +75,9 @@ describe("simple plan review UI", () => {
 
 		await harness.emit("session_tree", { type: "session_tree" });
 		const [result] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(result.systemPrompt).toContain('<runtime mode="default" revision="9"/>');
+		expect(result.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		const [context] = await harness.emit("context", { type: "context", messages: [] });
+		expect(context.messages.at(-1).content).toContain('<runtime mode="default" revision="9"/>');
 	});
 
 	it("clears plan content when a newer state omits it", async () => {
@@ -189,15 +198,19 @@ describe("simple plan review UI", () => {
 		await initializeAndExtract(harness, plan);
 
 		const [activePrompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(activePrompt.systemPrompt).toContain("You are in **Plan Mode**");
+		expect(activePrompt.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		const [activeContext] = await harness.emit("context", { type: "context", messages: [] });
+		expect(activeContext.messages.at(-1).content).toContain("You are in **Plan Mode**");
 
 		await harness.emit("agent_settled");
 
 		expect(harness.sendUserMessage).toHaveBeenCalledWith(`Implement this proposed plan:\n\n${plan}`, undefined);
 		expect(harness.setEditorText).not.toHaveBeenCalled();
 		const [implementationPrompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(implementationPrompt.systemPrompt).toContain('<runtime mode="default" revision="2"/>');
-		expect(implementationPrompt.systemPrompt).not.toContain("You are in **Plan Mode**");
+		expect(implementationPrompt.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		const [implementationContext] = await harness.emit("context", { type: "context", messages: [] });
+		expect(implementationContext.messages.at(-1).content).toContain('<runtime mode="default" revision="2"/>');
+		expect(implementationContext.messages.at(-1).content).not.toContain("You are in **Plan Mode**");
 		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({
 			mode: "default",
 			revision: 2,
@@ -352,7 +365,9 @@ describe("simple plan review UI", () => {
 			"info",
 		);
 		const [prompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(prompt.systemPrompt).toContain('<runtime mode="plan" revision="3"/>');
+		expect(prompt.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		const [context] = await harness.emit("context", { type: "context", messages: [] });
+		expect(context.messages.at(-1).content).toContain('<runtime mode="plan" revision="3"/>');
 	});
 
 	it("falls back to prefilling the command when automatic submission is unavailable", async () => {

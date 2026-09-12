@@ -73,6 +73,82 @@ describe("safety permission status", () => {
 	});
 });
 
+describe("permission marker context", () => {
+	const markerType = "permission-mode-marker";
+
+	it("puts one read-only marker at the end of the request without mutating context", async () => {
+		const harness = createHarness();
+		saveModeToFile(harness.ctx.cwd, { mode: "read-only", setAt: 0 });
+		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+		const messages = [
+			{ role: "user", content: [{ type: "text", text: "Inspect this" }], timestamp: 1 },
+			{ role: "custom", customType: markerType, content: "Read-only", display: false, timestamp: 2 },
+			{ role: "assistant", content: [], timestamp: 3 },
+		];
+
+		const result = await (harness.handlers.get("context") as any)!({ type: "context", messages }, harness.ctx);
+
+		expect(result?.messages).toHaveLength(3);
+		expect(result?.messages).toEqual([
+			messages[0],
+			messages[2],
+			expect.objectContaining({
+				role: "custom",
+				customType: markerType,
+				content: "Read-only",
+				display: false,
+			}),
+		]);
+		expect(result?.messages?.filter((message: any) => message.customType === markerType)).toHaveLength(1);
+		expect(messages).toEqual([
+			{ role: "user", content: [{ type: "text", text: "Inspect this" }], timestamp: 1 },
+			{ role: "custom", customType: markerType, content: "Read-only", display: false, timestamp: 2 },
+			{ role: "assistant", content: [], timestamp: 3 },
+		]);
+
+		const repeated = await (harness.handlers.get("context") as any)!({ type: "context", messages: result.messages }, harness.ctx);
+		expect(repeated?.messages?.filter((message: any) => message.customType === markerType)).toHaveLength(1);
+		expect(repeated?.messages?.at(-1)).toEqual(expect.objectContaining({ content: "Read-only" }));
+	});
+
+	it("removes stale markers and adds none outside read-only mode", async () => {
+		for (const mode of ["default", "auto-review", "full-access"] as const) {
+			const harness = createHarness();
+			saveModeToFile(harness.ctx.cwd, { mode, setAt: 0 });
+			await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+			const messages = [
+				{ role: "user", content: [{ type: "text", text: "Inspect this" }], timestamp: 1 },
+				{ role: "custom", customType: markerType, content: "Read-only", display: false, timestamp: 2 },
+			];
+
+			const result = await (harness.handlers.get("context") as any)!({ type: "context", messages }, harness.ctx);
+
+			expect(result).toEqual({ messages: [messages[0]] });
+		}
+	});
+
+	it("changes only the request tail when the mode changes", async () => {
+		const harness = createHarness();
+		saveModeToFile(harness.ctx.cwd, { mode: "read-only", setAt: 0 });
+		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+		const messages = [{ role: "user", content: [{ type: "text", text: "Inspect this" }], timestamp: 1 }];
+		const contextHandler = harness.handlers.get("context") as any;
+		const readOnly = await contextHandler({ type: "context", messages }, harness.ctx);
+
+		await harness.commands.get("permissions").handler("default", harness.ctx);
+		const defaultMode = await contextHandler({ type: "context", messages: readOnly.messages }, harness.ctx);
+		expect(defaultMode).toEqual({ messages });
+
+		await harness.commands.get("permissions").handler("read-only", harness.ctx);
+		const readOnlyAgain = await contextHandler({ type: "context", messages: defaultMode.messages }, harness.ctx);
+		expect(readOnlyAgain?.messages).toHaveLength(2);
+		expect(readOnlyAgain?.messages?.at(-1)).toEqual(expect.objectContaining({
+			customType: markerType,
+			content: "Read-only",
+		}));
+	});
+});
+
 describe("permission enforcement adapter", () => {
 	it("issues and consumes one canonical one-shot approval through /approve", async () => {
 		const harness = createHarness();

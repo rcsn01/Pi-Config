@@ -4,9 +4,9 @@ import {
 	approvalDisposition,
 	isApprovalMode,
 	modePickerDescription,
+	modeRequestMarker,
 	modeStatusLabel,
 	modeSwitchConfirmation,
-	modeSystemPrompt,
 	resolveModeInput,
 } from "./mode-registry.ts";
 
@@ -105,26 +105,14 @@ describe("modePickerDescription", () => {
 	});
 });
 
-describe("modeSystemPrompt", () => {
-	const READ_ONLY_WORKSPACE = `\n\n## Permission Mode: READ-ONLY\nYou are in read-only browsing mode, limited to the current directory.\n- You CAN read files, search code, list directories, and run read-only commands within the workspace.\n- You CANNOT modify files, run write commands, execute shell commands that change the system, or access the network.\n- Do NOT attempt to use write, edit, or bash for destructive operations.\n- Inform the user if a task requires write access. They can switch mode with /permissions default.`;
-	const READ_ONLY_CURRENT_DIRECTORY = `\n\n## Permission Mode: READ-ONLY\nYou are in read-only browsing mode, limited to the current directory.\n- You CAN read files, search code, list directories, and run read-only commands within the current directory.\n- You CANNOT modify files, run write commands, execute shell commands that change the system, or access the network.\n- Do NOT attempt to use write, edit, or bash for destructive operations.\n- Inform the user if a task requires write access. They can switch mode with /permissions default.`;
-	const DEFAULT_SECTION = `\n\n## Permission Mode: DEFAULT\nYou may read, write, and edit files within the current workspace, and run commands.\nApproval is required to:\n- Access the internet (curl, fetch, package installs, git push/pull/clone, etc.)\n- Write or edit files outside the workspace\n- Run dangerous commands (sudo, rm -rf, curl piped to shell)\nPrefer safe alternatives when possible.`;
-	const AUTO_REVIEW_SECTION = `\n\n## Permission Mode: AUTO-REVIEW\nFull auto — no restrictions on reading, writing within the workspace, web searches, or running commands.\nA guardian LLM reviews dangerous commands, network installs, and writes outside the workspace.\nSafe actions pass silently. Risky actions may trigger a user prompt.`;
-	const FULL_ACCESS_SECTION = `\n\n## Permission Mode: FULL ACCESS\nNo restrictions. You have full access to read, write, and execute any command, including network access and writing outside the workspace.\nExercise caution and always inform the user of destructive operations.`;
-
-	it("pins the read-only section under the workspace phrasing", () => {
-		expect(modeSystemPrompt("read-only", "workspace")).toBe(READ_ONLY_WORKSPACE);
+describe("modeRequestMarker", () => {
+	it("returns only the read-only marker while read-only mode is active", () => {
+		expect(modeRequestMarker("read-only")).toBe("Read-only");
 	});
 
-	it("pins the read-only section under the current-directory phrasing", () => {
-		expect(modeSystemPrompt("read-only", "current-directory")).toBe(READ_ONLY_CURRENT_DIRECTORY);
-	});
-
-	it("pins the other three sections regardless of the phrasing argument", () => {
-		for (const phrasing of ["workspace", "current-directory"] as const) {
-			expect(modeSystemPrompt("default", phrasing)).toBe(DEFAULT_SECTION);
-			expect(modeSystemPrompt("auto-review", phrasing)).toBe(AUTO_REVIEW_SECTION);
-			expect(modeSystemPrompt("full-access", phrasing)).toBe(FULL_ACCESS_SECTION);
+	it("returns no marker for other modes", () => {
+		for (const mode of ["default", "auto-review", "full-access"] as const) {
+			expect(modeRequestMarker(mode)).toBeUndefined();
 		}
 	});
 });

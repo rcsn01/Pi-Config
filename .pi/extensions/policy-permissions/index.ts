@@ -37,7 +37,7 @@ import {
 	type GuardianSettings,
 } from "./guardian-settings.ts";
 import { loadModeFromFile, saveModeToFile } from "./mode-store.ts";
-import { modeStatusLabel, modeSystemPrompt } from "./mode-registry.ts";
+import { modeRequestMarker, modeStatusLabel } from "./mode-registry.ts";
 import {
 	createPermissionEnforcementLifecycle,
 	permissionActionKey,
@@ -50,6 +50,22 @@ export { parseGuardianDefinition, resolveGuardianPath };
 export type { GuardianDefinition } from "./guardian-runner.ts";
 
 export { permissionActionKey as actionKey, evaluateToolCall };
+
+const PERMISSION_MARKER_CUSTOM_TYPE = "permission-mode-marker";
+
+function isPermissionMarker(message: { role: string; customType?: string }): boolean {
+	return message.role === "custom" && message.customType === PERMISSION_MARKER_CUSTOM_TYPE;
+}
+
+function createPermissionMarkerMessage(marker: string) {
+	return {
+		role: "custom" as const,
+		customType: PERMISSION_MARKER_CUSTOM_TYPE,
+		content: marker,
+		display: false,
+		timestamp: Date.now(),
+	};
+}
 
 // ── Extension ──────────────────────────────────────────────────────────
 
@@ -188,7 +204,19 @@ function installSafetyPermissions(
 		if (outcome.kind === "blocked") return { block: true, reason: outcome.reason };
 	});
 
-	// ── System prompt injection ────────────────────────────────────────
+	// ── Request-local permission marker ─────────────────────────────────
+
+	pi.on("context", async (event) => {
+		// Context-hook messages are used only for this provider request. Remove any
+		// stale marker before adding the current one so mode changes never accumulate
+		// marker messages in the session context.
+		const messages = event.messages.filter((message) => !isPermissionMarker(message));
+		const marker = modeRequestMarker(enforcement.mode.mode);
+		if (!marker) {
+			return messages.length === event.messages.length ? undefined : { messages };
+		}
+		return { messages: [...messages, createPermissionMarkerMessage(marker)] };
+	});
 
 	pi.on("before_agent_start", async (event) => {
 		// Snapshot the prior turn's final assistant message before this turn begins.
@@ -197,12 +225,6 @@ function installSafetyPermissions(
 		// current-turn assistant text cannot overwrite it before a tool_call fires.
 		precedingAssistantMessage = lastAssistantMessage;
 		lastUserPrompt = (event.prompt || "").slice(0, 500);
-		return {
-			systemPrompt: event.systemPrompt + modeSystemPrompt(
-				enforcement.mode.mode,
-				event.systemPrompt.includes("cwd") ? "workspace" : "current-directory",
-			),
-		};
 	});
 
 	// ── Commands ────────────────────────────────────────────────────────
