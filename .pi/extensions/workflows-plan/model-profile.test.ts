@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
-import { MODE_POLICY_PROMPT } from "./plan-prompt.ts";
 import { PLAN_MODE_CONTEXT_CUSTOM_TYPE } from "./index.ts";
 import {
 	createNormalDefaultsStore,
@@ -336,7 +335,7 @@ describe("Plan Mode model and thinking profiles", () => {
 		expect(harness.notify).toHaveBeenCalledWith(expect.stringContaining("Could not exit Plan Mode"), "error");
 		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({ mode: "plan" });
 		const [result] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(result.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(result.systemPrompt).toBe("BASE");
 		const [context] = await harness.emit("context", { type: "context", messages: [] });
 		expect(context.messages.at(-1)).toMatchObject({
 			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,

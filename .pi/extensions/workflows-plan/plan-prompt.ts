@@ -1,16 +1,5 @@
 import { isPlanMode, type PlanPhase, type AgentModeState } from "./plan-state.ts";
 
-export const MODE_POLICY_PROMPT = `
-
-<plan_mode_policy>
-The final request-local mode block at the end of the conversation is authoritative for this turn.
-The runtime mode marker reflects the mode at the start of this turn.
-A runtime mode of plan means follow the Plan Mode behavior in the request-local collaboration block.
-A runtime mode of default means Plan Mode is inactive.
-When asked about the current mode, answer from the final runtime marker.
-If the marker conflicts with observable reality — for example, tools that Plan Mode disables (bash, edit, write) are available and working, or the user states the mode — the marker is stale: trust the live evidence and the user.
-</plan_mode_policy>`;
-
 export const PLAN_MODE_PROMPT = `
 
 <collaboration_mode>
@@ -123,20 +112,6 @@ export function runtimeModeMarker(state: AgentModeState): string {
 	return `\n\n<runtime mode="${state.mode}" revision="${state.revision}"/>`;
 }
 
-export function stripGeneratedModeContext(systemPrompt: string): string {
-	return systemPrompt
-		.replaceAll(MODE_POLICY_PROMPT, "")
-		.replaceAll(PLAN_MODE_PROMPT, "")
-		.replace(/\n*<plan_mode_policy>[\s\S]*?<\/plan_mode_policy>/g, "")
-		.replace(/\n*<mode_policy>\s*The final runtime mode marker is authoritative[\s\S]*?<\/mode_policy>/g, "")
-		.replace(/\n*<default_mode>[\s\S]*?<\/default_mode>/g, "")
-		.replace(/\n*<collaboration_mode>\s*# Plan Mode \(Conversational\)[\s\S]*?<\/collaboration_mode>/g, "")
-		.replace(/\n*<plan_review_state>[\s\S]*?<\/plan_review_state>/g, "")
-		.replace(/\n*<plan_mode_state>[\s\S]*?<\/plan_mode_state>/g, "")
-		.replace(/\n*<mode_change_note>[\s\S]*?<\/mode_change_note>/g, "")
-		.replace(/\n*<runtime mode="(?:default|plan)" revision="\d+"\/>/g, "");
-}
-
 export interface PlanPromptSnapshot extends AgentModeState {
 	phase?: PlanPhase;
 }
@@ -150,11 +125,6 @@ export type ModeChange = "entered" | "exited";
 export function modeChangeNote(modeChange: ModeChange | undefined): string {
 	if (modeChange === undefined) return "";
 	return `\n\n<mode_change_note>Plan Mode was ${modeChange} since the previous turn.</mode_change_note>`;
-}
-
-/** Build the stable system prompt with exactly one Plan Mode policy block. */
-export function buildPlanModeSystemPrompt(systemPrompt: string): string {
-	return stripGeneratedModeContext(systemPrompt) + MODE_POLICY_PROMPT;
 }
 
 /** Build request-local Plan Mode context with the runtime marker last. */

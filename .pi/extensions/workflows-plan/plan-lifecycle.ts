@@ -60,7 +60,6 @@ import { createPlanPendingMode } from "./plan-pending-mode.ts";
 import { createPlanProfileTransition } from "./plan-profile-transition.ts";
 import {
 	buildPlanModeRequestPrompt,
-	buildPlanModeSystemPrompt,
 	type ModeChange,
 	type PlanPromptSnapshot,
 } from "./plan-prompt.ts";
@@ -1031,7 +1030,7 @@ export function createPlanLifecycle(
 					lastPromptedMode = snapshot.mode;
 					requestSnapshot = snapshot;
 					return {
-						systemPrompt: buildPlanModeSystemPrompt(event.event.systemPrompt),
+						systemPrompt: event.event.systemPrompt,
 					} as PlanLifecycleResult<E>;
 				}
 			case "contextConstruction":
