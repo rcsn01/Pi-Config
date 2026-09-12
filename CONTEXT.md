@@ -291,16 +291,21 @@ extension.
 ## Child processes
 
 - **Child process module** — the deep in-process module in
-  `_shared/child-process.ts` that owns how Pi re-invokes itself and how child
-  process lifetimes end: exact invocation resolution (realpath of the running
-  entry, Bun fallback, PATH `pi`), UTF-8 line framing with optional
-  bounded-line discard, and termination escalation (SIGTERM → grace → SIGKILL;
-  the cache-effort child runner waits a 1,000 ms grace plus a 1,000 ms
-  post-kill wait, while subagent child execution grants a 3,000 ms grace) plus
-  the immediate group kill for sandbox teardown. The Subagent child execution
-  module, the cache-effort child runner, the Child observation module, file
-  discovery, and the Plan sandbox and workspace runners consume it at its
-  seam. The Git executor keeps its own bounded output accumulation by design.
+  `_shared/child-process.ts` that owns how Pi re-invokes itself, how child
+  output is framed into lines, how child process lifetimes end, and how
+  children are spawned into their own process group: exact invocation
+  resolution (realpath of the running entry, Bun fallback, PATH `pi`), UTF-8
+  line framing with optional bounded-line discard, the detached
+  spawn-into-group pattern (spawn off Windows, abort and deadline → immediate
+  group kill, settle-once, caller-declared kill-at-settle descendant policy),
+  and termination escalation (SIGTERM → grace → SIGKILL; the cache-effort
+  child runner waits a 1,000 ms grace plus a 1,000 ms post-kill wait, while
+  subagent child execution grants a 3,000 ms grace) plus the immediate group
+  kill for sandbox teardown. The Plan sandbox and workspace runners consume
+  the spawn-into-group pattern; the Subagent child execution module, the
+  cache-effort child runner, the Child observation module, and file discovery
+  consume the module's framing and termination mechanics at its seam. The Git
+  executor keeps its own bounded output accumulation by design.
 
 ## Repository snapshots
 

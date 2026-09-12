@@ -1,12 +1,13 @@
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 
 /**
  * The deep in-process module for repeated child-process mechanics: how Pi
- * re-invokes itself, how child output is framed into lines, and how child
- * process lifetimes end. Protocol parsing, event meaning, output accumulation,
- * and caller policy stay with the consumers.
+ * re-invokes itself, how child output is framed into lines, how child process
+ * lifetimes end, and how children are spawned into their own process group.
+ * Protocol parsing, event meaning, output accumulation, and caller policy stay
+ * with the consumers.
  */
 
 export interface PiInvocation {
@@ -127,6 +128,108 @@ export function killProcessGroup(child: ChildProcess): void {
 	} catch {
 		try { child.kill("SIGKILL"); } catch { /* already exited */ }
 	}
+}
+
+export type SpawnProcess = typeof spawn;
+
+export type GroupSpawnOutcome =
+	| { kind: "exit"; exitCode: number | null }
+	| { kind: "aborted" }
+	| { kind: "timed-out" }
+	| { kind: "spawn-error"; error: Error };
+
+export interface SpawnInGroupOptions {
+	command: string;
+	args: readonly string[];
+	cwd?: string;
+	env?: NodeJS.ProcessEnv;
+	/** Caller-owned stdio policy, passed verbatim to spawn. Must be node's own
+	 *  `StdioOptions`: `@types/node` 26 exports no `StdioOption`, and a readonly
+	 *  array is not assignable to `spawn`'s mutable `stdio` option. */
+	stdio: StdioOptions;
+	signal?: AbortSignal;
+	/** Positive value kills the process group at the deadline and reports `timed-out`. */
+	timeoutSeconds?: number;
+	/** Kill the surviving process group when the child settles (descendant policy). */
+	killGroupOnSettle?: boolean;
+	onStdout?: (chunk: Buffer) => void;
+	onStderr?: (chunk: Buffer) => void;
+	/** Injectable spawn, typed as `typeof spawn`. */
+	spawnProcess?: SpawnProcess;
+}
+
+/**
+ * Spawn a child into its own process group and settle exactly once with a
+ * total outcome; the promise never rejects. The module owns the detached
+ * spawn decision (off Windows), the immediate group kill on abort and on the
+ * optional deadline, the post-attach aborted re-check, settle-once, and the
+ * caller-declared kill-at-settle descendant policy. Stream consumption,
+ * executable selection, and result-to-error mapping stay with the caller.
+ * Outcome marks accumulate, so an abort after the deadline still reports
+ * `aborted`, and the abort listener is removed at settle.
+ */
+export function spawnInGroup(options: SpawnInGroupOptions): Promise<GroupSpawnOutcome> {
+	return new Promise((resolve) => {
+		if (options.signal?.aborted) {
+			resolve({ kind: "aborted" });
+			return;
+		}
+
+		let child: ChildProcess;
+		try {
+			child = (options.spawnProcess ?? spawn)(options.command, options.args, {
+				cwd: options.cwd,
+				env: options.env,
+				detached: process.platform !== "win32",
+				stdio: options.stdio,
+			});
+		} catch (error) {
+			resolve({ kind: "spawn-error", error: error instanceof Error ? error : new Error(String(error)) });
+			return;
+		}
+
+		let abortInitiated = false;
+		let deadlineInitiated = false;
+		let settled = false;
+		let timer: NodeJS.Timeout | undefined;
+
+		const onAbort = () => {
+			abortInitiated = true;
+			killProcessGroup(child);
+		};
+		options.signal?.addEventListener("abort", onAbort, { once: true });
+		// A listener attached to an already-aborted signal never fires; the
+		// re-check covers the window between the pre-check and this attach.
+		if (options.signal?.aborted) onAbort();
+
+		if (options.timeoutSeconds !== undefined && options.timeoutSeconds > 0) {
+			timer = setTimeout(() => {
+				deadlineInitiated = true;
+				killProcessGroup(child);
+			}, options.timeoutSeconds * 1000);
+		}
+
+		child.stdout?.on("data", (chunk: Buffer) => options.onStdout?.(chunk));
+		child.stderr?.on("data", (chunk: Buffer) => options.onStderr?.(chunk));
+
+		const finish = (outcome: GroupSpawnOutcome) => {
+			if (settled) return;
+			settled = true;
+			if (timer) clearTimeout(timer);
+			options.signal?.removeEventListener("abort", onAbort);
+			if (options.killGroupOnSettle) killProcessGroup(child);
+			resolve(outcome);
+		};
+
+		child.on("error", (error) => finish({ kind: "spawn-error", error }));
+		child.on("close", (code) => finish(
+			abortInitiated
+				? { kind: "aborted" }
+				: deadlineInitiated
+					? { kind: "timed-out" }
+					: { kind: "exit", exitCode: code },
+		));
+	});
 }
 
 export interface TerminateChildProcessOptions {

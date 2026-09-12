@@ -1,11 +1,10 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
-import { killProcessGroup } from "../_shared/child-process.ts";
+import { spawnInGroup } from "../_shared/child-process.ts";
 import type { PlanWorkspace } from "./plan-workspace.ts";
 
 interface SandboxRuntime {
@@ -45,59 +44,30 @@ export interface PlanSandboxController {
 	dispose(): Promise<void>;
 }
 
-const runSandboxed: RunSandboxed = (argv, options) => new Promise((resolvePromise, rejectPromise) => {
+const runSandboxed: RunSandboxed = async (argv, options) => {
 	const [executable, ...args] = argv;
-	if (!executable) {
-		rejectPromise(new Error("Sandbox runtime returned an empty command."));
-		return;
-	}
-	if (options.signal?.aborted) {
-		rejectPromise(new Error("aborted"));
-		return;
-	}
-
-	const child = spawn(executable, args, {
+	if (!executable) throw new Error("Sandbox runtime returned an empty command.");
+	let stderr = "";
+	const outcome = await spawnInGroup({
+		command: executable,
+		args,
 		cwd: options.cwd,
 		env: options.env,
-		detached: process.platform !== "win32",
 		stdio: ["ignore", "pipe", "pipe"],
+		signal: options.signal,
+		timeoutSeconds: options.timeout,
+		killGroupOnSettle: true,
+		onStdout: options.onData,
+		onStderr: (chunk) => {
+			stderr += chunk.toString("utf8");
+			options.onData(chunk);
+		},
 	});
-	let stderr = "";
-	let timedOut = false;
-	let settled = false;
-	let timer: NodeJS.Timeout | undefined;
-
-	const finish = (callback: () => void) => {
-		if (settled) return;
-		settled = true;
-		if (timer) clearTimeout(timer);
-		options.signal?.removeEventListener("abort", onAbort);
-		// A shell can exit while descendants remain alive. Never let them outlive
-		// a Plan Mode tool call or retain access to the disposable workspace.
-		killProcessGroup(child);
-		callback();
-	};
-	const onAbort = () => killProcessGroup(child);
-	options.signal?.addEventListener("abort", onAbort, { once: true });
-
-	if (options.timeout !== undefined && options.timeout > 0) {
-		timer = setTimeout(() => {
-			timedOut = true;
-			killProcessGroup(child);
-		}, options.timeout * 1000);
-	}
-	child.stdout?.on("data", (chunk: Buffer) => options.onData(chunk));
-	child.stderr?.on("data", (chunk: Buffer) => {
-		stderr += chunk.toString("utf8");
-		options.onData(chunk);
-	});
-	child.on("error", (error) => finish(() => rejectPromise(error)));
-	child.on("close", (code) => finish(() => {
-		if (options.signal?.aborted) rejectPromise(new Error("aborted"));
-		else if (timedOut) rejectPromise(new Error(`timeout:${options.timeout}`));
-		else resolvePromise({ exitCode: code, stderr });
-	}));
-});
+	if (outcome.kind === "spawn-error") throw outcome.error;
+	if (outcome.kind === "aborted") throw new Error("aborted");
+	if (outcome.kind === "timed-out") throw new Error(`timeout:${options.timeout}`);
+	return { exitCode: outcome.exitCode, stderr };
+};
 
 function mapWorkingDirectory(workspace: PlanWorkspace, cwd: string): string {
 	const resolved = isAbsolute(cwd) ? resolve(cwd) : resolve(workspace.hostRoot, cwd);
