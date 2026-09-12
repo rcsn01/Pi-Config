@@ -12,22 +12,28 @@ import type { AgentConfig } from "../_shared/subagent-service.ts";
 import { agentRegistry, type AgentRegistry } from "./agent-registry.ts";
 import {
 	getDefaultSubagentConfig,
-	normalizeModelSetting,
 	normalizeThinkingLevel,
+	parseSubagentAssignmentEdit,
+	parseSubagentModelEdit,
+	parseSubagentThinkingEdit,
+	resolveSubagentAssignmentTarget,
 	splitModelThinkingSetting,
+	subagentModelPickerValue,
+	subagentStoredModelSetting,
+	subagentThinkingPickerValue,
 	THINKING_LEVELS,
+	type AssignmentSelectionTarget,
 	type ExtensionConfig,
 	type ResolvedSubagentAssignmentSelection,
 	type SubagentAssignmentEdit,
-	type SubagentAssignmentTarget,
 	type SubagentConfigStore,
 	type SubagentThinkingLevel,
 } from "./config.ts";
 import { formatContextWindow } from "./formatting.ts";
 import {
 	createSubagentChildExecution,
+	formatChildToolDiagnostic,
 	type SubagentChildExecution,
-	type SubagentChildToolDiagnostic,
 } from "./child-execution.ts";
 import { DEFAULT_MAX_CONCURRENCY } from "./subagent-execution.ts";
 
@@ -35,23 +41,14 @@ export interface ModelCommandDependencies {
 	registry?: AgentRegistry;
 	config?: SubagentConfigStore;
 	childExecution?: Pick<SubagentChildExecution, "inspectTools">;
-}
-
-function formatChildToolDiagnostic(diagnostic: SubagentChildToolDiagnostic): string {
-	switch (diagnostic.kind) {
-		case "unmapped-tool":
-			return `${diagnostic.tool} (unmapped)`;
-		case "missing-tool-extension":
-			return `${diagnostic.tool} (${diagnostic.path})`;
-		case "missing-runtime-extension":
-			return `${diagnostic.extension} (${diagnostic.path})`;
-	}
+	pickScreen?: typeof pickSelectScreen;
 }
 
 export function createSubagentsCommand(dependencies: ModelCommandDependencies = {}) {
 	const registry = dependencies.registry ?? agentRegistry;
 	const configStore = dependencies.config ?? getDefaultSubagentConfig();
 	const childExecution = dependencies.childExecution ?? createSubagentChildExecution();
+	const pickScreen = dependencies.pickScreen ?? pickSelectScreen;
 	const SUBAGENT_MODEL_USAGE = [
 		"Usage:",
 		"  /subagents",
@@ -60,47 +57,21 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		"  /subagents model",
 		"  /subagents model all <main|provider/model>",
 		"  /subagents model <agent> <main|provider/model|inherit>",
-		"  /subagents thinking all <default|off|minimal|low|medium|high|xhigh|max>",
-		"  /subagents thinking <agent> <inherit|off|minimal|low|medium|high|xhigh|max>",
+		`  /subagents thinking all <${["default", ...THINKING_LEVELS].join("|")}>`,
+		`  /subagents thinking <agent> <${["inherit", ...THINKING_LEVELS].join("|")}>`,
 	].join("\n");
 
-	function assignmentTarget(target: string): SubagentAssignmentTarget {
-		return target === "all" ? { kind: "all" } : { kind: "agent", name: target };
-	}
-
-	function targetName(target: SubagentAssignmentTarget): string {
-		return target.kind === "all" ? "all" : target.name;
-	}
-
-	function modelEdit(target: SubagentAssignmentTarget, value: string): SubagentAssignmentEdit {
-		const setting = value.trim();
-		return setting.toLowerCase() === "inherit"
-			? { target, model: { kind: "inherit" } }
-			: { target, model: { kind: "set", setting: normalizeModelSetting(setting, `model for ${targetName(target)}`) } };
-	}
-
-	function thinkingEdit(target: SubagentAssignmentTarget, value: string): SubagentAssignmentEdit {
-		const level = value.trim().toLowerCase();
-		if (level === "default") return { target, thinking: { kind: "default" } };
-		if (level === "inherit") return { target, thinking: { kind: "inherit" } };
-		return { target, thinking: { kind: "set", level: normalizeThinkingLevel(level, `thinking level for ${targetName(target)}`) } };
-	}
-
-	function combinedEdit(
-		target: SubagentAssignmentTarget,
-		modelValue: string,
-		thinkingValue: string,
-	): SubagentAssignmentEdit {
-		return { ...modelEdit(target, modelValue), thinking: thinkingEdit(target, thinkingValue).thinking };
-	}
-
-	function requireKnownTarget(target: string, availableAgents: AgentConfig[], ctx: ExtensionContext): boolean {
-		if (target === "all" || availableAgents.some((candidate) => candidate.name === target)) return true;
-		ctx.ui.notify(
-			`Unknown subagent: ${target}. Available: ${availableAgents.map((item) => item.name).join(", ") || "none"}\n\n${SUBAGENT_MODEL_USAGE}`,
-			"error",
-		);
-		return false;
+	function requireKnownTarget(
+		target: string,
+		availableAgents: AgentConfig[],
+		ctx: ExtensionContext,
+	): AssignmentSelectionTarget | undefined {
+		try {
+			return resolveSubagentAssignmentTarget(target, availableAgents);
+		} catch (error) {
+			ctx.ui.notify(`${error instanceof Error ? error.message : String(error)}\n\n${SUBAGENT_MODEL_USAGE}`, "error");
+			return undefined;
+		}
 	}
 
 	function contextDisplay(contextWindow: number | undefined): string {
@@ -121,11 +92,10 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		availableAgents: AgentConfig[],
 		options: { snapshot: ExtensionConfig; edit?: SubagentAssignmentEdit },
 	): ResolvedSubagentAssignmentSelection {
-		const agent = target === "all" ? undefined : availableAgents.find((candidate) => candidate.name === target);
-		if (target !== "all" && !agent) throw new Error(`Unknown subagent: ${target}`);
-		return agent
-			? configStore.resolveAssignmentSelection({ target: { kind: "agent", name: target }, agent, ...options })
-			: configStore.resolveAssignmentSelection({ target: { kind: "all" }, ...options });
+		return configStore.resolveAssignmentSelection({
+			...resolveSubagentAssignmentTarget(target, availableAgents),
+			...options,
+		});
 	}
 
 	function statusLines(availableAgents: AgentConfig[]): string[] {
@@ -215,11 +185,12 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		availableAgents: AgentConfig[],
 		ctx: ExtensionContext,
 	): Promise<void> {
-		if (!requireKnownTarget(target, availableAgents, ctx)) return;
+		const resolved = requireKnownTarget(target, availableAgents, ctx);
+		if (!resolved) return;
 
 		let edit: SubagentAssignmentEdit;
 		try {
-			edit = modelEdit(assignmentTarget(target), rawValue);
+			edit = parseSubagentModelEdit(resolved.target, rawValue);
 			const pending = edit.model!;
 			if (pending.kind === "set" && !(await validateAvailableModel(pending.setting, ctx))) return;
 			await configStore.applyAssignmentEdit(edit);
@@ -244,11 +215,12 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		availableAgents: AgentConfig[],
 		ctx: ExtensionContext,
 	): Promise<void> {
-		if (!requireKnownTarget(target, availableAgents, ctx)) return;
+		const resolved = requireKnownTarget(target, availableAgents, ctx);
+		if (!resolved) return;
 
 		let edit: SubagentAssignmentEdit;
 		try {
-			edit = thinkingEdit(assignmentTarget(target), rawValue);
+			edit = parseSubagentThinkingEdit(resolved.target, rawValue);
 			await configStore.applyAssignmentEdit(edit);
 		} catch (error) {
 			ctx.ui.notify(`${error instanceof Error ? error.message : String(error)}\n\n${SUBAGENT_MODEL_USAGE}`, "error");
@@ -274,10 +246,9 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		availableAgents: AgentConfig[],
 		ctx: ExtensionContext,
 	): Promise<void> {
-		const agent = availableAgents.find((candidate) => candidate.name === target);
-		if (target !== "all" && !agent) throw new Error(`Unknown subagent: ${target}`);
+		const resolved = resolveSubagentAssignmentTarget(target, availableAgents);
 
-		const edit = combinedEdit(assignmentTarget(target), rawModel, rawThinking);
+		const edit = parseSubagentAssignmentEdit(resolved.target, rawModel, rawThinking);
 		const model = edit.model!;
 		if (model.kind === "set" && !(await validateAvailableModel(model.setting, ctx))) return;
 
@@ -323,7 +294,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			}),
 		];
 
-		return pickSelectScreen(ctx, {
+		return pickScreen(ctx, {
 			title: "Configure subagents",
 			subtitle: "Choose all subagents or one agent to change model and thinking",
 			items,
@@ -339,21 +310,19 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		ctx: ExtensionContext,
 	): Promise<string | undefined> {
 		const config = configStore.load();
-		const agent = target === "all" ? undefined : availableAgents.find((candidate) => candidate.name === target);
-		if (target !== "all" && !agent) throw new Error(`Unknown subagent: ${target}`);
+		const resolved = resolveSubagentAssignmentTarget(target, availableAgents);
+		const agent = resolved.agent;
 
 		const current = targetSelection(target, availableAgents, { snapshot: config });
-		const currentModelValue = current.model.kind === "set"
-			? current.assignment.modelSetting
-			: current.model.kind === "inherit" ? "inherit" : "main";
-		const rawSetting = current.model.kind === "set" ? current.model.setting : undefined;
+		const currentModelValue = subagentModelPickerValue(current);
+		const rawSetting = subagentStoredModelSetting(current);
 		const mainModel = configStore.resolveMainModel();
 		const choices: SelectScreenItem[] = [];
 
 		if (agent) {
 			const inherited = targetSelection(target, availableAgents, {
 				snapshot: config,
-				edit: modelEdit({ kind: "agent", name: target }, "inherit"),
+				edit: parseSubagentModelEdit(resolved.target, "inherit"),
 			});
 			choices.push({
 				value: "inherit",
@@ -381,7 +350,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			});
 		}
 
-		return pickSelectScreen(ctx, {
+		return pickScreen(ctx, {
 			title: `Select model for ${target === "all" ? "all subagents" : target}`,
 			items: choices,
 			currentValue: currentModelValue,
@@ -414,10 +383,9 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 		ctx: ExtensionContext,
 	): Promise<string | undefined> {
 		const config = configStore.load();
-		const agent = target === "all" ? undefined : availableAgents.find((candidate) => candidate.name === target);
-		if (target !== "all" && !agent) throw new Error(`Unknown subagent: ${target}`);
+		const resolved = resolveSubagentAssignmentTarget(target, availableAgents);
 
-		const pendingModelEdit = modelEdit(assignmentTarget(target), modelChoice);
+		const pendingModelEdit = parseSubagentModelEdit(resolved.target, modelChoice);
 		const currentSelection = targetSelection(target, availableAgents, { snapshot: config });
 		const pendingSelection = targetSelection(target, availableAgents, { snapshot: config, edit: pendingModelEdit });
 		const pendingModelSetting = pendingSelection.assignment.modelSetting;
@@ -426,16 +394,11 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			? getSupportedThinkingLevels(catalogueModel).map((level) => normalizeThinkingLevel(level))
 			: [...THINKING_LEVELS];
 
-		const sameModel = currentSelection.assignment.modelSetting === pendingModelSetting;
-		const currentValue = target === "all"
-			? sameModel && currentSelection.modelSuffixThinkingLevel
-				? currentSelection.modelSuffixThinkingLevel
-				: currentSelection.thinking.kind === "set" ? currentSelection.thinking.level : "default"
-			: currentSelection.thinking.kind === "set"
-				? currentSelection.thinking.level
-				: sameModel && currentSelection.modelSuffixThinkingLevel
-					? currentSelection.assignment.launch.thinkingLevel!
-					: "inherit";
+		const currentValue = subagentThinkingPickerValue({
+			target: resolved.target,
+			current: currentSelection,
+			pending: pendingSelection,
+		});
 
 		const items: Array<{ value: string; label: string; description: string }> = [];
 		if (target === "all") {
@@ -464,7 +427,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			});
 		}
 
-		return pickSelectScreen(ctx, {
+		return pickScreen(ctx, {
 			title: `Select thinking for ${target === "all" ? "all subagents" : target}`,
 			subtitle: `Model: ${pendingModelSetting}`,
 			items,

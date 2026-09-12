@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../_shared/subagent-service.ts";
+import { resolveSubagentAgent } from "./config.ts";
 
 export interface AgentRegistry {
 	initialize(): void;
@@ -63,12 +64,7 @@ export function createAgentRegistry(agentsDir: string): AgentRegistry {
 		load,
 		resolve(agent) {
 			if (typeof agent !== "string") return agent;
-			const availableAgents = load();
-			const found = availableAgents.find((candidate) => candidate.name === agent);
-			if (!found) {
-				throw new Error(`Unknown agent: ${agent}. Available agents: ${availableAgents.map((candidate) => candidate.name).join(", ") || "none"}`);
-			}
-			return found;
+			return resolveSubagentAgent(agent, load());
 		},
 	};
 }

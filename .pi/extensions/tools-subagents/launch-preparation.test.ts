@@ -69,7 +69,7 @@ describe("subagent launch preparation", () => {
 		expect(() => prepareSubagentLaunches([
 			{ agent: "worker", task: "valid", cwd: "/root" },
 			{ agent: "missing", task: "invalid", cwd: "/root" },
-		], { registry, config })).toThrow("Unknown agent: missing. Available agents: worker, other");
+		], { registry, config })).toThrow("Unknown subagent: missing. Available: worker, other");
 		expect(resolveLaunch).not.toHaveBeenCalled();
 	});
 

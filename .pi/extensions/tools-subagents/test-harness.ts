@@ -6,8 +6,8 @@ import type { AgentConfig, AgentResult } from "../_shared/subagent-service.ts";
 import { createAgentRegistry, type AgentRegistry } from "./agent-registry.ts";
 import {
 	applySubagentAssignmentEdit,
-	normalizeModelSetting,
-	parseModelConfiguration,
+	canonicalMainModel,
+	parseSubagentExtensionConfig,
 	resolveSubagentAssignment,
 	resolveSubagentAssignmentSelection,
 	type ExtensionConfig,
@@ -71,29 +71,16 @@ export function memoryConfigStore(initial: Record<string, unknown> = {}): Memory
 		document: structuredClone(initial),
 		updates: [],
 		edits: [],
-		load: () => {
-			const parsed = parseModelConfiguration(store.document);
-			return { ...parsed, maxConcurrency: store.document.maxConcurrency as number | undefined } satisfies ExtensionConfig;
-		},
+		load: () => parseSubagentExtensionConfig(store.document) satisfies ExtensionConfig,
 		async applyAssignmentEdit(edit) {
 			store.document = applySubagentAssignmentEdit(structuredClone(store.document), edit);
 			store.edits.push(structuredClone(edit));
 			store.updates.push(structuredClone(store.document));
 		},
 		rememberMainModel(model) {
-			if (!model) {
-				activeMainModel = undefined;
-				return;
-			}
-			if (typeof model.provider !== "string" || typeof model.id !== "string") {
-				throw new Error('Cannot resolve subagent model "main": the main session has no active model.');
-			}
-			activeMainModel = normalizeModelSetting(`${model.provider}/${model.id}`, "main session model");
+			activeMainModel = model ? canonicalMainModel(model) : undefined;
 		},
-		resolveMainModel: () => {
-			if (!activeMainModel) throw new Error('Cannot resolve subagent model "main": the main session has no active model.');
-			return activeMainModel;
-		},
+		resolveMainModel: () => canonicalMainModel(activeMainModel),
 		resolveAssignment(config, options = {}) {
 			let document: unknown = options.snapshot ?? store.document;
 			if (options.edit) document = applySubagentAssignmentEdit(document, options.edit);

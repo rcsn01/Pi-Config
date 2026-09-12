@@ -9,13 +9,21 @@ import {
 	createSubagentConfigStore,
 	normalizeModelSetting,
 	parseModelConfiguration,
+	parseSubagentAssignmentEdit,
+	parseSubagentModelEdit,
+	parseSubagentThinkingEdit,
+	resolveSubagentAgent,
 	resolveSubagentAssignment,
 	resolveSubagentAssignmentSelection,
+	resolveSubagentAssignmentTarget,
 	splitModelThinkingSetting,
+	subagentModelPickerValue,
+	subagentStoredModelSetting,
+	subagentThinkingPickerValue,
 	type SubagentAssignmentEdit,
 	type SubagentThinkingLevel,
 } from "./config.ts";
-import { agent } from "./test-harness.ts";
+import { agent, memoryConfigStore } from "./test-harness.ts";
 
 const mainModel = { provider: "anthropic", id: "claude-sonnet-4-6" };
 const roots: string[] = [];
@@ -635,6 +643,204 @@ describe("subagent assignment edits", () => {
 		expect(() => parseModelConfiguration({ agentContextWindows: { worker: "200k" } })).toThrow(/positive integer/);
 		expect(() => parseModelConfiguration([])).toThrow(/must contain a JSON object/);
 		expect(parseModelConfiguration({ defaultContextWindow: 200000 }).defaultContextWindow).toBe(200000);
+	});
+});
+
+describe("subagent assignment target resolution", () => {
+	it("resolves the all sentinel without touching the roster", () => {
+		expect(resolveSubagentAssignmentTarget("all", [])).toEqual({ target: { kind: "all" } });
+	});
+
+	it("resolves a named agent with its matching AgentConfig", () => {
+		const worker = agent({ model: "google/frontmatter" });
+		expect(resolveSubagentAssignmentTarget("worker", [worker])).toEqual({
+			target: { kind: "agent", name: "worker" },
+			agent: worker,
+		});
+	});
+
+	it("throws the canonical unknown-target error listing the roster", () => {
+		expect(() => resolveSubagentAssignmentTarget("missing", [agent(), agent({ name: "explorer" })]))
+			.toThrow("Unknown subagent: missing. Available: worker, explorer");
+	});
+
+	it("renders an empty roster as none", () => {
+		expect(() => resolveSubagentAssignmentTarget("missing", [])).toThrow("Unknown subagent: missing. Available: none");
+	});
+
+	it("keeps the roster lookup free of the all sentinel", () => {
+		expect(() => resolveSubagentAgent("all", [agent()])).toThrow("Unknown subagent: all. Available: worker");
+		const named = agent({ name: "all" });
+		expect(resolveSubagentAgent("all", [named])).toBe(named);
+	});
+});
+
+describe("subagent assignment edit parsing", () => {
+	it("parses raw model words, trimming and accepting inherit case-insensitively", () => {
+		expect(parseSubagentModelEdit({ kind: "all" }, "main")).toEqual({
+			target: { kind: "all" },
+			model: { kind: "set", setting: "main" },
+		});
+		expect(parseSubagentModelEdit({ kind: "agent", name: "worker" }, " openai/gpt-5.2:high ")).toEqual({
+			target: { kind: "agent", name: "worker" },
+			model: { kind: "set", setting: "openai/gpt-5.2:high" },
+		});
+		expect(parseSubagentModelEdit({ kind: "agent", name: "worker" }, "INHERIT")).toEqual({
+			target: { kind: "agent", name: "worker" },
+			model: { kind: "inherit" },
+		});
+	});
+
+	it("labels model diagnostics with the command convention, not the store's", () => {
+		expect(() => parseSubagentModelEdit({ kind: "all" }, "bogus"))
+			.toThrow('Subagent model for all must be "main" or a canonical "provider/model" identifier.');
+		expect(() => parseSubagentModelEdit({ kind: "agent", name: "worker" }, "bogus"))
+			.toThrow('Subagent model for worker must be "main" or a canonical "provider/model" identifier.');
+	});
+
+	it("parses thinking keywords and levels", () => {
+		expect(parseSubagentThinkingEdit({ kind: "all" }, "default")).toEqual({
+			target: { kind: "all" },
+			thinking: { kind: "default" },
+		});
+		expect(parseSubagentThinkingEdit({ kind: "agent", name: "worker" }, "INHERIT")).toEqual({
+			target: { kind: "agent", name: "worker" },
+			thinking: { kind: "inherit" },
+		});
+		expect(parseSubagentThinkingEdit({ kind: "agent", name: "worker" }, " HIGH ")).toEqual({
+			target: { kind: "agent", name: "worker" },
+			thinking: { kind: "set", level: "high" },
+		});
+		expect(() => parseSubagentThinkingEdit({ kind: "agent", name: "worker" }, "bogus"))
+			.toThrow("Subagent thinking level for worker must be one of: off, minimal, low, medium, high, xhigh, max.");
+	});
+
+	it("combines both fields into one edit for the interactive flow", () => {
+		expect(parseSubagentAssignmentEdit({ kind: "all" }, "main", "high")).toEqual({
+			target: { kind: "all" },
+			model: { kind: "set", setting: "main" },
+			thinking: { kind: "set", level: "high" },
+		});
+	});
+});
+
+describe("subagent picker meaning", () => {
+	const worker = agent();
+	const workerTarget = { kind: "agent", name: "worker" } as const;
+	const allTarget = { kind: "all" } as const;
+
+	function storeFor(initial: Record<string, unknown>) {
+		const store = memoryConfigStore(initial);
+		store.rememberMainModel(mainModel);
+		return store;
+	}
+
+	it("derives the model picker value from the assignment, stripping a direct suffix", () => {
+		const store = storeFor({ agentModels: { worker: "openai/gpt-5.2:high" } });
+		const current = store.resolveAssignmentSelection({ target: workerTarget, agent: worker });
+		expect(subagentModelPickerValue(current)).toBe("openai/gpt-5.2");
+		expect(subagentStoredModelSetting(current)).toBe("openai/gpt-5.2:high");
+	});
+
+	it("reports inherit and main choices without a stored setting", () => {
+		const store = storeFor({});
+		const inherit = store.resolveAssignmentSelection({ target: workerTarget, agent: worker });
+		expect(subagentModelPickerValue(inherit)).toBe("inherit");
+		expect(subagentStoredModelSetting(inherit)).toBeUndefined();
+		const fallback = store.resolveAssignmentSelection({ target: allTarget });
+		expect(subagentModelPickerValue(fallback)).toBe("main");
+		expect(subagentStoredModelSetting(fallback)).toBeUndefined();
+	});
+
+	it("keeps the suffix level when the pending model keeps its base", () => {
+		const store = storeFor({ agentModels: { worker: "openai/gpt-5.2:high" } });
+		const current = store.resolveAssignmentSelection({ target: workerTarget, agent: worker });
+		const pending = store.resolveAssignmentSelection({
+			target: workerTarget,
+			agent: worker,
+			edit: { target: workerTarget, model: { kind: "set", setting: "openai/gpt-5.2" } },
+		});
+		expect(subagentThinkingPickerValue({ target: workerTarget, current, pending })).toBe("high");
+	});
+
+	it("keeps an explicit thinking level ahead of a direct model suffix", () => {
+		const store = storeFor({ agentModels: { worker: "openai/gpt-5.2:high" }, agentThinkingLevels: { worker: "low" } });
+		const current = store.resolveAssignmentSelection({ target: workerTarget, agent: worker });
+		const pending = store.resolveAssignmentSelection({
+			target: workerTarget,
+			agent: worker,
+			edit: { target: workerTarget, model: { kind: "set", setting: "openai/gpt-5.2" } },
+		});
+		expect(subagentThinkingPickerValue({ target: workerTarget, current, pending })).toBe("low");
+	});
+
+	it("falls back to inherit when the pending model changes the base", () => {
+		const store = storeFor({ agentModels: { worker: "openai/gpt-5.2:high" } });
+		const current = store.resolveAssignmentSelection({ target: workerTarget, agent: worker });
+		const pending = store.resolveAssignmentSelection({
+			target: workerTarget,
+			agent: worker,
+			edit: { target: workerTarget, model: { kind: "set", setting: "ollama/qwen3.8:27b" } },
+		});
+		expect(subagentThinkingPickerValue({ target: workerTarget, current, pending })).toBe("inherit");
+	});
+
+	it("treats a colon-bearing model id as suffixless", () => {
+		const store = storeFor({ agentModels: { worker: "ollama/qwen3.8:27b" } });
+		const current = store.resolveAssignmentSelection({ target: workerTarget, agent: worker });
+		const pending = store.resolveAssignmentSelection({
+			target: workerTarget,
+			agent: worker,
+			edit: { target: workerTarget, model: { kind: "set", setting: "ollama/qwen3.8:27b" } },
+		});
+		expect(subagentThinkingPickerValue({ target: workerTarget, current, pending })).toBe("inherit");
+	});
+
+	it("lets a direct global model suffix beat an explicit global thinking level", () => {
+		const store = storeFor({ defaultModel: "openai/gpt-5.2:high", defaultThinkingLevel: "minimal" });
+		const current = store.resolveAssignmentSelection({ target: allTarget });
+		const pending = store.resolveAssignmentSelection({
+			target: allTarget,
+			edit: { target: allTarget, model: { kind: "set", setting: "openai/gpt-5.2:high" } },
+		});
+		expect(subagentThinkingPickerValue({ target: allTarget, current, pending })).toBe("high");
+	});
+
+	it("uses the global thinking level when no suffix applies", () => {
+		const store = storeFor({ defaultThinkingLevel: "minimal" });
+		const current = store.resolveAssignmentSelection({ target: allTarget });
+		const pending = store.resolveAssignmentSelection({
+			target: allTarget,
+			edit: { target: allTarget, model: { kind: "set", setting: "openai/gpt-5.2" } },
+		});
+		expect(subagentThinkingPickerValue({ target: allTarget, current, pending })).toBe("minimal");
+	});
+
+	it("reports the default for an unset global target", () => {
+		const store = storeFor({});
+		const current = store.resolveAssignmentSelection({ target: allTarget });
+		const pending = store.resolveAssignmentSelection({
+			target: allTarget,
+			edit: { target: allTarget, model: { kind: "set", setting: "openai/gpt-5.2" } },
+		});
+		expect(subagentThinkingPickerValue({ target: allTarget, current, pending })).toBe("default");
+	});
+
+	it("survives clearing individual overrides through a combined inherit edit", () => {
+		const store = storeFor({
+			defaultModel: "openai/gpt-5.2:high",
+			defaultThinkingLevel: "minimal",
+			agentModels: { worker: "openai/override" },
+			agentThinkingLevels: { worker: "low" },
+		});
+		const pending = store.resolveAssignmentSelection({
+			target: workerTarget,
+			agent: worker,
+			edit: { target: workerTarget, model: { kind: "inherit" }, thinking: { kind: "inherit" } },
+		});
+		expect(pending.model).toEqual({ kind: "inherit" });
+		expect(pending.thinking).toEqual({ kind: "inherit" });
+		expect(pending.assignment.launch.thinkingLevel).toBe("high");
 	});
 });
 

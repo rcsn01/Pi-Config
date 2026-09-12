@@ -2,7 +2,7 @@ import type { AgentConfig, RunSubagentOptions } from "../_shared/subagent-servic
 import type { AgentRegistry } from "./agent-registry.ts";
 import { deriveSubagentSessionId } from "./cache-affinity.ts";
 import type { SubagentChildExecutionRequest } from "./child-execution.ts";
-import type { SubagentConfigStore } from "./config.ts";
+import { resolveSubagentAgent, type SubagentConfigStore } from "./config.ts";
 
 export function prepareSubagentLaunches(
 	requests: readonly RunSubagentOptions[],
@@ -14,17 +14,9 @@ export function prepareSubagentLaunches(
 	if (requests.length === 0) return [];
 
 	const availableAgents = dependencies.registry.load();
-	const agentsByName = new Map<string, AgentConfig>(
-		availableAgents.map((agent) => [agent.name, agent]),
-	);
-	const available = availableAgents.map((agent) => agent.name).join(", ") || "none";
 	const agents = requests.map((request) => {
 		if (typeof request.agent !== "string") return request.agent;
-		const resolved = agentsByName.get(request.agent);
-		if (!resolved) {
-			throw new Error(`Unknown agent: ${request.agent}. Available agents: ${available}`);
-		}
-		return resolved;
+		return resolveSubagentAgent(request.agent, availableAgents);
 	});
 
 	return requests.map((request, index) => {

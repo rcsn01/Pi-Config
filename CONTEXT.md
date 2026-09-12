@@ -290,7 +290,14 @@ extension.
   target-aware current model and thinking choices shown for `all` or one agent
   including legacy direct-model suffix interpretation, semantic model and thinking
   changes, Profile-aware `subagents` namespace persistence, legacy fallback and
-  migration, current Main-model observation, and preview and launch resolution.
+  migration, and preview and launch resolution. It also owns the assignment edit
+  vocabulary parsed from raw settings (`inherit`, `default`, `main|provider/model[:thinking]`),
+  the picker-facing current-selection meaning (model picker value, the explicitly stored
+  setting, and the pending-model thinking value, resolved together with the pending preview),
+  the canonical roster lookup and its single unknown-target error format — shared by the
+  command adapter, launch preparation, and the registry, with the `all` command sentinel
+  layered on top of it for assignment targets only — and the Main-model rule
+  (`canonicalMainModel`).
   `_shared/settings-document.ts` remains the Settings document
   seam. The Pi `/subagents` command adapter owns catalogue access, TUI flow, and
   notifications. Context-window settings remain display metadata; the child gets
@@ -299,7 +306,9 @@ extension.
   or parallel Subagent requests into prepared child launches. It owns one registry
   snapshot, whole-request-set agent validation, task normalization, model and thinking
   resolution exactly once, and cache-affinity identity derivation; scheduling and child
-  process lifetime stay outside.
+  process lifetime stay outside. Named-request resolution delegates to the Subagent
+  assignment resolution module's canonical roster lookup, so one unknown-agent error
+  format is shared with the registry and the `/subagents` command adapter.
 - **Subagent result status** — the authoritative `AgentProgress.status` meaning
   shared across Subagent execution, invocation, rendering, and Workflow.
   `pending` and `running` are nonterminal; `completed` and `failed` are terminal.
@@ -312,7 +321,9 @@ extension.
   admission, tool and extension argument ordering and deduplication, private
   prompt and task files, child observation setup, process spawning and
   termination, and cleanup on every exit path. `/subagents` is an adapter at this
-  seam and renders the module's structured diagnostics. Its private Child event
+  seam and renders the module's structured diagnostics. It also owns child-tool
+  diagnostic rendering in both forms — the short status form and the
+  launch-failure sentence — beside the diagnostic union. Its private Child event
   ingestion module owns stdout framing, JSON event meaning, progress and usage
   state, terminal Subagent result status, timing input, output selection,
   truncation, and terminal result construction. It delivers authoritative

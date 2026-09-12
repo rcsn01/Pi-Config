@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getObservabilityService, resetObservabilityServiceForTests } from "../_shared/observability.ts";
 import { loadAgents } from "./agent-registry.ts";
-import { createSubagentChildExecution } from "./child-execution.ts";
+import { createSubagentChildExecution, formatChildToolDiagnostic } from "./child-execution.ts";
 import { agent, emitProcessResult, fakeProcess, spawnHarness } from "./test-harness.ts";
 
 const tempRoots: string[] = [];
@@ -33,6 +33,16 @@ beforeEach(() => resetObservabilityServiceForTests());
 afterEach(() => {
 	resetObservabilityServiceForTests();
 	for (const directory of tempRoots.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
+
+describe("child-tool diagnostic rendering", () => {
+	it("renders the short status form for every diagnostic kind", () => {
+		expect(formatChildToolDiagnostic({ kind: "unmapped-tool", tool: "unknown" })).toBe("unknown (unmapped)");
+		expect(formatChildToolDiagnostic({ kind: "missing-tool-extension", tool: "safe_bash", path: "/extensions/safe-bash.ts" }))
+			.toBe("safe_bash (/extensions/safe-bash.ts)");
+		expect(formatChildToolDiagnostic({ kind: "missing-runtime-extension", extension: "session-compaction", path: "/extensions/session-compaction/index.ts" }))
+			.toBe("session-compaction (/extensions/session-compaction/index.ts)");
+	});
 });
 
 describe("Subagent child execution", () => {

@@ -153,7 +153,7 @@ describe("Subagent execution", () => {
 		await expect(execution.runBatch([
 			{ agent: "worker", task: "valid" },
 			{ agent: "missing", task: "invalid" },
-		], { cwd: "/root" })).rejects.toThrow("Unknown agent: missing. Available agents: worker");
+		], { cwd: "/root" })).rejects.toThrow("Unknown subagent: missing. Available: worker");
 		expect(execute).not.toHaveBeenCalled();
 	});
 

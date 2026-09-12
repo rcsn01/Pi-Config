@@ -84,7 +84,7 @@ export interface SubagentAssignmentEdit {
 }
 
 /** Discriminated target so an individual selection always carries its matching AgentConfig. */
-type AssignmentSelectionTarget =
+export type AssignmentSelectionTarget =
 	| {
 			readonly target: { readonly kind: "all" };
 			readonly agent?: never;
@@ -261,8 +261,17 @@ export function parseModelConfiguration(value: unknown): ModelConfiguration {
 	return parsed;
 }
 
-/** Construct the current main model's canonical provider/model identity. */
-function canonicalMainModel(model: string | { provider: unknown; id: unknown } | undefined): string {
+/** Parse the model configuration plus the maxConcurrency rule from one settings namespace. */
+export function parseSubagentExtensionConfig(document: Record<string, unknown>): ExtensionConfig {
+	const modelConfig = parseModelConfiguration(document);
+	const maxConcurrency = document.maxConcurrency;
+	if (maxConcurrency !== undefined && (!Number.isInteger(maxConcurrency) || (maxConcurrency as number) < 1))
+		throw new Error("Subagent config maxConcurrency must be a positive integer.");
+	return { ...modelConfig, maxConcurrency: maxConcurrency as number | undefined };
+}
+
+/** The Main-model rule: canonical provider/model identity; throws when the main session has no model. */
+export function canonicalMainModel(model: string | { provider: unknown; id: unknown } | undefined): string {
 	if (typeof model === "string") {
 		const canonical = normalizeModelSetting(model, "main session model");
 		if (canonical === MAIN_MODEL_SETTING) {
@@ -361,6 +370,95 @@ export function resolveSubagentAssignmentSelection(
 			: { kind: "set", level: directThinking },
 		assignment,
 	};
+}
+
+/** Resolve one agent name against the roster; the sole owner of the unknown-target error format. */
+export function resolveSubagentAgent(name: string, agents: readonly AgentConfig[]): AgentConfig {
+	const found = agents.find((candidate) => candidate.name === name);
+	if (!found) {
+		throw new Error(`Unknown subagent: ${name}. Available: ${agents.map((candidate) => candidate.name).join(", ") || "none"}`);
+	}
+	return found;
+}
+
+/** Command-grammar layer: the "all" sentinel, otherwise a roster lookup through resolveSubagentAgent. */
+export function resolveSubagentAssignmentTarget(
+	target: string,
+	agents: readonly AgentConfig[],
+): AssignmentSelectionTarget {
+	if (target === "all") return { target: { kind: "all" } };
+	return { target: { kind: "agent", name: target }, agent: resolveSubagentAgent(target, agents) };
+}
+
+/** Command label for edit diagnostics; the "all" target is addressed as itself. */
+function targetName(target: SubagentAssignmentTarget): string {
+	return target.kind === "all" ? "all" : target.name;
+}
+
+/** Parse one raw model setting word into a model edit; "inherit" (case-insensitive) inherits. */
+export function parseSubagentModelEdit(target: SubagentAssignmentTarget, value: string): SubagentAssignmentEdit {
+	const setting = value.trim();
+	return setting.toLowerCase() === "inherit"
+		? { target, model: { kind: "inherit" } }
+		: { target, model: { kind: "set", setting: normalizeModelSetting(setting, `model for ${targetName(target)}`) } };
+}
+
+/** Parse one raw thinking word into a thinking edit; "default" and "inherit" are direct keywords. */
+export function parseSubagentThinkingEdit(target: SubagentAssignmentTarget, value: string): SubagentAssignmentEdit {
+	const level = value.trim().toLowerCase();
+	if (level === "default") return { target, thinking: { kind: "default" } };
+	if (level === "inherit") return { target, thinking: { kind: "inherit" } };
+	return { target, thinking: { kind: "set", level: normalizeThinkingLevel(level, `thinking level for ${targetName(target)}`) } };
+}
+
+/** Parse both raw words into one combined edit (used by the interactive flow). */
+export function parseSubagentAssignmentEdit(
+	target: SubagentAssignmentTarget,
+	modelValue: string,
+	thinkingValue: string,
+): SubagentAssignmentEdit {
+	return { ...parseSubagentModelEdit(target, modelValue), thinking: parseSubagentThinkingEdit(target, thinkingValue).thinking };
+}
+
+/**
+ * What a model picker marks current for one target's stored choice: the suffix-stripped
+ * effective setting, "inherit", or "main". Reads the assignment, not the stored setting,
+ * so a stored `provider/model:high` marks the catalogue row `provider/model`.
+ */
+export function subagentModelPickerValue(selection: ResolvedSubagentAssignmentSelection): string {
+	return selection.model.kind === "set"
+		? selection.assignment.modelSetting
+		: selection.model.kind === "inherit" ? "inherit" : "main";
+}
+
+/** The explicitly stored model setting with any suffix, else undefined; drives the "configured as …" note. */
+export function subagentStoredModelSetting(selection: ResolvedSubagentAssignmentSelection): string | undefined {
+	return selection.model.kind === "set" ? selection.model.setting : undefined;
+}
+
+/**
+ * Current thinking value for a thinking picker, given the pending model choice. The two
+ * target kinds invert the suffix/thinking precedence: for `all`, a direct model suffix on
+ * the same pending model wins over an explicitly set global thinking level; for an agent,
+ * an explicitly set thinking level wins over the suffix.
+ */
+export function subagentThinkingPickerValue(options: {
+	target: SubagentAssignmentTarget;
+	current: ResolvedSubagentAssignmentSelection;
+	/** The same target's selection with the pending model edit applied (preview through the store seam). */
+	pending: ResolvedSubagentAssignmentSelection;
+}): "inherit" | "default" | SubagentThinkingLevel {
+	const sameModel = options.current.assignment.modelSetting === options.pending.assignment.modelSetting;
+	if (options.target.kind === "all") {
+		return sameModel && options.current.modelSuffixThinkingLevel
+			? options.current.modelSuffixThinkingLevel
+			: options.current.thinking.kind === "set" ? options.current.thinking.level : "default";
+	}
+	return options.current.thinking.kind === "set"
+		? options.current.thinking.level
+		: sameModel && options.current.modelSuffixThinkingLevel
+			? options.current.assignment.launch.thinkingLevel!
+			: "inherit";
 }
 
 function requireAssignmentTarget(target: SubagentAssignmentTarget): SubagentAssignmentTarget {
@@ -503,14 +601,7 @@ export function createSubagentConfigStore(options: SubagentConfigStoreOptions = 
 	};
 	const readSettingsNamespace = (): Record<string, unknown> =>
 		namespaceFrom(readSettingsDocument(settingsPath)) ?? readLegacyDocument() ?? {};
-	const load = (): ExtensionConfig => {
-		const document = readSettingsNamespace();
-		const modelConfig = parseModelConfiguration(document);
-		const maxConcurrency = document.maxConcurrency;
-		if (maxConcurrency !== undefined && (!Number.isInteger(maxConcurrency) || (maxConcurrency as number) < 1))
-			throw new Error("Subagent config maxConcurrency must be a positive integer.");
-		return { ...modelConfig, maxConcurrency: maxConcurrency as number | undefined };
-	};
+	const load = (): ExtensionConfig => parseSubagentExtensionConfig(readSettingsNamespace());
 	const resolveAssignment = (agent: AgentConfig, options: ResolveStoredAssignmentOptions = {}): ResolvedSubagentAssignment => {
 		let config: unknown = options.snapshot ?? readSettingsNamespace();
 		if (options.edit) config = applySubagentAssignmentEdit(config, options.edit);
