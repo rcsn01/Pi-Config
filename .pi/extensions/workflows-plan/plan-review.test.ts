@@ -13,7 +13,7 @@ import {
 } from "./test-harness.ts";
 
 describe("simple plan review UI", () => {
-	it("keeps reconstructed inactive state in the request tail", async () => {
+	it("does not append a marker when reconstructing inactive state", async () => {
 		const harness = createHarness({
 			branch: [{
 				type: "custom",
@@ -25,12 +25,7 @@ describe("simple plan review UI", () => {
 
 		const [result] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
 		expect(result.systemPrompt).toBe("BASE");
-		const [context] = await harness.emit("context", { type: "context", messages: [] });
-		expect(context.messages.at(-1)).toMatchObject({
-			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
-			content: expect.stringContaining('<runtime mode="default" revision="7"/>'),
-		});
-		expect(context.messages.at(-1).content).not.toContain("You are in **Plan Mode**");
+		expect(harness.sendMessage).not.toHaveBeenCalled();
 	});
 
 	it("ignores a stale persisted mode transition with a lower revision", async () => {
@@ -52,18 +47,21 @@ describe("simple plan review UI", () => {
 
 		const [result] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
 		expect(result.systemPrompt).toBe("BASE");
-		const [context] = await harness.emit("context", { type: "context", messages: [] });
-		expect(context.messages.at(-1).content).toContain('<runtime mode="plan" revision="8"/>');
+		expect(harness.sendMessage).not.toHaveBeenCalled();
 		expect(harness.getActiveToolNames()).toContain("plan_bash");
 	});
 
 	it("keeps runtime revisions monotonic across branch reconstruction", async () => {
+		const stores = createProfileDependencies();
 		const harness = createHarness({
 			branch: [{
 				type: "custom",
 				customType: "plan-mode-state",
 				data: { mode: "plan", revision: 8, changedAt: "2026-01-01T00:00:00.000Z" },
 			}],
+			model: normalModel,
+			availableModels: [normalModel],
+			dependencies: stores.dependencies,
 		});
 		await harness.emit("session_start", { type: "session_start", reason: "resume" });
 		harness.setBranch([{
@@ -73,10 +71,8 @@ describe("simple plan review UI", () => {
 		}]);
 
 		await harness.emit("session_tree", { type: "session_tree" });
-		const [result] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(result.systemPrompt).toBe("BASE");
-		const [context] = await harness.emit("context", { type: "context", messages: [] });
-		expect(context.messages.at(-1).content).toContain('<runtime mode="default" revision="9"/>');
+		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
+		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({ mode: "plan", revision: 10 });
 	});
 
 	it("clears plan content when a newer state omits it", async () => {
@@ -198,8 +194,6 @@ describe("simple plan review UI", () => {
 
 		const [activePrompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
 		expect(activePrompt.systemPrompt).toBe("BASE");
-		const [activeContext] = await harness.emit("context", { type: "context", messages: [] });
-		expect(activeContext.messages.at(-1).content).toContain("You are in **Plan Mode**");
 
 		await harness.emit("agent_settled");
 
@@ -207,9 +201,10 @@ describe("simple plan review UI", () => {
 		expect(harness.setEditorText).not.toHaveBeenCalled();
 		const [implementationPrompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
 		expect(implementationPrompt.systemPrompt).toBe("BASE");
-		const [implementationContext] = await harness.emit("context", { type: "context", messages: [] });
-		expect(implementationContext.messages.at(-1).content).toContain('<runtime mode="default" revision="2"/>');
-		expect(implementationContext.messages.at(-1).content).not.toContain("You are in **Plan Mode**");
+		expect(harness.sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
+			content: "This is an internal marker, user has changed to default mode",
+		}));
 		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({
 			mode: "default",
 			revision: 2,
@@ -365,8 +360,10 @@ describe("simple plan review UI", () => {
 		);
 		const [prompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
 		expect(prompt.systemPrompt).toBe("BASE");
-		const [context] = await harness.emit("context", { type: "context", messages: [] });
-		expect(context.messages.at(-1).content).toContain('<runtime mode="plan" revision="3"/>');
+		expect(harness.sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
+			content: expect.stringMatching(/^This is an internal marker, user has changed to plan mode/),
+		}));
 	});
 
 	it("falls back to prefilling the command when automatic submission is unavailable", async () => {

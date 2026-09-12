@@ -47,7 +47,6 @@ describe("Plan Mode tool policy integration", () => {
 			"event:input",
 			"event:turn_end",
 			"event:before_agent_start",
-			"event:context",
 			"event:message_end",
 			"event:agent_settled",
 			"event:tool_call",
@@ -182,11 +181,7 @@ describe("Plan Mode tool policy integration", () => {
 		expect(stores.createModelSelectionPersistence).toHaveBeenCalledTimes(2);
 		const [prompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
 		expect(prompt.systemPrompt).toBe("BASE");
-		const [context] = await harness.emit("context", { type: "context", messages: [] });
-		expect(context.messages.at(-1)).toMatchObject({
-			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
-			content: expect.stringContaining("You are in **Plan Mode**"),
-		});
+		expect(harness.getActiveToolNames()).toContain("plan_bash");
 	});
 
 	it("ignores model changes driven by a profile application", async () => {
@@ -296,43 +291,34 @@ describe("Plan Mode tool policy integration", () => {
 		}));
 	});
 
-	it("uses one monotonic request-tail marker across repeated mode switches", async () => {
+	it("records one internal marker at each mode switch", async () => {
 		const stores = createProfileDependencies();
 		const harness = createHarness({
 			branch: [], model: normalModel, availableModels: [normalModel], dependencies: stores.dependencies,
 		});
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		const contextMessages = [{ role: "user", content: [{ type: "text", text: "Continue" }], timestamp: 1 }];
 
 		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
-		let [prompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(prompt.systemPrompt).toBe("BASE");
-		let [context] = await harness.emit("context", { type: "context", messages: contextMessages });
-		expect(context.messages.at(-1)).toMatchObject({
-			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
-			content: expect.stringContaining('<runtime mode="plan" revision="1"/>'),
-		});
-		expect(context.messages.at(-1).content.endsWith('<runtime mode="plan" revision="1"/>')).toBe(true);
-
 		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
-		[prompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(prompt.systemPrompt).toBe("BASE");
-		[context] = await harness.emit("context", { type: "context", messages: contextMessages });
-		expect(context.messages.at(-1)).toMatchObject({
-			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
-			content: expect.stringContaining('<runtime mode="default" revision="2"/>'),
-		});
-		expect(context.messages.at(-1).content.endsWith('<runtime mode="default" revision="2"/>')).toBe(true);
-
 		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
-		[prompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(prompt.systemPrompt).toBe("BASE");
-		[context] = await harness.emit("context", { type: "context", messages: contextMessages });
-		expect(context.messages.at(-1)).toMatchObject({
-			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
-			content: expect.stringContaining('<runtime mode="plan" revision="3"/>'),
-		});
-		expect(context.messages.at(-1).content.endsWith('<runtime mode="plan" revision="3"/>')).toBe(true);
+
+		expect(harness.sendMessage.mock.calls.map(([message]) => message)).toEqual([
+			expect.objectContaining({
+				customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
+				display: false,
+				content: expect.stringMatching(/^This is an internal marker, user has changed to plan mode/),
+			}),
+			expect.objectContaining({
+				customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
+				display: false,
+				content: "This is an internal marker, user has changed to default mode",
+			}),
+			expect.objectContaining({
+				customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
+				display: false,
+				content: expect.stringMatching(/^This is an internal marker, user has changed to plan mode/),
+			}),
+		]);
 		expect(harness.appendedEntries
 			.filter((entry) => entry.customType === "plan-mode-state")
 			.map((entry) => entry.data.revision)).toEqual([1, 2, 3]);
@@ -380,8 +366,9 @@ describe("Plan Mode tool policy integration", () => {
 		expect(harness.getActiveToolNames()).not.toContain("plan_bash");
 		const [promptResult] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
 		expect(promptResult.systemPrompt).toBe("BASE");
-		const [contextResult] = await harness.emit("context", { type: "context", messages: [] });
-		expect(contextResult.messages.at(-1).content).toContain('<runtime mode="default" revision="2"/>');
+		expect(harness.sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+			content: "This is an internal marker, user has changed to default mode",
+		}));
 	});
 
 	it("coalesces busy toggles and enters Plan Mode only after the agent settles", async () => {
@@ -476,9 +463,15 @@ describe("Plan Mode tool policy integration", () => {
 		expect(allowed).toBeUndefined();
 	});
 
-	it("continues blocking non-Bash mutating tools while planning", async () => {
+	it("allows todo while continuing to block host mutations", async () => {
 		const harness = createHarness();
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		const [allowed] = await harness.emit("tool_call", {
+			type: "tool_call", toolName: "todo", input: { todos: [] },
+		});
+		expect(allowed).toBeUndefined();
+
 		const [blocked] = await harness.emit("tool_call", {
 			type: "tool_call", toolName: "write", input: { path: "file" },
 		});
@@ -660,7 +653,7 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 
 	it("routes arbitrary commands through plan_bash and restores the exact normal tools on exit", async () => {
 		const stores = createProfileDependencies();
-		const initialTools = ["read", "bash", "edit", "write", "grep", "custom_tool", "ask_user"];
+		const initialTools = ["read", "bash", "edit", "write", "grep", "custom_tool", "ask_user", "todo"];
 		const harness = createHarness({
 			branch: [], model: normalModel, thinkingLevel: "medium",
 			availableModels: [normalModel], activeTools: initialTools,
@@ -669,7 +662,7 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		await harness.commands.get("plan").handler("", harness.ctx);
 
-		expect(harness.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "grep", "custom_tool", "plan_bash", "ask_user"]));
+		expect(harness.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "grep", "custom_tool", "plan_bash", "ask_user", "todo"]));
 		expect(harness.getActiveToolNames()).not.toEqual(expect.arrayContaining(["bash", "edit", "write"]));
 
 		const planBash = harness.tools.get("plan_bash");
@@ -713,181 +706,51 @@ describe("Plan Mode isolated Bash lifecycle", () => {
 	});
 });
 
-describe("request-local mode context", () => {
-	it("appends one hidden message at the tail without mutating or accumulating context", async () => {
-		const harness = createHarness({ model: normalModel, availableModels: [normalModel] });
-		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-
-		const messages = [
-			{ role: "user", content: [{ type: "text", text: "Plan this" }], timestamp: 1 },
-			{ role: "custom", customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE, content: "stale", display: false, timestamp: 2 },
-			{ role: "assistant", content: [], timestamp: 3 },
-		];
-		const original = structuredClone(messages);
-		const [result] = await harness.emit("context", { type: "context", messages });
-
-		expect(result.messages).toHaveLength(3);
-		expect(result.messages.at(-1)).toMatchObject({
-			role: "custom",
-			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
-			display: false,
-			content: expect.stringContaining("You are in **Plan Mode**"),
-		});
-		expect(result.messages.at(-1).content.endsWith('<runtime mode="plan" revision="1"/>')).toBe(true);
-		expect(messages).toEqual(original);
-
-		const [repeated] = await harness.emit("context", { type: "context", messages: result.messages });
-		expect(repeated.messages.filter((message: any) => message.customType === PLAN_MODE_CONTEXT_CUSTOM_TYPE)).toHaveLength(1);
-		expect(repeated.messages.at(-1).content.endsWith('<runtime mode="plan" revision="1"/>')).toBe(true);
-	});
-
-	it("removes stale context without appending when no request snapshot exists", async () => {
-		const harness = createHarness({ branch: [] });
-		const messages = [
-			{ role: "user", content: [{ type: "text", text: "Default" }], timestamp: 1 },
-			{ role: "custom", customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE, content: "stale", display: false, timestamp: 2 },
-		];
-
-		const [result] = await harness.emit("context", { type: "context", messages });
-
-		expect(result).toEqual({ messages: [messages[0]] });
-		expect(messages).toHaveLength(2);
-	});
-
-	it("uses the before-agent snapshot instead of live mode and phase changes", async () => {
-		const harness = createHarness({ model: normalModel, availableModels: [normalModel] });
-		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-
-		await harness.emit("message_end", {
-			type: "message_end",
-			message: { role: "assistant", content: [{ type: "text", text: "<proposed_plan>Plan</proposed_plan>" }] },
-		});
-		await harness.commands.get("plan").handler("exit", harness.ctx);
-
-		const [result] = await harness.emit("context", { type: "context", messages: [] });
-		const content = result.messages.at(-1).content as string;
-		expect(content).toContain("You are in **Plan Mode**");
-		expect(content).not.toContain("<plan_review_state>");
-		expect(content).toContain('<runtime mode="plan" revision="1"/>');
-		expect(content).not.toContain('<runtime mode="default" revision="2"/>');
-	});
-
-	it("does not leak a snapshot after branch reconstruction", async () => {
-		const harness = createHarness({ model: normalModel, availableModels: [normalModel] });
-		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		harness.setBranch([]);
-		await harness.emit("session_tree", { type: "session_tree" });
-
-		const stale = {
-			role: "custom",
-			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
-			content: "stale",
-			display: false,
-			timestamp: 1,
-		};
-		const [result] = await harness.emit("context", { type: "context", messages: [stale] });
-
-		expect(result).toEqual({ messages: [] });
-	});
-});
-
-describe("mode-change note", () => {
-	it("notes Plan Mode entry and exit in the request tail", async () => {
+describe("mode-change markers", () => {
+	it("records Plan Mode entry and exit where the changes occur", async () => {
 		const stores = createProfileDependencies();
 		const harness = createHarness({
 			branch: [], model: normalModel, thinkingLevel: "medium",
 			availableModels: [normalModel], dependencies: stores.dependencies,
 		});
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		const getTail = async () => {
-			const [result] = await harness.emit("context", { type: "context", messages: [] });
-			return result.messages.at(-1).content as string;
-		};
-
-		const [first] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(first.systemPrompt).toBe("BASE");
-		expect(await getTail()).not.toContain("<mode_change_note>");
+		expect(harness.sendMessage).not.toHaveBeenCalled();
 
 		await harness.commands.get("plan").handler("", harness.ctx);
-		const [afterEnter] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(afterEnter.systemPrompt).toBe("BASE");
-		const enteredTail = await getTail();
-		expect(enteredTail).toContain(
-			"<mode_change_note>Plan Mode was entered since the previous turn.</mode_change_note>",
-		);
-		expect(enteredTail).toContain('<runtime mode="plan" revision="1"/>');
-		expect(enteredTail.endsWith('<runtime mode="plan" revision="1"/>')).toBe(true);
+		expect(harness.sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
+			display: false,
+			content: expect.stringMatching(/^This is an internal marker, user has changed to plan mode/),
+		}));
+		const callsAfterEntry = harness.sendMessage.mock.calls.length;
 
-		const [stable] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(stable.systemPrompt).toBe("BASE");
-		expect(await getTail()).not.toContain("<mode_change_note>");
+		await harness.emit("before_agent_start", { systemPrompt: "BASE" });
+		expect(harness.sendMessage).toHaveBeenCalledTimes(callsAfterEntry);
 
 		await harness.commands.get("plan").handler("exit", harness.ctx);
-		const [afterExit] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(afterExit.systemPrompt).toBe("BASE");
-		const exitedTail = await getTail();
-		expect(exitedTail).toContain(
-			"<mode_change_note>Plan Mode was exited since the previous turn.</mode_change_note>",
-		);
-		expect(exitedTail).toContain('<runtime mode="default" revision="2"/>');
-		expect(exitedTail.endsWith('<runtime mode="default" revision="2"/>')).toBe(true);
+		expect(harness.sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
+			display: false,
+			content: "This is an internal marker, user has changed to default mode",
+		}));
 	});
 
-	it("does not emit a spurious note after reconstruction", async () => {
+	it("does not create a marker during session reconstruction", async () => {
+		const harness = createHarness();
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+
+		expect(harness.sendMessage).not.toHaveBeenCalled();
+	});
+
+	it("does not create new markers during tree reconstruction", async () => {
 		const harness = createHarness();
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		const [before] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(before.systemPrompt).toBe("BASE");
+		harness.sendMessage.mockClear();
 
 		await harness.emit("session_tree", { type: "session_tree" });
-		const [after] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(after.systemPrompt).toBe("BASE");
-	});
 
-	it("notes mode changes caused by tree navigation", async () => {
-		const stores = createProfileDependencies();
-		const stateEntry = (mode: "default" | "plan", revision: number) => ({
-			type: "custom",
-			customType: "plan-mode-state",
-			data: {
-				mode,
-				revision,
-				changedAt: "2026-01-01T00:00:00.000Z",
-				...(mode === "plan" ? { phase: "planning" } : {}),
-			},
-		});
-		const harness = createHarness({
-			branch: [stateEntry("default", 1)],
-			model: normalModel,
-			thinkingLevel: "medium",
-			availableModels: [normalModel],
-			dependencies: stores.dependencies,
-		});
-
-		await harness.emit("session_start", { type: "session_start", reason: "startup" });
-		const [initial] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(initial.systemPrompt).toBe("BASE");
-
-		harness.setBranch([stateEntry("plan", 2)]);
-		await harness.emit("session_tree", { type: "session_tree" });
-		const [entered] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(entered.systemPrompt).toBe("BASE");
-		const [enteredContext] = await harness.emit("context", { type: "context", messages: [] });
-		expect(enteredContext.messages.at(-1).content).toContain(
-			"<mode_change_note>Plan Mode was entered since the previous turn.</mode_change_note>",
-		);
-
-		harness.setBranch([stateEntry("default", 3)]);
-		await harness.emit("session_tree", { type: "session_tree" });
-		const [exited] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(exited.systemPrompt).toBe("BASE");
-		const [exitedContext] = await harness.emit("context", { type: "context", messages: [] });
-		expect(exitedContext.messages.at(-1).content).toContain(
-			"<mode_change_note>Plan Mode was exited since the previous turn.</mode_change_note>",
-		);
+		expect(harness.sendMessage).not.toHaveBeenCalled();
 	});
 });
 

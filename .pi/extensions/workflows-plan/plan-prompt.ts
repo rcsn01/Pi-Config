@@ -1,4 +1,4 @@
-import { isPlanMode, type PlanPhase, type AgentModeState } from "./plan-state.ts";
+import type { AgentMode } from "./plan-state.ts";
 
 export const PLAN_MODE_PROMPT = `
 
@@ -7,9 +7,9 @@ export const PLAN_MODE_PROMPT = `
 
 You are in **Plan Mode** until system/developer instructions say otherwise. User intent, tone, or imperative language does not end Plan Mode. If the user asks for execution while still in Plan Mode, treat that as a request to **plan the execution**, not perform it.
 
-## Plan Mode vs todo/update_plan
+## Planning todos
 
-Plan Mode is a collaboration mode for producing a decision-complete implementation plan. It is separate from TODO/checklist/progress tools. Do not use todo/update_plan-style tools while in Plan Mode.
+You may use todo/update_plan-style tools to track exploration, clarification, and plan preparation. Do not use them to perform or imply implementation. Clear planning todos before presenting the final plan.
 
 ## Execution vs. mutation in Plan Mode
 
@@ -102,41 +102,11 @@ Rules for the proposed plan:
 - Do not ask "should I proceed?" in the final plan; the user can leave Plan Mode and request implementation.
 </collaboration_mode>`;
 
-const REVIEW_STATE_PROMPT = `
-
-<plan_review_state>
-A proposed plan already exists. Prefer targeted revision or concise no-op acknowledgement over restating the whole plan. Only emit a new <proposed_plan> block when the user's latest feedback materially changes the plan.
-</plan_review_state>`;
-
-export function runtimeModeMarker(state: AgentModeState): string {
-	return `\n\n<runtime mode="${state.mode}" revision="${state.revision}"/>`;
+export function modeChangeMarker(mode: AgentMode): string {
+	return `This is an internal marker, user has changed to ${mode} mode`;
 }
 
-export interface PlanPromptSnapshot extends AgentModeState {
-	phase?: PlanPhase;
-}
-
-export type ModeChange = "entered" | "exited";
-
-/**
- * Prominent note announcing a mode flip since the previous turn, so the model
- * cannot anchor on a stale mode. It precedes the request-local mode prompt.
- */
-export function modeChangeNote(modeChange: ModeChange | undefined): string {
-	if (modeChange === undefined) return "";
-	return `\n\n<mode_change_note>Plan Mode was ${modeChange} since the previous turn.</mode_change_note>`;
-}
-
-/** Build request-local Plan Mode context with the runtime marker last. */
-export function buildPlanModeRequestPrompt(
-	snapshot: PlanPromptSnapshot,
-	modeChange?: ModeChange,
-): string {
-	const parts = [modeChangeNote(modeChange)];
-	if (isPlanMode(snapshot)) {
-		parts.push(PLAN_MODE_PROMPT);
-		if (snapshot.phase === "awaiting_review") parts.push(REVIEW_STATE_PROMPT);
-	}
-	parts.push(runtimeModeMarker(snapshot));
-	return parts.join("");
+export function buildModeChangeMessage(mode: AgentMode): string {
+	const marker = modeChangeMarker(mode);
+	return mode === "plan" ? `${marker}${PLAN_MODE_PROMPT}` : marker;
 }
