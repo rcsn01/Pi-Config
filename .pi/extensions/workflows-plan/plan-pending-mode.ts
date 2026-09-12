@@ -9,7 +9,11 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { declareStatus } from "../_shared/status-registry.ts";
 import type { AgentMode } from "./plan-state.ts";
+
+const PLAN_PENDING_STATUS_ID = "plan-pending";
+declareStatus({ id: PLAN_PENDING_STATUS_ID, style: "accent", order: 40 });
 
 export interface PendingModeHost {
 	/** Lifecycle-owned Plan State read used for queue cancellation and toggle coalescing. */
@@ -36,7 +40,7 @@ export function createPlanPendingMode(host: PendingModeHost): PlanPendingMode {
 
 	function clear(ctx: ExtensionContext): void {
 		pendingRequest = undefined;
-		ctx.ui.setStatus("plan-pending", undefined);
+		ctx.ui.setStatus(PLAN_PENDING_STATUS_ID, undefined);
 	}
 
 	function queue(
@@ -51,12 +55,12 @@ export function createPlanPendingMode(host: PendingModeHost): PlanPendingMode {
 		}
 		pendingRequest = { target, ...options };
 		if (options.task) {
-			ctx.ui.setStatus("plan-pending", "plan task queued");
+			ctx.ui.setStatus(PLAN_PENDING_STATUS_ID, "plan task queued");
 			ctx.ui.notify("Plan task will start after the current run.", "info");
 			return;
 		}
 		const label = target === "plan" ? "Plan Mode" : "normal mode";
-		ctx.ui.setStatus("plan-pending", `${label} queued`);
+		ctx.ui.setStatus(PLAN_PENDING_STATUS_ID, `${label} queued`);
 		ctx.ui.notify(`Mode switch to ${label} queued until the current run finishes.`, "info");
 	}
 

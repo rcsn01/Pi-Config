@@ -17,6 +17,7 @@
  * lifecycle interface.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { declareStatus } from "../_shared/status-registry.ts";
 import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { formatTokenCount, modelKey, pickModelConfiguration } from "../_shared/model-picker.ts";
 import { resolveModelContext } from "../_shared/model-selection.ts";
@@ -50,6 +51,9 @@ export { parseGuardianDefinition, resolveGuardianPath };
 export type { GuardianDefinition } from "./guardian-runner.ts";
 
 export { permissionActionKey as actionKey, evaluateToolCall };
+
+const APPROVAL_MODE_STATUS_ID = "approval-mode";
+declareStatus({ id: APPROVAL_MODE_STATUS_ID, style: "muted", order: 20 });
 
 const PERMISSION_MARKER_CUSTOM_TYPE = "permission-mode-marker";
 
@@ -112,7 +116,7 @@ function installSafetyPermissions(
 	// ── Status display ─────────────────────────────────────────────────
 
 	function updateStatus(ctx: ExtensionContext) {
-		ctx.ui.setStatus("approval-mode", modeStatusLabel(enforcement.mode.mode));
+		ctx.ui.setStatus(APPROVAL_MODE_STATUS_ID, modeStatusLabel(enforcement.mode.mode));
 	}
 
 	// ── Command adapter ────────────────────────────────────────────────

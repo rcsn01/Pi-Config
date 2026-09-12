@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { declareStatus } from "../_shared/status-registry.ts";
 import type { Box, MarkdownTheme } from "@earendil-works/pi-tui";
 import {
 	createSemanticMarkdownTheme,
@@ -11,6 +12,9 @@ import {
 	type ProposedPlanDetails,
 } from "./plan-content.ts";
 import { isPlanMode, type PlanState } from "./plan-state.ts";
+
+export const PLAN_STATUS_ID = "plan";
+declareStatus({ id: PLAN_STATUS_ID, style: "accent", order: 30 });
 
 /** Backward-compatible export for callers that used the plan-specific Markdown theme. */
 export function createPlanMarkdownTheme(theme: Theme): MarkdownTheme {
@@ -53,9 +57,9 @@ export function registerPlanRenderers(pi: ExtensionAPI): void {
 /** Render status from an immutable state snapshot. */
 export function updatePlanStatus(ctx: ExtensionContext, state: PlanState): void {
 	if (!isPlanMode(state)) {
-		ctx.ui.setStatus("plan", undefined);
+		ctx.ui.setStatus(PLAN_STATUS_ID, undefined);
 		return;
 	}
 	const phase = state.phase === "awaiting_review" ? "plan review" : "plan";
-	ctx.ui.setStatus("plan", phase);
+	ctx.ui.setStatus(PLAN_STATUS_ID, phase);
 }

@@ -1,5 +1,6 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
+import { getStatusRegistry } from "../_shared/status-registry.ts";
 import workflowExtension from "./index.ts";
 
 function theme() {
@@ -24,6 +25,14 @@ function renderer() {
 }
 
 describe("workflow transcript rendering", () => {
+	it("declares the workflow status", () => {
+		expect(getStatusRegistry().declarations()).toContainEqual({
+			id: "workflow",
+			style: "accent",
+			order: 60,
+		});
+	});
+
 	it("renders a compact success summary and expanded metadata", () => {
 		const render = renderer();
 		const collapsed = render({

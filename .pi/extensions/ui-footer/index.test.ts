@@ -1,26 +1,17 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
-import footerExtension, { ensureThinkingCycleBinding } from "./index.ts";
+import { declareStatus } from "../_shared/status-registry.ts";
+import footerExtension from "./index.ts";
 
-let testAgentDir = "";
-const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-
-beforeAll(() => {
-	testAgentDir = mkdtempSync(join(tmpdir(), "ui-status-separators-agent-"));
-	process.env.PI_CODING_AGENT_DIR = testAgentDir;
-});
-
-afterAll(() => {
-	if (previousAgentDir === undefined) {
-		delete process.env.PI_CODING_AGENT_DIR;
-	} else {
-		process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-	}
-	rmSync(testAgentDir, { recursive: true, force: true });
-});
+declareStatus({ id: "profile", style: "muted", order: 10 });
+declareStatus({ id: "approval-mode", style: "muted", order: 20 });
+declareStatus({ id: "plan", style: "accent", order: 30 });
+declareStatus({ id: "plan-pending", style: "accent", order: 40 });
+declareStatus({ id: "plan-runtime", style: "warning", order: 50 });
+declareStatus({ id: "workflow", style: "accent", order: 60 });
+declareStatus({ id: "side-mode", style: "accent", order: 70 });
+declareStatus({ id: "advisor", style: "muted", order: 80, placement: "right" });
+declareStatus({ id: "cache-effort", style: "muted", order: 90 });
 
 function renderFooter(statuses: ReadonlyMap<string, string>, width: number, theme: any = { fg: (_color: string, text: string) => text }): string[] {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
@@ -56,105 +47,6 @@ function renderFooter(statuses: ReadonlyMap<string, string>, width: number, them
 	return factory({}, theme, footerData).render(width);
 }
 
-describe("keybinding provisioning", () => {
-	it("creates the config directory and required binding when missing", () => {
-		const root = mkdtempSync(join(tmpdir(), "ui-status-separators-config-"));
-		const configPath = join(root, "nested", "keybindings.json");
-
-		try {
-			ensureThinkingCycleBinding(configPath);
-
-			expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
-				"app.thinking.cycle": [],
-			});
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("preserves unrelated keybindings while adding the required binding", () => {
-		const root = mkdtempSync(join(tmpdir(), "ui-status-separators-config-"));
-		const configPath = join(root, "keybindings.json");
-		writeFileSync(configPath, JSON.stringify({ "app.model.select": "ctrl+l" }, null, 2) + "\n");
-
-		try {
-			ensureThinkingCycleBinding(configPath);
-
-			expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
-				"app.model.select": "ctrl+l",
-				"app.thinking.cycle": [],
-			});
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("replaces a conflicting thinking-cycle binding", () => {
-		const root = mkdtempSync(join(tmpdir(), "ui-status-separators-config-"));
-		const configPath = join(root, "keybindings.json");
-		writeFileSync(configPath, JSON.stringify({
-			"app.thinking.cycle": ["shift+tab"],
-			"app.model.select": "ctrl+l",
-		}, null, 2) + "\n");
-
-		try {
-			ensureThinkingCycleBinding(configPath);
-
-			expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
-				"app.thinking.cycle": [],
-				"app.model.select": "ctrl+l",
-			});
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("does not rewrite an already-correct config", () => {
-		const root = mkdtempSync(join(tmpdir(), "ui-status-separators-config-"));
-		const configPath = join(root, "keybindings.json");
-		const original = '{\n  "app.thinking.cycle": []\n}\n';
-		writeFileSync(configPath, original);
-
-		try {
-			ensureThinkingCycleBinding(configPath);
-			ensureThinkingCycleBinding(configPath);
-
-			expect(readFileSync(configPath, "utf8")).toBe(original);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("leaves malformed JSON unchanged and warns", () => {
-		const root = mkdtempSync(join(tmpdir(), "ui-status-separators-config-"));
-		const configPath = join(root, "keybindings.json");
-		const malformed = "{ not valid json";
-		writeFileSync(configPath, malformed);
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-		try {
-			ensureThinkingCycleBinding(configPath);
-
-			expect(readFileSync(configPath, "utf8")).toBe(malformed);
-			expect(warning).toHaveBeenCalledOnce();
-		} finally {
-			warning.mockRestore();
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("uses Pi's configured agent directory when the extension loads", () => {
-		const configPath = join(testAgentDir, "keybindings.json");
-		rmSync(configPath, { force: true });
-
-		footerExtension({ on: vi.fn() } as any);
-
-		expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
-			"app.thinking.cycle": [],
-		});
-	});
-});
-
 describe("status footer", () => {
 	it("orders extension statuses and uses one separator between them", () => {
 		const statusLine = renderFooter(new Map([
@@ -177,6 +69,16 @@ describe("status footer", () => {
 		]), 120)[2] ?? "";
 
 		expect(statusLine).toBe("plan | ⟳ sandbox | build · running · 1/3 agents | side mode | other");
+	});
+
+	it("orders plan-pending between plan and plan-runtime", () => {
+		const statusLine = renderFooter(new Map([
+			["plan-runtime", "sandbox"],
+			["plan-pending", "queued"],
+			["plan", "plan"],
+		]), 80)[2] ?? "";
+
+		expect(statusLine).toBe("plan | queued | sandbox");
 	});
 
 	it("applies semantic styling per status key", () => {

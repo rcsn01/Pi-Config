@@ -1,6 +1,7 @@
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { declareStatus } from "../_shared/status-registry.ts";
 import { Text } from "@earendil-works/pi-tui";
 import {
 	mutateSettingsDocument,
@@ -23,6 +24,9 @@ import { ADVISOR_TOOL_DESCRIPTION } from "./prompt.ts";
 import { createAdvisorRunner, DEFAULT_MAX_TOKENS, type AdvisorRunner, type AdvisorSettings } from "./runner.ts";
 
 export type { AdvisorSettings } from "./runner.ts";
+
+const ADVISOR_STATUS_ID = "advisor";
+declareStatus({ id: ADVISOR_STATUS_ID, style: "muted", order: 80, placement: "right" });
 
 export interface AdvisorExtensionDependencies {
 	settingsPath?: string;
@@ -147,7 +151,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 			if (ctx.hasUI) ctx.ui.notify(message, type);
 		};
 		const updateStatus = (ctx: ExtensionContext) => {
-			if (ctx.hasUI) ctx.ui.setStatus("advisor", formatAdvisorStatus(settings));
+			if (ctx.hasUI) ctx.ui.setStatus(ADVISOR_STATUS_ID, formatAdvisorStatus(settings));
 		};
 		const syncTool = () => {
 			const active = pi.getActiveTools();
@@ -172,7 +176,7 @@ export function createAdvisorExtension(dependencies: AdvisorExtensionDependencie
 				name: "tools-advisor",
 				applyPath: (binding) => { settingsPath = binding.settingsPath; },
 				initialize: (_binding, _event, ctx) => loadForSession(ctx),
-				dispose: (_binding, ctx) => { if (ctx.hasUI) ctx.ui.setStatus("advisor", undefined); },
+				dispose: (_binding, ctx) => { if (ctx.hasUI) ctx.ui.setStatus(ADVISOR_STATUS_ID, undefined); },
 			},
 		);
 

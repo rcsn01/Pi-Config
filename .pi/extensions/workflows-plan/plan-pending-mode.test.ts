@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { getStatusRegistry } from "../_shared/status-registry.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentMode } from "./plan-state.ts";
 import { createPlanPendingMode, type PendingModeHost } from "./plan-pending-mode.ts";
@@ -19,6 +20,14 @@ function createHost(overrides: Partial<PendingModeHost> = {}): PendingModeHost {
 }
 
 describe("Plan pending-mode queue", () => {
+	it("declares the plan-pending status", () => {
+		expect(getStatusRegistry().declarations()).toContainEqual({
+			id: "plan-pending",
+			style: "accent",
+			order: 40,
+		});
+	});
+
 	it("queue records the request, sets the plan-pending status, and notifies", () => {
 		const host = createHost();
 		const pending = createPlanPendingMode(host);

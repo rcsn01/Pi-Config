@@ -7,6 +7,7 @@ import planModeExtension, {
 import type { ModeModelProfile } from "./model-profile.ts";
 import { MODE_POLICY_PROMPT } from "./plan-prompt.ts";
 import { selectionModeFromEntries } from "../_shared/model-selection.ts";
+import { getStatusRegistry } from "../_shared/status-registry.ts";
 import { PLAN_STATE_ENTRY_TYPE } from "../_shared/session-entries.ts";
 import { beginProfileModelApplication } from "../_shared/profile-model-application.ts";
 import {
@@ -20,6 +21,14 @@ import {
 } from "./test-harness.ts";
 
 describe("Plan Mode tool policy integration", () => {
+	it("declares the plan-runtime status", () => {
+		expect(getStatusRegistry().declarations()).toContainEqual({
+			id: "plan-runtime",
+			style: "warning",
+			order: 50,
+		});
+	});
+
 	it("preserves the public entrypoint and Pi registration interfaces in order", () => {
 		const harness = createHarness();
 		expect(planModeExtension).toEqual(expect.any(Function));

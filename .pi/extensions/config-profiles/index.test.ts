@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { getStatusRegistry } from "../_shared/status-registry.ts";
 import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { createConfigProfilesExtension } from "./index.ts";
 import { createProfileStore, type ProfileStore } from "./profile-store.ts";
@@ -158,6 +159,14 @@ afterEach(() => {
 });
 
 describe("config profiles extension", () => {
+	it("declares the profile status", () => {
+		expect(getStatusRegistry().declarations()).toContainEqual({
+			id: "profile",
+			style: "muted",
+			order: 10,
+		});
+	});
+
 	it("rejects a settings path that conflicts with an injected ProfileStore", () => {
 		expect(() => createHarness({ settingsPath: join("/other-project", "settings.json") }))
 			.toThrow(/does not match the injected ProfileStore path/);

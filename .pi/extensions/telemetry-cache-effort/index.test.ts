@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { getStatusRegistry } from "../_shared/status-registry.ts";
 import { createCacheEffortExtension } from "./index.ts";
 
 const config: any = {
@@ -34,6 +35,14 @@ function harness(confirm = false) {
 }
 
 describe("cache effort extension activation boundary", () => {
+	it("declares the cache-effort status", () => {
+		expect(getStatusRegistry().declarations()).toContainEqual({
+			id: "cache-effort",
+			style: "muted",
+			order: 90,
+		});
+	});
+
 	it("registers only a command and passive entry renderer at startup", () => {
 		const h = harness();
 		createCacheEffortExtension()(h.pi);
