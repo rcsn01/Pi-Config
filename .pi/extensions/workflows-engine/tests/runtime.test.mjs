@@ -15,7 +15,8 @@ const definition = await import('../lib/definition.ts');
 const registry = await import('../lib/registry.ts');
 const approval = await import('../lib/approval.ts');
 const runStore = await import('../lib/run-store.ts');
-const runner = await import('../lib/runner.ts');
+const runState = await import('../lib/workflow-run-state.ts');
+const workflowRun = await import('../lib/workflow-run.ts');
 const scheduler = await import('../lib/scheduler.ts');
 const subagentService = await import('../../_shared/subagent-service.ts');
 const fanOutWorkflow = (await import('../bundled/fan-out-and-synthesize.ts')).default;
@@ -138,6 +139,53 @@ function registerFailedStatusSubagents(result = failedStatusResult()) {
   return { result, unregister };
 }
 
+class TestStore {
+  constructor(cwd, runId) {
+    this.persistence = new runStore.FileRunPersistence(cwd, runId);
+    this.runId = runId;
+    this.paths = this.persistence.paths();
+  }
+  async initialize(entry, args, sourceSnapshotPath) {
+    await this.persistence.initializeInput({ args, workflowName: entry.name, sourceHash: entry.sourceHash });
+    const event = {
+      type: 'run_created', runId: this.runId, workflowName: entry.name, trust: entry.trust,
+      args, sourceHash: entry.sourceHash, sourceSnapshotPath, description: entry.description,
+      costShape: entry.cost, canEditFiles: entry.canEditFiles,
+    };
+    await this.persistence.appendEvent(event);
+    return runState.rebuildState((await this.persistence.readEventLog()).events);
+  }
+  async append(event) {
+    await this.persistence.appendEvent(event);
+    const state = runState.rebuildState((await this.persistence.readEventLog()).events);
+    await this.persistence.writeProjection(state);
+    return state;
+  }
+}
+
+async function readPersistedState(cwd, runId) {
+  const persistence = new runStore.FileRunPersistence(cwd, runId);
+  return runState.rebuildState((await persistence.readEventLog()).events);
+}
+
+async function readPersistedEvents(cwd, runId) {
+  return (await new runStore.FileRunPersistence(cwd, runId).readEventLog()).events;
+}
+
+async function createTestHandle(cwd, runId, entry, workflow, { args = 'args', signal = new AbortController().signal, resume = false, persistence = new runStore.FileRunPersistence(cwd, runId) } = {}) {
+  const paths = persistence.paths();
+  await mkdir(paths.root, { recursive: true });
+  const sourceSnapshotPath = path.join(paths.root, 'source.txt');
+  await writeFile(sourceSnapshotPath, entry.source || 'test source', 'utf8');
+  const handle = await workflowRun.createWorkflowRun({
+    entry, workflow, runId, resume, args, sourceSnapshotPath, cwd,
+    parentSignal: signal, cacheAffinitySeed: 'workflow-main-session', persistence,
+    runSubagent: (options) => subagentService.requireSubagentService().runSubagent(options),
+    setStatus() {},
+  });
+  return { handle, persistence, paths, sourceSnapshotPath };
+}
+
 async function runBundledWorkflow(cwd, runId, workflow) {
   const entry = {
     name: workflow.name,
@@ -148,14 +196,9 @@ async function runBundledWorkflow(cwd, runId, workflow) {
     source: 'bundled test source',
     sourceHash: registry.hash('bundled test source'),
   };
-  const store = new runStore.RunStore(cwd, runId);
-  const state = await store.initialize(entry, 'verify this subject', path.join(cwd, `${workflow.name}.ts`));
-  const result = await runner.runPreparedWorkflow(
-    {},
-    { cwd, signal: new AbortController().signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } },
-    { entry, workflow, store, state, resume: false },
-  );
-  return { result, store, state: await runStore.readRunState(cwd, runId) };
+  const { handle, persistence, paths } = await createTestHandle(cwd, runId, entry, workflow, { args: 'verify this subject' });
+  const result = await handle.execute();
+  return { result, store: { runId, paths, persistence }, state: await readPersistedState(cwd, runId) };
 }
 
 test('defineWorkflow accepts valid definitions and normalizes phases/capabilities', () => {
@@ -257,7 +300,7 @@ test('run store projects progress, reuse, pause, dependencies, and agent running
   const cwd = await tempProject();
   try {
     const entry = { name: 'demo', trust: 'bundled', description: 'demo', cost: 'quick', canEditFiles: false, source: 'source', sourceHash: registry.hash('source') };
-    const store = new runStore.RunStore(cwd, 'run-events');
+    const store = new TestStore(cwd, 'run-events');
     assert.equal(store.paths.root.startsWith(stateRoot), true);
     assert.equal(store.paths.root.startsWith(path.join(cwd, '.pi')), false);
     await store.initialize(entry, 'args', path.join(cwd, 'source.txt'));
@@ -272,7 +315,7 @@ test('run store projects progress, reuse, pause, dependencies, and agent running
     await store.append({ type: 'agent_reused', key: 'a1', agent: 'default' });
     await store.append({ type: 'run_pausing', mode: 'after-current' });
     await store.append({ type: 'run_paused' });
-    const state = await runStore.rebuildStateFromEvents(store.paths.events);
+    const state = await readPersistedState(cwd, store.runId);
     assert.equal(state.status, 'paused');
     assert.equal(state.steps.s1.status, 'completed');
     assert.equal(state.agents.a1.status, 'completed');
@@ -290,15 +333,15 @@ test('run store appends JSONL, rebuilds state, handles invalidation, and protect
   const cwd = await tempProject();
   try {
     const entry = { name: 'demo', trust: 'bundled', description: 'demo', cost: 'quick', canEditFiles: false, source: 'source', sourceHash: registry.hash('source') };
-    const store = new runStore.RunStore(cwd, 'run-1');
+    const store = new TestStore(cwd, 'run-1');
     await store.initialize(entry, 'args', path.join(cwd, 'source.txt'));
     await store.append({ type: 'step_started', key: 's1' });
     await store.append({ type: 'step_completed', key: 's1', result: 42 });
     await store.append({ type: 'invalidated', key: 's1' });
-    let state = await runStore.rebuildStateFromEvents(store.paths.events);
+    let state = await readPersistedState(cwd, store.runId);
     assert.equal(state.steps.s1.status, 'invalidated');
     await store.append({ type: 'step_completed', key: 's1', result: 43 });
-    state = await runStore.rebuildStateFromEvents(store.paths.events);
+    state = await readPersistedState(cwd, store.runId);
     assert.equal(state.steps.s1.result, 43);
     assert.deepEqual(state.invalidatedKeys, []);
     assert.throws(() => runStore.safeArtifactPath(store.paths.artifacts, '../escape.txt'), /escapes/);
@@ -311,32 +354,36 @@ test('resume records replay, reuses completed keys, and restart invalidates depe
   const cwd = await tempProject();
   try {
     const entry = { name: 'demo', trust: 'bundled', description: 'demo', cost: 'quick', canEditFiles: false, source: 'source', sourceHash: registry.hash('source') };
-    const store = new runStore.RunStore(cwd, 'run-resume');
     let executions = 0;
     const workflow = definition.defineWorkflow({
       name: 'demo',
       description: 'demo',
       canEditFiles: false,
       async run(ctx) {
-        return ctx.step('first', () => ++executions);
+        const first = await ctx.step('first', () => ++executions);
+        await ctx.step('second', () => ++executions, { dependsOn: ['first'] });
+        return first;
       },
     });
-    const state = await store.initialize(entry, 'args', path.join(cwd, 'source.ts'));
-    const context = { cwd, signal: new AbortController().signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } };
-    const prepared = { entry, workflow, store, state, resume: false };
-    assert.equal(await runner.runPreparedWorkflow({}, context, prepared), 1);
-    assert.equal(await runner.runPreparedWorkflow({}, context, { ...prepared, state: await runStore.readRunState(cwd, store.runId), resume: true }), 1);
-    assert.equal(executions, 1);
-    const events = await runStore.readEvents(store.paths.events);
+    const initial = await createTestHandle(cwd, 'run-resume', entry, workflow, { args: 'args' });
+    assert.equal(await initial.handle.execute(), 1);
+    const resumed = await createTestHandle(cwd, 'run-resume', entry, workflow, { args: 'args', resume: true, persistence: initial.persistence });
+    assert.equal(await resumed.handle.execute(), 1);
+    assert.equal(executions, 2);
+    let events = await readPersistedEvents(cwd, 'run-resume');
     assert.equal(events.filter((event) => event.type === 'run_started').length, 1);
     assert.equal(events.filter((event) => event.type === 'run_resumed').length, 1);
-    assert.equal(events.filter((event) => event.type === 'step_reused').length, 1);
+    assert.equal(events.filter((event) => event.type === 'step_reused').length, 2);
 
-    await store.append({ type: 'step_started', key: 'second', dependsOn: ['first'] });
-    await store.append({ type: 'step_completed', key: 'second', result: 2 });
-    const invalidated = await runner.invalidateKeyAndDependents(cwd, store.runId, 'first');
-    assert.deepEqual(new Set(invalidated.invalidatedKeys), new Set(['first', 'second']));
-    await assert.rejects(() => runner.invalidateKeyAndDependents(cwd, store.runId, 'missing'), /Durable key not found/);
+    const restarted = await createTestHandle(cwd, 'run-resume', entry, workflow, { args: 'args', resume: true });
+    assert.equal(await restarted.handle.restart('first'), 3);
+    assert.equal(executions, 4);
+    events = await readPersistedEvents(cwd, 'run-resume');
+    assert.deepEqual(events.filter((event) => event.type === 'invalidated' || event.type === 'dependency_invalidated').slice(-2).map((event) => event.key), ['first', 'second']);
+    const before = events.length;
+    const missing = await createTestHandle(cwd, 'run-resume', entry, workflow, { args: 'args', resume: true });
+    await assert.rejects(() => missing.handle.restart('missing'), /Durable key not found/);
+    assert.equal((await readPersistedEvents(cwd, 'run-resume')).length, before);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -346,7 +393,6 @@ test('abort marks the run stopped and preserves completed keyed results', async 
   const cwd = await tempProject();
   try {
     const entry = { name: 'demo', trust: 'bundled', description: 'demo', cost: 'quick', canEditFiles: false, source: 'source', sourceHash: registry.hash('source') };
-    const store = new runStore.RunStore(cwd, 'run-stop');
     const controller = new AbortController();
     let enteredWaitingStep;
     const waitingStepStarted = new Promise((resolve) => { enteredWaitingStep = resolve; });
@@ -364,17 +410,13 @@ test('abort marks the run stopped and preserves completed keyed results', async 
         });
       },
     });
-    const state = await store.initialize(entry, 'args', path.join(cwd, 'source.ts'));
-    const running = runner.runPreparedWorkflow(
-      {},
-      { cwd, signal: controller.signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } },
-      { entry, workflow, store, state, resume: false },
-    );
+    const run = await createTestHandle(cwd, 'run-stop', entry, workflow, { args: 'args', signal: controller.signal });
+    const running = run.handle.execute();
     await waitingStepStarted;
     controller.abort(new Error('cancelled by test'));
     await assert.rejects(running, /cancelled by test/);
 
-    const stopped = await runStore.readRunState(cwd, store.runId);
+    const stopped = await readPersistedState(cwd, run.handle.runId);
     assert.equal(stopped.status, 'stopped');
     assert.equal(stopped.steps.completed.status, 'completed');
     assert.equal(stopped.steps.completed.result, 'preserved');
@@ -428,13 +470,8 @@ test('workflow agent requests pass the name and canonical task through the regis
         return ctx.agent({ key: 'mapped-agent', agent: 'worker', prompt: 'inspect the module' });
       },
     });
-    const store = new runStore.RunStore(cwd, 'run-task-mapping');
-    const state = await store.initialize(entry, '', path.join(cwd, 'task-mapping.ts'));
-    const result = await runner.runPreparedWorkflow(
-      {},
-      { cwd, signal: new AbortController().signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } },
-      { entry, workflow, store, state, resume: false },
-    );
+    const run = await createTestHandle(cwd, 'run-task-mapping', entry, workflow, { args: '' });
+    const result = await run.handle.execute();
     assert.equal(result, 'done');
     // The agent name passes through unresolved and `prompt` maps once to `task`.
     assert.deepEqual(observed, [{
@@ -443,7 +480,7 @@ test('workflow agent requests pass the name and canonical task through the regis
       prompt: undefined,
       cacheAffinitySeed: 'workflow-main-session',
     }]);
-    const events = await runStore.readEvents(store.paths.events);
+    const events = await readPersistedEvents(cwd, run.handle.runId);
     const progressEvents = events.filter((event) => event.type === 'agent_progress' && event.key === 'mapped-agent');
     assert.equal(progressEvents.length, 2);
     assert.deepEqual(progressEvents.map((event) => event.event.type), ['message', 'completed']);
@@ -479,21 +516,13 @@ test('execution rejection after admission appends agent_started then agent_faile
         return ctx.agent({ key: 'rejected-agent', agent: 'missing-agent', prompt: 'never runs' });
       },
     });
-    const store = new runStore.RunStore(cwd, 'run-preflight-failure');
-    const state = await store.initialize(entry, '', path.join(cwd, 'preflight-failure.ts'));
-    await assert.rejects(
-      () => runner.runPreparedWorkflow(
-        {},
-        { cwd, signal: new AbortController().signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } },
-        { entry, workflow, store, state, resume: false },
-      ),
-      (error) => error === preflightError,
-    );
-    const events = await runStore.readEvents(store.paths.events);
+    const run = await createTestHandle(cwd, 'run-preflight-failure', entry, workflow, { args: '' });
+    await assert.rejects(() => run.handle.execute(), (error) => error === preflightError);
+    const events = await readPersistedEvents(cwd, run.handle.runId);
     const agentEvents = events.filter((event) => event.key === 'rejected-agent').map((event) => event.type);
     assert.deepEqual(agentEvents, ['agent_started', 'agent_failed']);
     assert.equal(events.some((event) => event.type === 'agent_completed'), false);
-    const rebuilt = await runStore.rebuildStateFromEvents(store.paths.events);
+    const rebuilt = await readPersistedState(cwd, run.handle.runId);
     assert.equal(rebuilt.agents['rejected-agent'].status, 'failed');
   } finally {
     unregister();
@@ -525,20 +554,12 @@ test('AbortError from subagent execution retains the stopped classification', as
         return ctx.agent({ key: 'aborted-agent', agent: 'worker', prompt: 'get aborted' });
       },
     });
-    const store = new runStore.RunStore(cwd, 'run-abort-classification');
-    const state = await store.initialize(entry, '', path.join(cwd, 'abort-classification.ts'));
-    await assert.rejects(
-      () => runner.runPreparedWorkflow(
-        {},
-        { cwd, signal: new AbortController().signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } },
-        { entry, workflow, store, state, resume: false },
-      ),
-      /child aborted/,
-    );
-    const events = await runStore.readEvents(store.paths.events);
+    const run = await createTestHandle(cwd, 'run-abort-classification', entry, workflow, { args: '' });
+    await assert.rejects(() => run.handle.execute(), /child aborted/);
+    const events = await readPersistedEvents(cwd, run.handle.runId);
     const failed = events.find((event) => event.type === 'agent_failed' && event.key === 'aborted-agent');
     assert.equal(failed.stopped, true);
-    const stopped = await runStore.readRunState(cwd, store.runId);
+    const stopped = await readPersistedState(cwd, run.handle.runId);
     assert.equal(stopped.status, 'stopped');
   } finally {
     unregister();
@@ -567,20 +588,12 @@ test('workflow runner rejects failed authoritative status', async () => {
       return ctx.agent({ key: 'failed-agent', agent: 'worker', prompt: 'report failure' });
     },
   });
-  const store = new runStore.RunStore(cwd, 'run-status-failure');
-  const state = await store.initialize(entry, '', path.join(cwd, 'status-failure.ts'));
   try {
-    await assert.rejects(
-      () => runner.runPreparedWorkflow(
-        {},
-        { cwd, signal: new AbortController().signal, sessionManager: { getSessionId: () => 'workflow-main-session' }, ui: { setStatus() {} } },
-        { entry, workflow, store, state, resume: false },
-      ),
-      /Subagent reported failure/,
-    );
-    const events = await runStore.readEvents(store.paths.events);
+    const run = await createTestHandle(cwd, 'run-status-failure', entry, workflow, { args: '' });
+    await assert.rejects(() => run.handle.execute(), /Subagent reported failure/);
+    const events = await readPersistedEvents(cwd, run.handle.runId);
     assert.equal(events.some((event) => event.type === 'agent_completed' && event.key === 'failed-agent'), false);
-    const rebuilt = await runStore.rebuildStateFromEvents(store.paths.events);
+    const rebuilt = await readPersistedState(cwd, run.handle.runId);
     assert.equal(rebuilt.agents['failed-agent'].status, 'failed');
   } finally {
     fake.unregister();

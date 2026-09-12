@@ -78,13 +78,15 @@ Rules:
 - Bundled workflows are trusted extension code.
 - Project workflows are discovered as metadata only before approval.
 - Project workflows require approval keyed by project path hash, workflow name, and source hash.
-- The runtime snapshots source into `.pi/workflow-runs/<run-id>/source.*` before importing and replaying.
+- The runtime snapshots source into the run's external state directory before importing and replaying.
 - Source hash changes require approval again.
 
 ## Run Directory Layout
 
+Runs live below `projectStatePath(cwd, "workflow-runs", runId)`. The state base is `$PI_CONFIG_STATE_DIR` when set, otherwise `~/.pi/state/pi-config`. A per-project hash separates checkouts.
+
 ```text
-.pi/workflow-runs/<run-id>/
+<state-base>/<project-hash>/workflow-runs/<run-id>/
   source.*
   input.json
   events.jsonl
@@ -92,16 +94,20 @@ Rules:
   artifacts/
 ```
 
-`state.json` is a materialized projection of the append-only event log and is written atomically.
+`events.jsonl` is canonical. The runtime writes `state.json` atomically as a materialized projection and rebuilds it from the event log when needed.
 
 ## Background, Pause, Stop, Resume
 
 Background execution is managed in the current Pi process. Active background runs update the same event log and can be inspected with `/workflows`.
 
-- `stop` aborts running agents and marks the run stopped.
+- `stop` asks the run handle to abort running agents and records the stopped state when execution settles.
 - `pause` requests pause after current scheduled work reaches the next scheduling boundary.
-- `pause-now` aborts now and leaves replayable state.
+- `pause-now` asks the run handle to abort now and leaves replayable state.
 - `resume` replays from the source snapshot and skips completed keys.
+- A second in-process resume or restart for an active run is rejected.
+- Session shutdown requests stop for every active run and waits for those executions to settle.
+
+The lease and write queue are process-local. Two Pi processes can still write the same run directory, so concurrent cross-process use is unsupported.
 
 ## Worktree Editing Safety
 

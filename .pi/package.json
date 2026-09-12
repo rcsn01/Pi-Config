@@ -49,7 +49,7 @@
 		"test:worktree": "vitest run extensions/tools-worktree",
 		"test:goal": "vitest run extensions/workflows-goal",
 		"test:plan": "vitest run extensions/workflows-plan",
-		"test:workflows": "pnpm exec vitest run extensions/workflows-engine/index.test.ts extensions/workflows-engine/lib/worktree-artifacts.test.ts && node --test extensions/workflows-engine/tests/*.test.mjs",
+		"test:workflows": "pnpm exec vitest run extensions/workflows-engine/index.test.ts extensions/workflows-engine/lib/commands.test.ts extensions/workflows-engine/lib/run-store.test.ts extensions/workflows-engine/lib/workflow-run.test.ts extensions/workflows-engine/lib/worktree-artifacts.test.ts && node --test extensions/workflows-engine/tests/*.test.mjs",
 		"test:integrations": "vitest run extensions-disabled/integration-plane/lib/plane/client.test.ts",
 		"test:status": "vitest run extensions/ui-footer",
 		"test:keybindings": "vitest run extensions/config-keybindings",
