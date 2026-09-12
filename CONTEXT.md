@@ -66,6 +66,21 @@ extension.
   editor swaps (steer during streaming, Plan Review command submission)
   stay in their adapters and restore whatever the module installed.
 
+## Status line
+
+- **Status-line registry** — the pure in-process module in
+  `_shared/status-registry.ts` that owns the extension status-id vocabulary:
+  declaration of id, semantic theme style, canonical order, and footer
+  placement, shared across extensions through a `Symbol.for` globalThis key
+  because the extension loader gives each extension its own copy of shared
+  modules. Setters declare at their own seam beside their `ctx.ui.setStatus`
+  calls; ui-footer renders order, style, and left/right placement from the
+  registry and keeps truncation and text sanitizing. Undeclared ids fall back
+  to muted style and tail ordering. Adapters: config-profiles,
+  policy-permissions, workflows-plan (`plan`, `plan-pending`, `plan-runtime`),
+  workflows-engine, workflows-side-conversation, tools-advisor (right
+  placement), and telemetry-cache-effort.
+
 ## Telemetry dashboards
 
 - **Usage dashboard** — the `/global-usage` dashboard: scans session files into
