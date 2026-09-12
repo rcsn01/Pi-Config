@@ -32,6 +32,7 @@ beforeEach(() => resetObservabilityServiceForTests());
 
 afterEach(() => {
 	resetObservabilityServiceForTests();
+	vi.useRealTimers();
 	for (const directory of tempRoots.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -443,11 +444,17 @@ describe("Subagent child execution", () => {
 		expect(result).toMatchObject({ exitCode: 2, progress: { status: "failed", error: "child failed" } });
 	});
 
-	it("terminates on caller abort and timeout", async () => {
+	it("terminates on caller abort and timeout, escalating to SIGKILL after the 3-second grace", async () => {
 		for (const mode of ["abort", "timeout"] as const) {
-			const spawn = spawnHarness();
+			vi.useFakeTimers();
+			const child = fakeProcess();
+			let spawned!: () => void;
+			const spawnedPromise = new Promise<void>((resolve) => { spawned = resolve; });
+			const execution = createSubagentChildExecution({
+				tempRoot: tempRoot(),
+				spawnProcess: (() => { spawned(); return child as any; }) as any,
+			});
 			const controller = new AbortController();
-			const execution = createSubagentChildExecution({ spawnProcess: spawn.spawnProcess, tempRoot: tempRoot() });
 			const promise = execution.execute({
 				agent: agent(),
 				task: mode,
@@ -456,11 +463,21 @@ describe("Subagent child execution", () => {
 				signal: mode === "abort" ? controller.signal : undefined,
 				timeoutMs: mode === "timeout" ? 5 : undefined,
 			});
-			await waitForProcess(spawn.processes);
+			await spawnedPromise;
 			if (mode === "abort") controller.abort(new Error("cancelled"));
-			await vi.waitFor(() => expect(spawn.processes[0].kill).toHaveBeenCalledWith("SIGTERM"));
-			spawn.processes[0].emit("close", 143);
-			await expect(promise).resolves.toMatchObject({ exitCode: 143, progress: { status: "failed" } });
+			else await vi.advanceTimersByTimeAsync(5);
+			expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+			expect(child.kill).not.toHaveBeenCalledWith("SIGKILL");
+			await vi.advanceTimersByTimeAsync(2999);
+			expect(child.kill).not.toHaveBeenCalledWith("SIGKILL");
+			await vi.advanceTimersByTimeAsync(1);
+			expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+			child.emit("close", 137);
+			await expect(promise).resolves.toMatchObject({ exitCode: 137, progress: { status: "failed" } });
+			const killCount = child.kill.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(child.kill).toHaveBeenCalledTimes(killCount);
+			vi.useRealTimers();
 		}
 	});
 

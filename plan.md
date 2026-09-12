@@ -1,555 +1,301 @@
-# Implementation plan: deepen the workflow run module
+# Implementation plan: deepen the child-process machinery
 
 ## Status
 
-Ready for implementation. This plan records the recommended decisions for option 1, so implementation can proceed without another clarification round.
+Ready for implementation. The source inventory and behavior taxonomy below were checked against checkout `94958a0`. The plan has no deferred verification items.
 
 Planning baseline:
 
-- Checkout: `af47494` (`HEAD` at review time)
-- Scope: `.pi/extensions/workflows-engine/`, `.pi/package.json`, `.pi/extensions/workflows-engine/README.md`, and `CONTEXT.md`
-- Baseline typecheck: `pnpm --dir .pi typecheck` passes
-- Baseline workflow tests: `pnpm --dir .pi test:workflows` passes, 7 Vitest tests and 17 Node tests, 24 tests total
-- Existing command surface and persisted run files are compatibility requirements
-- The current state root comes from `projectStatePath()`: `PI_CONFIG_STATE_DIR` when set, otherwise the home-state directory. It is not normally `.pi/workflow-runs/` under the checkout.
+- Checkout: `94958a0` (`HEAD` during this review)
+- Changed source scope: `.pi/extensions/_shared/child-process.ts` (new), `.pi/extensions/_shared/child-observation/index.ts`, `.pi/extensions/_shared/file-discovery.ts`, `.pi/extensions/_shared/process.ts` (deleted), `.pi/extensions/telemetry-cache-effort/child-runner.ts`, `.pi/extensions/tools-subagents/child-execution.ts`, `.pi/extensions/tools-subagents/child-event-ingestion.ts`, `.pi/extensions/workflows-plan/plan-sandbox.ts`, and `.pi/extensions/workflows-plan/plan-workspace.ts`
+- Test and documentation scope: `.pi/extensions/_shared/child-process.test.ts` (new), the affected caller tests named below, and `CONTEXT.md`
+- Baseline verified on this checkout: `pnpm --dir .pi typecheck` passes. `test:shared` passes 38 files and 383 tests. `test:cache-effort` passes 5 files and 18 tests. `test:subagents` passes 14 files and 241 tests. `test:plan` passes 13 files and 183 tests, with 1 file and 2 tests skipped behind the sandbox integration guard.
+- Compatibility requirements: the `TrialRunner`, `SubagentChildExecution`, `SubagentChildEventIngestion`, `ChildObservation`, `PlanSandboxController`, and `PlanWorkspace` interfaces keep their shapes. Both existing spawn-injection seams, `ChildRunnerDependencies.spawnProcess` and `SubagentChildExecutionDependencies.spawnProcess`, stay in place. Persisted files, commands, and tool contracts are untouched.
 
 ## Objective
 
-Make one deep workflow run module the sole owner of a run's lifecycle and persisted writes. Keep the public `WorkflowContext` used by workflow authors stable, keep the JSONL and materialized-state formats stable, and make Pi commands adapters over a small run interface instead of readers and writers of raw `RunState`.
+Move repeated child-process mechanics behind one stateless in-process module. The module owns Pi invocation resolution, incremental UTF-8 line framing, immediate process-group kill, and graceful termination escalation. Protocol parsing, event meaning, output accumulation, and caller policy remain with their current owners.
 
-The target is depth at the run interface. A caller can start, resume, pause, stop, restart, and inspect a run without knowing how events reduce into state, how files are written, how progress is capped, how durable keys are reused, or how worktree results are nested inside an agent result. That gives callers leverage and gives lifecycle changes locality.
+This is a real seam. Pi invocation resolution has two implementations. Incremental command-output line framing has four implementations. Termination escalation has two implementations, plus one shared immediate group-kill implementation used by two Plan runners. The new module removes those copies without trying to own process spawning or whole child lifecycles.
 
-## Recommended decisions applied
+## Source inventory and verified behavior
 
-| Decision | Recommended answer | Consequence |
+### Pi invocation resolution: two implementations
+
+1. `telemetry-cache-effort/child-runner.ts:33-50` defines `PiInvocation` and `resolvePiInvocation(argvEntry = process.argv[1])`.
+   - If `argvEntry` is truthy and `realpathSync(argvEntry)` ends in `.mjs`, `.cjs`, or `.js`, case-insensitively, it returns `process.execPath`, the real path as the sole base argument, and `exact: true`.
+   - A missing, unreadable, or non-JavaScript entry falls through. The code does not check that the resolved path is a regular file.
+   - On fallthrough, a truthy `process.versions.bun` returns `process.execPath`, no base arguments, and `exact: true`.
+   - All other fallthrough cases return `pi`, no base arguments, and `exact: false`.
+   - `createChildTrialRunner` rejects the non-exact branch before spawn at `child-runner.ts:344-345`.
+2. `tools-subagents/child-execution.ts:154-165` defines `resolvePiBinary()`.
+   - It has the same JavaScript-entry branch.
+   - It has no Bun branch and no exactness field. Every fallthrough returns `pi`.
+   - `buildPiArgs` consumes the command and base arguments at `child-execution.ts:175-205`.
+
+No test imports either resolver. `child-execution.test.ts:254-285` happens to assert `process.execPath` on this checkout because the Vitest entry resolves to JavaScript. That test does not cover either fallback.
+
+### Incremental line framing: four implementations
+
+1. `telemetry-cache-effort/child-runner.ts:59-79` defines a private stream adapter.
+   - It uses `StringDecoder("utf8")`, splits on LF, removes one CR immediately before LF or at the tail, skips only empty strings, and flushes the tail on `end`.
+   - It listens only to `data` and `end`; its returned detach removes both listeners without flushing.
+2. `_shared/child-observation/index.ts:90-134` defines `createFrameReader`.
+   - It uses `StringDecoder("utf8")`, splits on LF, and discards a line once its decoded UTF-8 byte count exceeds 8 MiB. An LF leaves discard mode and allows the next line.
+   - Exactly 8 MiB is accepted. The CR and any trailing whitespace count toward the limit because `trimEnd()` runs only after framing.
+   - `end()` is idempotent, ignores later pushes, flushes a nonblank bounded tail, and drops an overlong tail.
+   - Before parsing, it removes all trailing whitespace with `trimEnd()`. `parseFrame` performs a second 8 MiB check and validates the event.
+3. `tools-subagents/child-event-ingestion.ts:73-257` owns a string buffer directly.
+   - `write()` calls `Buffer.toString()` independently for each Buffer, splits on LF, and retains the last segment.
+   - `finish()` processes a nonblank tail. `processLine` ignores blank and malformed JSON.
+   - A multibyte UTF-8 sequence split between Buffer chunks becomes replacement characters. This can corrupt assistant output and progress text silently.
+4. `_shared/file-discovery.ts:108-158` owns another string buffer in `listWithCommand`.
+   - It calls `Buffer.toString()` independently for each chunk, splits on `/\r?\n/`, trims accepted file names, flushes the tail on child close, and kills the command when the scan limit is reached.
+   - It has the same split-multibyte corruption bug for file names returned by `fd` or `rg`.
+
+Existing coverage is not empty:
+
+- `child-observation/index.test.ts:46-77` already covers split records, a split `é`, the 8 MiB overflow case, and recovery after LF through the `ChildObservation` interface.
+- `child-event-ingestion.test.ts:46-58` covers split ASCII records, blank and malformed lines, and tail flush through the ingestion interface. It does not split a multibyte character.
+- `child-runner.test.ts:107-125` exercises the runner's reader through RPC and probe streams, but not decoder boundaries or detach.
+- `_shared/file-discovery.test.ts` has 2 tests, both using the Node fallback. Neither exercises the `fd` or `rg` stream reader.
+
+### Termination: three target implementations and two Plan consumers
+
+1. `telemetry-cache-effort/child-runner.ts:243-269` implements idempotent stop with `stopPromise ??=`.
+   - If its private `exited` flag is set, it detaches readers and returns.
+   - Otherwise it sends pid SIGTERM immediately, schedules pid SIGKILL at 1,000 ms, and schedules give-up resolution at 2,000 ms from the initial SIGTERM. Exit clears both timers and resolves early.
+   - Its child spawn is detached on non-Windows at `child-runner.ts:357-362`, so pid signals do not target descendants.
+2. `tools-subagents/child-execution.ts:284-314` installs one abort listener.
+   - It sends pid SIGTERM and schedules a callback at 3,000 ms.
+   - The callback is `!proc.killed && proc.kill("SIGKILL")`. Node sets `ChildProcess.killed` when `kill()` successfully sends SIGTERM, not when the process exits. The normal successful-SIGTERM path therefore suppresses SIGKILL. The source does not currently provide reliable TERM-to-KILL escalation.
+   - Process `close` or `error` settles the owner promise. `cancelProcessWait` removes the abort listener and clears the timer after settlement.
+   - The subagent spawn is not detached, so pid signaling remains the intended policy.
+3. `_shared/process.ts:3-11` implements immediate group SIGKILL.
+   - A child without a pid is a no-op.
+   - Windows calls `child.kill("SIGKILL")`.
+   - Other platforms call `process.kill(-child.pid, "SIGKILL")` and fall back to `child.kill("SIGKILL")` if group signaling throws.
+   - All signaling errors are contained.
+4. `workflows-plan/plan-sandbox.ts` imports that helper and calls it in three places: command finish at line 77, abort at line 80, and timeout at line 86. The finish call deliberately catches descendants that remain after their shell exits.
+5. `workflows-plan/plan-workspace.ts` imports the helper and calls it once on clone abort at line 64. Both Plan spawns are detached on non-Windows.
+
+Relevant existing tests are narrower than the plan previously claimed:
+
+- `child-runner.test.ts:127-144` checks that cancellation sends SIGTERM and removes the temporary directory. Its fake exits on the first signal, so it does not cover escalation, the 2-second give-up window, or group signaling.
+- `child-execution.test.ts:446-465` checks SIGTERM for caller abort and timeout, then manually emits `close`. It does not advance 3 seconds or assert SIGKILL.
+- Plan unit tests inject above `runSandboxed` or `runCloneCommand`; they do not call `killProcessGroup`. The guarded sandbox integration test indirectly exercises disposal of a long-running command.
+- `_shared/process.ts` has no direct test.
+
+### Related implementations deliberately left outside
+
+Repository-wide searches found other process and decoding code. They stay outside for concrete reasons:
+
+- `_shared/git.ts` incrementally decodes stdout and stderr with `StringDecoder`, but it accumulates bounded text and never frames stream records. Its timeout and abort paths use immediate pid `child.kill()` and settle the Git operation at once. It remains the Git executor.
+- `_shared/file-discovery.ts` keeps command selection, result limits, trimming, and limit-triggered pid kill. Only its line framing moves.
+- `tools-subagents/child-execution.ts`, `workflows-plan/plan-sandbox.ts`, and `workflows-plan/plan-workspace.ts` keep stderr accumulation. This work does not introduce a generic text accumulator.
+- `_shared/browser.ts` starts a detached browser and deliberately does not terminate it.
+- `skills/github-repo-explorer/scripts/github-repo-snapshot.mjs` has its own detached subprocess and Windows `taskkill` behavior. It is a standalone JavaScript CLI outside the extension TypeScript modules.
+- `extensions-disabled/integration-fleet/integration-codex/index.ts` contains two disabled 3-second termination copies. Disabled extensions are not runtime consumers of the new module.
+
+These exclusions mean the module does not claim to own every subprocess in the repository. It owns the repeated mechanics used by the active extension consumers listed above.
+
+## Design decisions
+
+| Decision | Final answer | Reason |
 | --- | --- | --- |
-| Scope | Refactor ownership while preserving the command and persistence contracts. | Keep command names, workflow authoring, event names, run-directory layout, and result shapes compatible. The intentional observable changes are exactly seven: (1) lease rejection of a second active operation, together with serialized `maxAgents` admission that can no longer oversubscribe; (2) shutdown stop-and-wait instead of a command-level `run_stopped` append; (3) command pause/stop reaching the run control path, which now writes `run_pausing`, checks pause/stop immediately before `run_completed`, and drops post-terminal writes from a settled attempt; (4) run-id, path, worktree-id, and result-shape validation; (5) `/workflows raw` reporting a missing log as not-found instead of empty output; (6) `/workflow source` falling back to the registry only on not-found; (7) a cache-affinity seed captured once per run instead of read per agent. |
-| Deep module | Add a `WorkflowRun` facade for one run. | It owns lifecycle transitions, event creation, state projection, control, durable keys, execution, and typed read views. |
-| External interface | Expose a run handle plus read queries. | Commands use `execute`, `restart`, `requestPause`, `requestStop`, `inspect`, `list`, and `readEvents`. Descendant invalidation is reachable only inside `restart()`, so no caller mutates raw state. |
-| Persistence | Put one internal persistence seam behind the facade. | Production uses a file adapter; tests use an in-memory adapter. The adapter does I/O only, while the run facade reduces events and owns lifecycle policy. |
-| State | Keep the event log canonical and the state file a materialized projection. | Existing event ordering and recovery semantics remain valid. The reducer moves behind the run facade. |
-| Control | The run handle owns pause and stop control. | Commands send requests; they do not append lifecycle events themselves. |
-| Concurrency | One coordinator, keyed by canonical run storage root, owns the active lease and write queue for a run. | A concurrent resume or restart is rejected rather than producing competing in-process writers. |
-| Restart | Make invalidation plus replay one handle operation. | `/workflow restart` cannot release the run lease between descendant invalidation and `execute`. |
-| Worktrees | Preserve the workflow runner's distinct worktree policy. | Do not merge it with `tools-worktree`. Continue using the existing Git executor and worktree artifact module. |
-| Subagents | Keep the existing Subagent execution seam. | The production composition adapter delegates to the registered Subagent execution module; tests inject a fake runner. |
-| Replay | Do not change bundled replay semantics. | Project workflows still replay from their source snapshot. Bundled workflows still use the current bundled definition. |
-| Testing | Replace direct state/store tests with tests through the deep interface, retaining file and end-to-end coverage. | The interface becomes the test surface; shallow implementation tests are removed once their behavior has coverage. |
-| Documentation | Update `CONTEXT.md` when the implementation lands. | Record the new Workflow run lifecycle module and its seam without changing it during this planning task. |
-| Read-path reads | Route `inspect`, `list`, and `readEvents` through the same per-run queue as writes. | A reader can no longer see a partial JSONL line or overwrite a newer `state.json` with an older rebuild. |
+| Module placement | Add `_shared/child-process.ts` with stateless functions. | Shared modules are instantiated per extension. Stateless decoder and termination objects belong to individual calls, so no global registry is needed. The loader behavior is documented in `_shared/editor-slot.ts:13-17` and `_shared/status-registry.ts:4-7`. |
+| Process spawning | Keep spawning in every current owner. | RPC, JSON ingestion, observation fd 3, sandbox execution, and file discovery have different spawn arguments and lifetimes. A `runChildProcess` facade would expose nearly all of those differences and would be shallow. |
+| Invocation | Export one `resolvePiInvocation` and one `PiInvocation` result. | Both Pi callers need the same resolution branches. Cache-effort consumes `exact`; subagents deliberately ignore it. |
+| Line framing | Export `createLineReader`. | Four active consumers need incremental decoding and LF framing. Callers retain parsing, trimming beyond one CR, size policy, stream wiring, and command-limit behavior. |
+| Stream convenience | Do not export `attachLineReader`. | Only cache-effort would use it after migration, and it merely adds two listeners. It is a one-consumer pass-through with no leverage. Cache-effort keeps its private attach/detach wiring around the shared reader. |
+| Immediate group kill | Move `killProcessGroup` unchanged from `_shared/process.ts`. | Plan teardown requires synchronous SIGKILL with no grace period and no await. Folding it into an asynchronous escalation call would obscure that invariant. |
+| Escalation | Export `terminateChildProcess(child, options): Promise<void>` with required timing policy. | Cache-effort awaits exit or a deadline. Subagents start the same mechanics but continue to let their existing `close` or `error` listeners settle execution. No caller uses a termination outcome value, so there is no `TerminationOutcome` type. |
+| Clock injection | Use normal timers and Vitest fake timers. | There is no production clock adapter. Adding one would create a hypothetical seam. |
+| Documentation | Keep the planning-time Child process module entry, then correct its consumer list and exact timing terms when implementation lands. | The current entry omits file discovery and does not define whether its termination deadline starts before or after SIGKILL. |
 
-## Current architecture and evidence
-
-### The run concept is split across three files
-
-- `lib/runner.ts:117-385` contains `WorkflowRun`, mutable run state, execution, phases, durable steps, agents, parallel work, artifacts, progress, budgets, status output, and workflow-specific worktree creation. Its `pi` field is unused. Its `requestPause()` method exists, but the command adapter does not call it.
-- `lib/run-store.ts:19-51` defines a broad `RunState`; `:156-310` reduces every event into that state; `:332-406` appends JSONL, rebuilds state, writes `state.json`, and serializes writes only per `RunStore` instance. `appendRunEvent()` and `readRunState()` bypass that instance queue, and `invalidateKeyAndDependents()` creates a new `RunStore` for each invalidation event.
-- `lib/commands.ts:53-87` owns execution reporting and background state; `:89-121` controls active runs; `:136-176` reads nested worktree data with `any`; `:195-272` reads raw state, appends a shutdown event outside the active store, performs invalidation outside the running handle, and formats command output.
-- `lib/ui.ts:51-88` formats the raw `RunState` directly.
-
-The result is a shallow seam. The command adapter must know the event store, the full state shape, the event-log path, the source-snapshot path, and the location of worktree information inside arbitrary agent results. The implementation's lifecycle knowledge is spread across callers instead of concentrated behind one interface. The new seam must also correct the path and competing-writer hazards rather than merely move them.
-
-### Important existing behavior to preserve
-
-The current runtime tests in `tests/runtime.test.mjs` are the characterization suite:
-
-- Definition normalization and registry trust handling at lines 161-254.
-- Event projection, progress retention, dependency recording, invalidation, and artifact path safety at lines 256-308.
-- Resume and durable-key reuse at lines 310-343.
-- Abort and stopped-state handling at lines 345-385.
-- Subagent task mapping, progress events, preflight failure, authoritative failed status, and abort classification at lines 387-589.
-- Bundled workflow execution and artifact output at lines 591-651.
-- Worktree creation, normalization, reuse, preservation metadata, patch collection, and applicability at lines 653-750.
-
-The refactor must preserve these facts, including the boundary cases that the current code actually implements:
-
-1. `prepareNewWorkflowRun()` writes a source snapshot before importing a project workflow. It writes the new run's `input.json` and then `run_created`, after import succeeds. Bundled runs also receive a snapshot file, although resume uses the bundled definition rather than importing that snapshot.
-2. `events.jsonl` is append-only. `state.json` is a materialized projection written through a temporary file and rename. If an event file exists, it is authoritative; an existing but empty event file is an error rather than a projection fallback. The default storage root is the external project-state directory described above.
-3. The current `RunStore` queue serializes calls made through one instance only. Progress events from one `WorkflowRun` can interleave across agents, but direct `appendRunEvent()` calls and different `RunStore` instances can race. The new coordinator must provide the stronger one-queue guarantee for all facade writes.
-4. `step` and `agent` reuse only a record whose status is `completed` and whose key is not in `invalidatedKeys`. `step_reused` and `agent_reused` update the record timestamp but do not change its status to `reused`.
-5. Dependency edges are recorded only when `step_started` or `agent_started` events carry `dependsOn`. Missing dependency records are accepted, duplicate edges are deduplicated, and invalidation walks the recorded graph breadth-first with one event per visited key per invalidation operation. Cycles must terminate through the existing visited set.
-6. Worktree target preparation occurs before `agent_started`. A target-preparation failure therefore produces neither `agent_started` nor `agent_failed`; once `agent_started` is appended, a Subagent preflight or execution rejection enters the catch path and produces `agent_failed`.
-7. The current `maxAgents` check runs before waiting for the semaphore, so concurrent callers can pass a stale `agentsStarted` count. The refactor must make the check and admission reservation one serialized operation without changing the total-attempt meaning of `agentsStarted`.
-8. A child result with authoritative `progress.status === "failed"` fails the workflow even if its process exit code is zero. Success must not be inferred from exit code or error text.
-9. The materialized `agent.progress` array retains only its latest 50 entries per agent. The raw event log retains every progress event. `tool_call` becomes `agent_tool`; every other Subagent progress event is recorded as `agent_progress` with the current event payload.
-10. `ctx.agent({ output: "json" })` retains the current parser order: direct JSON, an optional-json fenced block, then the first-to-last object span, then the first-to-last array span. Invalid or empty output still throws `Agent did not return valid JSON`.
-11. Stop and pause classification wins over generic failure in the execution catch path. `pause-now` remains replayable, and completed durable results remain available. A pause-after-current request is observed only at the existing scheduling boundaries: before a phase, step, agent, or parallel block, and at each parallel-worker iteration. If the workflow returns without another boundary, the current implementation completes normally.
-12. Workflow worktree ids are lowercased, invalid runs are replaced with `-`, leading/trailing hyphens are trimmed, and the result is capped at 80 characters. Existing paths are reused based on the current existence check, and `preserve` and `fileOwnership` metadata are retained. The refactor must additionally reject normalized `.`/`..` and `.lock` forms and prove the resolved path stays under the managed directory; this closes a path escape without merging the workflow policy with `tools-worktree`.
-13. Worktree patches and summaries are written through `worktree-artifacts.ts` and the run artifact writer before `agent_completed`. No worktree is silently integrated into the main checkout. A clean worktree still receives a JSON summary but no patch artifact.
-14. The current `RunState.tokens` calculation is `usage.inputTokens + usage.outputTokens`; cache counts, turns, and progress-message token fields do not contribute. Preserve this calculation and all serialized event/state field names, including the current usage aliases and counter behavior.
-15. Project workflows replay from the approved source snapshot. Bundled workflows use the current bundled definition on resume, but `prepareExistingWorkflowRun()` currently requires a non-empty `sourceSnapshotPath` for both trust modes before it reaches either loading path. Preserve that guard.
-16. `parallel()` records `parallel_started` before workers and either records `parallel_completed` or `parallel_failed`. With `stopOnError: false`, a worker error becomes a result object and the block completes; with the default fail-fast behavior, already-running workers are not cancelled and the first observed error is rethrown.
-17. The command adapter currently trusts a caller-supplied run id in `runPaths()`, a persisted source-snapshot path, a persisted patch path, and the nested agent result. The facade must validate run ids and all paths it returns to commands. It must expose worktree metadata only when the run recorded a worktree for that agent, so an ordinary JSON agent result cannot manufacture an integration artifact.
-18. `listRunStates()` reads every run directory, silently drops any run whose read throws, and sorts by `updatedAt` descending; `formatRunList` then shows the first 30. `list()` must keep all three behaviors, so one malformed run directory cannot break `/workflows`.
-19. `runAndReport` currently classifies a rejected execution into three notifications by reading the shared `control.pauseMode` and `controller.signal.aborted`: `Workflow paused: <name>`, `Workflow stopped: <name>`, and `Workflow failed: <message>`. Both of those inputs disappear with the handle refactor, so the handle must supply the replacement classification (see the command adapter section).
-20. Two read commands are looser than their messages suggest. `/workflows raw <run-id>` on a run with no event file currently notifies an empty string at `info` rather than the adjacent not-found message, because `readEvents()` returns `[]` for a missing file. `/workflow source <run-id>` wraps both the state read and the snapshot `readFile` in one `try`, so an unreadable snapshot also falls through to the live registry lookup. The facade narrows both to not-found only; these are the two read-path behavior changes recorded in the decisions table.
-
-## Target architecture
-
-### The deep module
-
-Add `lib/workflow-run.ts`. It is the external seam for one prepared workflow run and the only per-run lifecycle writer. Its implementation contains private helpers for state reduction, control, persistence, worktree policy, and agent execution. Those internal seams must not leak into commands or workflow definitions.
-
-The module owns:
-
-- The current private `RunState`.
-- Creation, start, resume, completion, pause, failure, and stopped transitions.
-- The `WorkflowContext` passed to workflow definitions.
-- Phase, step, agent, parallel, artifact, and log operations.
-- Durable-key reuse and invalidation.
-- Dependency graph updates.
-- Agent admission and budget checks.
-- Event construction and ordered persistence.
-- Materialized-state projection and recovery after a projection write failure.
-- Run-level pause and stop control.
-- Typed read models for commands and text formatting.
-- Extraction and validation of worktree artifact metadata from agent results.
-- The workflow-specific worktree policy currently implemented by `prepareAgentTarget`.
-
-It does not own:
-
-- Workflow discovery, approval, source loading, or source snapshots.
-- Pi command parsing, prompts, notifications, or transcript rendering.
-- The Subagent execution implementation.
-- The Git executor implementation.
-- Applying a patch to the main checkout or removing a worktree from a command.
-
-Those remain adapters or existing deep modules at the appropriate seam.
-
-### Recommended external interface
-
-The run module is constructed with the prepared definition, a `RunPersistence`, the parent signal, the captured cache-affinity seed, the status callback, and the Subagent callback. Its read methods take `cwd` and `runId`; a command service binds those methods to a project. Creation is asynchronous because a new handle must finish the `input.json` and `run_created` writes, and a resumed handle must load or rebuild its state before it is returned.
+## Target interface and exact semantics
 
 ```ts
-type WorkflowPauseMode = "after-current" | "now";
-
-interface WorkflowRunHandle<TResult = unknown> {
-  readonly runId: string;
-  execute(): Promise<TResult>;
-  restart(key: string): Promise<TResult>;
-  requestPause(mode?: WorkflowPauseMode): Promise<void>;
-  requestStop(reason?: string): void;
-  inspect(): Promise<WorkflowRunDetail>;
+export interface PiInvocation {
+	command: string;
+	baseArgs: string[];
+	exact: boolean;
 }
 
-interface WorkflowRunModule {
-  create(options: PreparedWorkflowRunOptions): Promise<WorkflowRunHandle>;
-  inspect(cwd: string, runId: string): Promise<WorkflowRunDetail>;
-  list(cwd: string): Promise<readonly WorkflowRunSummary[]>;
-  readEvents(cwd: string, runId: string): Promise<readonly WorkflowRunEventView[]>;
+export function resolvePiInvocation(argvEntry?: string): PiInvocation;
+
+export interface LineReader {
+	push(chunk: Buffer | string): void;
+	end(): void;
 }
+
+export function createLineReader(
+	onLine: (line: string) => void,
+	options?: { maxLineBytes?: number },
+): LineReader;
+
+export function killProcessGroup(child: ChildProcess): void;
+
+export function terminateChildProcess(
+	child: ChildProcess,
+	options: { graceMs: number; killWaitMs?: number; group?: boolean },
+): Promise<void>;
 ```
 
-`PreparedWorkflowRunOptions` is the composition record enumerated in the `runner.ts` section below: normalized entry/definition, run id, resume mode, `cwd`, parent signal, captured cache-affinity seed, persistence adapter, Subagent callback, and status callback. Nothing else.
+`resolvePiInvocation` preserves the cache-effort branch order exactly:
 
-`create()` performs new-run initialization when `resume` is false and loads the existing event log or projection when `resume` is true. It returns a handle that has not started workflow execution. `execute()` is single-flight: the first call owns the execution attempt, and every later `execute()` call, including calls after settlement, returns the same promise. It never appends a second start event. The first operation is either `execute()` or `restart()`; later calls return that cached promise, while a restart request made after an ordinary execution has started is rejected. A resumed handle is used for `restart()` before its first execution attempt.
+1. Use `argvEntry`, whose default value is `process.argv[1]`. Omission and an explicit `undefined` both use the process argument; an explicit empty string bypasses it.
+2. A successful realpath ending in `.mjs`, `.cjs`, or `.js`, case-insensitively, wins even under Bun.
+3. Otherwise Bun uses `process.execPath` with no base arguments and `exact: true`.
+4. Otherwise use `pi` with no base arguments and `exact: false`.
 
-`restart(key)` is the atomic command operation. It acquires the run lease, reloads current state, invalidates the key and its recorded descendants through the run queue, then resumes execution without releasing the lease between those steps. A second handle cannot mutate the same canonical run root while it is active. This removes the race in today's separate `invalidateKeyAndDependents()` call followed by a fresh `prepareExistingWorkflowRun()` and execute. Descendant invalidation has no other entry point: it is a private step of `restart()`, not a public handle method, because after this refactor no command invalidates without replaying. It keeps the current `Durable key not found in run <runId>: <key>` error when the key exists in neither `steps` nor `agents`, and it raises that error before appending any event or `run_resumed`.
+`createLineReader` has these semantics:
 
-`requestPause()` is valid for an active or about-to-start execution and resolves after its request event is queued. An identical pending request is a no-op; `now` upgrades a pending `after-current` request by queuing one new `run_pausing` event with the stronger mode, then aborts the owned signal. The execution catch path writes `run_paused`; `requestPause("now")` does not throw the execution's abort error itself. Requests after terminal settlement are no-ops and never append after a terminal event. `requestStop()` records no separate request event, stores the supplied reason, and aborts the owned signal; the execution catch path writes the one `run_stopped` event. If pause and stop are both pending, pause classification retains the current catch-path precedence.
+- It passes Buffer chunks through `StringDecoder`. It UTF-8 encodes string chunks to Buffer first, then passes them through the same decoder. Mixed chunk types therefore cannot reorder text around a decoder-held partial sequence.
+- LF terminates a line. One CR immediately before LF or at the final tail is removed. Other whitespace is retained.
+- Empty strings are skipped. Whitespace-only strings are delivered because existing cache behavior distinguishes them; ingestion and observation continue to reject them in their own callbacks.
+- `end()` appends `decoder.end()`, flushes one nonempty bounded tail, and is idempotent. Pushes after `end()` do nothing.
+- Without `maxLineBytes`, buffering is unbounded as it is today in cache-effort, ingestion, and file discovery.
+- `maxLineBytes`, when supplied, must be a positive finite integer. Invalid values throw before reader state is created.
+- With `maxLineBytes`, the decoded line's UTF-8 byte count includes a trailing CR and all other whitespace. A line equal to the limit is delivered. A line over the limit is discarded through its next LF. An overlong tail is discarded. The next line after LF is read normally.
+- `onLine` exceptions propagate from `push()` or `end()`. Current owners that intentionally contain parser or publication failures keep doing so in their callbacks.
 
-`WorkflowRunDetail` and `WorkflowRunSummary` are read models, not aliases for mutable `RunState`. The summary model contains exactly what `formatRunList` reads: `runId`, `workflowName`, `status`, `currentPhase`, `error`, `startedAt`, `completedAt`, `agentsStarted`, `agentsCompleted`, `agentsFailed`, `tokens`, and `cost`. The detail model contains the current UI fields: run identity, workflow metadata needed for replay, trust, arguments, source hash, timestamps, status, current phase, counts, usage, token total, cost, error, result, source snapshot path, event-log path, phase/step/parallel/artifact views, and agent views. The agent view contains only status, name, error, and an optional `WorkflowWorktreeView`. Dependencies, logs, invalidation internals, raw child results, and the mutable state object stay private because no current command or formatter consumes them.
+`killProcessGroup` keeps every `_shared/process.ts` branch unchanged, including the no-pid no-op and pid fallback when POSIX group signaling throws.
 
-`WorkflowWorktreeView` contains the recorded worktree path and branch metadata, changed files and status, the original run-root-relative patch artifact path for display, and an absolute patch path after containment validation. It is returned only when the agent's `agent_started` record proves that the run created a worktree and the completed result carries the matching worktree summary. A clean worktree has no patch path but still has a view for cleanup. `eventLogPath` and `sourceSnapshotPath` are validated paths, not paths copied from arbitrary command input. The command adapter must never inspect `agent.result`, its nested `result.output.worktree`, or a mutable state record.
+`terminateChildProcess` has these semantics:
 
-### Persistence seam
+- `graceMs` and `killWaitMs`, when present, are finite nonnegative milliseconds. Invalid values throw synchronously before listeners or timers are installed.
+- If `exitCode` or `signalCode` already indicates exit, return an already-resolved promise and send no signal.
+- Register `exit` and `close` listeners before signaling so a synchronous fake or fast child cannot race settlement. Either event proves that no later escalation is needed.
+- Send SIGTERM immediately. At `graceMs`, send SIGKILL unless exit has occurred. A zero grace sends TERM and then KILL in the same call turn, in that order.
+- With `group: true` on non-Windows and a pid, each signal targets `-pid`; if group signaling throws, retry that signal through `child.kill`. Windows and missing-pid cases use `child.kill` for escalation. This differs from the preserved no-pid behavior of the immediate `killProcessGroup` primitive because escalation still has a live child object to signal.
+- Signaling failures are contained. The function is safe to call with `void` and cannot create an unhandled rejection.
+- Exit or close clears all timers and resolves early.
+- If `killWaitMs` is omitted, resolution waits for exit or close. If it is supplied, the promise resolves after SIGKILL plus `killWaitMs` even if neither event arrives. `killWaitMs: 0` resolves immediately after the SIGKILL attempt.
+- Resolution removes both process listeners. Timers are not `unref()`ed, matching the current process-lifetime behavior.
 
-Refactor `lib/run-store.ts` into the production file adapter behind an internal persistence interface. The interface is used by `workflow-run.ts` and its tests, not by `commands.ts`.
+The explicit post-kill wait avoids the previous timing ambiguity. Cache-effort uses `graceMs: 1000, killWaitMs: 1000`, preserving its 2,000 ms total deadline. It must not pass a 2,000 ms post-kill wait, which would change shutdown to 3,000 ms.
 
-The persistence interface must preserve the distinction between a missing event file and an existing empty event file:
+## Consumer migration
 
-```ts
-interface RunPersistence {
-  initializeInput(input: RunInput): Promise<void>;
-  appendEvent(event: WorkflowRunEventToPersist): Promise<void>;
-  readEventLog(): Promise<{ exists: boolean; events: readonly WorkflowRunEventView[] }>;
-  readProjection(): Promise<unknown | undefined>;
-  writeProjection(projection: unknown): Promise<void>;
-  writeArtifact(requestedPath: string, data: string): Promise<string>;
-  paths(): InternalRunPaths;
-}
-```
+| Consumer | Migration and preserved policy |
+| --- | --- |
+| Cache-effort child runner | Import `resolvePiInvocation`, `createLineReader`, and `terminateChildProcess`. Delete the local resolver and decoder. Keep a private stream attach function because it owns detach. Replace only `stopOnce` signaling and waiting with `await terminateChildProcess(child, { graceMs: 1000, killWaitMs: 1000, group: true })`. Keep `stopPromise ??=`, the private `exited` fast path, reader detachment after termination settles, exact-resolution refusal, detached spawn, and both spawn and temp-directory dependencies. |
+| Subagent child execution | Import `resolvePiInvocation` and `terminateChildProcess`. Delete `resolvePiBinary`, use `command` and `baseArgs`, and ignore `exact`. In the abort listener call `void terminateChildProcess(proc, { graceMs: 3000 })`. Remove `forceKillTimer` and only retain abort-listener cleanup. Keep the non-detached spawn, owner `close` and `error` settlement, child-observation attachment, and spawn dependency. |
+| Subagent child event ingestion | Replace its buffer with one `createLineReader(processLine)`. `write()` delegates to `push`; `finish()` calls `end()` before cancelling the throttle and constructing the result. Keep `processLine`, JSON parsing, event meaning, progress serialization, usage, truncation, and terminal result logic unchanged. |
+| Child observation module | Replace `createFrameReader` with `createLineReader(callback, { maxLineBytes: MAX_FRAME_BYTES })`. The callback must retain `line.trimEnd()` before `parseFrame`, then publish only a parsed event. Keep `parseFrame`, its defensive size check, all validation, source attribution, publication failure containment, and the existing `data`, stream `end`, stream `close`, child `close`, and child `error` fan-in to idempotent `reader.end()`. |
+| File discovery | Replace only the command backend's buffer and `/\r?\n/` split with `createLineReader(acceptLine)`. Wire `data` to `push` and call `end` before `finish` on child close so the tail is accepted first. Keep trimming in `acceptLine`, scan-limit kill, abort behavior, backend fallback, and the Node walker unchanged. |
+| Plan sandbox and workspace | Repoint their imports from `_shared/process.ts` to `_shared/child-process.ts`. Do not replace any call with graceful termination. Preserve all three sandbox calls and the one workspace abort call exactly. Delete `_shared/process.ts` after repository search shows no imports remain. |
 
-`writeArtifact()` accepts the same run-relative request accepted by `ctx.artifact()`, writes below the run's `artifacts` directory, and returns the current persisted path relative to the run root, such as `artifacts/diffs/edit.patch`. It takes an already-serialized string: the current `typeof data === "string" ? data : JSON.stringify(data, null, 2)` rule stays in the run module so artifact bytes are unchanged and the adapter stays I/O-only. It does not append `artifact_written`; the run's single event-recording method does that after the file write succeeds.
+There is no need to re-export `resolvePiInvocation` from `child-runner.ts`. Repository search found no test or production import of that symbol. `probe-protocol.test.ts` does not use it.
 
-The implementation rules are:
+## Intentional observable changes
 
-- `FileRunPersistence` retains `projectStatePath`, the current run-directory layout, `input.json` contents, JSONL parsing, atomic `state.json` writes, and artifact path traversal protection. `initializeInput()` keeps the current `RunStore.initialize` side effect of creating the run's `artifacts/` directory before writing `input.json`, so a run with no artifacts still has the documented directory. Run ids are validated before they become path segments: they must be non-empty single path components, cannot be `.` or `..`, cannot contain `/` or `\\`, and their resolved run root must remain below the project-state root.
-- When appending, the file adapter preserves the current serialized timestamp behavior: it writes `{ ts: Date.now(), ...event }`, so an explicitly supplied `ts` still wins. It preserves event field names and JSON serialization behavior.
-- `InMemoryRunPersistence` lives in test support. It records the same JSON-shaped events and artifacts without filesystem I/O and has deterministic append and projection failure switches, including one-shot failures. It must emulate the file adapter's timestamp, missing-versus-empty log, and JSON round-trip semantics so it does not create a second behavior.
-- The production adapter does not reduce events. It appends and reads durable data. The run module owns event reduction and decides when to rebuild from the event log.
-- The run module keeps the commit ordering: append the event first, apply it to private state, then attempt the materialized projection. A failed append leaves private state unchanged. A successful append followed by a projection failure advances private state, marks the projection dirty, and does not append a compensating failure event. The durable event remains recoverable.
-- On open, an existing non-empty event log is rebuilt and takes precedence over `state.json`. When the event file is missing, the materialized projection is read for compatibility with existing run directories. An existing empty event file remains an error when a run is expected to exist. A projection write failure while repairing a read is nonfatal to the rebuilt read model; the next write or open retries the repair.
-- `paths()` is an internal dependency. Commands receive selected validated paths through read models, not the persistence object. Raw event reads are serialized through the same per-run coordinator so they cannot observe a partial append.
+Exactly five changes are intended:
 
-### State and event implementation
+1. A subagent under Bun whose entry does not resolve to a JavaScript path uses the Bun runtime executable instead of PATH `pi`.
+2. Subagent stdout preserves a multibyte UTF-8 character split across Buffer chunks.
+3. File names emitted by `fd` or `rg` preserve a multibyte UTF-8 character split across Buffer chunks.
+4. Cache-effort SIGTERM and SIGKILL target its detached process group on non-Windows, with pid fallback if group signaling fails. The grace and total give-up times remain 1,000 ms and 2,000 ms.
+5. A stubborn subagent receives SIGKILL 3,000 ms after SIGTERM. The current `proc.killed` guard normally prevents that escalation after a successful SIGTERM send.
 
-Add `lib/workflow-run-state.ts` as an internal implementation module. It is a private sibling of the deep run module, not a second external seam.
-
-This module must contain:
-
-- The current `RunStatus`, usage shape, private state shape, and event builders.
-- Initial-state construction.
-- The event reducer and full-log rebuild function.
-- Read-model projection helpers that JSON-clone values before exposure. The in-memory adapter must use the same clone boundary as the file adapter.
-- Runtime validation for the persisted projection, worktree artifact metadata, source-snapshot paths, event-log paths, and relative artifact paths.
-
-The reducer must cover all 28 current persisted event types (8 run + 3 phase + 4 step + 6 agent + 3 parallel + `artifact_written` + `log` + 2 invalidation): `run_created`, `run_started`, `run_resumed`, `run_completed`, `run_pausing`, `run_paused`, `run_failed`, `run_stopped`, `phase_started`, `phase_completed`, `phase_failed`, `step_started`, `step_completed`, `step_failed`, `step_reused`, `agent_started`, `agent_progress`, `agent_tool`, `agent_completed`, `agent_failed`, `agent_reused`, `parallel_started`, `parallel_completed`, `parallel_failed`, `artifact_written`, `log`, `invalidated`, and `dependency_invalidated`. The `agent_progress` and `agent_tool` builders preserve the current mapping from Subagent progress events, which is asymmetric and easy to flatten by accident: a `tool_call` event becomes `agent_tool` carrying `{ key, event, tool, args }` and projects into the agent's progress array as `{ type: "tool", tool, args }`, while every other event becomes `agent_progress` carrying the same fields but projects the whole `event` object. Both projections are then truncated to the last 50 entries.
-
-The event union used for append operations is private. The read-only raw-event view exposes the parsed `{ ts?: number; type: string; ... }` shape, but no caller can append an arbitrary lifecycle event. Serialized fields and event names stay compatible with existing JSONL. Unknown event types retain the current forward-compatible behavior of leaving known domain fields unchanged while applying the normal timestamp update, rather than rejecting a valid old log. Keep missing dependency records, duplicate-edge deduplication, breadth-first invalidation, counter accumulation, reuse timestamp updates, usage aliases, and `tokens = inputTokens + outputTokens` exactly as they are.
-
-### Control and concurrency
-
-The deep module must close the current competing-writer gap without pretending to solve cross-process locking.
-
-1. Create one in-process coordinator registry keyed by the canonical run storage root, not by bare `runId`. Each coordinator owns the per-run `AsyncQueue` and the current handle owner. Every handle for the same project/run pair shares that coordinator, even if it has a separate `FileRunPersistence` instance. `AsyncQueue` is currently declared in `run-store.ts` and used only by `RunStore`; move it next to the coordinator rather than deleting it with `RunStore`.
-2. `execute()` and `restart()` acquire the coordinator lease before reading mutable state or appending. A second handle attempting either operation receives a stable `RunAlreadyActiveError`. The lease is released in `finally`; `restart()` holds it through invalidation, `run_resumed`, execution, and terminal settlement.
-3. `inspect()` returns a cloned private read model when the calling handle is the coordinator's current owner, and a module-level `inspect(cwd, runId)` for a run that has an owner is answered from that owner's private state for the same reason. With no owner, inspect rebuilds from a queued event-log read and then rewrites `state.json` in that same queued operation, exactly as `readRunState()` does today; no staleness comparison is needed, and a rewrite failure is nonfatal. Running the read and the repair inside one queued operation is what stops a reader from overwriting a newer projection with an older rebuild. `readEvents()` is also queued per run; a missing event log raises the typed not-found error, while an existing empty log returns an empty raw view. `list(cwd)` performs the same queued per-run read for each run directory and keeps the current drop-on-error and `updatedAt`-descending behavior. This prevents inspection, `/workflows`, and `/workflows raw` from racing a file append or seeing a partial JSONL line.
-4. All event writes, including agent progress, pause requests, stop classification, shutdown handling, artifact records, and descendant invalidation, pass through the coordinator queue. No command or helper calls the file adapter's append method directly.
-5. Acquire a scheduler slot first, keep the existing in-slot pause/abort boundary immediately after acquisition, then perform the `maxAgents` check and worktree target preparation in one serialized admission operation. The check runs before target creation so a rejected attempt creates no worktree. A successful target preparation is followed immediately by `agent_started`; a target-preparation failure still produces neither start nor failed event, as it does today. Once `agent_started` is durable, every Subagent rejection enters the agent catch path and produces `agent_failed`. The event log must contain no more admitted attempts than `maxAgents`, including retries after invalidation.
-6. Keep `maxTokens` as a post-usage guard and preserve the current error wording. Usage is added on `agent_completed`; a completion that crosses the limit therefore retains the current `agent_completed` followed by `agent_failed` sequence, while a progress callback that crosses it fails before completion.
-7. `requestPause("after-current")` queues one `run_pausing` event. The next existing scheduling boundary queues `run_paused` and unwinds. `requestPause("now")` queues `run_pausing`, then aborts the owned signal and classifies the run as paused. The execution path checks pause/stop state immediately before `run_completed`, so a child or workflow that ignores abort cannot turn an already-requested immediate pause into completion. A pause-after-current request still completes if the workflow returns without another scheduling boundary.
-8. `requestStop(reason)` aborts the owned signal and records the supplied reason for the catch path. The catch path writes `run_stopped` once; for an unrequested `AbortError` or an aborted parent signal without a supplied reason it keeps `Workflow stopped by abort signal`. Commands never append `run_stopped`.
-9. Link the parent Pi signal to the run-owned signal and remove the listener when the handle settles. `session_shutdown` calls `requestStop("Pi session shut down")` on each active handle and waits for every recorded execution promise with `Promise.allSettled()` before returning. A stop request after the workflow has already reached terminal settlement is a no-op, so shutdown cannot append a duplicate terminal event.
-10. Within one execution attempt, the terminal event is last until an atomic restart begins the next attempt. The Subagent contract says progress callbacks are awaited, and `parallel()` awaits every worker before it settles, so the ordinary paths already respect this. The gate covers the paths that do not: an agent the workflow launched without awaiting, and a child that keeps emitting after the run's catch path has written `run_stopped`. Gate every queued write on the attempt that opened it, not only progress callbacks — once an attempt has appended its terminal event, any further write from that attempt is dropped, and the check happens inside the queued operation so it cannot be read stale. A new attempt started by `restart()` clears the gate, which is why `restart()` may append `invalidated` and `run_resumed` after a terminal event.
-11. A failed event append does not mutate private state. A successful append followed by a projection failure leaves the event durable, advances private state, marks the projection dirty, and lets the next open rebuild from JSONL. Do not append a compensating failure merely because the projection write failed.
-12. Validate every run id before path composition. Validate source snapshots and artifact paths as regular files below the run root, resolve existing paths before containment checks so symlinks cannot escape their root, require integration patches below `artifacts`, and validate recorded workflow worktree directories below the project managed-worktree directory before exposing them to commands.
-
-The coordinator and lease are in-process only. Two Pi processes writing the same run directory remain unsupported and must be documented as such; do not imply that a TypeScript map is a cross-process lock.
-
-### Worktree policy and existing deep modules
-
-Keep the workflow-specific policy separate from `tools-worktree` exactly as `CONTEXT.md` requires:
-
-- Generated ids use `workflow-<runId>-<key>` and the existing normalization rules.
-- Caller-supplied ids are normalized rather than rejected solely for punctuation.
-- After normalization, reject empty, `.`/`..`, `.lock`-suffixed, or otherwise unsafe results, resolve an existing target before containment checking, and assert that the target stays below `<cwd>/.pi/worktrees`. This is a path-safety correction, not a merge of the two policies.
-- Existing paths below the managed directory are reused for replay without invoking `worktree add`; the existing path must be a directory, and the workflow retains this reuse behavior rather than adopting the public tool's refusal policy.
-- `preserve` and `fileOwnership` metadata survive in the result.
-- The workflow path remains relative to the workflow command's `cwd`, under `.pi/worktrees/`, with a `fleet/` branch. Do not silently switch it to the repository-root behavior of `tools-worktree`.
-
-Keep the policy as a private helper in `workflow-run.ts`. Do not add a public worktree-policy callback or share it with `tools-worktree`. Continue delegating process execution to `_shared/git.ts` and patch collection to `lib/worktree-artifacts.ts`.
-
-The Subagent execution module remains the owner of child process lifetime and authoritative child status. `WorkflowRun` supplies the prompt as the service's `task`, the normalized target cwd, the run-owned signal, the captured cache-affinity seed, and the awaited progress callback. It must not infer success from exit code or error text.
-
-The run wraps a worktree agent's return value exactly one way today: an object result becomes `{ ...returned, worktree }` and any other result becomes `{ output: returned, worktree }`, so the collected summary is always at top-level `result.worktree`. `commands.ts:138` additionally reads `result.output.worktree`, but no code path produces that shape; it is reachable only when an agent's own JSON output fabricates it. The worktree view therefore reads `result.worktree` only, drops the `output.worktree` branch, and requires the recorded `agent_started.worktree` before exposing anything: an agent that ran without a worktree gets no view regardless of what its JSON says, and a recorded worktree whose summary `path`/`branchId` do not match the recorded metadata is rejected rather than displayed.
-
-## File-by-file implementation plan
-
-### Add `lib/workflow-run.ts`
-
-1. Move the `WorkflowRun` implementation out of `runner.ts` and expose the `WorkflowRunHandle` and `WorkflowRunModule` seam described above. `create()` is asynchronous, performs new-run initialization or resumed-state loading before returning the handle, and holds the coordinator's initialization lease while a new run writes `input.json` and `run_created`.
-2. Remove the unused `ExtensionAPI` field and stop passing `ExtensionContext` into the core. The composition record must contain only normalized entry/definition, run id, resume mode, `cwd`, parent signal, captured cache-affinity seed, persistence adapter, Subagent callback, and status callback. Keep worktree policy and artifact collection private to the module, with the existing collector available through a narrow test-only function boundary.
-3. Build `WorkflowContext` without exposing any host object. Its `cwd`, owned `signal`, `runId`, and string `args` are plain values owned by the handle; retain the public generic `WorkflowContext` authoring type through the implementation cast.
-4. Centralize event recording in one private queued method. It must append before reducing, reduce before attempting projection, and use the exact event builders and timestamp behavior listed in `workflow-run-state.ts`. Every lifecycle mutation, including progress, artifact records, pause, and invalidation, goes through it.
-5. Move `execute`, phase, step, agent, parallel, artifact, log, pause, budget, and dependency logic behind the handle. Preserve empty parallel blocks, stop-on-error result objects, missing dependency acceptance, and the current counter and usage semantics.
-6. Make `execute()` and `restart()` single-flight and hold the shared lease until their terminal event and cleanup settle. Gate a second call to the same handle to the cached promise.
-7. Implement `requestPause`, `requestStop`, and atomic `restart` against the shared coordinator. `restart` performs descendant invalidation and replay under one lease, with invalidation as a private step.
-8. Link and remove the parent-signal listener, retain explicit stop reasons, and make status updates best-effort. A throwing `setStatus` callback must not append a failure or change a successful workflow's result.
-9. Expose immutable read models through `inspect`, and export the `workflowRunKey(cwd, runId)` helper used by the command registry and the coordinator. It must return the canonical run storage root, that is `runPaths(cwd, runId).root`, not a string concatenation of `cwd` and `runId`: `projectStateRoot()` resolves `cwd` through `fs.realpathSync.native`, so two spellings of the same project (a symlink and its target) must land on one key while the same run id in two different projects must not. Keep raw `RunState`, reducer functions, arbitrary agent results, and persistence objects private. Clone nested result, phase, step, agent, parallel, artifact, and usage values before returning them.
-10. Keep JSON result cloning and the exact direct/fenced/object-span/array-span output parsing order. Preserve the existing return-shape wrapping around worktree results.
-11. Preserve the current ordering where a successfully prepared target is followed by `agent_started` before Subagent preflight, and where worktree artifacts are collected before `agent_completed`. Keep target-preparation failures outside that start/fail pair.
-
-### Refactor `lib/run-store.ts`
-
-1. Extract the current filesystem operations into `FileRunPersistence` and keep only the adapter/path helpers in this file. Do not retain a final `RunStore` compatibility class.
-2. Keep `runPaths`, `writeJson`, JSONL parsing, atomic projection writes, and `safeArtifactPath` in the file adapter or a private persistence helper. Add a validated run-id helper before any command-supplied id reaches `path.join`.
-3. Remove lifecycle policy from the file adapter. It must not know whether an event means pause, reuse, failure, or completion, and it must not reduce events.
-4. Replace every command-facing export with a facade operation. `commands.ts` currently imports `appendRunEvent`, `listRunStates`, `readEvents`, `readRunState`, `runPaths`, and the `RunState` type from this file; after the refactor it imports none of them. `readEventLog()` must report `{ exists, events }` so an existing empty file remains an error while a missing file selects projection fallback.
-5. Preserve the current path behavior under `PI_CONFIG_STATE_DIR` and the default home-state directory, including the absolute paths stored in `sourceSnapshotPath` and returned artifact records.
-6. Keep failure injection hooks only in the in-memory test adapter, not in the production file adapter. The file adapter must still expose projection failures naturally to the run's recovery path.
-
-### Add `lib/workflow-run-state.ts`
-
-1. Define the internal event builders and reducer without changing serialized event fields. Keep the raw read-event view separate from the append union.
-2. Move `initialState`, `applyEvent`, and full-log rebuild logic behind the run facade.
-3. Preserve progress truncation, usage accumulation, dependency projection, invalidation, status transitions, phase-current behavior, counter accumulation across retries, usage aliases, and token calculation.
-4. Add explicit helpers for mapping both current agent result shapes to `WorkflowWorktreeView`. Require recorded worktree metadata, validate the worktree target and all artifact paths, and omit spoofed or escaping metadata.
-5. Validate projection fallback enough to produce the same private state shape and reject malformed required data rather than handing arbitrary JSON to the formatter.
-6. Ensure returned read models do not share mutable arrays or records with private state. Do not expose dependencies, logs, invalidation internals, raw child results, or reducer helpers merely because they exist in `RunState`.
-
-### Refactor `lib/runner.ts`
-
-Keep `runner.ts` as the preparation and composition adapter. It must not become a second lifecycle owner:
-
-1. Keep approval, workflow source snapshots, registry lookup, project source loading, and `prepareStateEntry` here. Preserve the current distinction between bundled definitions and approved project snapshots, including the existing non-empty snapshot guard on resume.
-2. Define `PreparedWorkflowRun` as `{ entry: RegistryEntry; handle: WorkflowRunHandle }`. It contains no `RunStore`, raw `RunState`, controller, persistence object, or host object.
-3. Make `prepareNewWorkflowRun()` perform approval, snapshot, source import, and asynchronous handle creation before returning `{ entry, handle }`. It must not write `input.json` or `run_created` itself: `create()` owns both, under the initialization lease, so the run module stays the only persisted writer.
-4. Make `prepareExistingWorkflowRun()` accept the validated run detail and selected entry, load the correct definition, construct an asynchronous resumed handle, and return the same narrow shape. The handle reloads current events under its coordinator before execute or restart so preparation cannot authorize a stale mutation.
-5. Add the composition function that derives plain host values from `ExtensionContext`, captures the current session id once as the cache-affinity seed, passes `ctx.signal`, and wraps `ctx.ui.setStatus` in the run's best-effort status adapter. No `ExtensionAPI` or `ExtensionContext` enters the core. Capturing the seed once is a deliberate change: `runner.ts:273` calls `sessionManager.getSessionId()` per agent launch today, so a long background run that outlives a session change currently switches seeds mid-run and will now keep the seed it started with. Nothing else reads the seed, and the existing assertion that every launch carries the run's seed still holds.
-6. Bind the registered Subagent execution module as the production callback. Pass its task, cwd, signal, options, cache seed, and awaited progress callback without changing the callback contract.
-7. Construct `FileRunPersistence` for the validated run id and project cwd. The module, not commands, owns its coordinator key and event writes.
-8. Keep workflow worktree preparation and artifact-view mapping private to the deep run implementation. Do not pass a public workflow worktree-policy callback or merge behavior with `tools-worktree`.
-9. Delete `runPreparedWorkflow` after callers and tests use the handle. Remove its unused `pi` parameter rather than keeping a compatibility path. Remove the unused `pi` parameter from approval at the same time and update its internal callers.
-10. Provide restart by returning a handle whose `restart(key)` performs invalidation and replay under one lease; do not expose a preparation helper or a public invalidation method that asks commands to invalidate and execute as two steps.
-11. Drop the imports that this move strands: `parsePorcelainStatus` is already unused in `runner.ts`, and `initialState` becomes unused once `runPreparedWorkflow` is deleted.
-
-### Refactor `lib/commands.ts`
-
-Make this file a Pi command adapter and process-lifetime registry only. Give it one concrete injectable service so command tests do not need to reach into persistence or reducer internals:
-
-```ts
-interface WorkflowCommandService {
-  prepareNew(ctx: ExtensionContext, entry: RegistryEntry, args: string): Promise<PreparedWorkflowRun>;
-  prepareExisting(ctx: ExtensionContext, entry: RegistryEntry, detail: WorkflowRunDetail): Promise<PreparedWorkflowRun>;
-  inspect(cwd: string, runId: string): Promise<WorkflowRunDetail>;
-  list(cwd: string): Promise<readonly WorkflowRunSummary[]>;
-  readEvents(cwd: string, runId: string): Promise<readonly WorkflowRunEventView[]>;
-}
-
-registerWorkflowCommands(pi: ExtensionAPI, service: WorkflowCommandService = productionWorkflowCommandService)
-```
-
-1. Keep command parsing, workflow selection, argument prompting, notifications, confirmation prompts, and active background-run bookkeeping. Inject the service above; the default is the real runner/facade composition.
-2. Store a `WorkflowRunHandle` in `ActiveRun`, keyed by `workflowRunKey(ctx.cwd, runId)`, not by bare run id and not as a controller plus a separate mutable `WorkflowRunControl`. Every lookup uses the same key, so `handleStop` and `handlePause` must compose it from `ctx.cwd` rather than the bare id they receive; both keep their current `No active in-process workflow found for <run-id>` warnings on a miss.
-3. `runAndReport` rejects an already-registered key, registers the prepared handle, starts either `handle.execute()` or `handle.restart(key)`, stores that exact promise, and sends the final transcript message only after it resolves. In `finally`, it removes the entry when the map still points to that handle.
-   - There is no existing duplicate-active warning to reuse; add one. A rejected registration and a `RunAlreadyActiveError` from the handle both notify `Workflow ${name} (${runId}) is already running in this session.` at `warning`, and neither is reported as a run failure.
-   - The three-way failure notification currently reads `control.pauseMode` and `controller.signal.aborted`, which no longer exist. Replace them with the handle's settled status: after the execution promise rejects, `await handle.inspect()` and branch on `status` — `paused` keeps `Workflow paused: <name>`, `stopped` keeps `Workflow stopped: <name>`, and anything else keeps `Workflow failed: <error message>` using the thrown error's message. If `inspect()` itself fails, fall back to the failure branch so a reporting error never masks the run outcome.
-4. `handleStop` calls `requestStop("Workflow stopped by user")`; it never appends `run_stopped`.
-5. `handlePause` calls `requestPause("after-current")` or `requestPause("now")`; it never mutates a control object directly and reports request errors separately from run errors.
-6. `session_shutdown` requests `requestStop("Pi session shut down")` on every active handle and awaits all stored execution promises with `Promise.allSettled()`. It must not append events directly or return while a run can still write. It keeps the existing per-run `Stopped background workflow on shutdown: <run-id>` notification, still guarded so a failing notify cannot abort the loop. This is also why `runAndReport` must store the foreground promise too: today only background runs record one, so shutdown has nothing to wait on for a foreground run.
-7. `handleResume` calls `service.inspect`, resolves the registry entry from the detail, calls `service.prepareExisting`, and executes the returned handle. It has no fallback path: every failure, not-found included, surfaces through the command handler's existing `Workflow command failed: <message>` catch. The point of the typed not-found error here is that malformed state, path, and projection failures keep their own messages instead of being flattened into "run not found".
-8. `handleRestart` calls `service.inspect`, resolves the entry, prepares one resumed handle, and passes the invalidation key to `runAndReport` so that `handle.restart(key)` performs invalidation plus execution atomically. It keeps the current `Usage: /workflow restart <run-id> <durable-key>` guard for a missing key, and it no longer calls an invalidation function before resuming.
-9. Delete `worktreeInfoFromState` and read typed `WorkflowWorktreeView` data from `inspect`. Remove the `any` cast and both result-shape lookups from commands.
-10. Keep `git apply --check`, confirmation, and `git apply` in the command adapter. Use only the absolute, containment-checked `patchPath` returned in the read model; never reconstruct a path from a run id, agent result, or display string.
-11. Cleanup iterates typed worktree views. It keeps the current behavior of preserving dirty worktrees and reporting cleaned and skipped entries, while refusing a view whose path fails validation.
-12. `/workflows raw` reads events through the facade. A missing log now uses the existing `Run raw log not found: <run-id>` message instead of today's empty `info` notification; an existing empty log still renders as empty. `/workflows <run-id>` keeps `Run not found: <run-id>` and `/workflows` list uses read models. No command imports `RunState`, `RunStore`, `appendRunEvent`, `readRunState`, `listRunStates`, `readEvents`, `runPaths`, or a persistence adapter.
-13. `handleSource` resolves a run through `service.inspect` and reads only the detail model's validated snapshot path. Falling back to the live registry entry is now reserved for a typed not-found error; a run that exists but whose snapshot is missing or unreadable reports that, instead of silently printing today's workflow source as if it were the run's.
-
-### Refactor `lib/ui.ts`
-
-1. Change `formatRunList` to accept `readonly WorkflowRunSummary[]`.
-2. Change `formatRunDetail` to accept `WorkflowRunDetail`, including its validated event-log and source-snapshot paths; do not add a second raw-state/path argument.
-3. Keep command output wording and field order stable. Read-model omissions are deliberate: do not reintroduce raw dependency, log, invalidation, or child-result fields merely to make the formatter generic.
-4. Keep formatting in the adapter. The deep run module supplies facts, not prose.
-
-### Keep `index.ts`, `definition.ts`, `scheduler.ts`, and existing deep modules stable
-
-- `definition.ts` keeps the public `WorkflowContext` interface and workflow normalization behavior.
-- `scheduler.ts` keeps abort and semaphore behavior. The run module uses it but owns admission ordering around it.
-- `worktree-artifacts.ts` remains the deep artifact collector and keeps its existing tests.
-- `_shared/git.ts` remains the Git executor.
-- `approval.ts` keeps approval behavior and drops only its unused host-object parameter.
-- The workflow result transcript renderer and status-line registry stay unchanged, with import path updates only.
-
-### Documentation updates when implementation lands
-
-1. Update `CONTEXT.md` with a `Workflow run lifecycle` entry describing the deep module, its command adapter seam, the canonical event-log/projection relationship, the in-process lease limitation, and the fact that workflow-specific worktree policy remains distinct from `tools-worktree`.
-2. Update `.pi/extensions/workflows-engine/README.md` with the observable control/concurrency contract: a second active resume or restart is rejected, stop and pause requests are owned by the run handle, shutdown waits for active executions, and two Pi processes are not coordinated. Keep the command list and the run-directory contents unchanged, but correct the documented root while editing the file: the README's "Run Directory Layout" and "Trust Model" sections both claim `.pi/workflow-runs/<run-id>/`, and runs have never been written there. The real root is `projectStatePath(cwd, "workflow-runs", <run-id>)`, that is `$PI_CONFIG_STATE_DIR` or `~/.pi/state/pi-config`, then a per-project hash, then `workflow-runs/<run-id>/`. `tests/runtime.test.mjs:261-262` already asserts this, so the doc is the only thing that is wrong.
-3. Do not document the internal persistence interface as a public workflow-authoring interface.
+Empty-line handling is not an observable owner-level change. Cache-effort already skips empty lines, while ingestion and observation already reject them before producing events. The new reader merely makes that common framing rule explicit. The shared `exact` field is also not an observable subagent change because subagents ignore it.
 
 ## Migration sequence
 
-### Phase 0: characterize before moving code
-
-1. Run the baseline typecheck and workflow test command recorded above.
-2. Record the current 28 event names, event field shapes, input/snapshot ordering, empty-versus-missing event-log behavior, and the current JSONL timestamp behavior in tests rather than as untracked fixtures.
-3. Add characterization coverage for the behavior that must survive the move: successful step/agent, pause and resume, authoritative failed child status, project source snapshot, editing agent with a patch, clean worktree summary, reuse status, 50-entry materialized progress retention, raw progress retention, missing dependencies/cycles, parallel stop-on-error modes, path traversal rejection, and the current token calculation.
-4. Add target-regression tests for the known hazards before deleting their shallow paths: shared queue scope, serialized `maxAgents`, active lease rejection, command-owned pause/stop, shutdown waiting, normalized `.`/`..` and `.lock` rejection, and worktree/result/path spoofing. Pin the two read-path changes here as well, so the diff shows them moving from old behavior to new: `/workflows raw` on a missing log, and `/workflow source` on a run whose snapshot cannot be read.
-
-### Phase 1: introduce the persistence seam
-
-1. Add the internal `RunPersistence` type, `FileRunPersistence`, validated run-id helper, and `{ exists, events }` event-log result.
-2. Use a short-lived delegating `RunStore` wrapper only while moving callers in this phase; schedule its deletion in Phase 5 and do not add new callers to it.
-3. Add an in-memory persistence adapter in test support with event, artifact, and projection failure switches. Make its JSON/timestamp/missing-versus-empty behavior match the file adapter.
-4. Add focused adapter tests for `input.json`, JSONL append order, malformed lines, atomic projection output, event-log precedence, projection fallback only for a missing log, existing-empty-log errors, artifact writes, and traversal protection.
-5. Move reducer-free file operations behind the adapter and verify serialized event and state data before changing runner and command imports.
-
-### Phase 2: move state and run behavior behind the facade
-
-1. Add `workflow-run-state.ts` and move the reducer, event builders, projection validation, and read-model mapping behind it.
-2. Move `WorkflowRun` to `workflow-run.ts` and make asynchronous creation perform initialization or resume loading before returning a handle.
-3. Replace every direct `RunStore.append` call with the one private queued event-recording method. Test append failure and projection failure at this boundary.
-4. Inject the Subagent runner, captured cache seed, best-effort status callback, persistence adapter, and private workflow worktree behavior.
-5. Add the coordinator keyed by canonical run storage root, acquire/release the lease around execute and restart, and make execution and restart single-flight.
-6. Move invalidation onto the handle as a private step and serialize the entire descendant walk. Implement `restart(key)` as invalidation plus replay while the same lease remains held, and delete the exported `invalidateKeyAndDependents`.
-7. Fix agent admission so the scheduler slot, serialized `maxAgents` reservation, target preparation, and `agent_started` append cannot oversubscribe or race.
-8. Migrate the run behavior tests to the handle and make the existing runtime behavior pass through the new facade before changing command control paths.
-
-### Phase 3: move read access and controls to the command adapter
-
-1. Add summary, detail, agent, and worktree read models with validated event-log, source-snapshot, worktree, and patch paths.
-2. Update `runner.ts` preparation to return `{ entry, handle }` and stop returning raw state, store objects, controllers, or host objects to command code.
-3. Update `ui.ts` to consume read models and preserve current output wording and order.
-4. Add the concrete injectable `WorkflowCommandService`; update `commands.ts` to use handles for execution, pause, stop, shutdown, and atomic restart.
-5. Replace raw worktree result traversal with the typed worktree view and make integrate use only its validated absolute patch path.
-6. Add command-adapter tests with a fake service and fake UI host for active lookup, duplicate requests, resume, atomic restart, source display, raw/list/detail reads, integration path selection, cleanup of clean and dirty worktrees, shutdown stop/wait behavior, and the paused/stopped/failed notification chosen from the handle's settled status.
-7. Remove all temporary compatibility functions after `rg` confirms no raw-store imports or direct lifecycle appends remain outside persistence tests and internal composition.
-
-### Phase 4: harden failure, recovery, and path behavior
-
-1. Test append failure. State and read models must not advance when the event was not appended.
-2. Test projection-write failure. The append must remain in JSONL, the current handle must continue from its advanced private state, and a fresh inspect must rebuild the expected state from the event log.
-3. Test concurrent progress callbacks, raw reads, and inspection against a running execution. The resulting event order must be deterministic under the coordinator queue, and a restart's descendant invalidation must not race with execution.
-4. Test a second resume or restart for an active run. It must be rejected without duplicate lifecycle events; two different projects using the same run id must remain independent.
-5. Test stop and pause requests with a child that delays settlement. No late event may be written after the run's terminal event, and shutdown must await the delayed execution.
-6. Test `maxAgents` with more parallel callers than the limit. The event log must contain no more admitted launches than the configured maximum, including retries after invalidation.
-7. Test a throwing status callback. The workflow must persist its normal completion and result, and the callback error must be isolated from execution failure.
-8. Test missing and empty event logs, malformed projection data, absolute/relative traversal attempts, unsafe run ids, normalized `.`/`..` and `.lock` worktree ids, escaped snapshot/patch paths, and fabricated nested worktree results.
-
-### Phase 5: remove shallow paths and document ownership
-
-1. Delete direct command-level event writes and raw state reads.
-2. Delete the old `WorkflowRun` implementation from `runner.ts` and delete `runPreparedWorkflow`.
-3. Delete the temporary `RunStore` wrapper, the `RunStore` exports it leaves unused, and obsolete reducer tests that duplicate facade behavior. `AsyncQueue` is the one export to keep: it has no other caller today but the coordinator uses it, so move it rather than delete it. Retain lower-level file-format and adapter-failure tests.
-4. Update `.pi/package.json` so `test:workflows` explicitly runs every workflow Vitest file, including `index.test.ts`, `lib/workflow-run.test.ts`, `lib/run-store.test.ts`, `lib/commands.test.ts`, and `lib/worktree-artifacts.test.ts`, followed by all `tests/*.test.mjs` files.
-5. Update `CONTEXT.md` and README ownership/control notes.
-6. Run the full typecheck, the updated focused workflow command, and the repository test suite.
-7. Review the final diff for unrelated changes. Do not alter workflow definitions, `tools-worktree`, `_shared/git.ts`, Subagent execution, or status-registry behavior.
+1. Add `_shared/child-process.ts` and `_shared/child-process.test.ts`. Implement all four functions and the exact semantics above. Run `pnpm --dir .pi test:shared`.
+2. Migrate `child-event-ingestion.ts`. Extend its existing framing test with a multibyte character split between Buffer chunks so the consumer wiring, not only the shared reader, proves the regression fixed. Run `pnpm --dir .pi test:subagents`.
+3. Migrate `_shared/child-observation/index.ts`. Keep its current split-Unicode, exact-limit overflow, recovery, and fan-in coverage. Run `pnpm --dir .pi test:shared`.
+4. Migrate `_shared/file-discovery.ts`. Keep its 2 Node fallback tests unchanged. Do not add a spawn dependency or export a private command helper solely to duplicate the shared reader's decoder-boundary test. Run `pnpm --dir .pi test:shared` and `pnpm --dir .pi test:subagents`, because `repo-query` also consumes file discovery.
+5. Migrate `telemetry-cache-effort/child-runner.ts`. Update its cancellation test to mock POSIX `process.kill`, assert group SIGTERM with the fake child's negative pid, and restore the mock. On Windows, assert pid SIGTERM through `child.kill`. Keep escalation timing and fallback branches in the shared test. Run `pnpm --dir .pi test:cache-effort`.
+6. Migrate `tools-subagents/child-execution.ts`. Extend the abort/timeout test to use fake timers and prove SIGKILL occurs at 3,000 ms when no exit occurs, then prove close prevents a later kill. Run `pnpm --dir .pi test:subagents`.
+7. Move `killProcessGroup`, repoint both Plan imports, and delete `_shared/process.ts`. Run `pnpm --dir .pi test:plan`.
+8. Update `CONTEXT.md`. The Child process module entry must name file discovery as a line-reader consumer, distinguish the 1,000 ms grace plus 1,000 ms post-kill cache wait from the 3,000 ms subagent grace, and retain the explicit Git exclusion. Update the Subagent child execution and Child observation entries to say which mechanics they delegate. Run `pnpm --dir .pi typecheck`, then `pnpm --dir .pi test`.
 
 ## Test plan
 
-### Deep-interface tests
+Create `_shared/child-process.test.ts` and test through exported interfaces. Use temporary files for invocation paths, `PassThrough` only where stream behavior is under a caller test, EventEmitter-based fake children with `exitCode`, `signalCode`, `pid`, and `kill`, `vi.spyOn(process, "kill")` for POSIX group tests, and Vitest fake timers. No test may send a real process-group signal.
 
-Create `lib/workflow-run.test.ts` around the public run handle and the in-memory persistence adapter. Assert observable results, event views, and read models rather than private state fields.
+### Invocation cases
 
-Cover:
+Cover the complete branch taxonomy:
 
-- New creation ordering: source/input initialization before `run_created`, and no handle returned after a failed initialization append.
-- Final result, JSON result cloning, status updates, and status-callback failure isolation.
-- Phase start, complete, and failure ordering, including the original thrown error.
-- Step result cloning, reuse without changing status from `completed`, dependency recording, missing dependencies, cycles, and counter preservation. Descendant invalidation is asserted through `restart()`, on the event log rather than on the final projection, because a replay re-completes the keys it invalidated.
-- Agent admission, target-preparation failure before `agent_started`, progress mapping/retention, raw progress retention, authoritative failed status, usage, token calculation, and result cloning.
-- JSON output parsing in direct, fenced, object-span, array-span, invalid, and empty-output cases.
-- Parallel result ordering, empty blocks, concurrency cap, default fail-fast behavior, and `stopOnError: false` result objects.
-- Artifact writing, `artifact_written` ordering, clean-worktree summaries, and safe relative paths.
-- Pause after current and pause now, including a delayed child and a workflow that returns without another scheduling boundary.
-- Stop classification, explicit stop reasons, parent shutdown abort, preservation of completed durable results, and no post-terminal event.
-- Resume through a new handle with completed keys reused.
-- Atomic restart through one handle with descendant invalidation followed by replay and no lease gap, plus the unchanged `Durable key not found in run <runId>: <key>` rejection, which must leave the event log untouched.
-- Single-flight execution, same-handle repeated calls, canonical-root active-lease rejection, and same run id in two projects.
-- Worktree target normalization, rejection of unsafe normalized ids, replay reuse, metadata, containment checks, and typed artifact views. Result-shape validation must include the two negative cases that motivate it: an agent that ran with no worktree but returned JSON containing a `worktree` object gets no view, and an agent that did run in a worktree but returned a mismatched summary is rejected rather than displayed.
-- Budget enforcement, including serialized `maxAgents` admission and the existing post-usage `maxTokens` behavior.
+- Existing lowercase and uppercase `.js`, `.mjs`, and `.cjs` entries resolve through realpath and win over Bun fallback.
+- A symlink is classified by its real target path, not its link name.
+- A directory whose real path ends in a supported JavaScript suffix is classified as exact, preserving the current lack of a regular-file check.
+- Existing non-JavaScript, missing, and explicit empty entries reach the fallback branches.
+- For omitted and explicit-`undefined` arguments, mock `process.argv[1]` with JavaScript, non-JavaScript, missing, and empty values and assert the same branch rules.
+- Each fallthrough case under Bun returns `process.execPath`, no base arguments, and `exact: true`.
+- Each fallthrough case without Bun returns `pi`, no base arguments, and `exact: false`.
+- A defined explicit `argvEntry`, including an empty string, takes precedence over `process.argv[1]`.
 
-### File adapter tests
+Restore any mocked `process.versions.bun`, `process.argv`, and filesystem state after each test.
 
-Add focused adapter/path tests in `lib/run-store.test.ts`, using the facade only for the rebuild/fallback assertions:
+### Line-reader cases
 
-- `input.json`, the `artifacts/` directory created at initialization, source snapshot paths, the external project-state root, and run-directory layout.
-- Validated run ids, JSONL append order/timestamps, and malformed-line diagnostics.
-- Atomic `state.json` projection.
-- Event-log rebuild taking precedence over stale `state.json`.
-- Projection fallback only when the event file does not exist; an existing empty event file is rejected.
-- Artifact path traversal rejection and artifact writes.
+Cover delimiters, decoding, bounds, and lifecycle:
 
-Projection failure injection and recovery are tested through the in-memory adapter in `workflow-run.test.ts`, because the production adapter has no test-only failure hook.
+- Multiple lines in one chunk and one line split across chunks.
+- A CJK or emoji code point split at every interior byte boundary between Buffer chunks.
+- Pure string chunks, plus a Buffer-to-string-to-Buffer transition while the decoder holds an incomplete code point. The output must remain ordered and use replacement characters for invalid byte sequences.
+- LF, CRLF, a final tail ending in CR, and retained non-CR whitespace.
+- Consecutive empty lines are skipped; whitespace-only lines are delivered.
+- A tail without LF is delivered once. Repeated `end()` and pushes after `end()` do not deliver again.
+- Invalid zero, negative, nonfinite, and fractional byte limits throw before accepting input.
+- With a small byte limit, lines below and exactly at the limit are delivered, while limit plus one is discarded.
+- Multibyte byte accounting, including the fact that a trailing CR counts before removal.
+- Overlong lines split across chunks, overlong tails, recovery after LF in the same chunk, and recovery when LF arrives later.
+- `onLine` exceptions propagate.
 
-### Command adapter tests
+The existing Child observation test remains valuable because it checks framing, parsing, source attribution, and publication together. The existing ingestion framing test remains valuable because it checks malformed-line handling and result construction. They are not replaced by shared tests.
 
-Add `lib/commands.test.ts`. Pass a fake `WorkflowCommandService` and fake UI host to `registerWorkflowCommands`; do not mock reducer or persistence internals. Assert that:
+### Termination cases
 
-- Commands invoke the service/facade instead of appending events or reading raw state.
-- A rejected execution notifies paused, stopped, or failed according to the handle's settled status, and a failing `inspect()` during that classification still produces the failure notification.
-- Stop and pause requests reach the active handle with the exact modes/reasons.
-- Restart passes one key to the same handle's `restart()`; no invalidation entry point is reachable from the command adapter.
-- A duplicate canonical active run produces the already-running warning rather than a failure notification, while the same run id in another cwd is independent.
-- Resume distinguishes not-found from malformed/path errors.
-- Source and raw commands use only validated detail/event paths, `/workflows raw` reports a missing log as not-found, and `/workflow source` falls back to the registry only for a not-found run.
-- Integration uses only the validated absolute patch path from the read model and still checks/ confirms/applies through Git.
-- Cleanup skips dirty worktrees and reports both cleaned and skipped lists.
-- Shutdown requests stop, awaits every execution promise, and does not write a second shutdown event.
+Cover immediate state, signal targets, timers, and cleanup:
 
-### Existing integration tests
+- Already exited by `exitCode` and already signaled by `signalCode` resolve without signaling.
+- SIGTERM is immediate. SIGKILL does not occur before grace and occurs exactly at 1,000 ms and 3,000 ms policies.
+- `graceMs: 0` sends TERM then KILL in order.
+- Exit or close before grace clears the kill timer and resolves. Either event after KILL but before the post-kill deadline resolves early.
+- `graceMs: 1000, killWaitMs: 1000` resolves at a 2,000 ms total deadline for a stubborn child.
+- Omitting `killWaitMs` does not resolve a stubborn child's promise merely because SIGKILL was attempted.
+- `killWaitMs: 0` resolves immediately after the KILL attempt.
+- Pid mode calls `child.kill`. POSIX group mode calls `process.kill(-pid, signal)` for both TERM and KILL. A thrown group signal falls back to `child.kill` for the same signal. Windows behavior calls `child.kill`; test it by temporarily overriding `process.platform` using the pattern already used in `_shared/browser.test.ts`.
+- Escalation with `group: true` and no pid falls back to `child.kill`. The separate `killProcessGroup` no-pid case remains a no-op.
+- `killProcessGroup` preserves POSIX group SIGKILL, Windows pid SIGKILL, thrown-group fallback, no-pid no-op, and error containment.
+- Invalid negative, nonfinite, and fractional timing values throw before signaling.
+- Signal failures do not reject or leak an unhandled rejection. Promise resolution still follows exit or `killWaitMs`.
+- Resolution removes listeners and leaves no pending fake timers.
 
-Migrate `tests/runtime.test.mjs` in place rather than deleting its end-to-end value. Keep the definition, registry, approval, bundled workflow, source snapshot, Git, and real filesystem coverage. Replace direct `RunStore` and raw `RunState` calls with the public facade; keep adapter-only assertions in `lib/run-store.test.ts`.
+Caller tests retain ownership assertions:
 
-Keep `index.test.ts` and `lib/worktree-artifacts.test.ts` passing. Do not duplicate worktree artifact behavior in the run tests beyond verifying that the run module wires the collector and exposes its validated result.
+- `child-runner.test.ts` keeps exact launch flags, RPC and probe integration, cancellation cleanup, and first TERM behavior.
+- `child-execution.test.ts` keeps argument ordering, observation wiring, injected spawn, abort and timeout ownership, close and error result construction, and cleanup.
+- `child-event-ingestion.test.ts` keeps JSON event meaning, progress ordering, output selection, and terminal status.
+- `child-observation/index.test.ts` and `child-extension.test.ts` keep best-effort observation behavior.
+- `file-discovery.test.ts` keeps backend-independent result policy and Node fallback behavior.
+- Plan unit and guarded integration tests keep immediate teardown and disposable-workspace behavior.
 
-### Verification commands
+## Risks controlled by the checklist
 
-Update `.pi/package.json` so `test:workflows` runs exactly these workflow tests before the Node integration tests:
-
-```bash
-pnpm exec vitest run extensions/workflows-engine/index.test.ts extensions/workflows-engine/lib/commands.test.ts extensions/workflows-engine/lib/run-store.test.ts extensions/workflows-engine/lib/workflow-run.test.ts extensions/workflows-engine/lib/worktree-artifacts.test.ts && node --test extensions/workflows-engine/tests/*.test.mjs
-```
-
-Run these in order:
-
-```bash
-pnpm --dir .pi typecheck
-pnpm --dir .pi test:workflows
-pnpm --dir .pi test:features
-pnpm --dir .pi test:safety
-pnpm --dir .pi test:subagents
-pnpm --dir .pi test:worktree
-pnpm --dir .pi test
-```
-
-The focused command gives fast feedback on the changed seam. The full suite is required before the implementation is complete because workflow state, Subagent execution, Git, status output, and profile/session shutdown behavior share process-lifetime assumptions.
-
-## Compatibility matrix
-
-| Existing behavior | New owner | Required result |
-| --- | --- | --- |
-| `/workflow <name>` preparation | `runner.ts` adapter | Same approval, snapshot, import, input, and workflow loading order. |
-| Foreground and background execution | `WorkflowRunHandle` plus command adapter | Same result message, status updates, background lifetime, and paused/stopped/failed notification wording; status callback failures are isolated. Foreground runs now record an execution promise too, so shutdown can wait for them. |
-| `/workflow resume` | `runner.ts` plus run facade | Same source selection, snapshot guard, and completed-key reuse. A duplicate active operation is rejected. |
-| `/workflow restart` | `WorkflowRunHandle.restart(key)` | Same descendant invalidation and replay, with no lease gap between them. |
-| `/workflow stop` | Handle `requestStop` | Same stopped status and notification, with the explicit user reason persisted and no command-level event append. |
-| `/workflow pause` and `pause-now` | Handle `requestPause` | Same pause states and replayability, with command requests now reaching the existing run control path. |
-| Session shutdown | Command adapter plus handle stop/wait | Every active handle receives the shutdown stop request; shutdown waits for its execution promise and writes no direct event. |
-| `/workflow source` | Source preparation and detail read model | Same snapshot/source text, using only a validated snapshot path. Changed: the registry fallback now fires only for a not-found run, where today an unreadable snapshot also falls through to it. |
-| `/workflow integrate` | Command adapter plus typed worktree view | Same check, confirmation, and apply behavior, using only a validated artifact path. |
-| `/workflow cleanup-worktrees` | Command adapter plus typed worktree view | Same clean removal and dirty preservation; unsafe persisted paths are rejected before cleanup. |
-| `/workflows` list/detail/raw | Facade read queries plus `ui.ts` | Same useful fields, field order, 30-run list cap, drop-on-error listing, and raw event visibility, with reads serialized per run. Changed: `/workflows raw` on a missing log reports not-found where it currently notifies an empty string; an existing empty log still renders as empty. |
-| `WorkflowContext` authoring surface | `definition.ts` | No public authoring changes. |
-| Event names and fields | State/event implementation plus file adapter | All 28 existing event names and serialized fields remain readable and append-compatible. |
-| Run-directory paths | File persistence adapter | Existing runs under `projectStatePath()` remain inspectable and replayable; unsafe new run ids cannot escape the root. |
-| Workflow worktree policy | Private run implementation | Remains distinct from `tools-worktree`, while normalized path escapes are rejected. |
-| Subagent cache affinity | Composition adapter | Changed: the session id is captured once at composition instead of read at each agent launch, so a run that outlives a session change keeps its original seed. |
-
-## Risks and mitigations
-
-### Projection failure after a durable append
-
-Risk: an event may exist without a current `state.json`. Mitigation: keep JSONL as the commit point, rebuild from events on open/inspect, inject projection failures in the in-memory adapter, and never delete a durable event or append a compensating failure to repair a projection.
-
-### Competing writers
-
-Risk: two handles, separate `RunPersistence` instances, or command paths could append interleaved events or restart the same run. Mitigation: key one in-process coordinator by canonical storage root, acquire one lease before mutation, route every event-log/projection read and write through its queue, and keep cross-process locking explicitly out of scope.
-
-### Admission oversubscription
-
-Risk: parallel workflow workers can read the same `agentsStarted` count before waiting for a semaphore slot. Mitigation: perform slot admission, the serialized max-agent check, target preparation, and `agent_started` append as one coordinator-controlled operation; test the event count under contention.
-
-### Late child progress
-
-Risk: a delayed progress or completion callback could mutate a stopped run. This is reachable today: `parallel()` fail-fast leaves sibling workers running, and an unawaited `ctx.agent()` outlives `execute()`. Mitigation: retain the awaited Subagent callback contract, gate every queued write on the attempt that opened it, check the gate inside the queue, and add delayed-child tests.
-
-### Unsafe command paths and spoofed artifacts
-
-Risk: a run id, snapshot path, patch path, worktree path, or nested JSON result could escape its intended root or manufacture an integration artifact. Mitigation: validate ids before path composition, validate stored paths at read-model creation, require a recorded `agent_started.worktree`, require patches below `artifacts`, and use the validated absolute path for Git operations.
-
-### Overgrown facade
-
-Risk: moving every concern into one file produces a large implementation with a large interface. Mitigation: keep the external handle and command service small, put reduction and validation in the private state sibling, keep persistence/worktree helpers private, and expose no raw state or host context.
-
-### Accidental worktree policy merge
-
-Risk: a generic worktree abstraction could erase the documented difference between workflow and public tool behavior. Mitigation: retain the workflow-specific policy and its characterization tests; share only the Git executor and artifact collector already documented as shared deep modules.
-
-### Replay semantics drift
-
-Risk: moving preparation may make bundled workflows load snapshots or project workflows load live source. Mitigation: preserve the current `prepareStateEntry` and `prepareExistingWorkflowRun` selection rules and retain both source-snapshot tests.
-
-### Test layering
-
-Risk: old reducer tests and new facade tests both become maintenance work. Mitigation: migrate behavior assertions to the facade, keep file-format and adapter-failure assertions at lower seams, and delete only tests that duplicate those assertions.
+- Group signaling in tests can hit an unrelated operating-system process if `process.kill` is not mocked. Shared tests must mock it before using fake negative pids.
+- The cache-effort deadline can accidentally become 3 seconds if the post-kill wait is confused with the existing absolute give-up deadline. The interface uses `killWaitMs: 1000`, and the test pins total settlement at 2 seconds.
+- Listening after signaling can miss a synchronous fake exit or close. The helper installs both listeners first.
+- `ChildProcess.killed` does not mean exited. The new escalation never uses it as an exit test.
+- Child observation trims all trailing whitespace before parsing. The migration retains that adapter callback rather than broadening the shared reader's CR rule.
+- Child observation's byte cap includes whitespace before trimming and allows exactly 8 MiB. Shared boundary tests pin both facts.
+- File discovery must flush its reader before settling the close handler or it will lose a final unterminated file name.
+- A fire-and-forget termination promise must not reject. Signal failures are contained inside the helper.
+- Per-extension module copies cannot fork shared state because the module has no module-level mutable state. Each reader and termination operation owns only call-local state.
 
 ## Definition of done
 
-- `WorkflowRun` is the sole per-run lifecycle writer and owns event creation; no command path appends lifecycle events.
-- No command code imports or mutates `RunState`, `RunStore`, a controller, or a persistence adapter.
-- Commands receive typed run read models and no longer use `any` to find worktree data or reconstruct artifact paths. The `result.output.worktree` lookup is gone, not ported.
-- `WorkflowContext` and all 28 persisted event names/fields remain compatible.
-- `FileRunPersistence` and `InMemoryRunPersistence` pass the same observable behavior, including timestamp and missing-versus-empty semantics.
-- `create()` is asynchronous; `execute()` is single-flight; atomic `restart()` holds the shared lease through invalidation and replay.
-- Active resume and restart operations cannot create competing in-process writers, and same run ids in different canonical roots remain independent.
-- `maxAgents` admission is serialized and tested without changing counter meaning.
-- Projection-failure recovery, shutdown waiting, status-callback isolation, and late-callback ordering are tested.
-- Worktree ids, source snapshots, artifact paths, and returned worktree metadata pass containment validation; workflow-specific policy remains separate from `tools-worktree`.
-- `.pi/package.json` runs every workflow Vitest file and all workflow Node tests through `test:workflows`.
-- Existing workflow, Subagent, Git, worktree, and status tests pass.
-- `CONTEXT.md` and `.pi/extensions/workflows-engine/README.md` document the implemented Workflow run lifecycle and control contract, and the README names the real run-directory root instead of `.pi/workflow-runs/`.
-- Every observable change ships as one of the seven listed in the decisions table; anything else found during implementation is a regression, not a scope extension.
-- `pnpm --dir .pi typecheck` and the full `pnpm --dir .pi test` command pass.
+- Repository search finds one active Pi invocation resolver, one incremental UTF-8 line-reader implementation for the four migrated consumers, one immediate group-kill implementation, and one graceful escalation implementation.
+- `_shared/process.ts`, the local cache resolver and decoder, the subagent resolver and stdout buffer, the Child observation frame reader, and the file-discovery command buffer are gone.
+- Cache-effort still refuses a non-exact PATH guess, settles a stubborn stop after 2 seconds total, detaches its readers, removes its temporary directory, and now targets its detached process group.
+- Subagents retain their public and injection interfaces, preserve split UTF-8 output, and actually escalate a stubborn process after 3 seconds.
+- Child observation retains exact 8 MiB behavior, trailing-whitespace parsing, end/close/error fan-in, and best-effort failure containment.
+- Plan sandbox and workspace retain synchronous immediate group SIGKILL at all four existing call sites.
+- No `attachLineReader`, `TerminationOutcome`, injectable clock, process runner facade, or generic text accumulator is added.
+- `CONTEXT.md` matches the implemented consumer list and timing semantics.
+- `pnpm --dir .pi typecheck` and the full `pnpm --dir .pi test` pass.

@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
-import { killProcessGroup } from "../_shared/process.ts";
+import { killProcessGroup } from "../_shared/child-process.ts";
 import type { PlanWorkspace } from "./plan-workspace.ts";
 
 interface SandboxRuntime {

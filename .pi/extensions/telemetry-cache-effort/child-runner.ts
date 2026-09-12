@@ -2,8 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
+import { createLineReader, resolvePiInvocation, terminateChildProcess } from "../_shared/child-process.ts";
 import { describeTrial } from "./experiment.ts";
 import type {
 	PayloadObservation,
@@ -30,25 +30,6 @@ export interface ChildRunnerDependencies {
 	turnTimeoutMs?: number;
 }
 
-export interface PiInvocation {
-	command: string;
-	baseArgs: string[];
-	exact: boolean;
-}
-
-export function resolvePiInvocation(argvEntry = process.argv[1]): PiInvocation {
-	if (argvEntry) {
-		try {
-			const realEntry = fs.realpathSync(argvEntry);
-			if (/\.(?:mjs|cjs|js)$/i.test(realEntry)) {
-				return { command: process.execPath, baseArgs: [realEntry], exact: true };
-			}
-		} catch {}
-	}
-	if (process.versions.bun) return { command: process.execPath, baseArgs: [], exact: true };
-	return { command: "pi", baseArgs: [], exact: false };
-}
-
 function sanitizeError(value: unknown): string {
 	return (value instanceof Error ? value.message : String(value))
 		.replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
@@ -57,23 +38,9 @@ function sanitizeError(value: unknown): string {
 }
 
 function attachLineReader(stream: NodeJS.ReadableStream, onLine: (line: string) => void): () => void {
-	const decoder = new StringDecoder("utf8");
-	let buffer = "";
-	const onData = (chunk: Buffer | string) => {
-		buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
-		let newline = buffer.indexOf("\n");
-		while (newline >= 0) {
-			const line = buffer.slice(0, newline).replace(/\r$/, "");
-			buffer = buffer.slice(newline + 1);
-			if (line) onLine(line);
-			newline = buffer.indexOf("\n");
-		}
-	};
-	const onEnd = () => {
-		buffer += decoder.end();
-		if (buffer) onLine(buffer.replace(/\r$/, ""));
-		buffer = "";
-	};
+	const reader = createLineReader(onLine);
+	const onData = (chunk: Buffer | string) => reader.push(chunk);
+	const onEnd = () => reader.end();
 	stream.on("data", onData);
 	stream.on("end", onEnd);
 	return () => {
@@ -251,18 +218,7 @@ class RpcProcess {
 			this.stopStderr();
 			return;
 		}
-		this.child.kill("SIGTERM");
-		await new Promise<void>((resolve) => {
-			const forceTimer = setTimeout(() => {
-				try { this.child.kill("SIGKILL"); } catch {}
-			}, 1000);
-			const giveUpTimer = setTimeout(resolve, 2000);
-			this.child.once("exit", () => {
-				clearTimeout(forceTimer);
-				clearTimeout(giveUpTimer);
-				resolve();
-			});
-		});
+		await terminateChildProcess(this.child, { graceMs: 1000, killWaitMs: 1000, group: true });
 		this.stopStdout();
 		this.stopStderr();
 	}

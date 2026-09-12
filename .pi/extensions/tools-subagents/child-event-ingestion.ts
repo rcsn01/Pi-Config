@@ -1,4 +1,5 @@
 import { truncateHead, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
+import { createLineReader } from "../_shared/child-process.ts";
 import type {
 	AgentProgress,
 	AgentResult,
@@ -95,7 +96,6 @@ export function createSubagentChildEventIngestion(
 	const progress = result.progress;
 	const startedAt = Date.now();
 	const timing = createSubagentTimingRecorder();
-	let buffer = "";
 	let lastTool: string | undefined;
 	let lastToolArgs: string | undefined;
 	let recentToolCount = 0;
@@ -240,16 +240,14 @@ export function createSubagentChildEventIngestion(
 		} catch {}
 	};
 
+	const lineReader = createLineReader(processLine);
+
 	return {
 		write(chunk) {
-			buffer += typeof chunk === "string" ? chunk : chunk.toString();
-			const lines = buffer.split("\n");
-			buffer = lines.pop() || "";
-			for (const line of lines) processLine(line);
+			lineReader.push(chunk);
 		},
 		async finish(outcome) {
-			if (buffer.trim()) processLine(buffer);
-			buffer = "";
+			lineReader.end();
 			updateThrottle.cancel();
 
 			result.exitCode = outcome.exitCode;

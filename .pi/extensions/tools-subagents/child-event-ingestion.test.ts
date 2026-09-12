@@ -48,13 +48,18 @@ describe("Subagent child event ingestion", () => {
 		const first = line({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "one " } });
 		ingestion.write(Buffer.from(first.slice(0, 17)));
 		ingestion.write(first.slice(17) + "\nnot-json\n" + line({ type: "unknown" }));
-		ingestion.write(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "two" } }));
+		ingestion.write(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "two" } }) + "\n");
+		const multibyte = JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " café" } });
+		const multibyteBytes = Buffer.from(multibyte, "utf8");
+		const split = multibyteBytes.indexOf(Buffer.from("é", "utf8")) + 1;
+		ingestion.write(multibyteBytes.subarray(0, split));
+		ingestion.write(multibyteBytes.subarray(split));
 
 		const result = await finish(ingestion);
 
-		expect(result.output).toBe("one two");
+		expect(result.output).toBe("one two café");
 		expect(result.progress.status).toBe("completed");
-		expect(events.filter((event) => event.type === "message").map((event) => event.message)).toEqual(["one", "one two"]);
+		expect(events.filter((event) => event.type === "message").map((event) => event.message)).toEqual(["one", "one two", "one two café"]);
 	});
 
 	it("resets streamed text at message start and preserves partial output without a final message", async () => {

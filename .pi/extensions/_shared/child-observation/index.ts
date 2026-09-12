@@ -2,7 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { Readable } from "node:stream";
-import { StringDecoder } from "node:string_decoder";
+import { createLineReader } from "../child-process.ts";
 import type {
 	ObservabilityChannel,
 	ObservabilityEvent,
@@ -87,52 +87,6 @@ function parseFrame(line: string): RelayedEvent | undefined {
 	return undefined;
 }
 
-function createFrameReader(forward: (event: RelayedEvent) => void): { push(chunk: Buffer | string): void; end(): void } {
-	let buffer = "";
-	let discarding = false;
-	let ended = false;
-	const decoder = new StringDecoder("utf8");
-	const processLine = (line: string) => {
-		const event = parseFrame(line.trimEnd());
-		if (event) forward(event);
-	};
-	const feed = (input: string) => {
-		let text = input;
-		while (text) {
-			const newline = text.indexOf("\n");
-			const part = newline < 0 ? text : text.slice(0, newline);
-			text = newline < 0 ? "" : text.slice(newline + 1);
-			if (!discarding) {
-				const nextBytes = Buffer.byteLength(buffer, "utf8") + Buffer.byteLength(part, "utf8");
-				if (nextBytes > MAX_FRAME_BYTES) {
-					buffer = "";
-					discarding = true;
-				} else {
-					buffer += part;
-				}
-			}
-			if (newline >= 0) {
-				if (!discarding) processLine(buffer);
-				buffer = "";
-				discarding = false;
-			}
-		}
-	};
-	return {
-		push(chunk) {
-			if (!ended) feed(typeof chunk === "string" ? chunk : decoder.write(chunk));
-		},
-		end() {
-			if (ended) return;
-			ended = true;
-			feed(decoder.end());
-			if (!discarding && buffer.trim()) processLine(buffer);
-			buffer = "";
-			discarding = false;
-		},
-	};
-}
-
 export function createChildObservation(observability: ObservabilityService): ChildObservation {
 	return {
 		prepare(launch, sourceDescriptor) {
@@ -151,11 +105,13 @@ export function createChildObservation(observability: ObservabilityService): Chi
 							const stream = child.stdio[CHILD_OBSERVATION_FD] as Readable | null | undefined;
 							if (!stream || typeof stream.on !== "function") return;
 							attached = true;
-							const reader = createFrameReader((event) => {
+							const reader = createLineReader((line) => {
+								const event = parseFrame(line.trimEnd());
+								if (!event) return;
 								try {
 									observability.publish({ ...event, source } as ObservabilityEvent);
 								} catch {}
-							});
+							}, { maxLineBytes: MAX_FRAME_BYTES });
 							stream.on("data", (chunk: Buffer) => reader.push(chunk));
 							stream.once("end", () => reader.end());
 							stream.once("close", () => reader.end());

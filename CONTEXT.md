@@ -97,9 +97,11 @@ extension.
   cleanup. Analysis dashboard and Analysis capture module lifecycles stay outside.
 - **Child observation module** — the shared best-effort module that carries
   Observability events from a child Pi process into the parent process. It owns
-  conditional child-extension loading, pipe setup, private framing, size limits,
-  parsing, source attribution, and publication; observed work never fails because
-  observation failed.
+  conditional child-extension loading, pipe setup, source attribution, and
+  publication, and delegates UTF-8 line framing with the 8 MiB bounded-line
+  discard to the Child process module while keeping frame parsing, validation,
+  and its trailing-whitespace adapter callback here; observed work never fails
+  because observation failed.
 - **Persistent dashboard runtime** — the deep lifetime and server lifecycle
   module in `_shared/dashboard-runtime.ts` both dashboards sit on: one runtime
   per symbol key; lazy server adapters, coalesced start/close, close/start
@@ -286,6 +288,20 @@ extension.
   Both are pinned by characterization tests; do not merge them behind one
   shared store without new evidence.
 
+## Child processes
+
+- **Child process module** — the deep in-process module in
+  `_shared/child-process.ts` that owns how Pi re-invokes itself and how child
+  process lifetimes end: exact invocation resolution (realpath of the running
+  entry, Bun fallback, PATH `pi`), UTF-8 line framing with optional
+  bounded-line discard, and termination escalation (SIGTERM → grace → SIGKILL;
+  the cache-effort child runner waits a 1,000 ms grace plus a 1,000 ms
+  post-kill wait, while subagent child execution grants a 3,000 ms grace) plus
+  the immediate group kill for sandbox teardown. The Subagent child execution
+  module, the cache-effort child runner, the Child observation module, file
+  discovery, and the Plan sandbox and workspace runners consume it at its
+  seam. The Git executor keeps its own bounded output accumulation by design.
+
 ## Repository snapshots
 
 - **Repository snapshot** — an immutable, commit-pinned source tree under `.pi/repos`.
@@ -340,12 +356,15 @@ extension.
   resolved Subagent launch. It owns built-in and extension-backed child tool
   meaning, mandatory runtime extensions, availability diagnostics, pre-launch
   admission, tool and extension argument ordering and deduplication, private
-  prompt and task files, child observation setup, process spawning and
-  termination, and cleanup on every exit path. `/subagents` is an adapter at this
+  prompt and task files, child observation setup, and process spawning; Pi
+  invocation resolution and termination escalation (a 3,000 ms
+  SIGTERM→SIGKILL grace) are delegated to the Child process module, and
+  cleanup runs on every exit path. `/subagents` is an adapter at this
   seam and renders the module's structured diagnostics. It also owns child-tool
   diagnostic rendering in both forms — the short status form and the
   launch-failure sentence — beside the diagnostic union. Its private Child event
-  ingestion module owns stdout framing, JSON event meaning, progress and usage
+  ingestion module delegates stdout framing to the Child process module and owns
+  JSON event meaning, progress and usage
   state, terminal Subagent result status, timing input, output selection,
   truncation, and terminal result construction. It delivers authoritative
   progress to consumers in emission order per child, and child execution settles

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { createLineReader } from "./child-process.ts";
 import ignore from "ignore";
 
 export type FileDiscoveryBackend = "auto" | "fd" | "rg" | "node";
@@ -116,7 +117,6 @@ async function listWithCommand(
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 		const files: string[] = [];
-		let buffer = "";
 		let stoppedAtLimit = false;
 		let settled = false;
 
@@ -140,17 +140,14 @@ async function listWithCommand(
 			}
 		};
 
+		const lineReader = createLineReader(acceptLine);
+
 		child.once("error", (error: NodeJS.ErrnoException) => {
 			finish(error.code === "ENOENT" ? undefined : undefined);
 		});
-		child.stdout?.on("data", (chunk: Buffer) => {
-			buffer += chunk.toString();
-			const lines = buffer.split(/\r?\n/);
-			buffer = lines.pop() ?? "";
-			for (const line of lines) acceptLine(line);
-		});
+		child.stdout?.on("data", (chunk: Buffer) => lineReader.push(chunk));
 		child.once("close", (code) => {
-			if (buffer) acceptLine(buffer);
+			lineReader.end();
 			finish(code === 0 || stoppedAtLimit ? files : undefined);
 		});
 		if (signal?.aborted) abort();
