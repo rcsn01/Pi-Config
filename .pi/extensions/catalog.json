@@ -295,6 +295,13 @@
 			"requires": [],
 			"conflicts": []
 		},
+		"config-keybindings": {
+			"displayName": "Keybindings",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"ui-footer": {
 			"displayName": "Status Footer",
 			"pack": "core",

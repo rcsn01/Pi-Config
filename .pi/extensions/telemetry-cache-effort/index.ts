@@ -14,6 +14,10 @@ import {
 	renderExperimentReport,
 } from "./report.ts";
 import { selectExperimentConfig } from "./selection.ts";
+import { declareStatus } from "../_shared/status-registry.ts";
+
+const CACHE_EFFORT_STATUS_ID = "cache-effort";
+declareStatus({ id: CACHE_EFFORT_STATUS_ID, style: "muted", order: 90 });
 
 export interface CacheEffortExtensionDependencies {
 	selectConfig?: (ctx: ExtensionCommandContext) => Promise<ExperimentConfig | undefined>;
@@ -84,18 +88,18 @@ export function createCacheEffortExtension(dependencies: CacheEffortExtensionDep
 						`Testing prompt cache with ${calls} controlled calls...`,
 					);
 					loader.onAbort = () => {
-						ctx.ui.setStatus("cache-effort", "cancelling cache test");
+						ctx.ui.setStatus(CACHE_EFFORT_STATUS_ID, "cancelling cache test");
 					};
 					run(config!, {
 						signal: loader.signal,
-						onProgress: (completed, total) => ctx.ui.setStatus("cache-effort", `cache test ${completed}/${total}`),
+						onProgress: (completed, total) => ctx.ui.setStatus(CACHE_EFFORT_STATUS_ID, `cache test ${completed}/${total}`),
 					}).then(done).catch((error) => {
 						ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 						done(undefined);
 					});
 					return loader;
 				});
-				ctx.ui.setStatus("cache-effort", undefined);
+				ctx.ui.setStatus(CACHE_EFFORT_STATUS_ID, undefined);
 				if (!result) return;
 				pi.appendEntry(REPORT_ENTRY_TYPE, result);
 			},

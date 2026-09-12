@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { getStatusRegistry } from "../_shared/status-registry.ts";
 import { registerPlanRenderers, updatePlanStatus } from "./plan-renderer.ts";
 
 function theme() {
@@ -24,6 +25,14 @@ function registeredRenderers() {
 }
 
 describe("Plan Mode rendering", () => {
+	it("declares the plan status", () => {
+		expect(getStatusRegistry().declarations()).toContainEqual({
+			id: "plan",
+			style: "accent",
+			order: 30,
+		});
+	});
+
 	it("registers and renders backward-compatible proposed-plan messages", () => {
 		const { messages } = registeredRenderers();
 		expect([...messages.keys()]).toEqual(["proposed-plan"]);

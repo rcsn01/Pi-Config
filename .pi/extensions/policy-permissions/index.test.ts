@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { getStatusRegistry } from "../_shared/status-registry.ts";
 import safetyPermissions, { createSafetyPermissionsExtension } from "./index.ts";
 import { saveModeToFile } from "./mode-store.ts";
 import { createSessionProfileTransfer } from "../_shared/session-profile-transfer.ts";
@@ -63,6 +64,14 @@ function createHarness(options: { settingsPath?: string; branch?: any[] } = {}) 
 }
 
 describe("safety permission status", () => {
+	it("declares the approval-mode status", () => {
+		expect(getStatusRegistry().declarations()).toContainEqual({
+			id: "approval-mode",
+			style: "muted",
+			order: 20,
+		});
+	});
+
 	it("publishes only the permission mode, not a profile-qualified label", async () => {
 		const harness = createHarness();
 		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);

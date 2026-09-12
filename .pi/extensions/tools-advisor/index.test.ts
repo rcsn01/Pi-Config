@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { getStatusRegistry } from "../_shared/status-registry.ts";
 import advisorExtension, {
 	createAdvisorExtension,
 	formatAdvisorStatus,
@@ -104,6 +105,15 @@ describe("advisor settings", () => {
 });
 
 describe("advisor extension", () => {
+	it("declares the advisor status", () => {
+		expect(getStatusRegistry().declarations()).toContainEqual({
+			id: "advisor",
+			style: "muted",
+			order: 80,
+			placement: "right",
+		});
+	});
+
 	it("registers and activates the tool only when enabled with a model", async () => {
 		const configuredPath = settingsFile({ advisor: { enabled: true, model: "anthropic/strong" } });
 		const configured = makePi({ settingsPath: configuredPath });

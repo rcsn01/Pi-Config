@@ -1,6 +1,7 @@
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { declareStatus } from "../../_shared/status-registry.ts";
 import type { NormalizedWorkflowDefinition, WorkflowAgentOptions, WorkflowParallelOptions } from "./definition.ts";
 import { parsePorcelainStatus, runGit } from "../../_shared/git.ts";
 import type { RegistryEntry } from "./registry.ts";
@@ -10,6 +11,9 @@ import { RunStore, initialState, readRunState, runPaths, safeArtifactPath, type 
 import { AbortError, Semaphore, throwIfAborted } from "./scheduler.ts";
 import { collectWorktreeArtifacts, type WorktreeInfo } from "./worktree-artifacts.ts";
 import { requireSubagentService, type AgentResult, type SubagentProgressEvent } from "../../_shared/subagent-service.ts";
+const WORKFLOW_STATUS_ID = "workflow";
+declareStatus({ id: WORKFLOW_STATUS_ID, style: "accent", order: 60 });
+
 const DEFAULT_MAX_AGENTS = 20;
 const DEFAULT_MAX_CONCURRENT = 4;
 
@@ -162,7 +166,7 @@ export class WorkflowRun {
 			}
 			throw error;
 		} finally {
-			this.commandCtx.ui.setStatus?.("workflow", undefined);
+			this.commandCtx.ui.setStatus?.(WORKFLOW_STATUS_ID, undefined);
 		}
 	}
 
@@ -353,7 +357,7 @@ export class WorkflowRun {
 	}
 
 	private updateStatus(): void {
-		this.commandCtx.ui.setStatus?.("workflow", `${this.entry.name} · ${this.state.currentPhase || "running"} · ${this.state.agentsCompleted}/${this.state.agentsStarted} agents`);
+		this.commandCtx.ui.setStatus?.(WORKFLOW_STATUS_ID, `${this.entry.name} · ${this.state.currentPhase || "running"} · ${this.state.agentsCompleted}/${this.state.agentsStarted} agents`);
 	}
 
 	private async prepareAgentTarget(options: WorkflowAgentOptions): Promise<{ cwd: string; worktree?: unknown }> {

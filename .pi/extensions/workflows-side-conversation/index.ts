@@ -13,6 +13,7 @@
 
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import type { CustomEntry, ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { declareStatus } from "../_shared/status-registry.ts";
 
 type NewSessionOptions = NonNullable<Parameters<ExtensionCommandContext["newSession"]>[0]>;
 type ReplacedSessionContext = Parameters<NonNullable<NewSessionOptions["withSession"]>>[0];
@@ -20,6 +21,7 @@ type ReplacedSessionContext = Parameters<NonNullable<NewSessionOptions["withSess
 const SIDE_MARKER_TYPE = "side-mode-session";
 const SIDE_STATUS_ID = "side-mode";
 const SIDE_STATUS_TEXT = "side mode";
+declareStatus({ id: SIDE_STATUS_ID, style: "accent", order: 70 });
 
 function isSideModeSession(ctx: ExtensionContext): boolean {
 	return ctx.sessionManager

@@ -1,68 +1,8 @@
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { readFileSync } from "node:fs";
 import * as path from "node:path";
+import { getStatusRegistry, type StatusRegistry } from "../_shared/status-registry.ts";
 import { collectUsageSnapshot, normalizeContextUsage } from "../_shared/usage.ts";
-import { isRecord, writeSettingsDocument } from "../_shared/settings-document.ts";
-
-const STATUS_ORDER = ["profile", "approval-mode", "plan", "plan-runtime", "workflow", "side-mode"];
-
-/** Semantic theme status style per status key; unknown keys fall back to muted. */
-const STATUS_STYLES: Record<string, ThemeColor> = {
-	profile: "muted",
-	"approval-mode": "muted",
-	plan: "accent",
-	"plan-runtime": "warning",
-	workflow: "accent",
-	"side-mode": "accent",
-	advisor: "muted",
-};
-const KEYBINDINGS_FILENAME = "keybindings.json";
-const THINKING_CYCLE_KEY = "app.thinking.cycle";
-
-type JsonObject = Record<string, unknown>;
-
-function isFileNotFoundError(error: unknown): boolean {
-	return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-}
-
-function warnKeybindings(message: string, configPath: string, error?: unknown): void {
-	const detail = error instanceof Error ? `: ${error.message}` : "";
-	console.warn(`[ui-status-separators] ${message} (${configPath})${detail}`);
-}
-
-export function ensureThinkingCycleBinding(
-	configPath = path.join(getAgentDir(), KEYBINDINGS_FILENAME),
-): void {
-	let config: JsonObject;
-
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"));
-		if (!isRecord(parsed)) {
-			warnKeybindings("Keybindings config must contain a JSON object; leaving it unchanged", configPath);
-			return;
-		}
-		config = parsed;
-	} catch (error) {
-		if (!isFileNotFoundError(error)) {
-			warnKeybindings("Could not read keybindings config; leaving it unchanged", configPath, error);
-			return;
-		}
-		config = {};
-	}
-
-	const thinkingCycleBinding = config[THINKING_CYCLE_KEY];
-	if (Array.isArray(thinkingCycleBinding) && thinkingCycleBinding.length === 0) return;
-
-	config[THINKING_CYCLE_KEY] = [];
-
-	try {
-		writeSettingsDocument(configPath, config);
-	} catch (error) {
-		warnKeybindings("Could not update keybindings config", configPath, error);
-	}
-}
 
 function sanitizeStatusText(text: string): string {
 	return text
@@ -71,44 +11,39 @@ function sanitizeStatusText(text: string): string {
 		.trim();
 }
 
-function styleStatus(theme: Theme, key: string, text: string): string {
-	return theme.fg(STATUS_STYLES[key] ?? "muted", text);
-}
-
 function formatExtensionStatusLine(
 	statuses: ReadonlyMap<string, string>,
 	width: number,
 	ellipsis: string,
 	theme: Theme,
+	registry: StatusRegistry,
 ): string {
 	const targetWidth = Math.max(0, width);
 	if (targetWidth === 0) return "";
 
 	const entries = Array.from(statuses.entries())
-		.sort(([left], [right]) => {
-			const leftOrder = STATUS_ORDER.indexOf(left);
-			const rightOrder = STATUS_ORDER.indexOf(right);
-			return (leftOrder < 0 ? STATUS_ORDER.length : leftOrder) - (rightOrder < 0 ? STATUS_ORDER.length : rightOrder)
-				|| left.localeCompare(right);
-		})
+		.sort(([left], [right]) => (registry.order(left) - registry.order(right)) || left.localeCompare(right))
 		.map(([key, text]) => [key, sanitizeStatusText(text)] as const)
 		.filter(([, text]) => Boolean(text));
-	const advisor = entries.find(([key]) => key === "advisor")?.[1];
-	const leftStatuses = entries
-		.filter(([key]) => key !== "advisor")
-		.map(([key, text]) => styleStatus(theme, key, text));
-	const left = leftStatuses.join(" | ");
+	const left = entries
+		.filter(([key]) => registry.placement(key) === "left")
+		.map(([key, text]) => theme.fg(registry.style(key), text))
+		.join(" | ");
+	const right = entries
+		.filter(([key]) => registry.placement(key) === "right")
+		.map(([key, text]) => theme.fg(registry.style(key), text))
+		.join(" | ");
 
-	if (!advisor) return truncateToWidth(left, targetWidth, ellipsis);
+	if (!right) return truncateToWidth(left, targetWidth, ellipsis);
 
-	const advisorText = truncateToWidth(styleStatus(theme, "advisor", advisor), targetWidth, ellipsis);
-	const advisorWidth = visibleWidth(advisorText);
-	if (advisorWidth >= targetWidth) return advisorText;
-	if (!left) return " ".repeat(targetWidth - advisorWidth) + advisorText;
+	const rightText = truncateToWidth(right, targetWidth, ellipsis);
+	const rightWidth = visibleWidth(rightText);
+	if (rightWidth >= targetWidth) return rightText;
+	if (!left) return " ".repeat(targetWidth - rightWidth) + rightText;
 
-	const leftText = truncateToWidth(left, Math.max(0, targetWidth - advisorWidth - 1), ellipsis);
-	const gap = Math.max(1, targetWidth - visibleWidth(leftText) - advisorWidth);
-	return `${leftText}${" ".repeat(gap)}${advisorText}`;
+	const leftText = truncateToWidth(left, Math.max(0, targetWidth - rightWidth - 1), ellipsis);
+	const gap = Math.max(1, targetWidth - visibleWidth(leftText) - rightWidth);
+	return `${leftText}${" ".repeat(gap)}${rightText}`;
 }
 
 function formatTokens(count: number): string {
@@ -220,6 +155,7 @@ function installFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
 					width,
 					theme.fg("dim", "..."),
 					theme,
+					getStatusRegistry(),
 				);
 				if (statusLine) lines.push(statusLine);
 			}
@@ -230,7 +166,6 @@ function installFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
 }
 
 export default function (pi: ExtensionAPI) {
-	ensureThinkingCycleBinding();
 	pi.on("session_start", async (_event, ctx) => installFooter(pi, ctx));
 	pi.on("session_tree", async (_event, ctx) => installFooter(pi, ctx));
 }

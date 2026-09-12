@@ -22,6 +22,7 @@ import type {
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
+import { declareStatus } from "../_shared/status-registry.ts";
 import {
 	createModelSelectionPersistence,
 	type CreateModelSelectionPersistence,
@@ -63,7 +64,7 @@ import {
 	type ModeChange,
 	type PlanPromptSnapshot,
 } from "./plan-prompt.ts";
-import { updatePlanStatus } from "./plan-renderer.ts";
+import { PLAN_STATUS_ID, updatePlanStatus } from "./plan-renderer.ts";
 import {
 	createPlanReviewController,
 	type PlanReviewController,
@@ -89,6 +90,9 @@ import {
 	type PlanWorkspace,
 	type PlanWorkspaceOptions,
 } from "./plan-workspace.ts";
+
+const PLAN_RUNTIME_STATUS_ID = "plan-runtime";
+declareStatus({ id: PLAN_RUNTIME_STATUS_ID, style: "warning", order: 50 });
 
 export interface PlanModeDependencies {
 	settingsPath?: string;
@@ -342,15 +346,15 @@ export function createPlanLifecycle(
 		const ctx = runtimeContext;
 		if (!ctx) return;
 		if (status.phase === "warming") {
-			ctx.ui.setStatus("plan-runtime", `${UI_GLYPHS.running} sandbox`);
+			ctx.ui.setStatus(PLAN_RUNTIME_STATUS_ID, `${UI_GLYPHS.running} sandbox`);
 			return;
 		}
 		if (status.phase === "disposing") {
-			ctx.ui.setStatus("plan-runtime", `${UI_GLYPHS.running} sandbox cleanup`);
+			ctx.ui.setStatus(PLAN_RUNTIME_STATUS_ID, `${UI_GLYPHS.running} sandbox cleanup`);
 			return;
 		}
 		if (status.phase === "failed") {
-			ctx.ui.setStatus("plan-runtime", `${UI_GLYPHS.error} sandbox`);
+			ctx.ui.setStatus(PLAN_RUNTIME_STATUS_ID, `${UI_GLYPHS.error} sandbox`);
 			if (isPlanMode(planState)) {
 				ctx.ui.notify(
 					`Plan Mode remains active, but isolated command execution is unavailable: ${status.error instanceof Error ? status.error.message : String(status.error)}`,
@@ -359,7 +363,7 @@ export function createPlanLifecycle(
 			}
 			return;
 		}
-		ctx.ui.setStatus("plan-runtime", undefined);
+		ctx.ui.setStatus(PLAN_RUNTIME_STATUS_ID, undefined);
 	}
 
 	const workspaceFactory = dependencies.createWorkspace ?? createPlanWorkspace;
@@ -485,7 +489,7 @@ export function createPlanLifecycle(
 			// Entry check: warm only when still current.
 			await guard.run(() => warmPlanRuntime(ctx));
 		} else {
-			ctx.ui.setStatus("plan-runtime", undefined);
+			ctx.ui.setStatus(PLAN_RUNTIME_STATUS_ID, undefined);
 			pi.setActiveTools(previousNormalTools ?? toolsAtStart.filter((name) => name !== "plan_bash"));
 		}
 		if (guard.isCurrent() && !modeTransition) updatePlanStatus(ctx, planState);
@@ -527,7 +531,7 @@ export function createPlanLifecycle(
 		else restoreNormalTools(normalTools);
 
 		if (!active) {
-			ctx.ui.setStatus("plan-runtime", undefined);
+			ctx.ui.setStatus(PLAN_RUNTIME_STATUS_ID, undefined);
 			latestProposedPlan = undefined;
 			latestProposedPlanKey = undefined;
 			activePlanProfile = undefined;
@@ -708,7 +712,7 @@ export function createPlanLifecycle(
 		}
 		beginModeTransition();
 		modeTransition = direction;
-		ctx.ui.setStatus("plan", direction === "entering" ? "plan starting" : "plan exiting");
+		ctx.ui.setStatus(PLAN_STATUS_ID, direction === "entering" ? "plan starting" : "plan exiting");
 		const transition = enqueueLifecycle(() => runInternal(session));
 		modeTransitionPromise = transition;
 		try {

@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { declareStatus } from "../_shared/status-registry.ts";
 import { resolve } from "node:path";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import { applySelectionFromDocument } from "../_shared/model-selection-runtime.ts";
@@ -19,6 +20,9 @@ import {
 	type ProfileTransitionNotice,
 	type ProfileTransitionRequest,
 } from "./profile-transition-lifecycle.ts";
+
+const PROFILE_STATUS_ID = "profile";
+declareStatus({ id: PROFILE_STATUS_ID, style: "muted", order: 10 });
 
 export interface ConfigProfilesDependencies {
 	settingsPath?: string;
@@ -88,7 +92,7 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 		let profileInitializationDisposed = false;
 
 		const updateStatus = (ctx: ExtensionContext, profile: string | undefined): void => {
-			if (ctx.hasUI) ctx.ui.setStatus("profile", profile);
+			if (ctx.hasUI) ctx.ui.setStatus(PROFILE_STATUS_ID, profile);
 		};
 
 		const profileInitialization = registerSessionProfileBinding(
