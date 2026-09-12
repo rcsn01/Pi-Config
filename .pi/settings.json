@@ -17,6 +17,6 @@
     "enabled": false
   },
   "configProfiles": {
-    "active": "openai"
+    "active": "openai-cheap"
   }
 }

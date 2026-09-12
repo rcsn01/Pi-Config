@@ -3,19 +3,13 @@ import { isPlanMode, type PlanPhase, type AgentModeState } from "./plan-state.ts
 export const MODE_POLICY_PROMPT = `
 
 <plan_mode_policy>
+The final request-local mode block at the end of the conversation is authoritative for this turn.
 The runtime mode marker reflects the mode at the start of this turn.
-A runtime mode of plan means follow Plan Mode behavior.
+A runtime mode of plan means follow the Plan Mode behavior in the request-local collaboration block.
 A runtime mode of default means Plan Mode is inactive.
 When asked about the current mode, answer from the final runtime marker.
 If the marker conflicts with observable reality — for example, tools that Plan Mode disables (bash, edit, write) are available and working, or the user states the mode — the marker is stale: trust the live evidence and the user.
 </plan_mode_policy>`;
-
-export const DEFAULT_MODE_PROMPT = `
-
-<default_mode>
-Plan Mode is inactive for this turn. Normal execution is allowed.
-Do not refuse work on the grounds that Plan Mode is active.
-</default_mode>`;
 
 export const PLAN_MODE_PROMPT = `
 
@@ -132,7 +126,6 @@ export function runtimeModeMarker(state: AgentModeState): string {
 export function stripGeneratedModeContext(systemPrompt: string): string {
 	return systemPrompt
 		.replaceAll(MODE_POLICY_PROMPT, "")
-		.replaceAll(DEFAULT_MODE_PROMPT, "")
 		.replaceAll(PLAN_MODE_PROMPT, "")
 		.replace(/\n*<plan_mode_policy>[\s\S]*?<\/plan_mode_policy>/g, "")
 		.replace(/\n*<mode_policy>\s*The final runtime mode marker is authoritative[\s\S]*?<\/mode_policy>/g, "")
@@ -152,23 +145,28 @@ export type ModeChange = "entered" | "exited";
 
 /**
  * Prominent note announcing a mode flip since the previous turn, so the model
- * cannot anchor on a stale mode. Placed right after the policy block, before
- * the long mode prompt.
+ * cannot anchor on a stale mode. It precedes the request-local mode prompt.
  */
 export function modeChangeNote(modeChange: ModeChange | undefined): string {
 	if (modeChange === undefined) return "";
 	return `\n\n<mode_change_note>Plan Mode was ${modeChange} since the previous turn.</mode_change_note>`;
 }
 
-/** Build the complete generated context with exactly one final runtime marker. */
-export function buildPlanModeSystemPrompt(
-	systemPrompt: string,
+/** Build the stable system prompt with exactly one Plan Mode policy block. */
+export function buildPlanModeSystemPrompt(systemPrompt: string): string {
+	return stripGeneratedModeContext(systemPrompt) + MODE_POLICY_PROMPT;
+}
+
+/** Build request-local Plan Mode context with the runtime marker last. */
+export function buildPlanModeRequestPrompt(
 	snapshot: PlanPromptSnapshot,
 	modeChange?: ModeChange,
 ): string {
-	const stablePrompt = stripGeneratedModeContext(systemPrompt) + MODE_POLICY_PROMPT;
-	const note = modeChangeNote(modeChange);
-	if (!isPlanMode(snapshot)) return stablePrompt + note + DEFAULT_MODE_PROMPT + runtimeModeMarker(snapshot);
-	const reviewPrompt = snapshot.phase === "awaiting_review" ? REVIEW_STATE_PROMPT : "";
-	return stablePrompt + note + PLAN_MODE_PROMPT + reviewPrompt + runtimeModeMarker(snapshot);
+	const parts = [modeChangeNote(modeChange)];
+	if (isPlanMode(snapshot)) {
+		parts.push(PLAN_MODE_PROMPT);
+		if (snapshot.phase === "awaiting_review") parts.push(REVIEW_STATE_PROMPT);
+	}
+	parts.push(runtimeModeMarker(snapshot));
+	return parts.join("");
 }

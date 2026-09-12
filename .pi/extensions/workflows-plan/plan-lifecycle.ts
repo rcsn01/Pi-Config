@@ -11,6 +11,7 @@ import type {
 	BashOperations,
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
+	ContextEvent,
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
@@ -56,7 +57,12 @@ import {
 import { createPlanCurrency, type PlanGuardStep, type PlanSession } from "./plan-currency.ts";
 import { createPlanPendingMode } from "./plan-pending-mode.ts";
 import { createPlanProfileTransition } from "./plan-profile-transition.ts";
-import { buildPlanModeSystemPrompt } from "./plan-prompt.ts";
+import {
+	buildPlanModeRequestPrompt,
+	buildPlanModeSystemPrompt,
+	type ModeChange,
+	type PlanPromptSnapshot,
+} from "./plan-prompt.ts";
 import { updatePlanStatus } from "./plan-renderer.ts";
 import {
 	createPlanReviewController,
@@ -158,6 +164,12 @@ export interface PlanLifecycleAgentPromptConstruction {
 	ctx: ExtensionContext;
 }
 
+export interface PlanLifecycleContextConstruction {
+	type: "contextConstruction";
+	event: ContextEvent;
+	ctx: ExtensionContext;
+}
+
 export interface PlanLifecycleAssistantMessageCompleted {
 	type: "assistantMessageCompleted";
 	event: MessageEndEvent;
@@ -239,6 +251,7 @@ export type PlanLifecycleEvent =
 	| PlanLifecycleModelChanged
 	| PlanLifecycleThinkingLevelChanged
 	| PlanLifecycleAgentPromptConstruction
+	| PlanLifecycleContextConstruction
 	| PlanLifecycleAssistantMessageCompleted
 	| PlanLifecycleReviewInput
 	| PlanLifecycleAgentSettled
@@ -254,9 +267,11 @@ export type PlanLifecycleEvent =
 	| PlanLifecycleIsolatedCommand;
 
 export type PlanMessageEndResult = { message?: MessageEndEvent["message"] };
+type ContextEventResult = { messages?: ContextEvent["messages"] };
 
 export type PlanLifecycleResult<E extends PlanLifecycleEvent> =
 	E extends PlanLifecycleAgentPromptConstruction ? BeforeAgentStartEventResult :
+	E extends PlanLifecycleContextConstruction ? ContextEventResult | undefined :
 	E extends PlanLifecycleAssistantMessageCompleted ? PlanMessageEndResult | undefined :
 	E extends PlanLifecycleReviewInput ? InputEventResult :
 	E extends PlanLifecycleToolCall ? ToolCallEventResult | undefined :
@@ -265,6 +280,27 @@ export type PlanLifecycleResult<E extends PlanLifecycleEvent> =
 
 export interface PlanLifecycle {
 	dispatch<E extends PlanLifecycleEvent>(event: E): Promise<PlanLifecycleResult<E>>;
+}
+
+export const PLAN_MODE_CONTEXT_CUSTOM_TYPE = "plan-mode-context";
+
+interface PlanRequestSnapshot extends PlanPromptSnapshot {
+	session: PlanSession;
+	modeChange?: ModeChange;
+}
+
+function isPlanModeContextMessage(message: { role: string; customType?: string }): boolean {
+	return message.role === "custom" && message.customType === PLAN_MODE_CONTEXT_CUSTOM_TYPE;
+}
+
+function createPlanModeContextMessage(content: string) {
+	return {
+		role: "custom" as const,
+		customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
+		content,
+		display: false,
+		timestamp: Date.now(),
+	};
 }
 
 const MUTATING_TOOLS = new Set([
@@ -297,8 +333,7 @@ export function createPlanLifecycle(
 	let modeTransitionPromise: Promise<boolean> | undefined;
 	let lastPromptedMode: AgentMode | undefined;
 	let runtimeContext: ExtensionContext | undefined;
-	let requestModeRevision: number | undefined;
-	let requestPlanSession: PlanSession | undefined;
+	let requestSnapshot: PlanRequestSnapshot | undefined;
 	let modeRevisionCounter = planState.revision;
 	let hasReconstructedState = false;
 	let reviewController: PlanReviewController;
@@ -910,6 +945,7 @@ export function createPlanLifecycle(
 	async function dispatch<E extends PlanLifecycleEvent>(event: E): Promise<PlanLifecycleResult<E>> {
 		switch (event.type) {
 			case "sessionStarted":
+				requestSnapshot = undefined;
 				await profileEventQueue;
 				await enqueueLifecycle(async () => {
 					const session = currency.begin(event.binding, event.ctx);
@@ -921,10 +957,12 @@ export function createPlanLifecycle(
 				});
 				return undefined as PlanLifecycleResult<E>;
 			case "branchChanged":
+				requestSnapshot = undefined;
 				pendingMode.clear(event.ctx);
 				await reconstruct(event.ctx);
 				return undefined as PlanLifecycleResult<E>;
 			case "sessionStopping":
+				requestSnapshot = undefined;
 				{
 					const stoppingSession = currency.resolve(event.ctx);
 					if (stoppingSession?.binding !== event.binding) return undefined as PlanLifecycleResult<E>;
@@ -967,6 +1005,7 @@ export function createPlanLifecycle(
 				return undefined as PlanLifecycleResult<E>;
 			case "agentPromptConstruction":
 				{
+					requestSnapshot = undefined;
 					const session = currency.resolve(event.ctx);
 					if (!session) return { systemPrompt: event.event.systemPrompt } as PlanLifecycleResult<E>;
 					const pendingTransition = modeTransitionPromise;
@@ -974,23 +1013,37 @@ export function createPlanLifecycle(
 					if (!currency.isCurrent(session)) {
 						return { systemPrompt: event.event.systemPrompt } as PlanLifecycleResult<E>;
 					}
-					const snapshot: AgentModeState = {
+					const modeChange = lastPromptedMode !== undefined && lastPromptedMode !== planState.mode
+						? planState.mode === "plan" ? "entered" : "exited"
+						: undefined;
+					const snapshot: PlanRequestSnapshot = {
+						session,
 						mode: planState.mode,
 						revision: planState.revision,
 						changedAt: planState.changedAt,
+						phase: planState.phase,
+						modeChange,
 					};
-					requestModeRevision = snapshot.revision;
-					requestPlanSession = session;
-					const modeChange = lastPromptedMode !== undefined && lastPromptedMode !== snapshot.mode
-						? snapshot.mode === "plan" ? "entered" : "exited"
-						: undefined;
 					lastPromptedMode = snapshot.mode;
+					requestSnapshot = snapshot;
 					return {
-						systemPrompt: buildPlanModeSystemPrompt(
-							event.event.systemPrompt,
-							{ ...snapshot, phase: planState.phase },
-							modeChange,
-						),
+						systemPrompt: buildPlanModeSystemPrompt(event.event.systemPrompt),
+					} as PlanLifecycleResult<E>;
+				}
+			case "contextConstruction":
+				{
+					const messages = event.event.messages.filter((message) => !isPlanModeContextMessage(message));
+					const snapshot = requestSnapshot;
+					if (!snapshot || !currency.isCurrent(snapshot.session)) {
+						return messages.length === event.event.messages.length
+							? undefined as PlanLifecycleResult<E>
+							: { messages } as PlanLifecycleResult<E>;
+					}
+					return {
+						messages: [
+							...messages,
+							createPlanModeContextMessage(buildPlanModeRequestPrompt(snapshot, snapshot.modeChange)),
+						],
 					} as PlanLifecycleResult<E>;
 				}
 			case "assistantMessageCompleted":
@@ -999,11 +1052,11 @@ export function createPlanLifecycle(
 				}
 				{
 					const session = currency.resolve(event.ctx);
-					if (!session || (requestPlanSession !== undefined && requestPlanSession !== session)) {
+					if (!session || (requestSnapshot !== undefined && requestSnapshot.session !== session)) {
 						return { message: discardAssistantMessage(event.event.message) } as PlanLifecycleResult<E>;
 					}
 				}
-				if (requestModeRevision !== undefined && requestModeRevision !== planState.revision) {
+				if (requestSnapshot !== undefined && requestSnapshot.revision !== planState.revision) {
 					return { message: discardAssistantMessage(event.event.message) } as PlanLifecycleResult<E>;
 				}
 				if (!isPlanMode(planState)) return undefined as PlanLifecycleResult<E>;
