@@ -150,26 +150,27 @@ describe("subagent extension interfaces", () => {
 		expect(harness.tools.get("subagent")).toMatchObject({
 			name: "subagent",
 			label: "Subagent",
-			description: expect.stringContaining("Use this tool only when a subagent will inspect substantially more material than it returns"),
+			description: expect.stringContaining("Delegate only work that examines substantially more material than it returns"),
 			promptSnippet: "Delegate tasks",
 		});
 		const subagentDescription = harness.tools.get("subagent").description as string;
-		expect(subagentDescription).toContain("Do not delegate planning, architecture, design alternatives");
-		expect(subagentDescription).toContain("Available agents, using these exact names");
-		expect(subagentDescription).toContain("worker for implementing a bounded change after the main agent has decided the design");
-		expect(subagentDescription).toContain("Use parallel tasks only when they are independent");
-		expect(subagentDescription).toContain("one-or-two-file inspections");
+		expect(subagentDescription).toContain("Keep planning, architecture, decomposition, and implementation in the main agent");
+		expect(subagentDescription).toContain("Parallelize only independent tasks");
+		expect(subagentDescription).toContain("one-to-two-file inspection");
 		expect(subagentDescription).toContain("narrow scope");
-		expect(subagentDescription).toContain("several external sources");
-		expect(subagentDescription).toContain("tasks[] entry");
+		expect(subagentDescription).toContain("multi-source external research");
+		expect(subagentDescription).not.toContain("worker");
+		expect(subagentDescription).not.toContain("judge");
 		expect(harness.tools.get("subagent")).not.toHaveProperty("promptGuidelines");
 		const parameters = harness.tools.get("subagent").parameters as any;
 		expect(Object.keys(parameters.properties)).toEqual(["tasks"]);
 		expect(parameters.required).toEqual(["tasks"]);
 		expect(parameters.properties.tasks.minItems).toBe(1);
 		expect(parameters.properties.tasks.items.properties.agent.description).toContain(
-			"Exact registered agent name: default, explorer, worker, researcher, or judge",
+			"Built-ins available here: default, explorer, or researcher",
 		);
+		expect(parameters.properties.tasks.items.properties.agent.description).not.toContain("worker");
+		expect(parameters.properties.tasks.items.properties.agent.description).not.toContain("judge");
 		expect(requireSubagentService().id).toBe("tools-subagents");
 	});
 
@@ -178,13 +179,23 @@ describe("subagent extension interfaces", () => {
 		const tasks = [{ agent: "explorer", task: "Inspect code", cwd: "/workspace" }];
 
 		expect(tool.prepareArguments({ agent: "", task: "", tasks, cwd: "" })).toEqual({ tasks });
-		expect(tool.prepareArguments({ agent: "worker", task: "Fix code", cwd: "/task" })).toEqual({
-			tasks: [{ agent: "worker", task: "Fix code", cwd: "/task" }],
+		expect(tool.prepareArguments({ agent: "explorer", task: "Inspect code", cwd: "/task" })).toEqual({
+			tasks: [{ agent: "explorer", task: "Inspect code", cwd: "/task" }],
 		});
 	});
 });
 
 describe("subagent tool wiring", () => {
+	it.each(["judge", "worker"])("keeps %s workflow-only", async (agentName) => {
+		const harness = extensionHarness();
+		const tool = harness.tools.get("subagent");
+
+		await expect(tool.execute(
+			"call", { tasks: [{ agent: agentName, task: "Do work" }] }, undefined, undefined, harness.ctx,
+		)).rejects.toThrow(`Subagent "${agentName}" is only available to workflows.`);
+		expect(harness.executeChild).not.toHaveBeenCalled();
+	});
+
 	it("routes status and direct service calls through one child execution module", async () => {
 		const expectedResult = agentResult({ task: "Direct work", output: "done" });
 		const executeChild = vi.fn(async () => expectedResult);
@@ -224,11 +235,11 @@ describe("subagent tool wiring", () => {
 		const harness = extensionHarness(executeChild);
 		const updates: any[] = [];
 		const result = await harness.tools.get("subagent").execute(
-			"call", { tasks: [{ agent: "worker", task: "Do work", cwd: "/task" }] }, undefined,
+			"call", { tasks: [{ agent: "explorer", task: "Do work", cwd: "/task" }] }, undefined,
 			(update: any) => updates.push(update), harness.ctx,
 		);
 		expect(executeChild).toHaveBeenCalledWith(expect.objectContaining({
-			agent: expect.objectContaining({ name: "worker" }),
+			agent: expect.objectContaining({ name: "explorer" }),
 			task: "Do work",
 			cwd: "/task",
 			launch: { model: "openai/test-model", thinkingLevel: "minimal" },
@@ -318,7 +329,7 @@ describe("subagent tool wiring", () => {
 
 			const execution = harness.tools.get("subagent").execute("call", {
 				tasks: Array.from({ length: 4 }, (_, index) => ({
-					agent: index % 2 === 0 ? "worker" : "explorer",
+					agent: "explorer",
 					task: `task ${index}`,
 				})),
 			}, undefined, undefined, harness.ctx);
