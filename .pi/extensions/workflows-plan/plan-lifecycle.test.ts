@@ -5,7 +5,6 @@ import planModeExtension, {
 	PLAN_REVIEW_ACTIONS,
 } from "./index.ts";
 import type { ModeModelProfile } from "./model-profile.ts";
-import { MODE_POLICY_PROMPT } from "./plan-prompt.ts";
 import { selectionModeFromEntries } from "../_shared/model-selection.ts";
 import { getStatusRegistry } from "../_shared/status-registry.ts";
 import { PLAN_STATE_ENTRY_TYPE } from "../_shared/session-entries.ts";
@@ -182,7 +181,7 @@ describe("Plan Mode tool policy integration", () => {
 
 		expect(stores.createModelSelectionPersistence).toHaveBeenCalledTimes(2);
 		const [prompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(prompt.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(prompt.systemPrompt).toBe("BASE");
 		const [context] = await harness.emit("context", { type: "context", messages: [] });
 		expect(context.messages.at(-1)).toMatchObject({
 			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
@@ -307,7 +306,7 @@ describe("Plan Mode tool policy integration", () => {
 
 		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
 		let [prompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(prompt.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(prompt.systemPrompt).toBe("BASE");
 		let [context] = await harness.emit("context", { type: "context", messages: contextMessages });
 		expect(context.messages.at(-1)).toMatchObject({
 			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
@@ -317,7 +316,7 @@ describe("Plan Mode tool policy integration", () => {
 
 		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
 		[prompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(prompt.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(prompt.systemPrompt).toBe("BASE");
 		[context] = await harness.emit("context", { type: "context", messages: contextMessages });
 		expect(context.messages.at(-1)).toMatchObject({
 			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
@@ -327,7 +326,7 @@ describe("Plan Mode tool policy integration", () => {
 
 		await harness.shortcuts.get("shift+tab").handler(harness.ctx);
 		[prompt] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(prompt.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(prompt.systemPrompt).toBe("BASE");
 		[context] = await harness.emit("context", { type: "context", messages: contextMessages });
 		expect(context.messages.at(-1)).toMatchObject({
 			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
@@ -380,7 +379,7 @@ describe("Plan Mode tool policy integration", () => {
 		expect(harness.getActiveToolNames()).toContain("bash");
 		expect(harness.getActiveToolNames()).not.toContain("plan_bash");
 		const [promptResult] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(promptResult.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(promptResult.systemPrompt).toBe("BASE");
 		const [contextResult] = await harness.emit("context", { type: "context", messages: [] });
 		expect(contextResult.messages.at(-1).content).toContain('<runtime mode="default" revision="2"/>');
 	});
@@ -809,12 +808,12 @@ describe("mode-change note", () => {
 		};
 
 		const [first] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(first.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(first.systemPrompt).toBe("BASE");
 		expect(await getTail()).not.toContain("<mode_change_note>");
 
 		await harness.commands.get("plan").handler("", harness.ctx);
 		const [afterEnter] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(afterEnter.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(afterEnter.systemPrompt).toBe("BASE");
 		const enteredTail = await getTail();
 		expect(enteredTail).toContain(
 			"<mode_change_note>Plan Mode was entered since the previous turn.</mode_change_note>",
@@ -823,12 +822,12 @@ describe("mode-change note", () => {
 		expect(enteredTail.endsWith('<runtime mode="plan" revision="1"/>')).toBe(true);
 
 		const [stable] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(stable.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(stable.systemPrompt).toBe("BASE");
 		expect(await getTail()).not.toContain("<mode_change_note>");
 
 		await harness.commands.get("plan").handler("exit", harness.ctx);
 		const [afterExit] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(afterExit.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(afterExit.systemPrompt).toBe("BASE");
 		const exitedTail = await getTail();
 		expect(exitedTail).toContain(
 			"<mode_change_note>Plan Mode was exited since the previous turn.</mode_change_note>",
@@ -841,11 +840,11 @@ describe("mode-change note", () => {
 		const harness = createHarness();
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		const [before] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(before.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(before.systemPrompt).toBe("BASE");
 
 		await harness.emit("session_tree", { type: "session_tree" });
 		const [after] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(after.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(after.systemPrompt).toBe("BASE");
 	});
 
 	it("notes mode changes caused by tree navigation", async () => {
@@ -870,12 +869,12 @@ describe("mode-change note", () => {
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 		const [initial] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(initial.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(initial.systemPrompt).toBe("BASE");
 
 		harness.setBranch([stateEntry("plan", 2)]);
 		await harness.emit("session_tree", { type: "session_tree" });
 		const [entered] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(entered.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(entered.systemPrompt).toBe("BASE");
 		const [enteredContext] = await harness.emit("context", { type: "context", messages: [] });
 		expect(enteredContext.messages.at(-1).content).toContain(
 			"<mode_change_note>Plan Mode was entered since the previous turn.</mode_change_note>",
@@ -884,7 +883,7 @@ describe("mode-change note", () => {
 		harness.setBranch([stateEntry("default", 3)]);
 		await harness.emit("session_tree", { type: "session_tree" });
 		const [exited] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
-		expect(exited.systemPrompt).toBe(`BASE${MODE_POLICY_PROMPT}`);
+		expect(exited.systemPrompt).toBe("BASE");
 		const [exitedContext] = await harness.emit("context", { type: "context", messages: [] });
 		expect(exitedContext.messages.at(-1).content).toContain(
 			"<mode_change_note>Plan Mode was exited since the previous turn.</mode_change_note>",
