@@ -6,9 +6,11 @@ A Pi extension that registers one `subagent` tool and runs specialized agents in
 |---|---|---|
 | **default** | read, bash | Small general delegated tasks |
 | **explorer** | read, grep, find, ls, repo_query | Read-only codebase investigation |
-| **worker** | read, write, edit, safe_bash | Bounded implementation and verification |
 | **researcher** | ddg_search, ddg_fetch | Web research and synthesis |
-| **judge** | read | Structured rubric-based evaluation |
+| **worker** | read, write, edit, safe_bash | Workflow-only implementation and verification |
+| **judge** | read | Workflow-only rubric-based evaluation |
+
+The public `subagent` tool exposes `default`, `explorer`, and `researcher`. It rejects direct calls to the workflow-only `worker` and `judge` agents. Workflows invoke those agents through the shared subagent service.
 
 The researcher uses the local `ddg_search` and `ddg_fetch` extensions. The worker uses the bundled `safe_bash` tool.
 

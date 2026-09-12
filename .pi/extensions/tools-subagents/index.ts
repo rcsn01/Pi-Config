@@ -60,6 +60,13 @@ export interface SubagentsExtensionDependencies {
 	childExecution?: SubagentChildExecution;
 }
 
+const WORKFLOW_ONLY_AGENTS = new Set(["judge", "worker"]);
+
+function assertPublicAgentAccess(tasks: readonly { agent: string }[]): void {
+	const restricted = tasks.find((task) => WORKFLOW_ONLY_AGENTS.has(task.agent));
+	if (restricted) throw new Error(`Subagent "${restricted.agent}" is only available to workflows.`);
+}
+
 export function createSubagentsExtension(dependencies: SubagentsExtensionDependencies = {}) {
 	return (pi: ExtensionAPI): void => {
 		registerToolErrorHandler(pi, ["subagent"], (event) => {
@@ -121,13 +128,13 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		name: "subagent",
 		label: "Subagent",
 		description:
-			"Use this tool only when a subagent will inspect substantially more material than it returns. Do not delegate planning, architecture, design alternatives, task decomposition, or implementation decisions; the main agent must do those itself. Available agents, using these exact names: explorer for read-only investigation across several repository files; researcher for research requiring several external sources; worker for implementing a bounded change after the main agent has decided the design; judge for evaluating supplied work against an explicit rubric; default for small general delegated work. Use parallel tasks only when they are independent. Give each task all necessary context, a narrow scope, and the evidence or output required. Do not use this tool for simple lookups, known-symbol traces, direct documentation reads, or one-or-two-file inspections; use local tools, including parallel tool calls, instead. Supply exactly one tasks[] entry for a single invocation or multiple entries for parallel invocation. Ask for compact findings, not a work log. After a subagent returns, rely on its cited findings; do not repeat its searches or reread cited files unless the handoff identifies a gap or conflicting evidence.",
+			"Delegate only work that examines substantially more material than it returns. Keep planning, architecture, decomposition, and implementation in the main agent. Agents: explorer for multi-file repository investigation; researcher for multi-source external research; default for small general tasks. Parallelize only independent tasks. Provide complete context, narrow scope, and required evidence or output. Use local tools for simple lookups, known-symbol traces, direct docs, or one-to-two-file inspection. Request concise findings, not logs, and trust cited results unless gaps or conflicts remain.",
 		promptSnippet: "Delegate tasks",
 		parameters: Type.Object({
 			tasks: Type.Array(
 				Type.Object({
 					agent: Type.String({
-						description: "Exact registered agent name: default, explorer, worker, researcher, or judge. Never invent a role name.",
+						description: "Registered agent name. Built-ins available here: default, explorer, or researcher.",
 					}),
 					task: Type.String({ description: "Task description" }),
 					cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
@@ -164,6 +171,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			assertPublicAgentAccess(params.tasks);
 			configStore.rememberMainModel(ctx.model);
 			return invocationAdapter.execute(params, {
 				cwd: ctx.cwd,
