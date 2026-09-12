@@ -1,9 +1,8 @@
-import { spawn } from "node:child_process";
 import { constants, statSync } from "node:fs";
 import { chmod, cp, lstat, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative } from "node:path";
-import { killProcessGroup } from "../_shared/child-process.ts";
+import { spawnInGroup } from "../_shared/child-process.ts";
 
 export interface PlanWorkspace {
 	root: string;
@@ -46,33 +45,20 @@ function isWithin(parent: string, candidate: string): boolean {
 
 async function runCloneCommand(args: readonly string[], signal?: AbortSignal): Promise<void> {
 	throwIfAborted(signal);
-	await new Promise<void>((resolvePromise, rejectPromise) => {
-		const executable = process.platform === "darwin" ? "/bin/cp" : "/usr/bin/cp";
-		const child = spawn(executable, args, {
-			detached: process.platform !== "win32",
-			stdio: ["ignore", "ignore", "pipe"],
-		});
-		let stderr = "";
-		let settled = false;
-
-		const finish = (callback: () => void) => {
-			if (settled) return;
-			settled = true;
-			signal?.removeEventListener("abort", onAbort);
-			callback();
-		};
-		const onAbort = () => killProcessGroup(child);
-		signal?.addEventListener("abort", onAbort, { once: true });
-		if (signal?.aborted) onAbort();
-
-		child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
-		child.on("error", (error) => finish(() => rejectPromise(error)));
-		child.on("close", (code) => finish(() => {
-			if (signal?.aborted) rejectPromise(abortError());
-			else if (code === 0) resolvePromise();
-			else rejectPromise(new Error(`cp exited with code ${code}${stderr ? `: ${stderr.trim()}` : ""}`));
-		}));
+	let stderr = "";
+	const outcome = await spawnInGroup({
+		command: process.platform === "darwin" ? "/bin/cp" : "/usr/bin/cp",
+		args,
+		stdio: ["ignore", "ignore", "pipe"],
+		signal,
+		onStderr: (chunk) => { stderr += chunk.toString("utf8"); },
 	});
+	if (outcome.kind === "spawn-error") throw outcome.error;
+	if (outcome.kind === "aborted") throw abortError();
+	if (outcome.kind === "timed-out") throw new Error("cp timed out."); // unreachable: no timeoutSeconds is passed
+	if (outcome.exitCode !== 0) {
+		throw new Error(`cp exited with code ${outcome.exitCode}${stderr ? `: ${stderr.trim()}` : ""}`);
+	}
 }
 
 function cloneArgs(platform: NodeJS.Platform, source: string, destination: string): string[] {
