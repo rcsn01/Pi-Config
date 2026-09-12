@@ -325,7 +325,7 @@ export default function (pi: ExtensionAPI) {
 		name: "todo",
 		label: "Todo",
 		description:
-			"Track multi-step work with a structured todo list. For non-trivial work with at least three distinct steps, create the list before implementation. On updates, send the full list and reuse item IDs; keep exactly one item in_progress and complete items only after implementation and verification. Keep items specific, preserve user commands verbatim, and clear the list when work ends.",
+			"Track non-trivial multi-step work with a structured todo list. Create the list before work begins. In Plan Mode, track only exploration, clarification, and plan preparation, then clear the list before the final plan. On updates, send the full list and reuse item IDs; keep exactly one item in_progress and complete items only after the corresponding work is done and checked. Keep items specific, preserve user commands verbatim, and clear the list when work ends.",
 		promptSnippet: "Track tasks",
 		parameters: TodoParams,
 

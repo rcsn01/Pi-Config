@@ -23,6 +23,13 @@ function toolDefinition() {
 }
 
 describe("todo tool rendering", () => {
+	it("describes planning-only todo use", () => {
+		const description = toolDefinition().description as string;
+		expect(description).toContain("In Plan Mode, track only exploration, clarification, and plan preparation");
+		expect(description).toContain("clear the list before the final plan");
+		expect(description).not.toContain("complete items only after implementation");
+	});
+
 	it("marks invalid updates as errors", async () => {
 		const tool = toolDefinition();
 		const result = await tool.execute("call", {

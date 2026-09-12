@@ -3,15 +3,15 @@
     "profiles": {
       "normal": {
         "provider": "openai-codex",
-        "modelId": "gpt-5.3-codex-spark",
+        "modelId": "gpt-5.6-luna",
         "thinkingLevel": "low",
-        "contextWindow": 256000
+        "contextWindow": 272000
       },
       "plan": {
-        "provider": "default",
-        "modelId": "default",
-        "thinkingLevel": "default",
-        "contextWindow": "default"
+        "provider": "openai-codex",
+        "modelId": "gpt-5.6-luna",
+        "thinkingLevel": "low",
+        "contextWindow": 272000
       }
     }
   },

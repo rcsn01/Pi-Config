@@ -169,10 +169,11 @@ describe("Plan Mode model and thinking profiles", () => {
 		);
 
 		await harness.commands.get("plan").handler("exit", harness.ctx);
-		expect(harness.timeline.slice(-3)).toEqual([
+		expect(harness.timeline.slice(-4)).toEqual([
 			"setModel:anthropic/claude-sonnet-4.6",
 			"setThinking:medium",
 			"setActiveTools:read,bash,edit,write,grep,find,ls",
+			"message:plan-mode-context",
 		]);
 		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({ mode: "default", revision: 2 });
 		expect(harness.appendedEntries.at(-1)?.data.normalProfile).toBeUndefined();
@@ -336,12 +337,10 @@ describe("Plan Mode model and thinking profiles", () => {
 		expect(harness.appendedEntries.at(-1)?.data).toMatchObject({ mode: "plan" });
 		const [result] = await harness.emit("before_agent_start", { systemPrompt: "BASE" });
 		expect(result.systemPrompt).toBe("BASE");
-		const [context] = await harness.emit("context", { type: "context", messages: [] });
-		expect(context.messages.at(-1)).toMatchObject({
+		expect(harness.sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
 			customType: PLAN_MODE_CONTEXT_CUSTOM_TYPE,
-			content: expect.stringContaining("You are in **Plan Mode**"),
-		});
-		expect(context.messages.at(-1).content).not.toContain("Plan Mode is inactive for this turn");
+			content: "This is an internal marker, user has changed to default mode",
+		}));
 	});
 
 	it("reports unavailable and malformed profiles without entering", async () => {
@@ -393,10 +392,11 @@ describe("Plan Mode model and thinking profiles", () => {
 		});
 		await shortcutHarness.emit("session_start", { type: "session_start", reason: "reload" });
 		await shortcutHarness.shortcuts.get("shift+tab").handler(shortcutHarness.ctx);
-		expect(shortcutHarness.timeline.slice(-3)).toEqual([
+		expect(shortcutHarness.timeline.slice(-4)).toEqual([
 			"setModel:anthropic/claude-sonnet-4.6",
 			"setThinking:medium",
 			"setActiveTools:read,bash,edit,write,grep,find,ls",
+			"message:plan-mode-context",
 		]);
 
 		const freshStores = createProfileDependencies(profileFor(planModel, "high"));
