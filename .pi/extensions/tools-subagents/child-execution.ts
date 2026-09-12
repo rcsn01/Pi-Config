@@ -139,6 +139,18 @@ function formatLaunchFailure(
 	return `Subagent ${agentName} cannot launch: ${fragments.join("; ")}`;
 }
 
+/** Render one child-tool diagnostic in the short status form used by status displays. */
+export function formatChildToolDiagnostic(diagnostic: SubagentChildToolDiagnostic): string {
+	switch (diagnostic.kind) {
+		case "unmapped-tool":
+			return `${diagnostic.tool} (unmapped)`;
+		case "missing-tool-extension":
+			return `${diagnostic.tool} (${diagnostic.path})`;
+		case "missing-runtime-extension":
+			return `${diagnostic.extension} (${diagnostic.path})`;
+	}
+}
+
 function resolvePiBinary(): { command: string; baseArgs: string[] } {
 	const entry = process.argv[1];
 	if (entry) {

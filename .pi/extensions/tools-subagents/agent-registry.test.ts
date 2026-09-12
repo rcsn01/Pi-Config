@@ -60,6 +60,6 @@ describe("agent registry", () => {
 		const registry = createAgentRegistry(agentsDir());
 		registry.register(agent({ name: "worker" }));
 		registry.register(agent({ name: "explorer" }));
-		expect(() => registry.resolve("missing")).toThrow("Unknown agent: missing. Available agents: worker, explorer");
+		expect(() => registry.resolve("missing")).toThrow("Unknown subagent: missing. Available: worker, explorer");
 	});
 });
