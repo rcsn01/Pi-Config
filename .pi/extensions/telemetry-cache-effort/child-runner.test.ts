@@ -3,10 +3,25 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createChildTrialRunner } from "./child-runner.ts";
 import type { TrialSpec } from "./experiment.ts";
 import { fingerprintPayload, serializeProbeEvent } from "./probe-protocol.ts";
+
+const realPlatform = process.platform;
+
+afterEach(() => {
+	Object.defineProperty(process, "platform", { value: realPlatform });
+	vi.restoreAllMocks();
+});
+
+/** Route mocked POSIX group signals to the fake child so no test hits a real process group. */
+function mockGroupKillTo(child: FakeChild): ReturnType<typeof vi.spyOn> {
+	return vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+		if (pid === -child.pid) child.kill(signal as NodeJS.Signals);
+		return true;
+	}) as unknown as typeof process.kill);
+}
 
 const spec: TrialSpec = {
 	id: "cacheeffort-child-test",
@@ -107,6 +122,7 @@ describe("isolated child Pi runner", () => {
 	it("uses controlled flags, waits for stderr instrumentation, and strips prompts from results", async () => {
 		const root = mkdtempSync(join(tmpdir(), "cache-effort-test-"));
 		const child = new FakeChild();
+		mockGroupKillTo(child);
 		const spawnProcess = vi.fn(() => child as any);
 		const removeDirectory = vi.fn(async (directory: string) => rmSync(directory, { recursive: true, force: true }));
 		const run = createChildTrialRunner(
@@ -124,10 +140,11 @@ describe("isolated child Pi runner", () => {
 		expect(removeDirectory).toHaveBeenCalledWith(root);
 	});
 
-	it("kills the active child and removes its temporary directory on cancellation", async () => {
+	it("kills the detached process group and removes its temporary directory on cancellation", async () => {
 		const root = mkdtempSync(join(tmpdir(), "cache-effort-cancel-"));
 		const child = new FakeChild(true);
 		const removeDirectory = vi.fn(async (directory: string) => rmSync(directory, { recursive: true, force: true }));
+		const groupKill = mockGroupKillTo(child);
 		const run = createChildTrialRunner(
 			{ provider: "openai-codex", modelId: "gpt-test" },
 			{ spawnProcess: (() => child) as any, makeTempDirectory: async () => root, removeDirectory, turnTimeoutMs: 1000 },
@@ -138,6 +155,32 @@ describe("isolated child Pi runner", () => {
 		controller.abort();
 		const result = await promise;
 		expect(result.error).toBe("Experiment cancelled.");
+		if (process.platform !== "win32") {
+			expect(groupKill).toHaveBeenCalledWith(-child.pid, "SIGTERM");
+		} else {
+			expect(groupKill).not.toHaveBeenCalled();
+		}
+		expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+		expect(removeDirectory).toHaveBeenCalledWith(root);
+	});
+
+	it("signals the child pid directly on Windows", async () => {
+		Object.defineProperty(process, "platform", { value: "win32" });
+		const root = mkdtempSync(join(tmpdir(), "cache-effort-cancel-"));
+		const child = new FakeChild(true);
+		const removeDirectory = vi.fn(async (directory: string) => rmSync(directory, { recursive: true, force: true }));
+		const groupKill = mockGroupKillTo(child);
+		const run = createChildTrialRunner(
+			{ provider: "openai-codex", modelId: "gpt-test" },
+			{ spawnProcess: (() => child) as any, makeTempDirectory: async () => root, removeDirectory, turnTimeoutMs: 1000 },
+		);
+		const controller = new AbortController();
+		const promise = run(spec, { signal: controller.signal });
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		controller.abort();
+		const result = await promise;
+		expect(result.error).toBe("Experiment cancelled.");
+		expect(groupKill).not.toHaveBeenCalled();
 		expect(child.kill).toHaveBeenCalledWith("SIGTERM");
 		expect(removeDirectory).toHaveBeenCalledWith(root);
 	});

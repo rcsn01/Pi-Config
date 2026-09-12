@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { resolvePiInvocation, terminateChildProcess } from "../_shared/child-process.ts";
 import { createChildObservation } from "../_shared/child-observation/index.ts";
 import { getObservabilityService } from "../_shared/observability.ts";
 import type {
@@ -151,19 +152,6 @@ export function formatChildToolDiagnostic(diagnostic: SubagentChildToolDiagnosti
 	}
 }
 
-function resolvePiBinary(): { command: string; baseArgs: string[] } {
-	const entry = process.argv[1];
-	if (entry) {
-		try {
-			const realEntry = fs.realpathSync(entry);
-			if (/\.(?:mjs|cjs|js)$/i.test(realEntry)) {
-				return { command: process.execPath, baseArgs: [realEntry] };
-			}
-		} catch {}
-	}
-	return { command: "pi", baseArgs: [] };
-}
-
 async function buildPiArgs(
 	agent: AgentConfig,
 	task: string,
@@ -172,7 +160,7 @@ async function buildPiArgs(
 	sessionId: string | undefined,
 	tempRoot: string,
 ): Promise<{ args: string[]; tempDir: string }> {
-	const piBin = resolvePiBinary();
+	const invocation = resolvePiInvocation();
 	const tempDir = await fs.promises.mkdtemp(path.join(tempRoot, "pi-sub-"));
 	try {
 		const promptPath = path.join(tempDir, `${agent.name}.md`);
@@ -180,7 +168,7 @@ async function buildPiArgs(
 			await fs.promises.writeFile(promptPath, agent.systemPrompt, { encoding: "utf-8", mode: 0o600 });
 		});
 
-		let args = [...piBin.baseArgs, "--mode", "json", "-p", "--no-session", "--no-skills"];
+		let args = [...invocation.baseArgs, "--mode", "json", "-p", "--no-session", "--no-skills"];
 		if (sessionId) args.push("--session-id", sessionId);
 
 		args.push("--no-extensions");
@@ -201,7 +189,7 @@ async function buildPiArgs(
 		} else {
 			args.push(`Task: ${task}`);
 		}
-		return { args: [piBin.command, ...args], tempDir };
+		return { args: [invocation.command, ...args], tempDir };
 	} catch (error) {
 		removeTempDirectory(tempDir);
 		throw error;
@@ -281,12 +269,7 @@ export function createSubagentChildExecution(
 				});
 
 				let cancelAbort: () => void = () => undefined;
-				let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
-				cancelProcessWait = () => {
-					cancelAbort();
-					if (forceKillTimer) clearTimeout(forceKillTimer);
-					forceKillTimer = undefined;
-				};
+				cancelProcessWait = () => cancelAbort();
 
 				const outcome = await new Promise<SubagentChildProcessOutcome>((resolve) => {
 					const spawnProcess = dependencies.spawnProcess ?? spawn;
@@ -304,10 +287,7 @@ export function createSubagentChildExecution(
 					proc.on("error", (error) => resolve({ exitCode: 1, stderr, processError: error.message }));
 
 					if (timeout.signal) {
-						const kill = () => {
-							proc.kill("SIGTERM");
-							forceKillTimer = setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 3000);
-						};
+						const kill = () => { void terminateChildProcess(proc, { graceMs: 3000 }); };
 						if (timeout.signal.aborted) kill();
 						else {
 							timeout.signal.addEventListener("abort", kill, { once: true });

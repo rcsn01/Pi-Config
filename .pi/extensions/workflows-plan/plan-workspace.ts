@@ -3,7 +3,7 @@ import { constants, statSync } from "node:fs";
 import { chmod, cp, lstat, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative } from "node:path";
-import { killProcessGroup } from "../_shared/process.ts";
+import { killProcessGroup } from "../_shared/child-process.ts";
 
 export interface PlanWorkspace {
 	root: string;
