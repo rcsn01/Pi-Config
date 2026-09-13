@@ -400,8 +400,22 @@ extension.
   that owns the persisted Goal state shape, session-entry reconstruction
   (including the cleared tombstone), and every
   set/pause/resume/edit/checkpoint/complete/clear transition as immutable
-  operations with injected timestamps. Command parsing, confirmation,
-  notifications, rendering, and persistence stay in the extension adapter.
+  operations with injected timestamps. Pi wiring, notification delivery,
+  persistence, widget and tool rendering, and the `appendEntry` side effect
+  stay in the extension adapter.
+- **Goal command module** — the pure module in
+  `workflows-goal/goal-commands.ts` that owns the `/goal` command surface
+  behind `runGoalCommand(goal, args, now, host)`: subcommand parsing, the
+  transition→message policy for every arm, the replacement-confirmation
+  requirement and its question text, the kickoff message, and status
+  formatting. One outcome carries the notification (text plus
+  `info`/`warning`/`error`), the transition for the adapter to persist and
+  adopt, and the kickoff message; a null notification means stay silent. Its
+  host supplies `confirm(title, body)` — UI-backed and `hasUI`-guarded in the
+  adapter — so the module owns the question's text and the adapter owns the
+  asking. Goal prompts live beside it in `workflows-goal/goal-prompts.ts`:
+  `goalPromptAddendum(goal)` owns the status→prompt decision (none for no
+  goal, cleared, or completed).
 
 ## Safety
 
