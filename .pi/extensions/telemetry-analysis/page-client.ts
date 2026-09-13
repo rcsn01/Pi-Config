@@ -2,6 +2,7 @@ export const ANALYSIS_PAGE_CLIENT = String.raw`
 'use strict';
 
 const requests = createDashboardRequestLifecycle();
+const subagentList = document.getElementById('subagentList');
 const requestList = document.getElementById('requestList');
 const detailPane = document.getElementById('detailPane');
 const sourceTabs = document.getElementById('sourceTabs');
@@ -17,6 +18,7 @@ const tabs = [
 ];
 let summaries = [];
 let activeChannel = 'main';
+let selectedSubagentId = null;
 let selectedSequence = null;
 const selections = new Map();
 let renderedFingerprint = null;
@@ -267,8 +269,50 @@ function channelOf(item) {
 	return item.source?.channel || 'main';
 }
 
+function subagentIdOf(item) {
+	return item.source?.invocationId || 'legacy';
+}
+
+function availableSubagents() {
+	const grouped = new Map();
+	for (const item of summaries) {
+		if (channelOf(item) !== 'subagent') continue;
+		const id = subagentIdOf(item);
+		const existing = grouped.get(id);
+		if (existing) existing.count++;
+		else grouped.set(id, { id, label: item.source?.displayLabel || id, count: 1 });
+	}
+	return Array.from(grouped.values());
+}
+
+function syncSelectedSubagent() {
+	if (activeChannel !== 'subagent') return;
+	const agents = availableSubagents();
+	if (!agents.some((agent) => agent.id === selectedSubagentId)) {
+		selectedSubagentId = agents[0]?.id ?? null;
+	}
+}
+
+function selectionKey() {
+	return activeChannel === 'subagent' ? 'subagent\u0000' + (selectedSubagentId || '') : activeChannel;
+}
+
 function visibleSummaries() {
-	return summaries.filter((item) => channelOf(item) === activeChannel);
+	return summaries.filter((item) => channelOf(item) === activeChannel
+		&& (activeChannel !== 'subagent' || subagentIdOf(item) === selectedSubagentId));
+}
+
+function selectRequestForCurrentView() {
+	const visible = visibleSummaries();
+	const saved = selections.get(selectionKey());
+	selectedSequence = visible.some((item) => item.sequence === saved) ? saved : (visible[0]?.sequence ?? null);
+}
+
+function renderEmptyDetail(message) {
+	requests?.cancel('detail');
+	renderedFingerprint = null;
+	detailPane.removeAttribute('data-sequence');
+	detailPane.replaceChildren(element('div', 'empty-state', message));
 }
 
 const sourceTablist = dashCreateTablist({
@@ -284,24 +328,57 @@ const sourceTablist = dashCreateTablist({
 			if (focused) sourceTablist.focus(tab.key);
 			return;
 		}
-		if (selectedSequence != null) selections.set(activeChannel, selectedSequence);
+		if (selectedSequence != null) selections.set(selectionKey(), selectedSequence);
 		activeChannel = tab.key;
 		sourcePanel.setAttribute('aria-labelledby', 'tab-' + tab.key);
-		const visible = visibleSummaries();
-		const saved = selections.get(activeChannel);
-		selectedSequence = visible.some((item) => item.sequence === saved) ? saved : (visible[0]?.sequence ?? null);
+		sourcePanel.classList.toggle('subagent-mode', activeChannel === 'subagent');
+		subagentList.classList.toggle('hidden', activeChannel !== 'subagent');
+		syncSelectedSubagent();
+		selectRequestForCurrentView();
 		renderedFingerprint = null;
+		renderSubagentList();
 		renderRequestList();
+		const visible = visibleSummaries();
 		const selected = visible.find((item) => item.sequence === selectedSequence);
 		if (selected) renderDetail(selected);
-		else {
-			requests?.cancel('detail');
-			detailPane.removeAttribute('data-sequence');
-			detailPane.replaceChildren(element('div', 'empty-state', 'No captured requests for ' + tab.label + '.'));
-		}
+		else renderEmptyDetail('No captured requests for ' + tab.label + '.');
 		if (focused) sourceTablist.focus(tab.key);
 	},
 });
+
+function renderSubagentList() {
+	subagentList.replaceChildren();
+	if (activeChannel !== 'subagent') return;
+	const agents = availableSubagents();
+	if (!agents.length) {
+		subagentList.append(element('div', 'empty-state', 'No subagents captured in this session.'));
+		return;
+	}
+	agents.forEach((agent) => {
+		const button = document.createElement('button');
+		button.type = 'button';
+		button.className = 'subagent-row dash-row' + (agent.id === selectedSubagentId ? ' selected' : '');
+		button.setAttribute('aria-pressed', agent.id === selectedSubagentId ? 'true' : 'false');
+		const title = document.createElement('strong');
+		title.textContent = agent.label;
+		const meta = document.createElement('span');
+		meta.textContent = agent.id + ' · ' + agent.count + (agent.count === 1 ? ' request' : ' requests');
+		button.append(title, meta);
+		button.addEventListener('click', () => {
+			if (agent.id === selectedSubagentId) return;
+			if (selectedSequence != null) selections.set(selectionKey(), selectedSequence);
+			selectedSubagentId = agent.id;
+			selectRequestForCurrentView();
+			renderedFingerprint = null;
+			renderSubagentList();
+			renderRequestList();
+			const selected = visibleSummaries().find((item) => item.sequence === selectedSequence);
+			if (selected) renderDetail(selected);
+			else renderEmptyDetail('No captured requests for ' + agent.label + '.');
+		});
+		subagentList.append(button);
+	});
+}
 
 function renderRequestList() {
 	requestList.replaceChildren();
@@ -323,7 +400,7 @@ function renderRequestList() {
 		button.append(title, meta, usageBar(item.usage, 'request-usage-bar'));
 		button.addEventListener('click', () => {
 			selectedSequence = item.sequence;
-			selections.set(activeChannel, selectedSequence);
+			selections.set(selectionKey(), selectedSequence);
 			renderedFingerprint = null;
 			renderRequestList();
 			renderDetail(item);
@@ -395,22 +472,24 @@ function refresh() {
 			document.getElementById('pausedText').textContent = data.diagnostic || 'Capture paused.';
 
 			summaries = data.records.slice().reverse();
-			const visible = visibleSummaries();
+			syncSelectedSubagent();
+			let visible = visibleSummaries();
 			if (!visible.some((item) => item.sequence === selectedSequence)) {
-				const saved = selections.get(activeChannel);
-				selectedSequence = visible.some((item) => item.sequence === saved) ? saved : (visible[0]?.sequence ?? null);
+				selectRequestForCurrentView();
+				visible = visibleSummaries();
 			}
-			if (selectedSequence != null) selections.set(activeChannel, selectedSequence);
+			if (selectedSequence != null) selections.set(selectionKey(), selectedSequence);
 			sourceTablist.update();
+			renderSubagentList();
 			renderRequestList();
 
 			const selected = visible.find((item) => item.sequence === selectedSequence);
 			if (!selected) {
-				requests.cancel('detail');
-				renderedFingerprint = null;
-				const label = tabs.find((tab) => tab.key === activeChannel)?.label || activeChannel;
-				detailPane.removeAttribute('data-sequence');
-				detailPane.replaceChildren(element('div', 'empty-state', 'No captured requests for ' + label + '.'));
+				const subagent = availableSubagents().find((agent) => agent.id === selectedSubagentId);
+				const label = activeChannel === 'subagent'
+					? (subagent?.label || 'Subagents')
+					: (tabs.find((tab) => tab.key === activeChannel)?.label || activeChannel);
+				renderEmptyDetail('No captured requests for ' + label + '.');
 			} else if (renderedFingerprint !== itemFingerprint(selected)) {
 				renderDetail(selected);
 			}
