@@ -28,6 +28,7 @@ Deployment/
 .pi/workflow-runs/
 .pi/workflow-approvals/
 .pi/extensions/config-skill/update-skill/
+.pi/extensions/orca-*.ts
 .pi/profiles/*.json
 !.pi/profiles/default.json
 
