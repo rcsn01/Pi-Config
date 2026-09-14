@@ -100,15 +100,16 @@ describe("createPlanWorkspace", () => {
 		}
 	});
 
-	it("preserves symlinks instead of copying external targets", async () => {
+	it.runIf(process.platform !== "win32")("preserves symlinks instead of copying external targets", async () => {
 		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
 		const externalRoot = mkdtempSync(join(tmpdir(), "pi-plan-external-"));
 		writeFileSync(join(externalRoot, "outside.txt"), "outside\n");
-		symlinkSync(join(externalRoot, "outside.txt"), join(hostRoot, "outside-link"));
+		const target = join(externalRoot, "outside.txt");
+		symlinkSync(target, join(hostRoot, "outside-link"));
 		const workspace = await createPlanWorkspace(hostRoot);
 		try {
 			expect(lstatSync(join(workspace.sandboxRoot, "outside-link")).isSymbolicLink()).toBe(true);
-			expect(readlinkSync(join(workspace.sandboxRoot, "outside-link"))).toBe(join(externalRoot, "outside.txt"));
+			expect(readlinkSync(join(workspace.sandboxRoot, "outside-link"))).toBe(target);
 		} finally {
 			await workspace.dispose();
 			rmSync(hostRoot, { recursive: true, force: true });
@@ -218,7 +219,7 @@ describe("createPlanWorkspace", () => {
 		}
 	}, 20_000);
 
-	it("produces equivalent complete trees with clone and fs.cp strategies", async () => {
+	it.runIf(process.platform !== "win32")("produces equivalent complete trees with clone and fs.cp strategies", async () => {
 		const hostRoot = mkdtempSync(join(tmpdir(), "pi-plan-host-"));
 		const externalRoot = mkdtempSync(join(tmpdir(), "pi-plan-external-"));
 		mkdirSync(join(hostRoot, "nested", "node_modules"), { recursive: true });
@@ -278,6 +279,7 @@ describe("createPlanWorkspace", () => {
 		const started = new Promise<void>((resolvePromise) => { cloneStarted = resolvePromise; });
 		const creating = createPlanWorkspace(hostRoot, {
 			signal: controller.signal,
+			platform: "linux",
 			supportsCloning: async () => true,
 			runCloneCommand: async (args, signal) => {
 				const destination = args.at(-1)!;

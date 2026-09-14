@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { createLineReader, killProcessGroup, resolvePiInvocation, spawnInGroup, terminateChildProcess, type LineReader, type SpawnProcess } from "./child-process.ts";
 
 const realPlatform = process.platform;
@@ -74,10 +74,12 @@ describe("resolvePiInvocation", () => {
 
 	it("classifies a symlink by its real target path, not its link name", () => {
 		const root = createEntryRoot();
+		const linkType = process.platform === "win32" ? "junction" : undefined;
 		const target = path.join(root, "target.mjs");
-		fs.writeFileSync(target, "export {};");
+		if (linkType) fs.mkdirSync(target);
+		else fs.writeFileSync(target, "export {};");
 		const unlabeledLink = path.join(root, "entry-link");
-		fs.symlinkSync(target, unlabeledLink);
+		fs.symlinkSync(target, unlabeledLink, linkType);
 		expect(resolvePiInvocation(unlabeledLink)).toEqual({
 			command: process.execPath,
 			baseArgs: [fs.realpathSync(target)],
@@ -85,9 +87,10 @@ describe("resolvePiInvocation", () => {
 		});
 
 		const plain = path.join(root, "plain.txt");
-		fs.writeFileSync(plain, "text");
+		if (linkType) fs.mkdirSync(plain);
+		else fs.writeFileSync(plain, "text");
 		const misleadingLink = path.join(root, "misleading.js");
-		fs.symlinkSync(plain, misleadingLink);
+		fs.symlinkSync(plain, misleadingLink, linkType);
 		expect(resolvePiInvocation(misleadingLink)).toEqual({ command: "pi", baseArgs: [], exact: false });
 	});
 
@@ -340,6 +343,8 @@ describe("createLineReader", () => {
 });
 
 describe("killProcessGroup", () => {
+	beforeEach(() => setPlatform("linux"));
+
 	afterEach(() => {
 		setPlatform(realPlatform);
 		vi.restoreAllMocks();
@@ -387,6 +392,8 @@ describe("killProcessGroup", () => {
 });
 
 describe("terminateChildProcess", () => {
+	beforeEach(() => setPlatform("linux"));
+
 	afterEach(() => {
 		setPlatform(realPlatform);
 		vi.useRealTimers();
@@ -588,6 +595,8 @@ describe("terminateChildProcess", () => {
 });
 
 describe("spawnInGroup", () => {
+	beforeEach(() => setPlatform("linux"));
+
 	type SpawnMock = Mock<(command: string, args: readonly string[], options: SpawnOptions) => FakeChild>;
 
 	/** `typeof spawn`'s overloads cannot accept a mock returning a fake child, so

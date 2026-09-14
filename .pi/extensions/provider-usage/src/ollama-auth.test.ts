@@ -157,7 +157,8 @@ describe("Ollama request signing", () => {
 
 describe("Ollama auth inspection", () => {
 	it("resolves the fixed home-relative key path", () => {
-		expect(ollamaKeyPath("/home/user")).toBe("/home/user/.ollama/id_ed25519");
+		const home = join("home", "user");
+		expect(ollamaKeyPath(home)).toBe(join(home, ".ollama", "id_ed25519"));
 	});
 
 	it("reports a ready key carrying only the pem credential", async () => {

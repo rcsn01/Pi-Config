@@ -741,7 +741,7 @@ test('workflow worktrees normalize ids, reuse existing paths, and carry preserva
     assert.equal(run.result.generated.worktree.branchId, 'workflow-run-mix-gen');
     assert.equal(run.result.generated.worktree.branch, 'fleet/workflow-run-mix-gen');
     assert.equal(
-      await readFile(path.join(cwd, '.pi', 'worktrees', 'workflow-run-mix-gen', 'base.txt'), 'utf8'),
+      (await readFile(path.join(cwd, '.pi', 'worktrees', 'workflow-run-mix-gen', 'base.txt'), 'utf8')).replaceAll('\r\n', '\n'),
       'base\n',
     );
 

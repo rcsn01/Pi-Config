@@ -66,7 +66,8 @@ describe("Profile document helpers", () => {
 	});
 
 	it("derives the default Profile directory from the Settings document", () => {
-		expect(profilesDirectoryFor("/project/.pi/settings.json")).toBe("/project/.pi/profiles");
+		const settingsPath = join("project-root", ".pi", "settings.json");
+		expect(profilesDirectoryFor(settingsPath)).toBe(join("project-root", ".pi", "profiles"));
 	});
 
 	it("builds Profile paths from validated names", () => {

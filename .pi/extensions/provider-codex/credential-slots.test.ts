@@ -263,7 +263,7 @@ describe("CodexCredentialSlotStore", () => {
 		await expect(store.switchTo("missing")).rejects.toMatchObject({ code: "SLOT_NOT_FOUND" });
 	});
 
-	it("initializes a missing auth file with private permissions", () => {
+	it("initializes a missing auth file with private POSIX permissions", () => {
 		const root = mkdtempSync(join(tmpdir(), "provider-codex-missing-"));
 		roots.push(root);
 		const path = join(root, "agent", "auth.json");
@@ -271,7 +271,7 @@ describe("CodexCredentialSlotStore", () => {
 		const inspection = store.inspect();
 		expect(inspection.activeSlotName).toBe("default");
 		expect(readFileSync(path, "utf8")).toBe("{}");
-		expect(statSync(path).mode & 0o777).toBe(0o600);
+		if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
 	});
 
 	it("is resolved by ModelRuntime after a switch without reloading the session", async () => {

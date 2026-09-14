@@ -115,11 +115,13 @@ describe("shared git", () => {
 		const selectedFiles = [
 			"space name.txt",
 			"-leading.txt",
-			"star*.txt",
-			"question?.txt",
-			"left[.txt",
-			"right].txt",
-			"colon:name.txt",
+			...(process.platform === "win32" ? [] : [
+				"star*.txt",
+				"question?.txt",
+				"left[.txt",
+				"right].txt",
+				"colon:name.txt",
+			]),
 		];
 		const decoyFiles = ["starX.txt", "questionX.txt", "leftx.txt", "unrelated.txt"];
 		const allFiles = [...selectedFiles, ...decoyFiles];

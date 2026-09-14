@@ -28,6 +28,10 @@ function extensionArguments(args: readonly string[]): string[] {
 	return args.flatMap((value, index) => value === "--extension" ? [args[index + 1]!] : []);
 }
 
+function hasPathSuffix(value: string, suffix: string): boolean {
+	return path.normalize(value).endsWith(path.normalize(suffix));
+}
+
 beforeEach(() => resetObservabilityServiceForTests());
 
 afterEach(() => {
@@ -276,8 +280,8 @@ describe("Subagent child execution", () => {
 			"--no-skills", "--no-extensions", "--tools", "read,safe_bash",
 			"--model", "openai/test-model", "--thinking", "minimal", "Task: Inspect code",
 		]));
-		expect(args.some((value) => value.endsWith("tools/safe-bash.ts"))).toBe(true);
-		expect(args.filter((value) => value.endsWith("session-compaction/index.ts"))).toHaveLength(1);
+		expect(args.some((value) => hasPathSuffix(value, "tools/safe-bash.ts"))).toBe(true);
+		expect(args.filter((value) => hasPathSuffix(value, "session-compaction/index.ts"))).toHaveLength(1);
 		expect(options.cwd).toBe("/workspace");
 		expect(result).toMatchObject({ output: "Finished", exitCode: 0, progress: { status: "completed" } });
 		expect(progress[0]).toMatchObject({ type: "started" });
@@ -341,7 +345,7 @@ describe("Subagent child execution", () => {
 		await waitForProcess(spawn.processes);
 		const [, args] = spawn.spawnProcess.mock.calls[0];
 		expect(args[args.indexOf("--tools") + 1]).toBe("read,grep,find,ls,repo_query");
-		expect(args.some((value) => value.endsWith("tools/repo-query.ts"))).toBe(true);
+		expect(args.some((value) => hasPathSuffix(value, "tools/repo-query.ts"))).toBe(true);
 		spawn.processes[0].emit("close", 0);
 		await promise;
 	});
@@ -359,9 +363,9 @@ describe("Subagent child execution", () => {
 		const [, args] = spawn.spawnProcess.mock.calls[0];
 		expect(args[args.indexOf("--tools") + 1]).toBe("ddg_search,ddg_fetch");
 		expect(args).not.toContain("--no-tools");
-		expect(args.filter((value) => value.endsWith("tools-web-search/index.ts"))).toHaveLength(1);
-		expect(args.filter((value) => value.endsWith("tools-web-fetch/index.ts"))).toHaveLength(1);
-		expect(args.filter((value) => value.endsWith("session-compaction/index.ts"))).toHaveLength(1);
+		expect(args.filter((value) => hasPathSuffix(value, "tools-web-search/index.ts"))).toHaveLength(1);
+		expect(args.filter((value) => hasPathSuffix(value, "tools-web-fetch/index.ts"))).toHaveLength(1);
+		expect(args.filter((value) => hasPathSuffix(value, "session-compaction/index.ts"))).toHaveLength(1);
 		spawn.processes[0].emit("close", 0);
 		await promise;
 	});
