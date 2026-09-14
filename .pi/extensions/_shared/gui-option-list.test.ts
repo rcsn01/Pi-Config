@@ -47,19 +47,17 @@ const options = [
 ] as const;
 
 describe("GUI option list", () => {
-	it("uses the shared frame and configured checklist controls", async () => {
+	it("uses Space to toggle and the configured confirm key to save", async () => {
 		const h = tuiHarness((component) => {
 			const lines = component.render(80);
 			expect(lines).toContain("→ ● Alpha");
-			expect(lines.join("\n")).toContain("k/j navigate · y toggle · x cancel · space also toggles");
+			expect(lines.join("\n")).toContain("k/j navigate · y save · x cancel · space toggle");
 			for (const width of [1, 8, 20, 40, 80, 120]) {
 				expect(component.render(width).every((line: string) => visibleWidth(line) <= width)).toBe(true);
 			}
-			component.handleInput("y");
+			component.handleInput(" ");
 			component.handleInput("j");
-			component.handleInput("y");
-			component.handleInput("j");
-			component.handleInput("j");
+			component.handleInput(" ");
 			component.handleInput("y");
 		});
 		await expect(pickGuiOptions(h.ctx, { title: "Choose options", options: [...options] }))
@@ -71,8 +69,7 @@ describe("GUI option list", () => {
 		const h = tuiHarness((component) => {
 			component.handleInput("j");
 			component.handleInput("j");
-			component.handleInput("y");
-			component.handleInput("j");
+			component.handleInput(" ");
 			component.handleInput("y");
 		});
 		await expect(pickGuiOptions(h.ctx, { title: "Choose options", options: [...options] }))
