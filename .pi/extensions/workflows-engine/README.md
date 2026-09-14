@@ -71,7 +71,7 @@ Rules:
 
 `dependsOn` can declare downstream dependencies. `/workflow restart <run-id> <key>` invalidates the selected key and any keys projected from explicit dependency events.
 
-`agent_started` records an admitted launch attempt: the runtime persists it before Subagent launch preflight validates the agent name and launch configuration. A preflight or execution rejection appends `agent_failed`, so the event stream always contains the complete attempt. A misspelled agent name may therefore create the requested worktree before the launch fails; the worktree remains governed by the existing preservation policy.
+`agent_started` records an admitted launch attempt: the runtime persists it before Subagent launch preflight validates the agent name and launch configuration. A preflight or execution rejection appends `agent_failed`, so the event stream always contains the complete attempt. A misspelled agent name may therefore create the requested worktree before the launch fails. Explicit cleanup discovers the worktree from the admitted attempt even though the failed agent has no diff summary.
 
 ## Trust Model
 
@@ -119,7 +119,9 @@ No workflow silently merges worktree changes. Use:
 /workflow integrate <run-id> <agent-key>
 ```
 
-to apply a stored patch to the main checkout after `git apply --check`. Review, test, and commit manually. Cleanup is explicit with `/workflow cleanup-worktrees <run-id>` and skips dirty worktrees.
+to apply a stored patch to the main checkout after `git apply --check`. Review, test, and commit manually.
+
+Cleanup is explicit with `/workflow cleanup-worktrees <run-id>`. The `preserve` field is carried preservation metadata; no automatic cleanup currently consumes it. The explicit command ignores `preserve`, removes clean registered worktrees, skips dirty or invalid targets, and never force-removes. Its active-run exclusion is process-local, like the Workflow run lease.
 
 ## Bundled Workflows
 
