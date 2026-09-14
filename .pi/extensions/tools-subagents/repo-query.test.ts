@@ -181,7 +181,7 @@ describe("repo_query module", () => {
 		mkdirSync(join(root, "deleted"));
 		writeFileSync(join(root, "deleted", "gone.txt"), "gone");
 		unlinkSync(join(root, "deleted", "gone.txt"));
-		symlinkSync(outside, join(root, "outside-link"), "dir");
+		symlinkSync(outside, join(root, "outside-link"), process.platform === "win32" ? "junction" : "dir");
 		const executor = async () => "ok";
 		const deleted = await run(root, [
 			{ kind: "git_diff", mode: "uncommitted", paths: ["deleted/gone.txt"] },
@@ -232,7 +232,7 @@ describe("repo_query module", () => {
 		const outside = fixture();
 		writeFileSync(join(outside, "secret.txt"), "secret");
 		writeFileSync(join(root, "inside.txt"), "inside");
-		symlinkSync(outside, join(root, "outside-link"), "dir");
+		symlinkSync(outside, join(root, "outside-link"), process.platform === "win32" ? "junction" : "dir");
 		const executor = async () => "never reached";
 
 		await expect(run(root, [{ kind: "read", path: "../secret.txt" }], executor)).rejects.toThrow("escapes");

@@ -49,8 +49,10 @@ describe("FileRunPersistence", () => {
 		const cwd = await project();
 		temporary.push(cwd);
 		const persistence = new FileRunPersistence(cwd, "run-3");
-		expect(await persistence.writeArtifact("diffs/change.patch", "patch")).toBe("artifacts/diffs/change.patch");
-		expect(await readFile(path.join(persistence.paths().root, "artifacts/diffs/change.patch"), "utf8")).toBe("patch");
+		expect(await persistence.writeArtifact("diffs/change.patch", "patch"))
+			.toBe(path.join("artifacts", "diffs", "change.patch"));
+		expect(await readFile(path.join(persistence.paths().root, "artifacts", "diffs", "change.patch"), "utf8"))
+			.toBe("patch");
 		await expect(persistence.writeArtifact("../escape", "bad")).rejects.toThrow(/escapes/);
 		expect(() => safeArtifactPath(persistence.paths().artifacts, "../escape")).toThrow(/escapes/);
 	});

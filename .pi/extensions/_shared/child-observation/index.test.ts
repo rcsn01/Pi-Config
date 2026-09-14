@@ -53,7 +53,7 @@ describe("Child observation module", () => {
 		prepared.attach(child);
 
 		expect(prepared.args.slice(-2)[0]).toBe("--extension");
-		expect(prepared.args.at(-1)).toMatch(/_shared\/child-observation\/child-extension\.ts$/);
+		expect(prepared.args.at(-1)).toMatch(/_shared[\\/]child-observation[\\/]child-extension\.ts$/);
 		expect(prepared.env).toMatchObject({ PATH: "/bin", PI_CHILD_OBSERVATION_FD: "3" });
 		expect(prepared.stdio).toEqual(["ignore", "pipe", "pipe", "pipe"]);
 

@@ -157,7 +157,7 @@ describe("worktree tool characterization", () => {
 		await create(execute, { branch_id: "alpha" });
 
 		expect(errorText(await create(execute, { branch_id: "alpha" })))
-			.toBe("Error: Worktree path already exists: .pi/worktrees/alpha");
+			.toBe(`Error: Worktree path already exists: ${join(".pi", "worktrees", "alpha")}`);
 
 		// Same branch from a different path: the branch check fires.
 		await git(root, ["worktree", "add", "-b", "fleet/beta", join(root, "elsewhere-beta")]);

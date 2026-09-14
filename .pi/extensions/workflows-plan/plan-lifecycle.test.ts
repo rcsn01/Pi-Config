@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import planModeExtension, {
 	createPlanModeExtension,
@@ -82,7 +83,7 @@ describe("Plan Mode tool policy integration", () => {
 
 		await harness.emit("session_start", { type: "session_start", reason: "startup" });
 
-		expect(stores.createModelSelectionPersistence).toHaveBeenCalledWith(expect.stringContaining("/profiles/focused.json"));
+		expect(stores.createModelSelectionPersistence).toHaveBeenCalledWith(expect.stringContaining(join("profiles", "focused.json")));
 		expect(stores.createModelSelectionPersistence.mock.invocationCallOrder[0]).toBeLessThan(stores.capture.mock.invocationCallOrder[0]);
 	});
 
