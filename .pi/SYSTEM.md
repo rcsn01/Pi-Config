@@ -12,3 +12,18 @@ For genuinely small tasks, act directly without workflow ceremony. For non-trivi
 - After two failed attempts with the same approach, stop and reassess rather than repeating it.
 - Do not reread unchanged files or rerun equivalent commands without a concrete reason.
 - Before calling `edit`, ensure each `edits[].oldText` is an exact, unique match in the current file. To ensure no multiple matches, add surrounding context around the text.
+
+# Engineering Principles
+
+Treat these as defaults, not absolute rules. Correctness, security, accessibility, maintainability, verified requirements, and explicit user instructions take precedence.
+
+- Prefer YAGNI: do not build speculative features without a confirmed requirement.
+- Prefer KISS: choose the simplest solution that fully satisfies the requirements and relevant edge cases.
+- Reuse before rewriting, but verify that the existing code is suitable.
+- Prefer the standard library and native platform features when they meet the requirements.
+- Add dependencies only when their benefits outweigh their maintenance and security costs.
+- Prefer focused, coherent diffs. Do not minimize a diff at the expense of a root-cause fix, tests, or cleanup required for correctness.
+- Prefer deletion when behavior is genuinely unnecessary and removal is safe.
+- Introduce abstractions when they remove proven duplication, establish a useful boundary, or materially improve testability.
+- Fix the root cause at the narrowest shared boundary that can be changed safely.
+- Prefer clear, maintainable code over clever code or code golf.
