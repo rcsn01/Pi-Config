@@ -33,7 +33,7 @@ describe("analysis page", () => {
 		expect(() => new Function(script!)).not.toThrow();
 	});
 
-	it("filters source tabs, reports counts and empty states, and restores per-tab selection", async () => {
+	it("filters source tabs and subagent requests, reports counts, and restores selections", async () => {
 		const { window, document } = parseHTML(ANALYSIS_PAGE);
 		const records = [
 			{ sequence: 1, source: { channel: "main", invocationId: "main", displayLabel: "Main agent" }, provider: "openai", model: "main", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 0, requestedAt: 1, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
@@ -81,17 +81,31 @@ describe("analysis page", () => {
 		expect(requestBars[1]!.classList.contains("usage-unavailable")).toBe(true);
 		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #2");
 
+		expect(document.getElementById("subagentList")?.classList.contains("hidden")).toBe(true);
 		tabs[1]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(Array.from(document.querySelectorAll(".request-row strong"), (row) => row.textContent)).toEqual([
-			"#4 explorer · openai/explorer", "#3 worker · openai/worker",
+		expect(document.getElementById("sourcePanel")?.classList.contains("subagent-mode")).toBe(true);
+		expect(document.getElementById("subagentList")?.classList.contains("hidden")).toBe(false);
+		expect(Array.from(document.querySelectorAll(".subagent-row"), (row) => [
+			row.querySelector("strong")?.textContent, row.querySelector("span")?.textContent,
+		])).toEqual([
+			["explorer", "explorer-1 · 1 request"], ["worker", "worker-1 · 1 request"],
 		]);
-		document.querySelectorAll<HTMLButtonElement>(".request-row")[1]!.click();
+		expect(document.querySelector(".subagent-row.selected strong")?.textContent).toBe("explorer");
+		expect(Array.from(document.querySelectorAll(".request-row strong"), (row) => row.textContent)).toEqual([
+			"#4 explorer · openai/explorer",
+		]);
+		document.querySelectorAll<HTMLButtonElement>(".subagent-row")[1]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(Array.from(document.querySelectorAll(".request-row strong"), (row) => row.textContent)).toEqual([
+			"#3 worker · openai/worker",
+		]);
+		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #3");
 		tabs[0]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		tabs[1]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(document.querySelector(".subagent-row.selected strong")?.textContent).toBe("worker");
 		expect(document.querySelector(".request-row.selected strong")?.textContent).toContain("#3 worker");
 
 		tabs[2]!.click();

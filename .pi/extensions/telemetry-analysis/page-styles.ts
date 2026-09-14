@@ -17,10 +17,11 @@ h2 { margin: 0 0 14px; font-size: 1.1rem; font-weight: 570; }
 .source-tabs { margin-bottom: 30px; }
 .empty-state { padding: 28px 12px; border: 0; border-radius: 0; color: var(--page-text-muted); text-align: center; }
 .workspace { display: grid; grid-template-columns: minmax(280px, .78fr) minmax(420px, 1.22fr); gap: 12px; align-items: start; }
-.request-list { overflow: auto; position: sticky; top: 12px; max-height: 68vh; background: transparent; }
-.request-row.selected { background: var(--page-surface-hover); box-shadow: inset 3px 0 var(--page-accent); }
-.request-row strong { color: var(--page-text-soft); }
-.request-row span { margin-top: 4px; color: var(--page-text-muted); font-size: .78rem; }
+.workspace.subagent-mode { grid-template-columns: minmax(180px, .45fr) minmax(260px, .72fr) minmax(420px, 1.2fr); }
+.subagent-list, .request-list { overflow: auto; position: sticky; top: 12px; max-height: 68vh; background: transparent; }
+.subagent-row.selected, .request-row.selected { background: var(--page-surface-hover); box-shadow: inset 3px 0 var(--page-accent); }
+.subagent-row strong, .request-row strong { color: var(--page-text-soft); }
+.subagent-row span, .request-row span { margin-top: 4px; color: var(--page-text-muted); font-size: .78rem; }
 .detail-pane { min-width: 0; padding: 16px 0; background: transparent; }
 .detail-pane:empty { display: none; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 24px; margin-bottom: 16px; }
@@ -62,9 +63,14 @@ pre { max-height: 600px; overflow: auto; padding: 12px 0; background: transparen
 .section-content { max-height: 600px; margin: 0; padding: 16px; border-top: 1px solid var(--page-line); font-size: .9rem; line-height: 1.55; }
 code { color: var(--page-text-soft); }
 details details { margin-top: 10px; }
+@media (max-width: 960px) {
+	.workspace.subagent-mode { grid-template-columns: minmax(180px, .55fr) minmax(280px, 1fr); }
+	.workspace.subagent-mode .detail-pane { grid-column: 1 / -1; }
+}
 @media (max-width: 760px) {
-	.workspace { grid-template-columns: 1fr; }
-	.request-list { position: static; max-height: 300px; }
+	.workspace, .workspace.subagent-mode { grid-template-columns: 1fr; }
+	.workspace.subagent-mode .detail-pane { grid-column: auto; }
+	.subagent-list, .request-list { position: static; max-height: 300px; }
 	.detail-pane { padding: 11px 0; }
 }
 `;
