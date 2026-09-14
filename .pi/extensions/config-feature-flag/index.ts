@@ -19,6 +19,7 @@ import {
 	loadExtensionCatalog,
 	type ExtensionCatalog,
 	type ExtensionCatalogEntry,
+	validateExtensionDisablements,
 	validateExtensionSelection,
 } from "./catalog.ts";
 
@@ -152,11 +153,8 @@ async function featuresToggleUI(
 		for (const ext of extensions) {
 			if (ext.protected) selectedSet.add(ext.name);
 		}
-		const issues = validateExtensionSelection(catalog, selectedSet);
-		if (issues.length > 0) {
-			ctx.ui.notify(`Extension changes blocked:\n${issues.join("\n")}`, "warning");
-			return;
-		}
+		const current = enabledExtensionNames(extensions);
+		if (!notifySelectionIssues(ctx, catalog, current, selectedSet, "Extension changes blocked")) return;
 
 		let moved = 0;
 		for (const ext of extensions) {
@@ -262,9 +260,10 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(`"${extName}" is already enabled.`, "info");
 						return;
 					}
-					const desired = enabledExtensionNames(extensions);
+					const current = enabledExtensionNames(extensions);
+					const desired = new Set(current);
 					desired.add(extName);
-					if (!notifySelectionIssues(ctx, catalog, desired)) return;
+					if (!notifySelectionIssues(ctx, catalog, current, desired)) return;
 					if (enableExtension(cwd, extName)) {
 						ctx.ui.notify(`"${extName}" enabled. Run /reload to apply.`, "info");
 					} else {
@@ -281,9 +280,10 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(`"${extName}" is already disabled.`, "info");
 						return;
 					}
-					const desired = enabledExtensionNames(extensions);
+					const current = enabledExtensionNames(extensions);
+					const desired = new Set(current);
 					desired.delete(extName);
-					if (!notifySelectionIssues(ctx, catalog, desired)) return;
+					if (!notifySelectionIssues(ctx, catalog, current, desired)) return;
 					if (disableExtension(cwd, extName)) {
 						ctx.ui.notify(`"${extName}" disabled. Run /reload to apply.`, "info");
 					} else {
@@ -301,10 +301,11 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(`"${extName}" already matches its default (${defaultEnabled ? "enabled" : "disabled"}).`, "info");
 						return;
 					}
-					const desired = enabledExtensionNames(extensions);
+					const current = enabledExtensionNames(extensions);
+					const desired = new Set(current);
 					if (defaultEnabled) desired.add(extName);
 					else desired.delete(extName);
-					if (!notifySelectionIssues(ctx, catalog, desired)) return;
+					if (!notifySelectionIssues(ctx, catalog, current, desired)) return;
 					if (setExtensionEnabled(cwd, extName, defaultEnabled)) {
 						ctx.ui.notify(`"${extName}" reset to default (${defaultEnabled ? "enabled" : "disabled"}). Run /reload to apply.`, "info");
 					} else {
@@ -340,10 +341,15 @@ function enabledExtensionNames(extensions: ExtensionInfo[]): Set<string> {
 function notifySelectionIssues(
 	ctx: ExtensionContext,
 	catalog: ExtensionCatalog,
-	enabled: ReadonlySet<string>,
+	currentlyEnabled: ReadonlySet<string>,
+	desiredEnabled: ReadonlySet<string>,
+	heading = "Extension change blocked",
 ): boolean {
-	const issues = validateExtensionSelection(catalog, enabled);
+	const disablementIssues = validateExtensionDisablements(catalog, currentlyEnabled, desiredEnabled);
+	const issues = disablementIssues.length > 0
+		? disablementIssues
+		: validateExtensionSelection(catalog, desiredEnabled);
 	if (issues.length === 0) return true;
-	ctx.ui.notify(`Extension change blocked:\n${issues.join("\n")}`, "warning");
+	ctx.ui.notify(`${heading}:\n${issues.join("\n")}`, "warning");
 	return false;
 }

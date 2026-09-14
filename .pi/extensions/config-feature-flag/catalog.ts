@@ -49,6 +49,12 @@ export function parseExtensionCatalog(value: unknown): ExtensionCatalog {
 	}
 
 	for (const [name, entry] of Object.entries(extensions)) {
+		for (const relationship of ["requires", "conflicts"] as const) {
+			const duplicate = entry[relationship].find((related, index, values) => values.indexOf(related) !== index);
+			if (duplicate !== undefined) {
+				throw new Error(`Extension "${name}" contains duplicate ${relationship} entry "${duplicate}".`);
+			}
+		}
 		for (const related of [...entry.requires, ...entry.conflicts]) {
 			if (!(related in extensions)) {
 				throw new Error(`Extension "${name}" references unknown extension "${related}".`);
@@ -58,6 +64,8 @@ export function parseExtensionCatalog(value: unknown): ExtensionCatalog {
 			}
 		}
 	}
+
+	validateRequirementCycles(extensions);
 
 	const defaults = new Set(
 		Object.entries(extensions)
@@ -70,6 +78,29 @@ export function parseExtensionCatalog(value: unknown): ExtensionCatalog {
 	}
 
 	return { version: 1, extensions };
+}
+
+export function validateExtensionDisablements(
+	catalog: ExtensionCatalog,
+	currentlyEnabled: ReadonlySet<string>,
+	desiredEnabled: ReadonlySet<string>,
+): string[] {
+	const issues: string[] = [];
+	const removed = [...currentlyEnabled]
+		.filter((name) => !desiredEnabled.has(name))
+		.sort();
+	const current = [...currentlyEnabled].sort();
+
+	for (const requirement of removed) {
+		for (const dependent of current) {
+			if (!catalog.extensions[dependent]?.requires.includes(requirement)) continue;
+			issues.push(
+				`Cannot disable "${requirement}": enabled extension "${dependent}" depends on it. Disable "${dependent}" first.`,
+			);
+		}
+	}
+
+	return issues;
 }
 
 export function validateExtensionSelection(
@@ -100,6 +131,29 @@ export function validateExtensionSelection(
 	}
 
 	return issues;
+}
+
+function validateRequirementCycles(extensions: Readonly<Record<string, ExtensionCatalogEntry>>): void {
+	const visited = new Set<string>();
+	const active = new Set<string>();
+	const stack: string[] = [];
+
+	const visit = (name: string): void => {
+		if (visited.has(name)) return;
+		if (active.has(name)) {
+			const cycleStart = stack.indexOf(name);
+			const cycle = [...stack.slice(cycleStart), name];
+			throw new Error(`Extension requirements contain a cycle: ${cycle.join(" → ")}.`);
+		}
+		active.add(name);
+		stack.push(name);
+		for (const requirement of [...extensions[name]!.requires].sort()) visit(requirement);
+		stack.pop();
+		active.delete(name);
+		visited.add(name);
+	};
+
+	for (const name of Object.keys(extensions).sort()) visit(name);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

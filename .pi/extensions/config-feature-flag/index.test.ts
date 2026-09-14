@@ -45,6 +45,39 @@ function createRepository(): string {
 	return root;
 }
 
+function createDependencyRepository(): string {
+	const root = createRepository();
+	mkdirSync(join(root, ".pi", "extensions", "core"));
+	writeFileSync(join(root, ".pi", "extensions", "core", "index.ts"), "export {};\n");
+	writeFileSync(
+		join(root, ".pi", "extensions", "catalog.json"),
+		`${JSON.stringify(
+			{
+				version: 1,
+				extensions: {
+					core: {
+						displayName: "Core",
+						pack: "core",
+						defaultEnabled: true,
+						requires: [],
+						conflicts: [],
+					},
+					worker: {
+						displayName: "Worker",
+						pack: "autonomy",
+						defaultEnabled: false,
+						requires: ["core"],
+						conflicts: [],
+					},
+				},
+			},
+			null,
+			2,
+		)}\n`,
+	);
+	return root;
+}
+
 interface Harness {
 	root: string;
 	commands: Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>;
@@ -124,6 +157,23 @@ describe("/features protection", () => {
 		);
 		expect(existsSync(join(root, ".pi", "extensions", "config-feature-flag", "index.ts"))).toBe(true);
 		expect(existsSync(join(root, ".pi", "extensions-disabled", "config-feature-flag"))).toBe(false);
+	});
+
+	it("refuses to disable a requirement until its enabled dependent is disabled first", async () => {
+		const root = createDependencyRepository();
+		const harness = createHarness(root);
+
+		await harness.run("disable core");
+		expect(harness.notify).toHaveBeenLastCalledWith(
+			'Extension change blocked:\nCannot disable "core": enabled extension "worker" depends on it. Disable "worker" first.',
+			"warning",
+		);
+		expect(existsSync(join(root, ".pi", "extensions", "core", "index.ts"))).toBe(true);
+
+		await harness.run("disable worker");
+		await harness.run("disable core");
+		expect(existsSync(join(root, ".pi", "extensions-disabled", "worker", "index.ts"))).toBe(true);
+		expect(existsSync(join(root, ".pi", "extensions-disabled", "core", "index.ts"))).toBe(true);
 	});
 
 	it("keeps protected extensions enabled when the interactive picker saves without them", async () => {
