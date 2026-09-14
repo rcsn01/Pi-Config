@@ -132,9 +132,7 @@ function requestCustomChecklist<T extends string>(
 		let cachedWidth: number | undefined;
 		let cachedLines: string[] | undefined;
 
-		const totalRows = options.length + 2;
-		const saveIndex = options.length;
-		const cancelIndex = options.length + 1;
+		const totalRows = options.length;
 		const maxVisibleOptions = Math.max(6, Math.min(12, totalRows));
 		const invalidate = () => {
 			cachedWidth = undefined;
@@ -145,17 +143,11 @@ function requestCustomChecklist<T extends string>(
 			let text: string;
 			let disabled = false;
 
-			if (index === saveIndex) {
-				text = `${UI_GLYPHS.confirm} Save selected`;
-			} else if (index === cancelIndex) {
-				text = `${UI_GLYPHS.cancel} Cancel`;
-			} else {
-				const option = options[index]!;
-				disabled = Boolean(option.disabled);
-				const mark = selected.has(option.value) ? UI_GLYPHS.checked : UI_GLYPHS.unchecked;
-				const description = option.description ? ` — ${option.description}` : "";
-				text = `${mark} ${option.label}${description}${disabled ? " (disabled)" : ""}`;
-			}
+			const option = options[index]!;
+			disabled = Boolean(option.disabled);
+			const mark = selected.has(option.value) ? UI_GLYPHS.checked : UI_GLYPHS.unchecked;
+			const description = option.description ? ` — ${option.description}` : "";
+			text = `${mark} ${option.label}${description}${disabled ? " (disabled)" : ""}`;
 
 			const prefix = active ? `${UI_GLYPHS.cursor} ` : "  ";
 			let line = truncateToWidth(prefix + text, width);
@@ -164,15 +156,6 @@ function requestCustomChecklist<T extends string>(
 			return line;
 		};
 		const toggleCurrent = () => {
-			if (cursor === saveIndex) {
-				done(Array.from(selected));
-				return;
-			}
-			if (cursor === cancelIndex) {
-				done(undefined);
-				return;
-			}
-
 			const option = options[cursor];
 			if (!option || option.disabled) return;
 			if (selected.has(option.value)) selected.delete(option.value);
@@ -181,6 +164,7 @@ function requestCustomChecklist<T extends string>(
 			tui.requestRender();
 		};
 		const moveCursor = (next: number) => {
+			if (totalRows === 0) return;
 			cursor = clamp(next, 0, totalRows - 1);
 			if (cursor < scroll) scroll = cursor;
 			if (cursor >= scroll + maxVisibleOptions) scroll = cursor - maxVisibleOptions + 1;
@@ -201,14 +185,14 @@ function requestCustomChecklist<T extends string>(
 				}
 				const hint = formatSelectorHint(keybindings, [
 					{ keybindings: ["tui.select.up", "tui.select.down"], description: "navigate", fallback: "up/down" },
-					{ keybindings: "tui.select.confirm", description: "toggle", fallback: "enter" },
+					{ keybindings: "tui.select.confirm", description: "save", fallback: "enter" },
 					{ keybindings: "tui.select.cancel", description: "cancel", fallback: "escape" },
 				]);
 				const lines = renderSelectorFrame(theme, width, {
 					title: request.title,
 					subtitle: splitMessage(request.message),
 					body,
-					hint: `${hint} · space also toggles`,
+					hint: `${hint} · space toggle`,
 				});
 				cachedWidth = width;
 				cachedLines = lines;
@@ -219,7 +203,8 @@ function requestCustomChecklist<T extends string>(
 				else if (keybindings.matches(data, "tui.select.down")) moveCursor(cursor + 1);
 				else if (matchesKey(data, Key.home)) moveCursor(0);
 				else if (matchesKey(data, Key.end)) moveCursor(totalRows - 1);
-				else if (keybindings.matches(data, "tui.select.confirm") || matchesKey(data, Key.space) || data === " ") toggleCurrent();
+				else if (keybindings.matches(data, "tui.select.confirm")) done(Array.from(selected));
+				else if (matchesKey(data, Key.space) || data === " ") toggleCurrent();
 				else if (keybindings.matches(data, "tui.select.cancel")) done(undefined);
 			},
 			invalidate,
