@@ -1,13 +1,6 @@
 {
 	"version": 1,
 	"extensions": {
-		"auto-compact": {
-			"displayName": "Auto Compact",
-			"pack": "core",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
 		"config-profiles": {
 			"displayName": "Settings Profiles",
 			"pack": "core",
@@ -64,13 +57,6 @@
 			"requires": [],
 			"conflicts": []
 		},
-		"diagnostics-cache-effort": {
-			"displayName": "Prompt Cache Effort Test",
-			"pack": "observability",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
 		"integration-fleet": {
 			"displayName": "Fleet Integration",
 			"pack": "excluded",
@@ -85,27 +71,6 @@
 			"requires": [],
 			"conflicts": []
 		},
-		"observability-analysis": {
-			"displayName": "Provider Request Analysis",
-			"pack": "observability",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
-		"observability-usage": {
-			"displayName": "Provider Usage",
-			"pack": "observability",
-			"defaultEnabled": false,
-			"requires": [],
-			"conflicts": []
-		},
-		"previous-message": {
-			"displayName": "Previous Message",
-			"pack": "editor",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
 		"provider-ollama": {
 			"displayName": "Ollama Cloud Provider",
 			"pack": "providers",
@@ -117,27 +82,13 @@
 			"displayName": "Provider Usage",
 			"pack": "observability",
 			"defaultEnabled": false,
-			"requires": [],
-			"conflicts": []
-		},
-		"subscription-usage": {
-			"displayName": "Subscription Usage",
-			"pack": "observability",
-			"defaultEnabled": true,
-			"requires": [],
+			"requires": ["provider-codex"],
 			"conflicts": []
 		},
 		"policy-permissions": {
 			"displayName": "Policy Permissions",
 			"pack": "safety",
 			"defaultEnabled": false,
-			"requires": [],
-			"conflicts": []
-		},
-		"session-auto-name": {
-			"displayName": "Session Auto Name",
-			"pack": "core",
-			"defaultEnabled": true,
 			"requires": [],
 			"conflicts": []
 		},
@@ -204,29 +155,8 @@
 			"requires": [],
 			"conflicts": []
 		},
-		"tools-file-context": {
-			"displayName": "File Context",
-			"pack": "core",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
 		"tools-file-picker": {
 			"displayName": "File Picker",
-			"pack": "core",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
-		"tools-file-search": {
-			"displayName": "File Search",
-			"pack": "core",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
-		"tools-lsp": {
-			"displayName": "Language Server Tools",
 			"pack": "core",
 			"defaultEnabled": true,
 			"requires": [],
@@ -236,7 +166,7 @@
 			"displayName": "Subagents",
 			"pack": "autonomy",
 			"defaultEnabled": false,
-			"requires": ["policy-permissions"],
+			"requires": ["policy-permissions", "session-compaction"],
 			"conflicts": []
 		},
 		"tools-todo": {
@@ -281,13 +211,6 @@
 			"requires": [],
 			"conflicts": []
 		},
-		"ui-copy-all": {
-			"displayName": "Copy Conversation",
-			"pack": "core",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
 		"ui-model-selector": {
 			"displayName": "Model, Thinking, and Context Selector",
 			"pack": "editor",
@@ -323,20 +246,6 @@
 			"requires": [],
 			"conflicts": []
 		},
-		"ui-sessions": {
-			"displayName": "Sessions",
-			"pack": "core",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
-		"ui-status-separators": {
-			"displayName": "Status Footer",
-			"pack": "core",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
 		"ui-steer-input": {
 			"displayName": "Steer Input Editor",
 			"pack": "editor",
@@ -344,25 +253,11 @@
 			"requires": [],
 			"conflicts": []
 		},
-		"ui-terminal-name": {
-			"displayName": "Terminal Title",
-			"pack": "core",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
-		"update-skill": {
-			"displayName": "Update Skills",
-			"pack": "core",
-			"defaultEnabled": true,
-			"requires": [],
-			"conflicts": []
-		},
 		"workflows-engine": {
 			"displayName": "Workflow Runtime",
 			"pack": "autonomy",
 			"defaultEnabled": false,
-			"requires": [],
+			"requires": ["tools-subagents"],
 			"conflicts": []
 		},
 		"workflows-goal": {
@@ -377,20 +272,6 @@
 			"pack": "planning",
 			"defaultEnabled": false,
 			"requires": ["policy-permissions", "tools-ask-user"],
-			"conflicts": []
-		},
-		"workflows-plan-mode": {
-			"displayName": "Plan Mode",
-			"pack": "planning",
-			"defaultEnabled": false,
-			"requires": ["policy-permissions", "tools-ask-user"],
-			"conflicts": []
-		},
-		"workflows-runtime": {
-			"displayName": "Workflow Runtime",
-			"pack": "autonomy",
-			"defaultEnabled": false,
-			"requires": ["policy-permissions", "tools-subagents"],
 			"conflicts": []
 		},
 		"workflows-side-conversation": {
