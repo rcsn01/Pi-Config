@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
 	collectGuardianUsage,
+	decideGuardianClassification,
 	parseGuardianDefinition,
 	parseGuardianVerdict,
 	runAutoReviewer,
@@ -18,6 +19,15 @@ writeFileSync(guardianPath, GUARDIAN_CONTENT);
 afterAll(() => {
 	rmSync(tempDir, { recursive: true, force: true });
 });
+
+function classification(
+	risk_level = "low",
+	user_authorization = "high",
+	exact_confirmation = false,
+	rationale = "safe",
+): string {
+	return JSON.stringify({ risk_level, user_authorization, exact_confirmation, rationale });
+}
 
 const REQUEST_USAGE = {
 	input: 10,
@@ -54,6 +64,7 @@ function fakeSession(plan: FakeSessionPlan = {}) {
 		...(entry.usage ? { usage: entry.usage } : {}),
 	}));
 	const abort = vi.fn(async () => {});
+	const dispose = vi.fn();
 	const session: GuardianPromptSession = {
 		model: plan.model === null ? undefined : plan.model ?? { provider: "test", id: "guardian-1" },
 		get messages() {
@@ -77,8 +88,9 @@ function fakeSession(plan: FakeSessionPlan = {}) {
 			}
 		}),
 		abort,
+		dispose,
 	};
-	return { session, abort };
+	return { session, abort, dispose };
 }
 
 function review(plan: FakeSessionPlan = {}, options: { timeoutMs?: number } = {}) {
@@ -115,43 +127,47 @@ describe("collectGuardianUsage", () => {
 });
 
 describe("parseGuardianVerdict", () => {
-	it("parses a JSON allow verdict with rationale", () => {
-		expect(parseGuardianVerdict('{"outcome":"allow","risk_level":"low","rationale":"safe read"}')).toEqual({
-			allowed: true,
-			reason: "safe read",
+	it("strictly parses the classification schema", () => {
+		expect(parseGuardianVerdict(classification("medium", "high", false, "bounded install"))).toEqual({
+			risk_level: "medium",
+			user_authorization: "high",
+			exact_confirmation: false,
+			rationale: "bounded install",
 		});
 	});
 
-	it("parses a JSON deny verdict with risk and rationale", () => {
-		const result = parseGuardianVerdict('{"outcome":"deny","risk_level":"high","rationale":"deletes files"}');
-		expect(result).not.toBe("unclear");
-		expect(result).toMatchObject({ allowed: false });
-		expect((result as { reason: string }).reason).toContain("deletes files");
+	it.each([
+		["markdown fences", `\`\`\`json\n${classification()}\n\`\`\``],
+		["bare outcome", "ALLOW"],
+		["missing field", '{"risk_level":"low","user_authorization":"high","rationale":"safe"}'],
+		["extra outcome field", '{"risk_level":"low","user_authorization":"high","exact_confirmation":false,"rationale":"safe","outcome":"allow"}'],
+		["invalid enum", classification("extreme", "high")],
+		["empty rationale", classification("low", "high", false, "")],
+	])("rejects %s", (_name, output) => {
+		expect(parseGuardianVerdict(output)).toBe("unclear");
+	});
+});
+
+describe("decideGuardianClassification", () => {
+	it("compares risk and authorization in code", () => {
+		expect(decideGuardianClassification({
+			risk_level: "high",
+			user_authorization: "medium",
+			exact_confirmation: true,
+			rationale: "insufficient authorization",
+		}).allowed).toBe(false);
+		expect(decideGuardianClassification({
+			risk_level: "medium",
+			user_authorization: "medium",
+			exact_confirmation: false,
+			rationale: "authorized install",
+		}).allowed).toBe(true);
 	});
 
-	it("strips markdown fences around JSON verdicts", () => {
-		expect(parseGuardianVerdict('```json\n{"outcome":"allow"}\n```')).toEqual({
-			allowed: true,
-			reason: "allowed",
-		});
-	});
-
-	it("accepts a bare ALLOW token", () => {
-		expect(parseGuardianVerdict("I think this is fine. ALLOW")).toEqual({
-			allowed: true,
-			reason: "Guardian: allowed.",
-		});
-	});
-
-	it("accepts a bare DENY token", () => {
-		expect(parseGuardianVerdict("This is unsafe. DENY.")).toEqual({
-			allowed: false,
-			reason: "Guardian: denied.",
-		});
-	});
-
-	it("returns 'unclear' for ambiguous responses", () => {
-		expect(parseGuardianVerdict("I am not sure what to do here.")).toBe("unclear");
+	it("requires high authorization and exact confirmation for critical risk", () => {
+		const base = { risk_level: "critical", user_authorization: "high", rationale: "destructive" } as const;
+		expect(decideGuardianClassification({ ...base, exact_confirmation: false }).allowed).toBe(false);
+		expect(decideGuardianClassification({ ...base, exact_confirmation: true }).allowed).toBe(true);
 	});
 });
 
@@ -178,22 +194,24 @@ describe("parseGuardianDefinition", () => {
 });
 
 describe("runAutoReviewer decision matrix", () => {
-	it("returns parsed allow and deny verdicts", async () => {
-		const allowed = review({ text: '{"outcome":"allow","rationale":"safe read"}' });
+	it("returns deterministic allow and deny verdicts", async () => {
+		const allowed = review({ text: classification("low", "high", false, "safe read") });
 		const allow = await allowed.promise;
-		expect(allow).toMatchObject({ allowed: true, reason: "safe read" });
-		expect(allowed.session.prompt).toHaveBeenCalledWith(expect.stringContaining("Title: Test action"));
+		expect(allow).toMatchObject({ allowed: true, reason: "risk: low | auth: high | safe read" });
+		expect(allowed.session.prompt).toHaveBeenCalledWith(expect.stringContaining('"title": "Test action"'));
 		expect(allowed.session.prompt).toHaveBeenCalledWith(expect.stringContaining("rm -rf /tmp/scratch"));
 
-		const denied = review({ text: '{"outcome":"deny","risk_level":"high","rationale":"deletes files"}' });
+		const denied = review({ text: classification("high", "medium", true, "deletes files") });
 		const deny = await denied.promise;
 		expect(deny).toMatchObject({
 			allowed: false,
-			reason: "risk: high | deletes files",
+			reason: "risk: high | auth: medium | deletes files",
 		});
+		expect(allowed.dispose).toHaveBeenCalledOnce();
+		expect(denied.dispose).toHaveBeenCalledOnce();
 	});
 
-	it("fails closed on empty and ambiguous responses", async () => {
+	it("fails closed on empty and invalid responses", async () => {
 		const empty = await review({ text: "" }).promise;
 		expect(empty).toMatchObject({
 			allowed: false,
@@ -206,10 +224,10 @@ describe("runAutoReviewer decision matrix", () => {
 			reason: "Guardian returned no response; blocked for safety.",
 		});
 
-		const ambiguous = await review({ text: "I am not sure what to do here." }).promise;
-		expect(ambiguous).toMatchObject({
+		const invalid = await review({ text: "I am not sure what to do here." }).promise;
+		expect(invalid).toMatchObject({
 			allowed: false,
-			reason: "Guardian returned ambiguous response; blocked for safety.",
+			reason: "Guardian returned invalid classification; blocked for safety.",
 		});
 	});
 
@@ -254,19 +272,6 @@ describe("runAutoReviewer decision matrix", () => {
 				reason: "Guardian timed out after 5s; blocked for safety.",
 			});
 			expect(timedOut.abort).toHaveBeenCalledOnce();
-
-			// A failing abort is swallowed; the review still fails closed.
-			const stranded = fakeSession({ never: true });
-			stranded.abort.mockRejectedValue(new Error("abort failed"));
-			const pendingAbort = runAutoReviewer(
-				"Test action",
-				"message",
-				{ sessionFactory: async () => stranded.session, timeoutMs: 4000 },
-				guardianPath,
-			);
-			await vi.advanceTimersByTimeAsync(4000);
-			await expect(pendingAbort).resolves.toMatchObject({ allowed: false });
-			expect(stranded.abort).toHaveBeenCalledOnce();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -274,7 +279,7 @@ describe("runAutoReviewer decision matrix", () => {
 
 	it("attributes model and request usage on success and failure", async () => {
 		const success = await review({
-			text: '{"outcome":"allow"}',
+			text: classification(),
 			usage: REQUEST_USAGE,
 			model: { provider: "anthropic", id: "claude-guardian" },
 			prior: [{ text: "previous turn", usage: { ...REQUEST_USAGE, input: 999 } }],
@@ -287,7 +292,7 @@ describe("runAutoReviewer decision matrix", () => {
 		expect(failure.model).toBe("test/guardian-1");
 		expect(failure.usage).toMatchObject({ input: 10 });
 
-		const unattributed = await review({ text: '{"outcome":"allow"}', model: null }).promise;
+		const unattributed = await review({ text: classification(), model: null }).promise;
 		expect("model" in unattributed).toBe(false);
 		expect("usage" in unattributed).toBe(false);
 	});
@@ -297,7 +302,7 @@ describe("runAutoReviewer decision matrix", () => {
 		let maxActive = 0;
 		const factory = vi.fn(async (): Promise<GuardianPromptSession> =>
 			fakeSession({
-				text: '{"outcome":"allow"}',
+				text: classification(),
 				holdMs: 15,
 				onPromptStart: () => {
 					active += 1;
@@ -318,5 +323,31 @@ describe("runAutoReviewer decision matrix", () => {
 		expect(first.allowed).toBe(true);
 		expect(second.allowed).toBe(true);
 		expect(factory).toHaveBeenCalledTimes(2);
+	});
+
+	it("blocks later reviews when a timed-out request cannot be aborted", async () => {
+		vi.useFakeTimers();
+		try {
+			const stranded = fakeSession({ never: true });
+			stranded.abort.mockRejectedValue(new Error("provider did not stop"));
+			const first = runAutoReviewer(
+				"stranded",
+				"message",
+				{ sessionFactory: async () => stranded.session, timeoutMs: 4000 },
+				guardianPath,
+			);
+			await vi.advanceTimersByTimeAsync(4000);
+			await expect(first).resolves.toMatchObject({ allowed: false });
+
+			const nextFactory = vi.fn(async () => fakeSession({ text: classification() }).session);
+			await expect(runAutoReviewer("next", "message", { sessionFactory: nextFactory }, guardianPath))
+				.resolves.toMatchObject({
+					allowed: false,
+					reason: expect.stringContaining("abort failed after timeout"),
+				});
+			expect(nextFactory).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

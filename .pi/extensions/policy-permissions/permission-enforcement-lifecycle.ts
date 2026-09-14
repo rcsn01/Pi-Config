@@ -7,7 +7,53 @@ import type { ApprovalResult, ToolCallInput } from "./policy-types.ts";
 
 export interface GuardianContextSnapshot {
 	lastUserPrompt: string;
+	lastUserPromptTruncated?: boolean;
 	precedingAssistantMessage: string;
+	precedingAssistantMessageTruncated?: boolean;
+}
+
+export interface BoundedGuardianEvidence {
+	text: string;
+	truncated: boolean;
+}
+
+/** Preserve both ends of long evidence so destructive suffixes are not hidden. */
+export function boundGuardianEvidence(text: string, maxLength: number): BoundedGuardianEvidence {
+	if (text.length <= maxLength) return { text, truncated: false };
+	const marker = "\n...[truncated]...\n";
+	const available = Math.max(0, maxLength - marker.length);
+	const headLength = Math.ceil(available / 2);
+	const tailLength = Math.floor(available / 2);
+	return {
+		text: `${text.slice(0, headLength)}${marker}${text.slice(text.length - tailLength)}`,
+		truncated: true,
+	};
+}
+
+export function buildGuardianEvaluationMessage(
+	context: GuardianContextSnapshot,
+	title: string,
+	actionDescription: string,
+	triggers: readonly string[],
+): string {
+	const action = boundGuardianEvidence(actionDescription, 8_000);
+	return JSON.stringify({
+		schema_version: 1,
+		user_request: {
+			text: context.lastUserPrompt || "(unknown)",
+			truncated: context.lastUserPromptTruncated === true,
+		},
+		preceding_agent_turn: {
+			text: context.precedingAssistantMessage || "(none)",
+			truncated: context.precedingAssistantMessageTruncated === true,
+		},
+		action: {
+			title,
+			description: action.text,
+			description_truncated: action.truncated,
+			triggers: [...triggers],
+		},
+	});
 }
 
 export interface PermissionEnforcementEnvironment<HostContext> {
@@ -150,10 +196,12 @@ export function createPermissionEnforcementLifecycle<HostContext>(
 		if (!environment.hasUI) {
 			return { allowed: false, reason: "Auto-review: no UI available for guardian fallback." };
 		}
-		const userRequest = environment.guardianContext.lastUserPrompt || "(unknown)";
-		const precedingTurn = environment.guardianContext.precedingAssistantMessage || "(none)";
-		const evaluationMessage =
-			`User request: ${userRequest}\n\nAgent's preceding turn:\n${precedingTurn}\n\nAction: ${title}\n${actionDescription}`;
+		const evaluationMessage = buildGuardianEvaluationMessage(
+			environment.guardianContext,
+			title,
+			actionDescription,
+			triggers,
+		);
 		try {
 			const result = await adapter.runGuardianReview(
 				environment.hostContext,

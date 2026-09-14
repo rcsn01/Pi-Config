@@ -22,20 +22,23 @@ h2 { margin: 0 0 14px; font-size: 1.1rem; font-weight: 570; }
 .subagent-row.selected, .request-row.selected { background: var(--page-surface-hover); box-shadow: inset 3px 0 var(--page-accent); }
 .subagent-row strong, .request-row strong { color: var(--page-text-soft); }
 .subagent-row span, .request-row span { margin-top: 4px; color: var(--page-text-muted); font-size: .78rem; }
-.detail-pane { min-width: 0; padding: 16px 0; background: transparent; }
+.detail-pane { min-width: 0; padding: 10px 0; background: transparent; }
 .detail-pane:empty { display: none; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 24px; margin-bottom: 16px; }
-.metric { min-width: 0; padding: 10px 0; background: transparent; }
-.metric .muted { margin-bottom: 3px; font-size: .78rem; }
-.metric > div:last-child { overflow-wrap: anywhere; color: var(--page-text); }
+.request-overview { margin-bottom: 18px; padding: 8px 0 7px; border-top: 1px solid var(--page-line); border-bottom: 1px solid var(--page-line); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 5px 16px; margin: 0; }
+.detail-grid { margin-bottom: 7px; }
+.metric { min-width: 0; padding: 3px 0; background: transparent; }
+.metric .muted { margin-bottom: 1px; font-size: .72rem; line-height: 1.2; }
+.metric > div:last-child { overflow-wrap: anywhere; color: var(--page-text); font-size: .88rem; line-height: 1.3; }
+.summary-label { margin: 5px 0 4px; color: var(--page-text-muted); font-size: .72rem; font-weight: 600; }
 .token-input { --token-color: var(--token-input); }
 .token-cache-input { --token-color: var(--token-cache-input); }
 .token-cache-write { --token-color: var(--token-cache-write); }
 .token-output { --token-color: var(--token-output); }
 .token-reasoning { --token-color: var(--token-reasoning); }
-.token-metric { border-top: 2px solid var(--token-color); }
+.token-metric { padding-top: 5px; border-top: 1px solid var(--token-color); }
 .token-metric > div:last-child { color: var(--token-color); font-weight: 600; }
-.bar { display: flex; height: 18px; margin: 10px 0; overflow: hidden; border: 1px solid var(--page-line); border-radius: 5px; background: var(--page-line); }
+.bar { display: flex; height: 12px; margin: 6px 0 1px; overflow: hidden; border: 1px solid var(--page-line); border-radius: 4px; background: var(--page-line); }
 .bar span { min-width: 1px; margin: 0; }
 .bar span + span { border-left: 1px solid var(--page-bg); }
 .request-usage-bar { height: 7px; margin: 8px -12px -11px; border-width: 1px 0 0; border-radius: 0 0 9px 9px; }

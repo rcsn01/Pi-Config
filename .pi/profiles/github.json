@@ -45,8 +45,8 @@
   },
   "guardian": {
     "provider": "github-copilot",
-    "modelId": "gpt-5.6-sol",
-    "thinkingLevel": "low",
-    "contextWindow": 272000
+    "modelId": "gpt-5.6-luna",
+    "thinkingLevel": "high",
+    "contextWindow": 262500
   }
 }

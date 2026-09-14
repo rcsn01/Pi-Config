@@ -11,8 +11,6 @@ import {
 	applyEvent,
 	cloneJson,
 	projectDetail,
-	rebuildState,
-	validateProjection,
 	type RunState,
 	type WorkflowRunDetail,
 	type WorkflowRunEventToPersist,
@@ -21,7 +19,10 @@ import {
 	type WorkflowWorktreeView,
 } from "./workflow-run-state.ts";
 import { FileRunPersistence, runPaths, validateRunId, workflowRunsRoot, type RunPersistence } from "./run-store.ts";
+import { recoverWorkflowRunState, WorkflowRunNotFoundError } from "./workflow-run-recovery.ts";
 import { declareStatus } from "../../_shared/status-registry.ts";
+
+export { WorkflowEventLogEmptyError, WorkflowRunNotFoundError, isWorkflowRunNotFound } from "./workflow-run-recovery.ts";
 
 const WORKFLOW_STATUS_ID = "workflow";
 declareStatus({ id: WORKFLOW_STATUS_ID, style: "accent", order: 60 });
@@ -69,32 +70,12 @@ export interface WorkflowRunModule {
 	readEvents(cwd: string, runId: string): Promise<readonly WorkflowRunEventView[]>;
 }
 
-export class WorkflowRunNotFoundError extends Error {
-	readonly code = "WORKFLOW_RUN_NOT_FOUND";
-	constructor(runId: string) {
-		super(`Workflow run not found: ${runId}`);
-		this.name = "WorkflowRunNotFoundError";
-	}
-}
-
-export class WorkflowEventLogEmptyError extends Error {
-	readonly code = "WORKFLOW_EVENT_LOG_EMPTY";
-	constructor(file: string) {
-		super(`Workflow event log is empty: ${file}`);
-		this.name = "WorkflowEventLogEmptyError";
-	}
-}
-
 export class RunAlreadyActiveError extends Error {
 	readonly code = "WORKFLOW_RUN_ALREADY_ACTIVE";
 	constructor(runId: string) {
 		super(`Workflow run ${runId} already has an active operation`);
 		this.name = "RunAlreadyActiveError";
 	}
-}
-
-export function isWorkflowRunNotFound(error: unknown): error is WorkflowRunNotFoundError {
-	return error instanceof WorkflowRunNotFoundError || (Boolean(error) && typeof error === "object" && (error as { code?: unknown }).code === "WORKFLOW_RUN_NOT_FOUND");
 }
 
 export class AsyncQueue {
@@ -644,17 +625,7 @@ class WorkflowRun implements WorkflowRunHandle {
 	}
 
 	private async readStateOnQueue(): Promise<RunState> {
-		const log = await this.options.persistence.readEventLog();
-		if (log.exists) {
-			if (!log.events.length) throw new WorkflowEventLogEmptyError(this.options.persistence.paths().events);
-			const rebuilt = rebuildState(log.events);
-			const state = validateProjection(rebuilt, this.runId);
-			try { await this.options.persistence.writeProjection(cloneJson(state)); } catch {}
-			return state;
-		}
-		const projection = await this.options.persistence.readProjection();
-		if (projection === undefined) throw new WorkflowRunNotFoundError(this.runId);
-		return validateProjection(projection, this.runId);
+		return recoverWorkflowRunState(this.options.persistence, this.runId);
 	}
 
 	private async detailFromPrivateState(): Promise<WorkflowRunDetail> {
@@ -687,17 +658,7 @@ async function inspectWithPersistence(cwd: string, runId: string): Promise<Workf
 	const coordinator = coordinatorFor(persistence.paths().root);
 	if (coordinator.owner) return coordinator.owner.inspect();
 	return coordinator.queue.run(async () => {
-		const log = await persistence.readEventLog();
-		let state: RunState;
-		if (log.exists) {
-			if (!log.events.length) throw new WorkflowEventLogEmptyError(persistence.paths().events);
-			state = validateProjection(rebuildState(log.events), runId);
-			try { await persistence.writeProjection(cloneJson(state)); } catch {}
-		} else {
-			const projection = await persistence.readProjection();
-			if (projection === undefined) throw new WorkflowRunNotFoundError(runId);
-			state = validateProjection(projection, runId);
-		}
+		const state = await recoverWorkflowRunState(persistence, runId);
 		return projectDetail(state, {
 			root: persistence.paths().root,
 			events: persistence.paths().events,

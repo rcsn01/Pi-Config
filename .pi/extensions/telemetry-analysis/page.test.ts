@@ -70,6 +70,10 @@ describe("analysis page", () => {
 			["token-output", "width:20%"], ["token-reasoning", "width:10%"],
 		]);
 		expect(requestBars[0]!.getAttribute("aria-label")).toContain("Cache input: 20 tokens (40.0%)");
+		const requestOverview = document.querySelector<HTMLElement>(".request-overview")!;
+		expect(requestOverview.querySelectorAll(".detail-grid > .metric")).toHaveLength(8);
+		expect(requestOverview.querySelector(".summary-label")?.textContent).toBe("Exact provider-reported usage");
+		expect(requestOverview.querySelectorAll(".usage-grid > .metric")).toHaveLength(7);
 		const tokenMetrics = Array.from(document.querySelectorAll<HTMLElement>(".token-metric"));
 		expect(tokenMetrics.map((metric) => [metric.className, metric.firstElementChild?.textContent])).toEqual([
 			["metric token-metric token-input", "Input"],

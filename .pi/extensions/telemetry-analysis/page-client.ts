@@ -65,8 +65,9 @@ function usageBar(usage, className = '') {
 }
 
 function usageView(usage) {
-	const box = element('div', '');
-	const grid = element('div', 'grid');
+	const box = element('div', 'usage-summary');
+	box.append(element('div', 'summary-label', 'Exact provider-reported usage'));
+	const grid = element('div', 'grid usage-grid');
 	grid.append(
 		metric('Input', fmt(usage.input), 'token-input'),
 		metric('Cache input', fmt(usage.cacheRead), 'token-cache-input'),
@@ -424,7 +425,8 @@ function renderDetail(item) {
 
 			const heading = document.createElement('h2');
 			heading.textContent = (detail.source?.channel === 'compaction' ? 'Compaction #' : 'Request #') + item.sequence + ' · ' + detail.provider + '/' + detail.model;
-			const grid = element('div', 'grid');
+			const overview = element('div', 'request-overview');
+			const grid = element('div', 'grid detail-grid');
 			grid.append(
 				metric('Source', (detail.source?.displayLabel || 'Main agent') + ' · ' + (detail.source?.invocationId || 'legacy')),
 				metric('Run / turn', detail.run + ' / ' + detail.turn),
@@ -438,14 +440,11 @@ function renderDetail(item) {
 				metric('Correlation', detail.correlation),
 				metric('Retained bytes', fmt(detail.bytes)),
 			);
-			detailPane.replaceChildren(heading, grid);
+			overview.append(grid);
+			if (detail.usage) overview.append(usageView(detail.usage));
+			detailPane.replaceChildren(heading, overview);
 
 			if (detail.diagnostic) detailPane.append(element('div', 'alert', detail.diagnostic));
-			if (detail.usage) {
-				const usageHeading = document.createElement('h2');
-				usageHeading.textContent = 'Exact provider-reported usage';
-				detailPane.append(usageHeading, usageView(detail.usage));
-			}
 			detailPane.append(
 				sectionView(detail, openPointers),
 				rawDetails('Complete logical request JSON', detail.requestJson),

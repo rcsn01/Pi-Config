@@ -181,7 +181,7 @@ export async function evaluateToolCall(
 					concerns.push(`- External paths (outside workspace):\n${pathList}${extra}`);
 				}
 				if (triggers.length > 0) {
-					const message = `Command: ${trimmedCmd.slice(0, 200)}\n\nConcerns:\n${concerns.join("\n")}`;
+					const message = `Command: ${trimmedCmd}\n\nConcerns:\n${concerns.join("\n")}`;
 					const { allowed, reason } = await deps.guardianReview("Command Review", message, triggers);
 					if (!allowed) {
 						deps.onDenied(input, "Command Review", message);

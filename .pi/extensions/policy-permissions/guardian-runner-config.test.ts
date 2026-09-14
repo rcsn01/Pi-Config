@@ -16,6 +16,7 @@ const mocked = vi.hoisted(() => {
 	};
 	return {
 		catalogueModel,
+		resourceLoaderOptions: [] as any[],
 		createAgentSession: vi.fn(async (options: any) => {
 			const session: any = {
 				model: options.model,
@@ -25,7 +26,7 @@ const mocked = vi.hoisted(() => {
 				prompt: vi.fn(async () => {
 					session.messages.push({
 						role: "assistant",
-						content: [{ type: "text", text: '{"outcome":"allow","rationale":"safe"}' }],
+						content: [{ type: "text", text: '{"risk_level":"low","user_authorization":"high","exact_confirmation":false,"rationale":"safe"}' }],
 					});
 				}),
 			};
@@ -37,7 +38,7 @@ const mocked = vi.hoisted(() => {
 vi.mock("@earendil-works/pi-coding-agent", () => ({
 	createAgentSession: mocked.createAgentSession,
 	DefaultResourceLoader: class {
-		constructor(_options: unknown) {}
+		constructor(options: unknown) { mocked.resourceLoaderOptions.push(options); }
 		async reload() {}
 	},
 	getAgentDir: () => "/tmp/pi-agent",
@@ -65,6 +66,7 @@ const roots: string[] = [];
 afterEach(async () => {
 	await disposeAutoReviewer();
 	vi.clearAllMocks();
+	mocked.resourceLoaderOptions.length = 0;
 	while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
@@ -106,5 +108,11 @@ describe("Guardian runner profile configuration", () => {
 				contextWindow: 256_000,
 			}),
 		}));
+		const loaderOptions = mocked.resourceLoaderOptions.at(-1);
+		expect(loaderOptions.appendSystemPrompt).toBeUndefined();
+		expect(loaderOptions.appendSystemPromptOverride(["project APPEND_SYSTEM.md"])).toEqual([]);
+		expect(loaderOptions.systemPromptOverride()).toBe("Review safely.");
+		expect(loaderOptions.agentsFilesOverride({ agentsFiles: [{ path: "AGENTS.md" }] }))
+			.toEqual({ agentsFiles: [] });
 	});
 });

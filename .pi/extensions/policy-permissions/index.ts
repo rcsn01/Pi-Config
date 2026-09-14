@@ -40,6 +40,7 @@ import {
 import { loadModeFromFile, saveModeToFile } from "./mode-store.ts";
 import { modeRequestMarker, modeStatusLabel } from "./mode-registry.ts";
 import {
+	boundGuardianEvidence,
 	createPermissionEnforcementLifecycle,
 	permissionActionKey,
 } from "./permission-enforcement-lifecycle.ts";
@@ -92,8 +93,11 @@ function installSafetyPermissions(
 	let guardianSettings: GuardianSettings | undefined;
 	let profileBindingGeneration = 0;
 	let lastUserPrompt = "";
-	let lastAssistantMessage = ""; // most recent assistant message text (updated via message_end)
+	let lastUserPromptTruncated = false;
+	let lastAssistantMessage = ""; // bounded most recent assistant message text (updated via message_end)
+	let lastAssistantMessageTruncated = false;
 	let precedingAssistantMessage = ""; // snapshot of lastAssistantMessage at turn start — the prior turn's final assistant message (e.g. a proposal the user is replying to)
+	let precedingAssistantMessageTruncated = false;
 
 	const enforcement = createPermissionEnforcementLifecycle<ExtensionContext>({
 		loadMode: (cwd) => loadModeFromFile(cwd) ?? undefined,
@@ -172,7 +176,10 @@ function installSafetyPermissions(
 	pi.on("message_end", async (event) => {
 		if (event.message?.role !== "assistant") return;
 		const text = extractAssistantText(event.message);
-		if (text) lastAssistantMessage = text.slice(-2000);
+		if (!text) return;
+		const bounded = boundGuardianEvidence(text, 4_000);
+		lastAssistantMessage = bounded.text;
+		lastAssistantMessageTruncated = bounded.truncated;
 	});
 
 	// ── Custom rendering for auto-review verdict entries ──────────────
@@ -201,7 +208,12 @@ function installSafetyPermissions(
 				cwd: ctx.cwd,
 				hasUI: ctx.hasUI,
 				execPolicy: loadExecPolicy(),
-				guardianContext: { lastUserPrompt, precedingAssistantMessage },
+				guardianContext: {
+					lastUserPrompt,
+					lastUserPromptTruncated,
+					precedingAssistantMessage,
+					precedingAssistantMessageTruncated,
+				},
 				hostContext: ctx,
 			},
 		);
@@ -228,7 +240,10 @@ function installSafetyPermissions(
 		// replying to) and gives the guardian authorization context. Snapshotted here so
 		// current-turn assistant text cannot overwrite it before a tool_call fires.
 		precedingAssistantMessage = lastAssistantMessage;
-		lastUserPrompt = (event.prompt || "").slice(0, 500);
+		precedingAssistantMessageTruncated = lastAssistantMessageTruncated;
+		const boundedPrompt = boundGuardianEvidence(event.prompt || "", 2_000);
+		lastUserPrompt = boundedPrompt.text;
+		lastUserPromptTruncated = boundedPrompt.truncated;
 	});
 
 	// ── Commands ────────────────────────────────────────────────────────
