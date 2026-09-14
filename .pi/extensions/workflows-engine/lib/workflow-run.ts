@@ -63,11 +63,25 @@ export interface WorkflowRunHandle<TResult = unknown> {
 	inspect(): Promise<WorkflowRunDetail>;
 }
 
+export type WorkflowWorktreeCleanupSkipReason = "dirty" | "already-absent" | "invalid-record" | "git-failed";
+
+export interface WorkflowWorktreeCleanupSkip {
+	readonly key: string;
+	readonly reason: WorkflowWorktreeCleanupSkipReason;
+	readonly detail?: string;
+}
+
+export interface WorkflowWorktreeCleanupResult {
+	readonly cleaned: readonly string[];
+	readonly skipped: readonly WorkflowWorktreeCleanupSkip[];
+}
+
 export interface WorkflowRunModule {
 	create(options: PreparedWorkflowRunOptions): Promise<WorkflowRunHandle>;
 	inspect(cwd: string, runId: string): Promise<WorkflowRunDetail>;
 	list(cwd: string): Promise<readonly WorkflowRunSummary[]>;
 	readEvents(cwd: string, runId: string): Promise<readonly WorkflowRunEventView[]>;
+	cleanupWorktrees(cwd: string, runId: string, options?: { signal?: AbortSignal }): Promise<WorkflowWorktreeCleanupResult>;
 }
 
 export class RunAlreadyActiveError extends Error {
@@ -190,6 +204,20 @@ function safeWorktreeId(value: string): string {
 
 async function pathExists(file: string): Promise<boolean> {
 	try { await fsp.access(file); return true; } catch { return false; }
+}
+
+async function cleanupPathExists(file: string): Promise<boolean> {
+	try {
+		await fsp.access(file);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+		throw error;
+	}
+}
+
+function throwCleanupAborted(signal?: AbortSignal): void {
+	if (signal?.aborted) throw signalError(signal, "Workflow worktree cleanup aborted");
 }
 
 class WorkflowRun implements WorkflowRunHandle {
@@ -667,6 +695,136 @@ async function inspectWithPersistence(cwd: string, runId: string): Promise<Workf
 	});
 }
 
+interface CleanupTarget {
+	readonly path: string;
+	readonly keys: string[];
+}
+
+type CleanupKeyOutcome = "cleaned" | Omit<WorkflowWorktreeCleanupSkip, "key">;
+
+async function cleanupWorkflowWorktrees(
+	cwd: string,
+	runId: string,
+	options: { signal?: AbortSignal } = {},
+): Promise<WorkflowWorktreeCleanupResult> {
+	validateRunId(runId);
+	const persistence = new FileRunPersistence(cwd, runId);
+	const coordinator = coordinatorFor(persistence.paths().root);
+	return coordinator.queue.run(async () => {
+		if (coordinator.owner) throw new RunAlreadyActiveError(runId);
+		throwCleanupAborted(options.signal);
+		const state = await recoverWorkflowRunState(persistence, runId);
+		throwCleanupAborted(options.signal);
+		const keys = Object.keys(state.agents);
+		const outcomes = new Map<string, CleanupKeyOutcome>();
+		const targets = new Map<string, CleanupTarget>();
+		const managedRoot = path.resolve(cwd, ".pi", "worktrees");
+
+		for (const key of keys) {
+			throwCleanupAborted(options.signal);
+			const raw = state.agents[key].worktree;
+			if (raw === undefined) continue;
+			if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+				outcomes.set(key, { reason: "invalid-record", detail: "recorded worktree must be an object" });
+				continue;
+			}
+			const record = raw as Record<string, unknown>;
+			if (typeof record.path !== "string" || typeof record.branch !== "string" || typeof record.branchId !== "string") {
+				outcomes.set(key, { reason: "invalid-record", detail: "recorded worktree fields must be strings" });
+				continue;
+			}
+			let canonicalId: string;
+			try {
+				canonicalId = safeWorktreeId(record.branchId);
+			} catch {
+				outcomes.set(key, { reason: "invalid-record", detail: "recorded worktree branch ID is not canonical" });
+				continue;
+			}
+			if (canonicalId !== record.branchId) {
+				outcomes.set(key, { reason: "invalid-record", detail: "recorded worktree branch ID is not canonical" });
+				continue;
+			}
+			const expectedPath = path.resolve(managedRoot, canonicalId);
+			const recordedPath = path.resolve(record.path);
+			if (path.relative(expectedPath, recordedPath) !== "") {
+				outcomes.set(key, { reason: "invalid-record", detail: "recorded worktree path does not match branch ID" });
+				continue;
+			}
+			try {
+				await assertWorktreePath(expectedPath, managedRoot);
+			} catch {
+				outcomes.set(key, { reason: "invalid-record", detail: "recorded worktree path is invalid" });
+				continue;
+			}
+			const target = targets.get(expectedPath);
+			if (target) target.keys.push(key);
+			else targets.set(expectedPath, { path: expectedPath, keys: [key] });
+		}
+
+		const assign = (target: CleanupTarget, outcome: CleanupKeyOutcome) => {
+			for (const key of target.keys) outcomes.set(key, outcome);
+		};
+		for (const target of targets.values()) {
+			throwCleanupAborted(options.signal);
+			let exists: boolean;
+			try {
+				exists = await cleanupPathExists(target.path);
+			} catch {
+				assign(target, { reason: "invalid-record", detail: "recorded worktree path is inaccessible" });
+				continue;
+			}
+			if (!exists) {
+				assign(target, { reason: "already-absent" });
+				continue;
+			}
+			let status: Awaited<ReturnType<typeof runGit>>;
+			try {
+				status = await runGit(target.path, ["status", "--porcelain"], { signal: options.signal });
+				throwCleanupAborted(options.signal);
+			} catch (error) {
+				if (options.signal?.aborted || isAbortLike(error)) throw error;
+				assign(target, { reason: "git-failed", detail: errorMessage(error, "Git status failed") });
+				continue;
+			}
+			if (status.stdout.trim()) {
+				assign(target, { reason: "dirty" });
+				continue;
+			}
+			try {
+				await assertWorktreePath(target.path, managedRoot);
+				exists = await cleanupPathExists(target.path);
+				throwCleanupAborted(options.signal);
+			} catch (error) {
+				if (options.signal?.aborted || isAbortLike(error)) throw error;
+				assign(target, { reason: "invalid-record", detail: "recorded worktree path is invalid" });
+				continue;
+			}
+			if (!exists) {
+				assign(target, { reason: "already-absent" });
+				continue;
+			}
+			try {
+				await runGit(cwd, ["worktree", "remove", target.path], { signal: options.signal });
+				throwCleanupAborted(options.signal);
+				assign(target, "cleaned");
+			} catch (error) {
+				if (options.signal?.aborted || isAbortLike(error)) throw error;
+				assign(target, { reason: "git-failed", detail: errorMessage(error, "Git cleanup failed") });
+			}
+		}
+
+		throwCleanupAborted(options.signal);
+		const cleaned: string[] = [];
+		const skipped: WorkflowWorktreeCleanupSkip[] = [];
+		for (const key of keys) {
+			const outcome = outcomes.get(key);
+			if (outcome === "cleaned") cleaned.push(key);
+			else if (outcome) skipped.push({ key, ...outcome });
+		}
+		return { cleaned, skipped };
+	});
+}
+
 async function listWorkflowRuns(cwd: string): Promise<readonly WorkflowRunSummary[]> {
 	const base = workflowRunsRoot(cwd);
 	if (!fs.existsSync(base)) return [];
@@ -713,6 +871,7 @@ export const workflowRunModule: WorkflowRunModule = {
 	inspect: inspectWithPersistence,
 	list: listWorkflowRuns,
 	readEvents: readWorkflowEvents,
+	cleanupWorktrees: cleanupWorkflowWorktrees,
 };
 
 export { createWorkflowRun, WorkflowRun };

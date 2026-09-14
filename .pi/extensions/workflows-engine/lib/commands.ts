@@ -8,6 +8,8 @@ import {
 	type WorkflowRunDetail,
 	type WorkflowRunEventView,
 	type WorkflowRunSummary,
+	type WorkflowWorktreeCleanupResult,
+	type WorkflowWorktreeCleanupSkip,
 } from "./workflow-run.ts";
 import { prepareExistingWorkflowRun, prepareNewWorkflowRun, prepareStateEntry, type PreparedWorkflowRun } from "./runner.ts";
 import {
@@ -26,6 +28,7 @@ export interface WorkflowCommandService {
 	inspect(cwd: string, runId: string): Promise<WorkflowRunDetail>;
 	list(cwd: string): Promise<readonly WorkflowRunSummary[]>;
 	readEvents(cwd: string, runId: string): Promise<readonly WorkflowRunEventView[]>;
+	cleanupWorktrees(cwd: string, runId: string, options?: { signal?: AbortSignal }): Promise<WorkflowWorktreeCleanupResult>;
 }
 
 export const productionWorkflowCommandService: WorkflowCommandService = {
@@ -34,6 +37,7 @@ export const productionWorkflowCommandService: WorkflowCommandService = {
 	inspect: workflowRunModule.inspect,
 	list: workflowRunModule.list,
 	readEvents: workflowRunModule.readEvents,
+	cleanupWorktrees: workflowRunModule.cleanupWorktrees,
 };
 
 async function findEntryForDetail(cwd: string, detail: WorkflowRunDetail): Promise<RegistryEntry> {
@@ -180,24 +184,22 @@ async function handleIntegrate(service: WorkflowCommandService, ctx: ExtensionCo
 	ctx.ui.notify(`Applied workflow patch ${info.patchPathRelative || info.patchPath}. Review, test, and commit manually.`, "info");
 }
 
+function cleanupSkipText(skip: WorkflowWorktreeCleanupSkip): string {
+	let reason: string;
+	switch (skip.reason) {
+		case "dirty": reason = "dirty worktree preserved"; break;
+		case "already-absent": reason = "worktree already absent"; break;
+		case "invalid-record": reason = skip.detail || "invalid recorded worktree"; break;
+		case "git-failed": reason = skip.detail || "Git cleanup failed"; break;
+	}
+	return `${skip.key} (${reason})`;
+}
+
 async function handleCleanupWorktrees(service: WorkflowCommandService, ctx: ExtensionContext, runId: string): Promise<void> {
 	if (!runId) { ctx.ui.notify("Usage: /workflow cleanup-worktrees <run-id>", "warning"); return; }
-	const detail = await service.inspect(ctx.cwd, runId);
-	const cleaned: string[] = [];
-	const skipped: string[] = [];
-	for (const [key, agent] of Object.entries(detail.agents)) {
-		const info = agent.worktree;
-		if (!info?.path) continue;
-		try {
-			const status = await runGit(info.path, ["status", "--porcelain"], { signal: ctx.signal });
-			if (status.stdout.trim()) { skipped.push(`${key} (dirty worktree preserved)`); continue; }
-			await runGit(ctx.cwd, ["worktree", "remove", info.path], { signal: ctx.signal });
-			cleaned.push(key);
-		} catch (error: unknown) {
-			skipped.push(`${key} (${error instanceof Error ? error.message : String(error)})`);
-		}
-	}
-	ctx.ui.notify(`Workflow worktree cleanup\nCleaned: ${cleaned.join(", ") || "none"}\nSkipped: ${skipped.join(", ") || "none"}`, skipped.length ? "warning" : "info");
+	const result = await service.cleanupWorktrees(ctx.cwd, runId, { signal: ctx.signal });
+	const skipped = result.skipped.map(cleanupSkipText);
+	ctx.ui.notify(`Workflow worktree cleanup\nCleaned: ${result.cleaned.join(", ") || "none"}\nSkipped: ${skipped.join(", ") || "none"}`, skipped.length ? "warning" : "info");
 }
 
 async function runNamed(service: WorkflowCommandService, runControl: WorkflowRunControl, pi: ExtensionAPI, ctx: ExtensionContext, name: string, args: string, background = false): Promise<void> {
@@ -272,8 +274,8 @@ export function registerWorkflowCommands(
 					await handleIntegrate(service, ctx, runId, key);
 					return;
 				}
-				if (trimmed.startsWith("cleanup-worktrees ")) {
-					await handleCleanupWorktrees(service, ctx, trimmed.slice("cleanup-worktrees ".length).trim());
+				if (trimmed === "cleanup-worktrees" || trimmed.startsWith("cleanup-worktrees ")) {
+					await handleCleanupWorktrees(service, ctx, trimmed === "cleanup-worktrees" ? "" : trimmed.slice("cleanup-worktrees ".length).trim());
 					return;
 				}
 				const [name, ...rest] = trimmed.split(/\s+/);

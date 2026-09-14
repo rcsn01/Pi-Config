@@ -70,6 +70,7 @@ function service(runId = "run-1"): WorkflowCommandService {
 		inspect: async () => detail(runId, "completed"),
 		list: async () => [],
 		readEvents: async () => [],
+		cleanupWorktrees: async () => ({ cleaned: [], skipped: [] }),
 	};
 }
 
@@ -315,6 +316,71 @@ describe("workflow command adapter", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 
+	it("routes missing cleanup run IDs to usage without calling the module", async () => {
+		let calls = 0;
+		const commandService = { ...service(), cleanupWorktrees: async () => { calls++; return { cleaned: [], skipped: [] }; } };
+		const currentRegistration = register(new FakeRunControl(), commandService);
+		const current = context();
+		await currentRegistration.commands.get("workflow")("cleanup-worktrees", current.ctx);
+		expect(calls).toBe(0);
+		expect(current.notifications.at(-1)).toEqual({ message: "Usage: /workflow cleanup-worktrees <run-id>", level: "warning" });
+	});
+
+	it("delegates cleanup with the exact cwd, run ID, and signal", async () => {
+		const calls: unknown[][] = [];
+		const commandService = {
+			...service(),
+			cleanupWorktrees: async (...args: unknown[]) => { calls.push(args); return { cleaned: ["worker"], skipped: [] }; },
+		};
+		const currentRegistration = register(new FakeRunControl(), commandService);
+		const current = context("/tmp/workflow-cleanup");
+		await currentRegistration.commands.get("workflow")("cleanup-worktrees run-clean", current.ctx);
+		expect(calls).toEqual([[current.ctx.cwd, "run-clean", { signal: current.ctx.signal }]]);
+		expect(current.notifications.at(-1)).toEqual({
+			message: "Workflow worktree cleanup\nCleaned: worker\nSkipped: none",
+			level: "info",
+		});
+	});
+
+	it("renders empty cleanup and every structured skip reason", async () => {
+		const empty = context();
+		await register(new FakeRunControl(), service()).commands.get("workflow")("cleanup-worktrees run-empty", empty.ctx);
+		expect(empty.notifications.at(-1)).toEqual({
+			message: "Workflow worktree cleanup\nCleaned: none\nSkipped: none",
+			level: "info",
+		});
+
+		const commandService: WorkflowCommandService = {
+			...service(),
+			cleanupWorktrees: async () => ({
+				cleaned: [],
+				skipped: [
+					{ key: "dirty", reason: "dirty" },
+					{ key: "absent", reason: "already-absent" },
+					{ key: "invalid-detail", reason: "invalid-record", detail: "recorded path does not match branch ID" },
+					{ key: "invalid-fallback", reason: "invalid-record" },
+					{ key: "git-detail", reason: "git-failed", detail: "worktree is locked" },
+					{ key: "git-fallback", reason: "git-failed" },
+				],
+			}),
+		};
+		const currentRegistration = register(new FakeRunControl(), commandService);
+		const current = context();
+		await currentRegistration.commands.get("workflow")("cleanup-worktrees run-skips", current.ctx);
+		expect(current.notifications.at(-1)).toEqual({
+			message: "Workflow worktree cleanup\nCleaned: none\nSkipped: dirty (dirty worktree preserved), absent (worktree already absent), invalid-detail (recorded path does not match branch ID), invalid-fallback (invalid recorded worktree), git-detail (worktree is locked), git-fallback (Git cleanup failed)",
+			level: "warning",
+		});
+	});
+
+	it("routes cleanup rejection through the command error path", async () => {
+		const commandService = { ...service(), cleanupWorktrees: async () => { throw new Error("cleanup stopped"); } };
+		const currentRegistration = register(new FakeRunControl(), commandService);
+		const current = context();
+		await currentRegistration.commands.get("workflow")("cleanup-worktrees run-fail", current.ctx);
+		expect(current.notifications.at(-1)).toEqual({ message: "Workflow command failed: cleanup stopped", level: "error" });
+	});
+
 	it("does not fall back to live source when an existing snapshot is unreadable", async () => {
 		const commandService: WorkflowCommandService = {
 			prepareNew: async () => undefined,
@@ -322,6 +388,7 @@ describe("workflow command adapter", () => {
 			inspect: async () => ({ ...detail("run-source", "completed"), sourceSnapshotPath: "/definitely/missing/workflow.ts" }),
 			list: async () => [],
 			readEvents: async () => [],
+			cleanupWorktrees: async () => ({ cleaned: [], skipped: [] }),
 		};
 		const currentRegistration = register(new FakeRunControl(), commandService);
 		const current = context("/tmp/workflow-command-source");
@@ -336,6 +403,7 @@ describe("workflow command adapter", () => {
 			inspect: async () => { throw Object.assign(new Error("missing"), { code: "WORKFLOW_RUN_NOT_FOUND" }); },
 			list: async () => [],
 			readEvents: async () => { throw Object.assign(new Error("missing"), { code: "WORKFLOW_RUN_NOT_FOUND" }); },
+			cleanupWorktrees: async () => ({ cleaned: [], skipped: [] }),
 		};
 		const currentRegistration = register(new FakeRunControl(), commandService);
 		const current = context();
