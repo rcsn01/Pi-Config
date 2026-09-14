@@ -269,7 +269,8 @@ extension.
 
 ## Workflow runs
 
-- **Workflow run lifecycle** — `workflows-engine/lib/workflow-run.ts` owns one run's execution, pause and stop control, durable-key replay, agent admission, worktree result mapping, and lifecycle writes behind `WorkflowRunHandle`. `commands.ts` is a Pi adapter over that handle and typed read models. It does not read or mutate reducer state.
+- **Workflow run control module** — `workflows-engine/lib/workflow-run-control.ts` owns the session-local active-run registry, execute/restart dispatch, pause/stop lookup, operation settlement classification, cleanup, and shutdown stop-and-drain behind `WorkflowRunControl`. The production singleton preserves one process-local command-control registry. `commands.ts` prepares runs and owns Pi notifications and result messages.
+- **Workflow run lifecycle** — `workflows-engine/lib/workflow-run.ts` remains authoritative for one durable run's execution, pause and stop control, durable-key replay, agent admission, worktree result mapping, lifecycle writes, persistence ordering, and process-local lease behind `WorkflowRunHandle`. The command adapter and run control module do not read or mutate reducer state.
 - **Workflow run persistence** — `events.jsonl` is canonical and `state.json` is its materialized projection. `workflow-run-state.ts` owns reduction and read-model validation; `run-store.ts` performs file I/O only. A coordinator keyed by the canonical run storage root serializes in-process reads and writes and rejects a second active operation. It does not lock across Pi processes, so two processes writing one run directory remain unsupported.
 - **Workflow worktree policy** — the run lifecycle keeps its normalization, replay reuse, and preservation rules private. It shares the Git executor and artifact collector, but remains separate from `tools-worktree`.
 
