@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
 	clampThinkingLevel,
 	isContextOverflow,
@@ -11,6 +12,7 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import { type ExtensionContext, type ToolInfo } from "@earendil-works/pi-coding-agent";
+import { getObservabilityService, type ObservabilityEvent, type ObservabilitySource } from "../_shared/observability.ts";
 import { resolveModelContext } from "../_shared/model-selection.ts";
 import { ModelReferenceError, resolveModelReference } from "../_shared/model-reference.ts";
 import { advisorFailure, advisorSuccess, type AdvisorResult } from "./outcome.ts";
@@ -50,6 +52,45 @@ interface CompletionInput {
 }
 
 type CompleteAdvisor = (input: CompletionInput) => Promise<AssistantMessage>;
+type WithoutSource<T> = T extends unknown ? Omit<T, "source"> : never;
+
+function startAdvisorObservation(
+	model: Model<Api>,
+	messages: readonly Message[],
+	maxTokens: number,
+	thinkingLevel: ModelThinkingLevel,
+): ((event: WithoutSource<ObservabilityEvent>) => void) | undefined {
+	const observability = getObservabilityService();
+	if (!observability.isActive()) return undefined;
+	const source: ObservabilitySource = {
+		channel: "advisor",
+		invocationId: randomUUID(),
+		displayLabel: "Advisor",
+	};
+	const publish = (event: WithoutSource<ObservabilityEvent>) => {
+		observability.publish({ ...event, source } as ObservabilityEvent);
+	};
+	publish({ type: "agent_start" });
+	publish({ type: "turn_start", turnIndex: 0 });
+	publish({
+		type: "request",
+		provider: model.provider,
+		api: model.api,
+		model: model.id,
+		fidelity: "pi-preparation",
+		payload: {
+			systemPrompt: ADVISOR_SYSTEM_PROMPT,
+			messages,
+			tools: [],
+			options: {
+				maxTokens,
+				cacheRetention: "short",
+				...(thinkingLevel === "off" ? {} : { reasoning: thinkingLevel }),
+			},
+		},
+	});
+	return publish;
+}
 
 export function createAdvisorRunner(dependencies: { complete?: CompleteAdvisor } = {}): AdvisorRunner {
 	const complete = dependencies.complete ?? completeWithRegistry;
@@ -88,15 +129,19 @@ export function createAdvisorRunner(dependencies: { complete?: CompleteAdvisor }
 				return advisorFailure(error instanceof Error ? error.message : String(error), modelName);
 			}
 
+			const thinkingLevel = clampThinkingLevel(normalized, input.settings.thinkingLevel ?? "medium");
+			const observe = startAdvisorObservation(normalized, projection.messages, maxTokens, thinkingLevel);
 			try {
 				const response = await complete({
 					ctx: input.ctx,
 					model: normalized,
-					thinkingLevel: clampThinkingLevel(normalized, input.settings.thinkingLevel ?? "medium"),
+					thinkingLevel,
 					maxTokens,
 					messages: projection.messages,
 					signal: input.signal ?? input.ctx.signal,
 				});
+				observe?.({ type: "response" });
+				observe?.({ type: "assistant", message: response });
 				return resultFromResponse(response, modelName);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);

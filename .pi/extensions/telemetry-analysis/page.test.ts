@@ -40,7 +40,8 @@ describe("analysis page", () => {
 			{ sequence: 2, source: { channel: "main", invocationId: "main", displayLabel: "Main agent" }, provider: "openai", model: "main", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 1, requestedAt: 2, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider", usage: { input: 10, cacheRead: 20, cacheWrite: 5, output: 15, reasoning: 5, totalTokens: 50, cost: { total: 0 } } },
 			{ sequence: 3, source: { channel: "subagent", invocationId: "worker-1", displayLabel: "worker" }, provider: "openai", model: "worker", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 0, requestedAt: 3, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
 			{ sequence: 4, source: { channel: "subagent", invocationId: "explorer-1", displayLabel: "explorer" }, provider: "openai", model: "explorer", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 0, requestedAt: 4, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
-			{ sequence: 5, source: { channel: "compaction", invocationId: "compact-1", displayLabel: "Compaction" }, provider: "pi", model: "openai/main", api: "pi-compaction", apiLabel: "Pi Compaction Preparation", run: 1, turn: 0, requestedAt: 5, state: "complete", correlation: "exact", bytes: 10, fidelity: "pi-preparation" },
+			{ sequence: 5, source: { channel: "advisor", invocationId: "advisor-1", displayLabel: "Advisor" }, provider: "anthropic", model: "strong", api: "anthropic-messages", apiLabel: "Anthropic Messages", run: 1, turn: 0, requestedAt: 5, state: "complete", correlation: "exact", bytes: 10, fidelity: "pi-preparation" },
+			{ sequence: 6, source: { channel: "compaction", invocationId: "compact-1", displayLabel: "Compaction" }, provider: "pi", model: "openai/main", api: "pi-compaction", apiLabel: "Pi Compaction Preparation", run: 1, turn: 0, requestedAt: 6, state: "complete", correlation: "exact", bytes: 10, fidelity: "pi-preparation" },
 		];
 		Object.assign(window, {
 			location: { hash: "#token=test", pathname: "/" }, history: { replaceState: () => {} }, setInterval: () => 1,
@@ -57,10 +58,11 @@ describe("analysis page", () => {
 		expect(document.querySelector("main")?.firstElementChild?.id).toBe("sourceTabs");
 		expect(document.getElementById("activation")?.classList.contains("hidden")).toBe(true);
 		expect(document.getElementById("activation")?.textContent).toBe("");
-		expect(tabs.map((tab) => tab.textContent)).toEqual(["Main (2)", "Subagents (2)", "Guardian (0)", "Compaction (1)"]);
+		expect(tabs.map((tab) => tab.textContent)).toEqual(["Main (2)", "Subagents (2)", "Advisor (1)", "Guardian (0)", "Compaction (1)"]);
 		expect(tabs.map((tab) => [tab.id, tab.getAttribute("aria-controls"), tab.getAttribute("tabindex")])).toEqual([
 			["tab-main", "sourcePanel", "0"], ["tab-subagent", "sourcePanel", "-1"],
-			["tab-guardian", "sourcePanel", "-1"], ["tab-compaction", "sourcePanel", "-1"],
+			["tab-advisor", "sourcePanel", "-1"], ["tab-guardian", "sourcePanel", "-1"],
+			["tab-compaction", "sourcePanel", "-1"],
 		]);
 		expect(document.getElementById("sourcePanel")?.getAttribute("aria-labelledby")).toBe("tab-main");
 		const requestBars = Array.from(document.querySelectorAll<HTMLElement>(".request-usage-bar"));
@@ -113,11 +115,15 @@ describe("analysis page", () => {
 		expect(document.querySelector(".request-row.selected strong")?.textContent).toContain("#3 worker");
 
 		tabs[2]!.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #5");
+		expect(document.querySelector(".detail-pane")?.textContent).toContain("Advisor");
+		tabs[3]!.click();
 		expect(document.querySelector(".request-list .empty-state")?.textContent).toContain("No requests");
 		expect(document.querySelector(".detail-pane .empty-state")?.textContent).toContain("Guardian");
-		tabs[3]!.click();
+		tabs[4]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Compaction #5");
+		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Compaction #6");
 		expect(document.querySelector(".detail-pane")?.textContent).toContain("Pi-level preparation, not exact provider payload");
 	});
 

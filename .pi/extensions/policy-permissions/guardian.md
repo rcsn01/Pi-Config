@@ -19,8 +19,7 @@ Classify:
 2. **User authorization** — did the user agree to this action?
    You are given the user's request AND the agent's preceding turn (what the agent proposed/described just before the user replied). Decide whether a reasonable reader would conclude the user agreed to this kind of action. The user does NOT have to type the exact command or use any specific keywords.
 
-   - unknown: nothing suggests the user asked for or agreed to this
-   - low: only a loose, indirect connection to what the user said
+   - low: nothing suggests the user asked for or agreed to this, or the connection to what they said is only loose and indirect
    - medium: the user agreed in substance — e.g. they accepted a plan/goal that this action carries out, or their reply to a proposal reasonably covers this action
    - high: the user clearly wants this done — they asked for it, approved it, or agreed to a proposal that includes it
 
@@ -40,4 +39,4 @@ The host application makes the final allow/deny decision. You only classify the 
 
 You MUST output ONLY one JSON object with exactly these fields and no markdown:
 
-{"risk_level":"low|medium|high|critical","user_authorization":"unknown|low|medium|high","exact_confirmation":true|false,"rationale":"brief reason"}
+{"risk_level":"low|medium|high|critical","user_authorization":"low|medium|high","exact_confirmation":true|false,"rationale":"brief reason"}

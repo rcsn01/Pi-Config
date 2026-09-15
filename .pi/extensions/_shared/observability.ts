@@ -1,4 +1,4 @@
-export type ObservabilityChannel = "main" | "subagent" | "guardian" | "compaction";
+export type ObservabilityChannel = "main" | "subagent" | "advisor" | "guardian" | "compaction";
 
 export interface ObservabilitySource {
 	channel: ObservabilityChannel;
