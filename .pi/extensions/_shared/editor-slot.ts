@@ -20,10 +20,20 @@
  *   deferred flush mounts the highest-priority contributor's editor,
  *   reapplying the thinking border. A late registration re-flushes and still
  *   wins by priority — ownership is decided by priority, never by timing.
+ * - Input interception: one optional `EditorInputHandler` lives in the same
+ *   shared registry (`registerEditorInputHandler`). `ModelCommandRoutingEditor`
+ *   consults it on every keypress, before /model routing and the built-in
+ *   editor handling; returning `true` consumes the key. ui-steer-input uses
+ *   this to intercept Tab while the agent streams — the mounted editor is
+ *   never swapped. Note the dispatch boundary: a subclass (e.g.
+ *   PreviousMessageEditor) consumes some keys itself (Up, Down, dedicated
+ *   history bindings, Ctrl+C) before delegating to this base class, so the
+ *   hook only sees inputs the subclass delegates; it is not a universal
+ *   preprocessor.
  *
- * Transient editor swaps (steer during streaming, Plan Review command
- * submission) stay in their adapters: they capture and restore whatever this
- * module installed.
+ * The only remaining external editor swap is the synchronous Plan Review
+ * command bridge: it installs and restores the slot around a single
+ * synchronous submit call, so terminal input cannot reach the bridge editor.
  */
 
 import { CustomEditor, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -37,6 +47,14 @@ export type EditorFactory = (
 ) => EditorComponent;
 
 export type ModelCommandHandler = (args: string) => Promise<void>;
+
+/**
+ * Input handler consulted by ModelCommandRoutingEditor before its own
+ * routing and the built-in editor handling. Return `true` to consume the
+ * key; `false` delegates. Receives the raw terminal data and the editor
+ * instance the keypress reached.
+ */
+export type EditorInputHandler = (data: string, editor: EditorComponent) => boolean;
 
 /** Parse a standalone, single-line /model invocation without rewriting it. */
 export function parseModelCommand(text: string): string | undefined {
@@ -67,6 +85,7 @@ interface ContributionEntry {
 
 interface EditorSlotRegistry {
 	modelCommandHandler?: ModelCommandHandler;
+	editorInputHandler?: EditorInputHandler;
 	contributions: Map<string, ContributionEntry>;
 	nextOrder: number;
 	flushTimer?: ReturnType<typeof setTimeout>;
@@ -91,6 +110,24 @@ export function registerModelCommandHandler(handler: ModelCommandHandler): () =>
 
 export function getModelCommandHandler(): ModelCommandHandler | undefined {
 	return getRegistry().modelCommandHandler;
+}
+
+/**
+ * Register the input handler every ModelCommandRoutingEditor consults before
+ * its own key handling. Ownership-safe, like the /model handler registry: a
+ * later registration replaces the active handler, and the returned unregister
+ * only removes this handler, never a newer replacement.
+ */
+export function registerEditorInputHandler(handler: EditorInputHandler): () => void {
+	const registry = getRegistry();
+	registry.editorInputHandler = handler;
+	return () => {
+		if (registry.editorInputHandler === handler) registry.editorInputHandler = undefined;
+	};
+}
+
+export function getEditorInputHandler(): EditorInputHandler | undefined {
+	return getRegistry().editorInputHandler;
 }
 
 // -------------------------------------------------------- wave coordination ---
@@ -193,6 +230,11 @@ export class ModelCommandRoutingEditor extends CustomEditor {
 	}
 
 	override handleInput(data: string): void {
+		// Consult the shared input handler on every keypress: session editor
+		// construction and handler registration can happen in either order
+		// during the deferred session_start wave, so no construction-time
+		// snapshot can stand in for the registry.
+		if (getEditorInputHandler()?.(data, this)) return;
 		if (this.modelCommandHandler && this.routingKeybindings.matches(data, "tui.input.submit")) {
 			const args = parseModelCommand(this.getText());
 			if (args !== undefined) {

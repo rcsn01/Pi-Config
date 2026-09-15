@@ -6,12 +6,15 @@ import {
 	TUI_KEYBINDINGS,
 } from "@earendil-works/pi-tui";
 import {
+	getEditorInputHandler,
 	getModelCommandHandler,
 	installSessionEditor,
 	ModelCommandRoutingEditor,
 	parseModelCommand,
+	registerEditorInputHandler,
 	registerModelCommandHandler,
 	removeSessionEditor,
+	type EditorInputHandler,
 	type ModelCommandHandler,
 	type SessionEditorContribution,
 } from "./editor-slot.ts";
@@ -80,6 +83,12 @@ function registerHandler(handler: ModelCommandHandler): () => void {
 	return unregister;
 }
 
+function registerInputHandler(handler: EditorInputHandler): () => void {
+	const unregister = registerEditorInputHandler(handler);
+	handlerCleanups.push(unregister);
+	return unregister;
+}
+
 function stubTui(): TUI {
 	return { requestRender: vi.fn() } as unknown as TUI;
 }
@@ -130,6 +139,30 @@ describe("model command handler registry", () => {
 		registerHandler(second);
 		unregisterFirst();
 		expect(getModelCommandHandler()).toBe(second);
+	});
+});
+
+describe("editor input handler registry", () => {
+	it("exposes the registered handler and replaces it on re-register", () => {
+		const first: EditorInputHandler = () => false;
+		const second: EditorInputHandler = () => false;
+		registerInputHandler(first);
+		expect(getEditorInputHandler()).toBe(first);
+		registerInputHandler(second);
+		expect(getEditorInputHandler()).toBe(second);
+	});
+
+	it("does not let stale cleanup remove a newer active handler; the active unregister removes itself", () => {
+		const first: EditorInputHandler = () => false;
+		const second: EditorInputHandler = () => false;
+		const unregisterFirst = registerInputHandler(first);
+		const unregisterSecond = registerInputHandler(second);
+
+		unregisterFirst();
+		expect(getEditorInputHandler()).toBe(second);
+
+		unregisterSecond();
+		expect(getEditorInputHandler()).toBeUndefined();
 	});
 });
 
@@ -221,6 +254,53 @@ describe("ModelCommandRoutingEditor", () => {
 		editor.handleInput("\r");
 		expect(handler).toHaveBeenCalledWith("gpt-5.6-sol");
 		expect(editor.getText()).toBe("");
+	});
+
+	it("an editor constructed before handler registration sees the handler on the next keypress", () => {
+		const { editor, onSubmit } = createRoutingEditor();
+		editor.setText("hello");
+		editor.handleInput("\r");
+		expect(onSubmit).toHaveBeenCalledTimes(1);
+
+		const handler = vi.fn<EditorInputHandler>(() => false);
+		registerInputHandler(handler);
+		editor.setText("world");
+		editor.handleInput("\r");
+		expect(handler).toHaveBeenCalledWith("\r", editor);
+		expect(onSubmit).toHaveBeenCalledTimes(2);
+	});
+
+	it("a handler returning true prevents /model routing and built-in submit", () => {
+		const modelHandler = vi.fn<(args: string) => Promise<void>>(async () => {});
+		registerHandler(modelHandler);
+		const consumed = vi.fn<EditorInputHandler>(() => true);
+		registerInputHandler(consumed);
+		const { editor, onSubmit } = createRoutingEditor(modelHandler);
+
+		editor.setText("/model gpt-5.6-sol");
+		editor.handleInput("\r");
+		expect(consumed).toHaveBeenCalledWith("\r", editor);
+		expect(modelHandler).not.toHaveBeenCalled();
+		expect(onSubmit).not.toHaveBeenCalled();
+		expect(editor.getText()).toBe("/model gpt-5.6-sol");
+	});
+
+	it("a handler returning false preserves /model routing and ordinary built-in input", () => {
+		const modelHandler = vi.fn<(args: string) => Promise<void>>(async () => {});
+		registerHandler(modelHandler);
+		registerInputHandler(() => false);
+		const { editor, onSubmit } = createRoutingEditor(modelHandler);
+
+		editor.setText("/model gpt-5.6-sol");
+		editor.handleInput("\r");
+		expect(modelHandler).toHaveBeenCalledWith("gpt-5.6-sol");
+		expect(onSubmit).not.toHaveBeenCalled();
+		expect(editor.getText()).toBe("");
+
+		const { editor: plainEditor, onSubmit: plainSubmit } = createRoutingEditor(modelHandler);
+		plainEditor.setText("hello world");
+		plainEditor.handleInput("\r");
+		expect(plainSubmit).toHaveBeenCalledWith("hello world");
 	});
 });
 

@@ -1,85 +1,46 @@
 /**
  * Steer Input Extension
  *
- * Provides keyboard controls for mid-turn steering and follow-up queuing,
- * entirely within the project's extension (no global keybinding changes).
+ * Mid-turn steering and follow-up queuing without any editor replacement or
+ * global keybinding changes.
  *
- * During agent streaming, replaces the editor with a custom editor where:
+ * The mounted editor stays whatever the editor-slot module installed
+ * (normally ui-message-history's PreviousMessageEditor). While the agent
+ * streams, this extension registers one input handler with that module:
  *   Enter → steer (inject message after next tool call) — built-in pi behavior
- *   Tab   → queue follow-up (message delivered after agent finishes)
+ *   Tab   → queue the draft (delivered after the agent finishes)
  *
- * When idle, the normal editor is active and Tab/Enter behave as usual.
+ * Tab queueing requires the mounted editor to extend the editor-slot
+ * module's ModelCommandRoutingEditor, because the interception hook lives on
+ * that base class; both session editors this repository contributes do. A
+ * third-party editor that replaces the slot without that base class keeps
+ * its own Tab behavior. Up-arrow history and normal Enter behavior stay
+ * available at all times because no editor swap ever occurs — Pi's submit
+ * path records Enter-submitted steers through the mounted history editor.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	getModelCommandHandler,
-	ModelCommandRoutingEditor,
 	parseModelCommand,
+	registerEditorInputHandler,
+	type EditorInputHandler,
 } from "../_shared/editor-slot.ts";
-import { reapplyThinkingBorder } from "../_shared/editor-border.ts";
 
-/**
- * Wraps the built-in editor to intercept Tab during agent streaming.
- * Tab reads the current text, queues it as a followUp, and clears the editor.
- * Slash-prefixed input is queued separately and submitted after the current
- * response finishes, so Pi's normal slash-command handling runs generically.
- * When the custom model selector is enabled, /model invokes it directly both
- * on Enter and while queued. All other keys pass through to the built-in editor.
- */
-class SteerEditor extends ModelCommandRoutingEditor {
-	private sendFollowUp: (text: string) => void;
-	private queueSlashCommand: (text: string, submit?: (text: string) => void | Promise<void>) => void;
-
-	constructor(
-		tui: ConstructorParameters<typeof ModelCommandRoutingEditor>[0],
-		theme: ConstructorParameters<typeof ModelCommandRoutingEditor>[1],
-		keybindings: ConstructorParameters<typeof ModelCommandRoutingEditor>[2],
-		modelCommandHandler: ReturnType<typeof getModelCommandHandler>,
-		sendFollowUp: (text: string) => void,
-		queueSlashCommand: (text: string, submit?: (text: string) => void | Promise<void>) => void,
-	) {
-		super(tui, theme, keybindings, modelCommandHandler);
-		this.sendFollowUp = sendFollowUp;
-		this.queueSlashCommand = queueSlashCommand;
-	}
-
-	override handleInput(data: string): void {
-		if (matchesKey(data, Key.tab)) {
-			const text = this.getText().trim();
-			if (text) {
-				if (text.startsWith("/")) {
-					// pi.sendUserMessage(..., { deliverAs: "followUp" }) bypasses
-					// slash-command parsing by design. Keep slash commands out of
-					// the chat queue and submit them after the current response ends.
-					this.queueSlashCommand(text, this.onSubmit);
-					this.setText("");
-				} else {
-					this.sendFollowUp(text);
-					this.setText("");
-				}
-			}
-			return;
-		}
-		super.handleInput(data);
-	}
+interface QueuedSlashCommand {
+	text: string;
+	submit?: (text: string) => void | Promise<void>;
+	run?: () => Promise<void>;
 }
 
 export default function steerInputExtension(pi: ExtensionAPI) {
 	let agentActive = false;
 	let queuedCount = 0;
-	let queuedSlashCommands: Array<{
-		text: string;
-		submit?: (text: string) => void | Promise<void>;
-		run?: () => Promise<void>;
-	}> = [];
-	let previousEditorFactory: ReturnType<ExtensionContext["ui"]["getEditorComponent"]>;
-
-	function updateStatus(_ctx: ExtensionContext): void {
-		// Pi already shows the steering/queue hint above the editor via updateWidget().
-		// Keep the footer/status area clear to avoid a duplicate hint under the chat box.
-	}
+	let queuedSlashCommands: QueuedSlashCommand[] = [];
+	let unregisterInputHandler: (() => void) | undefined;
+	/** Session-start context; its ui getter resolves lazily, so it stays valid for streaming-time notifications. */
+	let sessionCtx: ExtensionContext | undefined;
 
 	function updateWidget(ctx: ExtensionContext): void {
 		if (agentActive) {
@@ -94,58 +55,61 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 		}
 	}
 
-	// ---- Agent lifecycle: swap editors ----
+	/**
+	 * Intercepts Tab while the agent streams. Queued drafts go through
+	 * editor.addToHistory before the editor is cleared — Pi's own history
+	 * insertion only covers Enter-submitted text, so this is what makes
+	 * Tab-queued follow-ups and slash commands recallable with Up.
+	 */
+	const handleSteerInput: EditorInputHandler = (data, editor) => {
+		if (!agentActive) return false;
+		if (!matchesKey(data, Key.tab)) return false;
+		const text = editor.getText().trim();
+		if (!text) return true; // swallow empty/whitespace-only Tab without clearing
+		if (text.startsWith("/")) {
+			// pi.sendUserMessage(..., { deliverAs: "followUp" }) bypasses
+			// slash-command parsing by design. Keep slash commands out of the
+			// chat queue and submit them after the current response ends.
+			const modelHandler = getModelCommandHandler();
+			const modelArgs = modelHandler ? parseModelCommand(text) : undefined;
+			if (modelHandler && modelArgs !== undefined) {
+				queuedSlashCommands.push({ text, run: () => modelHandler(modelArgs) });
+			} else {
+				queuedSlashCommands.push({ text, submit: editor.onSubmit });
+			}
+			queuedCount++;
+			sessionCtx?.ui.notify(
+				`Queued slash command for after this response${queuedSlashCommands.length > 1 ? ` (${queuedSlashCommands.length} pending)` : ""}`,
+				"info",
+			);
+		} else {
+			pi.sendUserMessage(text, { deliverAs: "followUp" });
+			queuedCount++;
+			sessionCtx?.ui.notify(
+				`Queued for next turn${queuedCount > 1 ? ` (${queuedCount} pending)` : ""}`,
+				"info",
+			);
+		}
+		// Record before clearing so the mounted history editor persists the
+		// entry (this is the step Pi's submit path would otherwise perform).
+		editor.addToHistory?.(text);
+		editor.setText("");
+		return true;
+	};
+
+	// ---- Agent lifecycle ----
 	pi.on("agent_start", async (_event, ctx) => {
 		agentActive = true;
 		queuedCount = 0;
-		updateStatus(ctx);
 		updateWidget(ctx);
-		previousEditorFactory = ctx.ui.getEditorComponent();
-		const modelCommandHandler = getModelCommandHandler();
-
-		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-			const editor = new SteerEditor(
-				tui,
-				theme,
-				keybindings,
-				modelCommandHandler,
-				(text) => {
-					pi.sendUserMessage(text, { deliverAs: "followUp" });
-					queuedCount++;
-					ctx.ui.notify(
-						`Queued for next turn${queuedCount > 1 ? ` (${queuedCount} pending)` : ""}`,
-						"info",
-					);
-				},
-				(text, submit) => {
-					const modelArgs = modelCommandHandler ? parseModelCommand(text) : undefined;
-					if (modelCommandHandler && modelArgs !== undefined) {
-						queuedSlashCommands.push({
-							text,
-							run: () => modelCommandHandler(modelArgs),
-						});
-					} else {
-						queuedSlashCommands.push({ text, submit });
-					}
-					queuedCount++;
-					ctx.ui.notify(
-						`Queued slash command for after this response${queuedSlashCommands.length > 1 ? ` (${queuedSlashCommands.length} pending)` : ""}`,
-						"info",
-					);
-				},
-			);
-			reapplyThinkingBorder(ctx, editor, tui);
-			return editor;
-		});
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
 		agentActive = false;
-		ctx.ui.setEditorComponent(previousEditorFactory);
-		previousEditorFactory = undefined;
-		updateStatus(ctx);
 		updateWidget(ctx);
 
+		// Copy and clear first so a callback that re-enters agent_end cannot
+		// drain the same batch twice.
 		const slashCommands = queuedSlashCommands;
 		queuedSlashCommands = [];
 		for (const { text, submit, run } of slashCommands) {
@@ -168,17 +132,22 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	// ---- Reload / shutdown cleanup ----
+	// ---- Reload / session start ----
 	pi.on("session_start", async (_event, ctx) => {
-		updateStatus(ctx);
+		if (ctx.mode !== "tui") return;
+		sessionCtx = ctx;
+		unregisterInputHandler?.();
+		unregisterInputHandler = registerEditorInputHandler(handleSteerInput);
 		if (agentActive) updateWidget(ctx);
 	});
 
+	// ---- Reload / shutdown cleanup ----
 	pi.on("session_shutdown", async (_event, ctx) => {
 		agentActive = false;
 		queuedSlashCommands = [];
-		previousEditorFactory = undefined;
-		ctx.ui.setEditorComponent(undefined);
+		unregisterInputHandler?.();
+		unregisterInputHandler = undefined;
+		sessionCtx = undefined;
 		ctx.ui.setWidget("steer-hint", undefined);
 	});
 }
