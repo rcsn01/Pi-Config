@@ -55,16 +55,17 @@ extension.
 
 - **Editor slot module** — the shared module in `_shared/editor-slot.ts` that
   owns Pi's single TUI editor slot behind one interface: the silent `/model`
-  routing editor base class and grammar, the `/model` handler registry
-  (backed by a `globalThis` symbol key, because the extension loader gives
-  each extension its own copy of shared modules), and wave-coordinated
-  session editor installation — contributors register
-  `{id, priority, createEditor}` during the `session_start` wave and the
-  deferred flush mounts the highest-priority contributor's editor once,
-  reapplying the thinking border itself. ui-model-selector,
-  ui-message-history, and ui-steer-input are adapters at its seam. Transient
-  editor swaps (steer during streaming, Plan Review command submission)
-  stay in their adapters and restore whatever the module installed.
+  routing editor base class and grammar, the `/model` handler registry and
+  the single input-interception handler registry (both backed by a
+  `globalThis` symbol key, because the extension loader gives each extension
+  its own copy of shared modules), and wave-coordinated session editor
+  installation — contributors register `{id, priority, createEditor}` during
+  the `session_start` wave and the deferred flush mounts the
+  highest-priority contributor's editor once, reapplying the thinking border
+  itself. ui-model-selector and ui-message-history are adapters at its seam;
+  ui-steer-input registers a Tab input handler that the routing base class
+  consults while the agent streams, so no streaming editor swap exists. The
+  only external swap left is the synchronous Plan Review command bridge.
 
 ## Status line
 
