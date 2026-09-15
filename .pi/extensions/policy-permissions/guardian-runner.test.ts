@@ -142,6 +142,7 @@ describe("parseGuardianVerdict", () => {
 		["missing field", '{"risk_level":"low","user_authorization":"high","rationale":"safe"}'],
 		["extra outcome field", '{"risk_level":"low","user_authorization":"high","exact_confirmation":false,"rationale":"safe","outcome":"allow"}'],
 		["invalid enum", classification("extreme", "high")],
+		["unknown authorization", classification("low", "unknown")],
 		["empty rationale", classification("low", "high", false, "")],
 	])("rejects %s", (_name, output) => {
 		expect(parseGuardianVerdict(output)).toBe("unclear");
@@ -162,6 +163,18 @@ describe("decideGuardianClassification", () => {
 			exact_confirmation: false,
 			rationale: "authorized install",
 		}).allowed).toBe(true);
+		expect(decideGuardianClassification({
+			risk_level: "low",
+			user_authorization: "low",
+			exact_confirmation: false,
+			rationale: "routine read",
+		}).allowed).toBe(true);
+		expect(decideGuardianClassification({
+			risk_level: "medium",
+			user_authorization: "low",
+			exact_confirmation: false,
+			rationale: "unauthorized install",
+		}).allowed).toBe(false);
 	});
 
 	it("requires high authorization and exact confirmation for critical risk", () => {

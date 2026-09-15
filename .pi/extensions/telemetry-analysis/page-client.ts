@@ -13,6 +13,7 @@ const error = document.getElementById('error');
 const tabs = [
 	{ key: 'main', label: 'Main' },
 	{ key: 'subagent', label: 'Subagents' },
+	{ key: 'advisor', label: 'Advisor' },
 	{ key: 'guardian', label: 'Guardian' },
 	{ key: 'compaction', label: 'Compaction' },
 ];

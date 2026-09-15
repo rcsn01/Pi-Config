@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Usage } from "@earendil-works/pi-ai";
+import { getObservabilityService, resetObservabilityServiceForTests } from "../_shared/observability.ts";
 import { createAdvisorRunner, type AdvisorRunInput } from "./runner.ts";
+
+beforeEach(() => resetObservabilityServiceForTests());
+afterEach(() => resetObservabilityServiceForTests());
 
 const usage: Usage = {
 	input: 20, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 30,
@@ -94,6 +98,28 @@ describe("advisor runner", () => {
 			truncated: false,
 			usage,
 		});
+	});
+
+	it("publishes the advisor request lifecycle under its own source category", async () => {
+		const events: any[] = [];
+		const stop = getObservabilityService().activate((event) => events.push(event));
+		const assistant = response();
+		try {
+			await createAdvisorRunner({ complete: async () => assistant }).execute(runInput(context()));
+		} finally {
+			stop();
+		}
+
+		expect(events.map((event) => event.type)).toEqual(["agent_start", "turn_start", "request", "response", "assistant"]);
+		expect(events.every((event) => event.source.channel === "advisor")).toBe(true);
+		expect(events[2]).toMatchObject({
+			provider: "anthropic",
+			api: "anthropic-messages",
+			model: "strong",
+			fidelity: "pi-preparation",
+			payload: { systemPrompt: expect.any(String), messages: expect.any(Array), tools: [], options: { maxTokens: 2048, reasoning: "high" } },
+		});
+		expect(events[4]).toMatchObject({ type: "assistant", message: assistant });
 	});
 
 	it("does not run when disabled, unavailable, unauthenticated, or outside scope", async () => {

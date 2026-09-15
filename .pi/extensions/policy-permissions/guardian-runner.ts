@@ -62,7 +62,7 @@ export interface GuardianReviewResult extends ApprovalResult {
 }
 
 export type GuardianRiskLevel = "low" | "medium" | "high" | "critical";
-export type GuardianAuthorization = "unknown" | "low" | "medium" | "high";
+export type GuardianAuthorization = "low" | "medium" | "high";
 
 export interface GuardianClassification {
 	risk_level: GuardianRiskLevel;
@@ -164,7 +164,7 @@ export function parseGuardianDefinition(content: string): GuardianDefinition {
 }
 
 const RISK_LEVELS = new Set<GuardianRiskLevel>(["low", "medium", "high", "critical"]);
-const AUTHORIZATION_LEVELS = new Set<GuardianAuthorization>(["unknown", "low", "medium", "high"]);
+const AUTHORIZATION_LEVELS = new Set<GuardianAuthorization>(["low", "medium", "high"]);
 const CLASSIFICATION_KEYS = ["exact_confirmation", "rationale", "risk_level", "user_authorization"];
 const MAX_RATIONALE_LENGTH = 500;
 
@@ -193,7 +193,7 @@ export function parseGuardianVerdict(content: string): GuardianClassification | 
 /** Apply the authorization policy deterministically to a validated classification. */
 export function decideGuardianClassification(classification: GuardianClassification): ApprovalResult {
 	const riskRank: Record<Exclude<GuardianRiskLevel, "critical">, number> = { low: 1, medium: 2, high: 3 };
-	const authorizationRank: Record<GuardianAuthorization, number> = { unknown: 0, low: 1, medium: 2, high: 3 };
+	const authorizationRank: Record<GuardianAuthorization, number> = { low: 1, medium: 2, high: 3 };
 	const allowed = classification.risk_level === "critical"
 		? classification.user_authorization === "high" && classification.exact_confirmation
 		: riskRank[classification.risk_level] <= authorizationRank[classification.user_authorization];
