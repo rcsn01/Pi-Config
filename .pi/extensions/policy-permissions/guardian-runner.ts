@@ -12,8 +12,9 @@
  * The guardian session is deliberately isolated from the main chat, matching
  * the old subprocess flags:
  *   - SessionManager.inMemory() → no session file, no shared history
- *   - noTools: "all"            → the guardian can never call tools
- *   - noExtensions / noSkills   → no extension recursion, no skill overhead
+ *   - tools: [guardian_classification] → only the structured classification tool is available
+ *   - noTools: "all"                  → no repository or built-in tools are available
+ *   - noExtensions / noSkills         → no extension recursion, no skill overhead
  *   - systemPromptOverride     → guardian.md is the complete system prompt
  *   - agentsFilesOverride      → project context cannot influence decisions
  *
@@ -29,11 +30,13 @@ import {
 	type CreateAgentSessionOptions,
 	DefaultResourceLoader,
 	type ModelRegistry,
+	type ToolDefinition,
 	getAgentDir,
 	ModelRuntime,
 	parseFrontmatter,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -168,23 +171,56 @@ const AUTHORIZATION_LEVELS = new Set<GuardianAuthorization>(["low", "medium", "h
 const CLASSIFICATION_KEYS = ["exact_confirmation", "rationale", "risk_level", "user_authorization"];
 const MAX_RATIONALE_LENGTH = 500;
 
-/** Parse and strictly validate the Guardian's classification. Invalid output fails closed. */
+/** The only tool exposed to the isolated Guardian session. */
+export const GUARDIAN_CLASSIFICATION_TOOL_NAME = "guardian_classification";
+
+const guardianClassificationParameters = Type.Object({
+	exact_confirmation: Type.Boolean(),
+	rationale: Type.String({ minLength: 1, maxLength: MAX_RATIONALE_LENGTH }),
+	risk_level: Type.String({ enum: [...RISK_LEVELS] }),
+	user_authorization: Type.String({ enum: [...AUTHORIZATION_LEVELS] }),
+}, { additionalProperties: false });
+
+/**
+ * Prefer provider-side constrained sampling where it is supported. Providers
+ * without strict tool schemas still receive the exact tool shape, and the
+ * runtime validator below remains authoritative.
+ */
+const guardianClassificationTool: ToolDefinition = {
+	name: GUARDIAN_CLASSIFICATION_TOOL_NAME,
+	label: "Guardian classification",
+	description: "Return exactly one structured safety classification for the proposed action.",
+	parameters: guardianClassificationParameters,
+	constrainedSampling: { type: "json_schema", strict: "prefer" },
+	async execute() {
+		return {
+			content: [{ type: "text", text: "Classification recorded." }],
+			details: undefined,
+			terminate: true,
+		};
+	},
+};
+
+function parseGuardianClassification(value: unknown): GuardianClassification | "unclear" {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return "unclear";
+	const record = value as Record<string, unknown>;
+	if (Object.keys(record).sort().join("\0") !== CLASSIFICATION_KEYS.join("\0")) return "unclear";
+	if (typeof record.risk_level !== "string" || !RISK_LEVELS.has(record.risk_level as GuardianRiskLevel)) return "unclear";
+	if (typeof record.user_authorization !== "string" || !AUTHORIZATION_LEVELS.has(record.user_authorization as GuardianAuthorization)) return "unclear";
+	if (typeof record.exact_confirmation !== "boolean") return "unclear";
+	if (typeof record.rationale !== "string" || !record.rationale.trim() || record.rationale.length > MAX_RATIONALE_LENGTH) return "unclear";
+	return {
+		risk_level: record.risk_level as GuardianRiskLevel,
+		user_authorization: record.user_authorization as GuardianAuthorization,
+		exact_confirmation: record.exact_confirmation,
+		rationale: record.rationale.trim(),
+	};
+}
+
+/** Parse and strictly validate the Guardian's raw JSON fallback. Invalid output fails closed. */
 export function parseGuardianVerdict(content: string): GuardianClassification | "unclear" {
 	try {
-		const parsed: unknown = JSON.parse(content.trim());
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "unclear";
-		const record = parsed as Record<string, unknown>;
-		if (Object.keys(record).sort().join("\0") !== CLASSIFICATION_KEYS.join("\0")) return "unclear";
-		if (typeof record.risk_level !== "string" || !RISK_LEVELS.has(record.risk_level as GuardianRiskLevel)) return "unclear";
-		if (typeof record.user_authorization !== "string" || !AUTHORIZATION_LEVELS.has(record.user_authorization as GuardianAuthorization)) return "unclear";
-		if (typeof record.exact_confirmation !== "boolean") return "unclear";
-		if (typeof record.rationale !== "string" || !record.rationale.trim() || record.rationale.length > MAX_RATIONALE_LENGTH) return "unclear";
-		return {
-			risk_level: record.risk_level as GuardianRiskLevel,
-			user_authorization: record.user_authorization as GuardianAuthorization,
-			exact_confirmation: record.exact_confirmation,
-			rationale: record.rationale.trim(),
-		};
+		return parseGuardianClassification(JSON.parse(content.trim()));
 	} catch {
 		return "unclear";
 	}
@@ -311,6 +347,8 @@ async function createGuardianSession(
 		resourceLoader: loader,
 		sessionManager: SessionManager.inMemory(),
 		noTools: "all",
+		tools: [GUARDIAN_CLASSIFICATION_TOOL_NAME],
+		customTools: [guardianClassificationTool],
 		modelRuntime: runtime,
 		...(model ? { model } : {}),
 		...(settings ? { thinkingLevel: settings.thinkingLevel } : {}),
@@ -334,7 +372,47 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 	});
 }
 
-/** Text of the newest assistant message added since `startCount` messages. */
+/** Inspect Guardian tool calls added since `startCount`. */
+function inspectGuardianToolCallSince(
+	session: GuardianPromptSession,
+	startCount: number,
+): { arguments: unknown; invalid: boolean } | undefined {
+	const messages = session.messages.slice(startCount);
+	const guardianCalls: Array<{ id: string; arguments: unknown }> = [];
+	let sawToolCall = false;
+	let invalid = false;
+
+	for (const message of messages) {
+		if (message.role === "assistant" && Array.isArray(message.content)) {
+			for (const part of message.content) {
+				if (part.type !== "toolCall") continue;
+				sawToolCall = true;
+				if (part.name !== GUARDIAN_CLASSIFICATION_TOOL_NAME) {
+					invalid = true;
+					continue;
+				}
+				guardianCalls.push({ id: part.id, arguments: part.arguments });
+				if (message.stopReason === "length" || message.stopReason === "error" || message.stopReason === "aborted") {
+					invalid = true;
+				}
+			}
+		}
+	}
+
+	if (!sawToolCall) return undefined;
+	if (guardianCalls.length !== 1) invalid = true;
+	const call = guardianCalls[guardianCalls.length - 1];
+	if (call) {
+		for (const message of messages) {
+			if (message.role === "toolResult" && message.toolCallId === call.id && message.isError) {
+				invalid = true;
+			}
+		}
+	}
+	return { arguments: call?.arguments, invalid };
+}
+
+/** Text of the newest assistant message added since `startCount`. */
 function lastAssistantTextSince(session: GuardianPromptSession, startCount: number): string {
 	const messages = session.messages.slice(startCount);
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -416,8 +494,22 @@ ${JSON.stringify({ title, evidence }, null, 2)}`;
 			? { channel: "guardian", invocationId: randomUUID(), displayLabel: "Guardian" }
 			: undefined;
 		await runWithGuardianObservation(observationSource, () => withTimeout(session!.prompt(task), timeoutMs));
-		const content = lastAssistantTextSince(session, startCount);
 
+		// Tool-call arguments are the primary response format. If a provider
+		// returned malformed arguments, do not let a later prose/text response
+		// bypass the structured result's validation.
+		const toolCall = inspectGuardianToolCallSince(session, startCount);
+		if (toolCall) {
+			const classification = toolCall.invalid ? "unclear" : parseGuardianClassification(toolCall.arguments);
+			if (classification === "unclear") {
+				return withRequestUsage({ allowed: false, reason: "Guardian returned invalid classification; blocked for safety." });
+			}
+			return withRequestUsage(decideGuardianClassification(classification));
+		}
+
+		// Compatibility fallback for models that cannot make tool calls. This
+		// remains an exact, whole-response JSON parse and is still fail-closed.
+		const content = lastAssistantTextSince(session, startCount);
 		if (!content.trim()) {
 			return withRequestUsage({ allowed: false, reason: "Guardian returned no response; blocked for safety." });
 		}

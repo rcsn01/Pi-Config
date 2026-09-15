@@ -41,6 +41,10 @@ const REQUEST_USAGE = {
 interface FakeSessionPlan {
 	/** Assistant text appended while the prompt runs. */
 	text?: string;
+	/** Structured tool call appended while the prompt runs. */
+	toolCall?: { name?: string; arguments?: unknown };
+	/** Multiple structured calls for malformed-response regression coverage. */
+	toolCalls?: Array<{ name?: string; arguments?: unknown }>;
 	/** Usage attached to that assistant message. */
 	usage?: typeof REQUEST_USAGE;
 	/** Thrown by prompt after the message (if any) is appended. */
@@ -74,10 +78,22 @@ function fakeSession(plan: FakeSessionPlan = {}) {
 			plan.onPromptStart?.();
 			try {
 				if (plan.holdMs) await new Promise((resolve) => setTimeout(resolve, plan.holdMs));
-				if (plan.text !== undefined || plan.usage) {
+				const toolCalls = plan.toolCalls ?? (plan.toolCall ? [plan.toolCall] : []);
+				if (plan.text !== undefined || toolCalls.length > 0 || plan.usage) {
+					const content = toolCalls.length > 0
+						? [
+							...toolCalls.map((toolCall, index) => ({
+								type: "toolCall",
+								id: `guardian-call-${index}`,
+								name: toolCall.name ?? "guardian_classification",
+								arguments: toolCall.arguments,
+							})),
+							...(plan.text ? [{ type: "text", text: plan.text }] : []),
+						]
+						: plan.text ?? "";
 					messages.push({
 						role: "assistant",
-						content: plan.text ?? "",
+						content,
 						...(plan.usage ? { usage: plan.usage } : {}),
 					});
 				}
@@ -207,6 +223,65 @@ describe("parseGuardianDefinition", () => {
 });
 
 describe("runAutoReviewer decision matrix", () => {
+	it("uses structured classification tool arguments before assistant text", async () => {
+		const result = await review({
+			toolCall: {
+				arguments: {
+					risk_level: "high",
+					user_authorization: "medium",
+					exact_confirmation: true,
+					rationale: "deletes files",
+				},
+			},
+			text: classification("low", "high", false, "safe read"),
+		}).promise;
+
+		expect(result).toMatchObject({
+			allowed: false,
+			reason: "risk: high | auth: medium | deletes files",
+		});
+	});
+
+	it("rejects invalid tool arguments without falling back to text", async () => {
+		const result = await review({
+			toolCall: {
+				arguments: {
+					risk_level: "low",
+					user_authorization: "high",
+					exact_confirmation: false,
+					rationale: "safe",
+					outcome: "allow",
+				},
+			},
+			text: classification("low", "high", false, "safe read"),
+		}).promise;
+
+		expect(result).toMatchObject({
+			allowed: false,
+			reason: "Guardian returned invalid classification; blocked for safety.",
+		});
+	});
+
+	it("rejects multiple classification calls instead of choosing one", async () => {
+		const result = await review({
+			toolCalls: [
+				{ arguments: { risk_level: "low", user_authorization: "high", exact_confirmation: false, rationale: "safe" } },
+				{ arguments: { risk_level: "high", user_authorization: "low", exact_confirmation: false, rationale: "unsafe" } },
+			],
+			text: classification("low", "high", false, "safe read"),
+		}).promise;
+
+		expect(result).toMatchObject({
+			allowed: false,
+			reason: "Guardian returned invalid classification; blocked for safety.",
+		});
+	});
+
+	it("falls back to exact raw JSON when no tool call is available", async () => {
+		const result = await review({ text: classification("low", "high", false, "safe read") }).promise;
+		expect(result).toMatchObject({ allowed: true, reason: "risk: low | auth: high | safe read" });
+	});
+
 	it("returns deterministic allow and deny verdicts", async () => {
 		const allowed = review({ text: classification("low", "high", false, "safe read") });
 		const allow = await allowed.promise;

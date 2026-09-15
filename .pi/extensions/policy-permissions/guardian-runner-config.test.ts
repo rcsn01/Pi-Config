@@ -59,7 +59,12 @@ vi.mock("../_shared/observability.ts", () => ({
 	getObservabilityService: () => ({ isActive: () => false, publish: vi.fn() }),
 }));
 
-import { disposeAutoReviewer, resolveGuardianModel, runAutoReviewer } from "./guardian-runner.ts";
+import {
+	disposeAutoReviewer,
+	GUARDIAN_CLASSIFICATION_TOOL_NAME,
+	resolveGuardianModel,
+	runAutoReviewer,
+} from "./guardian-runner.ts";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 const roots: string[] = [];
@@ -107,6 +112,12 @@ describe("Guardian runner profile configuration", () => {
 				id: "guardian",
 				contextWindow: 256_000,
 			}),
+			noTools: "all",
+			tools: [GUARDIAN_CLASSIFICATION_TOOL_NAME],
+			customTools: [expect.objectContaining({
+				name: GUARDIAN_CLASSIFICATION_TOOL_NAME,
+				constrainedSampling: { type: "json_schema", strict: "prefer" },
+			})],
 		}));
 		const loaderOptions = mocked.resourceLoaderOptions.at(-1);
 		expect(loaderOptions.appendSystemPrompt).toBeUndefined();
