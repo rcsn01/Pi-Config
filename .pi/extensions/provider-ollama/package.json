@@ -13,6 +13,7 @@
     "models.generated.ts",
     "pricing.generated.ts",
     "thinking-levels.ts",
+    "ollama-stream.ts",
     "utils.ts",
     "CHANGELOG.md",
     "README.md",

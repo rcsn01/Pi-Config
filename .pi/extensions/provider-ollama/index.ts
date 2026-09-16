@@ -31,6 +31,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { GENERATED_MODELS } from "./models.generated.ts";
+import { streamOllama } from "./ollama-stream.ts";
 import { OLLAMA_BASE, refreshOllamaCatalog } from "./models.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -39,6 +40,7 @@ export default function (pi: ExtensionAPI) {
     baseUrl: `${OLLAMA_BASE}/v1`,
     apiKey: "$OLLAMA_API_KEY",
     api: "openai-completions",
+    streamSimple: streamOllama,
     models: GENERATED_MODELS,
     refreshModels: refreshOllamaCatalog,
   });
