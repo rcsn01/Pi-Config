@@ -16,7 +16,11 @@
  * rendering. Policy ordering and mutable authorization state stay behind the
  * lifecycle interface.
  */
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	sessionEntryToContextMessages,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { declareStatus } from "../_shared/status-registry.ts";
 import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { formatTokenCount, modelKey, pickModelConfiguration } from "../_shared/model-picker.ts";
@@ -40,10 +44,13 @@ import {
 import { loadModeFromFile, saveModeToFile } from "./mode-store.ts";
 import { modeRequestMarker, modeStatusLabel } from "./mode-registry.ts";
 import {
-	boundGuardianEvidence,
 	createPermissionEnforcementLifecycle,
 	permissionActionKey,
 } from "./permission-enforcement-lifecycle.ts";
+import {
+	buildGuardianConversationEvidence,
+	type GuardianSkillInvocation,
+} from "./guardian-evidence.ts";
 import { evaluateToolCall } from "./permission-policy.ts";
 
 // Re-exported for backward compatibility (guardian-config.test.ts and external
@@ -72,6 +79,16 @@ function createPermissionMarkerMessage(marker: string) {
 	};
 }
 
+function skillInvocationFromInput(pi: ExtensionAPI, text: string): GuardianSkillInvocation | undefined {
+	const commandName = /^\/(\S+)/.exec(text.trim())?.[1];
+	if (!commandName) return undefined;
+	const command = pi.getCommands().find((candidate) =>
+		candidate.name === commandName && candidate.source === "skill"
+	);
+	if (!command) return undefined;
+	return { name: command.name, source: command.sourceInfo.scope };
+}
+
 // ── Extension ──────────────────────────────────────────────────────────
 
 export interface SafetyPermissionsDependencies {
@@ -92,12 +109,8 @@ function installSafetyPermissions(
 	let guardianSettingsPath = settingsFilePath;
 	let guardianSettings: GuardianSettings | undefined;
 	let profileBindingGeneration = 0;
-	let lastUserPrompt = "";
-	let lastUserPromptTruncated = false;
-	let lastAssistantMessage = ""; // bounded most recent assistant message text (updated via message_end)
-	let lastAssistantMessageTruncated = false;
-	let precedingAssistantMessage = ""; // snapshot of lastAssistantMessage at turn start — the prior turn's final assistant message (e.g. a proposal the user is replying to)
-	let precedingAssistantMessageTruncated = false;
+	let pendingSkillInvocation: GuardianSkillInvocation | undefined;
+	let currentSkillInvocation: GuardianSkillInvocation | undefined;
 
 	const enforcement = createPermissionEnforcementLifecycle<ExtensionContext>({
 		loadMode: (cwd) => loadModeFromFile(cwd) ?? undefined,
@@ -171,15 +184,10 @@ function installSafetyPermissions(
 	});
 	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx));
 
-	// Track the most recent assistant message text so the guardian can see the agent's
-	// preceding turn (e.g. a proposal/options the user is replying to).
-	pi.on("message_end", async (event) => {
-		if (event.message?.role !== "assistant") return;
-		const text = extractAssistantText(event.message);
-		if (!text) return;
-		const bounded = boundGuardianEvidence(text, 4_000);
-		lastAssistantMessage = bounded.text;
-		lastAssistantMessageTruncated = bounded.truncated;
+	// Capture explicit Skill invocation before Pi expands it into the user prompt.
+	// Availability alone is not authorization, so only the invoked Skill is kept.
+	pi.on("input", async (event) => {
+		pendingSkillInvocation = skillInvocationFromInput(pi, event.text);
 	});
 
 	// ── Custom rendering for auto-review verdict entries ──────────────
@@ -202,6 +210,8 @@ function installSafetyPermissions(
 	// ── tool_call handler ──────────────────────────────────────────────
 
 	pi.on("tool_call", async (event, ctx) => {
+		const branchMessages = ctx.sessionManager.buildContextEntries()
+			.flatMap((entry) => sessionEntryToContextMessages(entry));
 		const outcome = await enforcement.evaluate(
 			{ toolName: event.toolName, input: event.input },
 			{
@@ -209,10 +219,8 @@ function installSafetyPermissions(
 				hasUI: ctx.hasUI,
 				execPolicy: loadExecPolicy(),
 				guardianContext: {
-					lastUserPrompt,
-					lastUserPromptTruncated,
-					precedingAssistantMessage,
-					precedingAssistantMessageTruncated,
+					conversation: buildGuardianConversationEvidence(branchMessages),
+					...(currentSkillInvocation ? { invokedSkill: currentSkillInvocation } : {}),
 				},
 				hostContext: ctx,
 			},
@@ -234,16 +242,9 @@ function installSafetyPermissions(
 		return { messages: [...messages, createPermissionMarkerMessage(marker)] };
 	});
 
-	pi.on("before_agent_start", async (event) => {
-		// Snapshot the prior turn's final assistant message before this turn begins.
-		// This is the agent's preceding turn (e.g. a proposal/options the user is now
-		// replying to) and gives the guardian authorization context. Snapshotted here so
-		// current-turn assistant text cannot overwrite it before a tool_call fires.
-		precedingAssistantMessage = lastAssistantMessage;
-		precedingAssistantMessageTruncated = lastAssistantMessageTruncated;
-		const boundedPrompt = boundGuardianEvidence(event.prompt || "", 2_000);
-		lastUserPrompt = boundedPrompt.text;
-		lastUserPromptTruncated = boundedPrompt.truncated;
+	pi.on("before_agent_start", async () => {
+		currentSkillInvocation = pendingSkillInvocation;
+		pendingSkillInvocation = undefined;
 	});
 
 	// ── Commands ────────────────────────────────────────────────────────
@@ -300,17 +301,3 @@ function installSafetyPermissions(
 }
 
 export default createSafetyPermissionsExtension();
-
-// Extract readable text from an assistant message (content may be a string or an array of content blocks).
-function extractAssistantText(message: any): string {
-	if (!message) return "";
-	const content = message.content;
-	if (typeof content === "string") return content;
-	if (Array.isArray(content)) {
-		return content
-			.filter((block: any) => block && block.type === "text" && typeof block.text === "string")
-			.map((block: any) => block.text)
-			.join("\n");
-	}
-	return "";
-}

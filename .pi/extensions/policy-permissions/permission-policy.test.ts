@@ -66,7 +66,9 @@ async function evaluateToolCall(
 		cwd: ctx.cwd,
 		hasUI: ctx.hasUI,
 		execPolicy: ctx.execPolicy,
-		guardianContext: { lastUserPrompt: "", precedingAssistantMessage: "" },
+		guardianContext: {
+			conversation: { messages: [], omittedEarlierUserTurns: 0, truncated: false },
+		},
 		hostContext: undefined,
 	});
 	return outcome.kind === "allowed"
