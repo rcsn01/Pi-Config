@@ -24,10 +24,10 @@
  *   movement. This subclass owns the whole recall UX instead.
  * - Editor ownership is delegated to the editor-slot module
  *   (`_shared/editor-slot.ts`): this extension registers a contributor
- *   (`{id, priority, createEditor}`) for the session_start wave and the
- *   module mounts the highest-priority contributor's editor, reapplying the
- *   thinking border itself. ui-model-selector contributes the /model routing
- *   handler (registry) and the routing editor base class through the same
+ *   (`{id, priority, createEditor}`) for the session_start wave. The module
+ *   owns wave selection and teardown, mounts the highest-priority editor, and
+ *   reapplies the thinking border. ui-model-selector contributes the /model
+ *   routing handler (registry) and the routing editor base class through the same
  *   module, so the winner inherits silent /model routing without any probe
  *   into other extensions' editors and without any reclaim timing.
  */
@@ -39,8 +39,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import {
+	createSessionEditorLifetime,
 	getModelCommandHandler,
-	installSessionEditor,
 	ModelCommandRoutingEditor,
 	type ModelCommandHandler,
 } from "../_shared/editor-slot.ts";
@@ -191,11 +191,11 @@ class PreviousMessageEditor extends ModelCommandRoutingEditor {
 }
 
 export default function (pi: ExtensionAPI) {
-	let currentCwd = "";
+	const editorLifetime = createSessionEditorLifetime(pi);
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
 		if (ctx.mode !== "tui") return;
-		currentCwd = ctx.cwd;
+		const cwd = ctx.cwd;
 
 		// Pick up entries written by other pi instances since we last loaded.
 		store.load();
@@ -204,14 +204,14 @@ export default function (pi: ExtensionAPI) {
 		// unless a higher-priority contributor wins the wave, and re-flushes
 		// when the set of contributors changes (e.g. a Profile transition
 		// disposing ui-model-selector).
-		installSessionEditor(ctx, {
+		editorLifetime.install(event, ctx, {
 			id: "ui-message-history",
 			priority: 20,
 			createEditor: (tui, theme, keybindings) => {
 				const editor = new PreviousMessageEditor(tui, theme, keybindings);
 				editor.attach(
-					store.listFor(currentCwd),
-					(text) => store.record(currentCwd, text),
+					store.listFor(cwd),
+					(text) => store.record(cwd, text),
 					getModelCommandHandler(),
 				);
 				return editor;

@@ -10,9 +10,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
-	installSessionEditor,
+	createSessionEditorLifetime,
 	registerModelCommandHandler,
-	removeSessionEditor,
 	ModelCommandRoutingEditor,
 } from "../_shared/editor-slot.ts";
 import { createPiModelRuntime } from "../_shared/model-selection-runtime.ts";
@@ -128,16 +127,19 @@ export function createModelSelectorExtension(
 	return function modelSelectorExtension(pi: ExtensionAPI) {
 		let uninstallModelCommandHandler: (() => void) | undefined;
 		let activeLifecycle: ModelSelectionLifecycle | undefined;
+		const editorLifetime = createSessionEditorLifetime(pi);
 
 		const profileInitialization = registerSessionProfileBinding(
 			{ settingsPath },
 			{
 				name: "ui-model-selector",
 				initialize: async (binding, event, ctx) => {
+					editorLifetime.dispose();
 					uninstallModelCommandHandler?.();
 					uninstallModelCommandHandler = undefined;
-					await activeLifecycle?.dispose();
+					const previousLifecycle = activeLifecycle;
 					activeLifecycle = undefined;
+					await previousLifecycle?.dispose();
 					const persistence = persistenceFactory(binding.settingsPath);
 					if (ctx.mode !== "tui") return;
 
@@ -159,7 +161,7 @@ export function createModelSelectorExtension(
 						}
 					};
 					uninstallModelCommandHandler = registerModelCommandHandler(handler);
-					installSessionEditor(ctx, {
+					editorLifetime.install(event, ctx, {
 						id: "ui-model-selector",
 						priority: 10,
 						createEditor: (tui, theme, keybindings) =>
@@ -183,13 +185,13 @@ export function createModelSelectorExtension(
 						}
 					}
 				},
-				dispose: async (_binding, ctx) => {
+				dispose: async () => {
+					editorLifetime.dispose();
 					const lifecycle = activeLifecycle;
+					activeLifecycle = undefined;
 					await lifecycle?.dispose();
-					if (activeLifecycle === lifecycle) activeLifecycle = undefined;
 					uninstallModelCommandHandler?.();
 					uninstallModelCommandHandler = undefined;
-					if (ctx.mode === "tui") removeSessionEditor(ctx, "ui-model-selector");
 				},
 			},
 		);

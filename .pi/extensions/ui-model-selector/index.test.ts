@@ -61,7 +61,7 @@ function createAdapterHarness(options: {
 		contextWindow: number;
 	}>;
 } = {}) {
-	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => unknown>();
+	const handlers = new Map<string, Array<(event: any, ctx: ExtensionContext) => unknown>>();
 	let thinkingLevel: ThinkingLevel = "medium";
 	const custom = vi.fn(async () => options.cancel
 		? undefined
@@ -135,7 +135,11 @@ function createAdapterHarness(options: {
 		},
 	} as unknown as ExtensionContext;
 	const pi = {
-		on: (event: string, handler: (event: any, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+		on: (event: string, handler: (event: any, ctx: ExtensionContext) => unknown) => {
+			const eventHandlers = handlers.get(event) ?? [];
+			eventHandlers.push(handler);
+			handlers.set(event, eventHandlers);
+		},
 		setModel,
 		getThinkingLevel: vi.fn(() => thinkingLevel),
 		setThinkingLevel: vi.fn((level: ThinkingLevel) => {
@@ -157,11 +161,16 @@ function createAdapterHarness(options: {
 		createModelSelectionPersistence,
 		persistenceInstances,
 		savedByInstance,
+		setMode: (mode: "tui" | "print" | "json" | "rpc") => {
+			(ctx as { mode: string }).mode = mode;
+		},
 		emitStart: async (reason: "startup" | "reload" | "new" | "resume" | "fork" = "startup") => {
-			await handlers.get("session_start")?.({ type: "session_start", reason }, ctx);
+			const event = { type: "session_start", reason };
+			for (const handler of handlers.get("session_start") ?? []) await handler(event, ctx);
 		},
 		emitShutdown: async () => {
-			await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+			const event = { type: "session_shutdown", reason: "quit" };
+			for (const handler of handlers.get("session_shutdown") ?? []) await handler(event, ctx);
 		},
 	};
 }
@@ -325,6 +334,20 @@ describe("Pi model-selection adapter", () => {
 		expect(harness.notify).not.toHaveBeenCalledWith("Model-selection Session is no longer active.", "error");
 	});
 
+	it("removes TUI ownership when a non-TUI Session replaces it", async () => {
+		const harness = createAdapterHarness({ cancel: true });
+		await harness.emitStart();
+		await vi.waitFor(() =>
+			expect(harness.setEditorComponent).toHaveBeenCalledWith(expect.any(Function))
+		);
+
+		harness.setMode("rpc");
+		await harness.emitStart("reload");
+
+		expect(getModelCommandHandler()).toBeUndefined();
+		expect(harness.setEditorComponent).toHaveBeenLastCalledWith(undefined);
+	});
+
 	it("removes command ownership and editor installation on shutdown", async () => {
 		const harness = createAdapterHarness({ cancel: true });
 		await harness.emitStart();
@@ -335,5 +358,6 @@ describe("Pi model-selection adapter", () => {
 		await harness.emitShutdown();
 		expect(getModelCommandHandler()).toBeUndefined();
 		expect(harness.setEditorComponent).toHaveBeenLastCalledWith(undefined);
+		expect(harness.setEditorComponent.mock.calls.filter(([factory]) => factory === undefined)).toHaveLength(1);
 	});
 });
