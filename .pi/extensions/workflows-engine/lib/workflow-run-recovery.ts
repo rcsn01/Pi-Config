@@ -1,5 +1,6 @@
 import type { RunPersistence } from "./run-store.ts";
-import { cloneJson, rebuildState, validateProjection, type RunState } from "./workflow-run-state.ts";
+import { rebuildWorkflowRunState } from "./workflow-run-events.ts";
+import { cloneJson, validateProjection, type RunState } from "./workflow-run-state.ts";
 
 type WorkflowRunRecoveryPersistence = Pick<
 	RunPersistence,
@@ -40,7 +41,7 @@ export async function recoverWorkflowRunState(
 	const log = await persistence.readEventLog();
 	if (log.exists) {
 		if (!log.events.length) throw new WorkflowEventLogEmptyError(persistence.paths().events);
-		const state = validateProjection(rebuildState(log.events), expectedRunId);
+		const state = validateProjection(rebuildWorkflowRunState(log.events), expectedRunId);
 		try { await persistence.writeProjection(cloneJson(state)); } catch {}
 		return state;
 	}

@@ -2,7 +2,7 @@ import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { projectStatePath, projectStateRoot } from "../../_shared/state-paths.ts";
 import { ensureDir } from "./registry.ts";
-import type { WorkflowRunEventToPersist, WorkflowRunEventView } from "./workflow-run-state.ts";
+import type { WorkflowRunEventView } from "./workflow-run-events.ts";
 
 export interface InternalRunPaths {
 	root: string;
@@ -21,7 +21,7 @@ export interface RunInput {
 
 export interface RunPersistence {
 	initializeInput(input: RunInput): Promise<void>;
-	appendEvent(event: WorkflowRunEventToPersist): Promise<void>;
+	appendEvent(event: WorkflowRunEventView): Promise<void>;
 	readEventLog(): Promise<{ exists: boolean; events: readonly WorkflowRunEventView[] }>;
 	readProjection(): Promise<unknown | undefined>;
 	writeProjection(projection: unknown): Promise<void>;
@@ -168,7 +168,7 @@ export class FileRunPersistence implements RunPersistence {
 		});
 	}
 
-	async appendEvent(event: WorkflowRunEventToPersist): Promise<void> {
+	async appendEvent(event: WorkflowRunEventView): Promise<void> {
 		await this.assertRunRootSafe();
 		await ensureDir(this.runPaths.root);
 		await this.assertStoredPathSafe(this.runPaths.events, "event log");

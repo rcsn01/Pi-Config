@@ -94,7 +94,7 @@ Runs live below `projectStatePath(cwd, "workflow-runs", runId)`. The state base 
   artifacts/
 ```
 
-`events.jsonl` is canonical. The runtime writes `state.json` atomically as a materialized projection and rebuilds it from the event log when needed.
+`events.jsonl` is canonical. The runtime writes `state.json` atomically as a materialized projection and rebuilds it from the event log when needed. Engine writes use a closed event vocabulary, while durable reads remain open for forward compatibility. Unknown events stay visible in raw output and do not change known state after `run_created`.
 
 ## Background, Pause, Stop, Resume
 

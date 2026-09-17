@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { defineWorkflow } from "./definition.ts";
 import { runGit } from "../../_shared/git.ts";
 import { FileRunPersistence } from "./run-store.ts";
-import { applyEvent, initialState, type RunState } from "./workflow-run-state.ts";
+import { applyWorkflowRunEvent, type WorkflowRunEventView } from "./workflow-run-events.ts";
+import { initialState, type RunState } from "./workflow-run-state.ts";
 import { InMemoryRunPersistence } from "./test-support.ts";
 import { createWorkflowRun, RunAlreadyActiveError, workflowRunModule, type WorkflowSubagentRunner } from "./workflow-run.ts";
 
@@ -300,7 +301,7 @@ describe("WorkflowRunModule cleanup", () => {
 		const worktree = await addWorktree(project, "projection-only");
 		const persistence = filePersistence(project, "run-cleanup-projection");
 		let state: RunState = initialState("run-cleanup-projection", entry, "");
-		state = applyEvent(state, {
+		state = applyWorkflowRunEvent(state, {
 			type: "agent_started",
 			ts: Date.now(),
 			key: "projected",
@@ -313,6 +314,61 @@ describe("WorkflowRunModule cleanup", () => {
 });
 
 describe("WorkflowRun deep interface", () => {
+	it("keeps append, reduction, and projection ordering for creation and ordinary events", async () => {
+		const project = await cwd();
+		const calls: Array<{ name: string; value?: unknown }> = [];
+		class TracedPersistence extends InMemoryRunPersistence {
+			override async appendEvent(event: WorkflowRunEventView): Promise<void> {
+				calls.push({ name: "appendEvent", value: event });
+				await super.appendEvent(event);
+			}
+			override async writeProjection(projection: unknown): Promise<void> {
+				calls.push({ name: "writeProjection", value: structuredClone(projection) });
+				await super.writeProjection(projection);
+			}
+		}
+		const persistence = new TracedPersistence(project, "run-order");
+		const workflow = defineWorkflow({ name: entry.name, description: entry.description, canEditFiles: false, run: () => "ok" });
+		const handle = await handleFor(project, "run-order", workflow, persistence);
+		expect(calls.map(({ name }) => name)).toEqual(["appendEvent", "writeProjection"]);
+		expect(calls[1].value).toMatchObject({ status: "created" });
+
+		await handle.execute();
+		expect(calls.map(({ name }) => name)).toEqual([
+			"appendEvent", "writeProjection",
+			"appendEvent", "writeProjection",
+			"appendEvent", "writeProjection",
+		]);
+		expect(calls[3].value).toMatchObject({ status: "running" });
+		expect(calls[5].value).toMatchObject({ status: "completed", result: "ok" });
+	});
+
+	it("does not reduce or project an ordinary event whose append fails", async () => {
+		const project = await cwd();
+		const workflow = defineWorkflow({ name: entry.name, description: entry.description, canEditFiles: false, run: () => "never" });
+		const persistence = new InMemoryRunPersistence(project, "run-ordinary-append-failure");
+		const handle = await handleFor(project, "run-ordinary-append-failure", workflow, persistence);
+		const projection = persistence.projection;
+		persistence.failAppend = true;
+
+		await expect(handle.execute()).rejects.toThrow("event append failure");
+
+		expect(persistence.events.map((event) => event.type)).toEqual(["run_created"]);
+		expect(persistence.projection).toEqual(projection);
+		expect((handle as unknown as { state: RunState }).state.status).toBe("created");
+	});
+
+	it("preserves the production raw-read JSON clone semantics", async () => {
+		const project = await cwd();
+		const persistence = filePersistence(project, "run-raw-clone");
+		await mkdir(persistence.paths().root, { recursive: true });
+		await writeFile(persistence.paths().events, '{"type":"future","negative":-0,"overflow":1e400}\n', "utf8");
+
+		expect(await workflowRunModule.readEvents(project, "run-raw-clone")).toEqual([
+			{ type: "future", negative: 0, overflow: null },
+		]);
+	});
+
 	it("owns lifecycle events, durable reuse, and immutable detail views", async () => {
 		const project = await cwd();
 		let executions = 0;
@@ -341,15 +397,24 @@ describe("WorkflowRun deep interface", () => {
 		expect(persistence.events.some((event) => event.type === "step_reused")).toBe(true);
 	});
 
-	it("keeps durable append order and recovers after projection failure", async () => {
+	it("keeps durable append order and recovers after an ordinary projection failure", async () => {
 		const project = await cwd();
-		const workflow = defineWorkflow({ name: entry.name, description: entry.description, canEditFiles: false, run: () => "ok" });
-		const persistence = new InMemoryRunPersistence(project, "run-projection", { failNextProjection: true });
+		const persistence = new InMemoryRunPersistence(project, "run-projection");
+		const workflow = defineWorkflow({
+			name: entry.name,
+			description: entry.description,
+			canEditFiles: false,
+			run() {
+				persistence.failNextProjection = true;
+				return "ok";
+			},
+		});
 		const handle = await handleFor(project, "run-projection", workflow, persistence);
 		expect(await handle.execute()).toBe("ok");
+		expect((persistence.projection as RunState).status).toBe("running");
+		expect(persistence.events.at(-1)?.type).toBe("run_completed");
 		const reopened = await handleFor(project, "run-projection", workflow, persistence, true);
 		expect((await reopened.inspect()).status).toBe("completed");
-		expect(persistence.events.at(-1)?.type).toBe("run_completed");
 	});
 
 	it("reloads resumed state after acquiring the run lease", async () => {
