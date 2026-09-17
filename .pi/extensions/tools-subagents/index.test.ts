@@ -150,15 +150,16 @@ describe("subagent extension interfaces", () => {
 		expect(harness.tools.get("subagent")).toMatchObject({
 			name: "subagent",
 			label: "Subagent",
-			description: expect.stringContaining("Delegate only work that examines substantially more material than it returns"),
+			description: expect.stringContaining("Delegate only bounded work that examines substantially more material than it returns"),
 			promptSnippet: "Delegate tasks",
 		});
 		const subagentDescription = harness.tools.get("subagent").description as string;
-		expect(subagentDescription).toContain("Keep planning, architecture, decomposition, and implementation in the main agent");
-		expect(subagentDescription).toContain("Parallelize only independent tasks");
-		expect(subagentDescription).toContain("one-to-two-file inspection");
-		expect(subagentDescription).toContain("narrow scope");
+		expect(subagentDescription).toContain("Keep architecture, interface design, planning, decomposition, and implementation in the main agent");
+		expect(subagentDescription).toContain("Objective, Scope, Allowed actions, Forbidden actions, Required output, and Stop conditions");
+		expect(subagentDescription).toContain("Do not assume the subagent inherits conversation context");
+		expect(subagentDescription).toContain("Parallelize only independent tasks that cannot contend over mutable state");
 		expect(subagentDescription).toContain("multi-source external research");
+		expect(subagentDescription).toContain("running existing tests or commands");
 		expect(subagentDescription).not.toContain("worker");
 		expect(subagentDescription).not.toContain("judge");
 		expect(harness.tools.get("subagent")).not.toHaveProperty("promptGuidelines");

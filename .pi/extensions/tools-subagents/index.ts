@@ -128,7 +128,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		name: "subagent",
 		label: "Subagent",
 		description:
-			"Delegate only work that examines substantially more material than it returns. Keep planning, architecture, decomposition, and implementation in the main agent. Agents: explorer for multi-file repository investigation; researcher for multi-source external research; default for small general tasks. Parallelize only independent tasks. Provide complete context, narrow scope, and required evidence or output. Use local tools for simple lookups, known-symbol traces, direct docs, or one-to-two-file inspection. Request concise findings, not logs, and trust cited results unless gaps or conflicts remain.",
+			"Delegate only bounded work that examines substantially more material than it returns. Choose the agent by role: explorer for multi-file repository investigation, researcher for multi-source external research, and default for small bounded tasks such as running existing tests or commands. Keep architecture, interface design, planning, decomposition, and implementation in the main agent. Every delegated task must explicitly state: Objective, Scope, Allowed actions, Forbidden actions, Required output, and Stop conditions. Do not assume the subagent inherits conversation context; include all facts and constraints it needs. Use local tools for simple lookups, known-symbol traces, direct documentation, and quick commands. Parallelize only independent tasks that cannot contend over mutable state. Request concise findings with evidence rather than logs.",
 		promptSnippet: "Delegate tasks",
 		parameters: Type.Object({
 			tasks: Type.Array(
