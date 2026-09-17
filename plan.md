@@ -1,728 +1,826 @@
-# Deepen the Editor slot contribution lifetime
+# Deepen the Workflow run event module
 
 ## Goal
 
-Make the shared Editor slot module own a Session editor contribution from installation through shutdown. Remove caller-owned removal by public contributor id, prevent stale Session cleanup from deleting a newer contribution, and make pending Editor flushes safe across reload and Session replacement.
+Turn the current open Workflow run event record and reducer switch into one deep in-process module with a typed interface for engine-owned writes and an open compatibility interface for durable reads.
 
-The user-visible behavior must remain the same:
+The implementation must improve locality without changing persisted data or moving Workflow run lifecycle policy. After the change:
 
-- `ui-message-history` remains the winning Session editor at priority 20.
-- Up and Down continue to navigate persisted prompt history.
-- standalone `/model` submissions continue to route through the Model selector without entering the transcript.
-- the streaming Tab handler continues to intercept input without swapping the mounted Editor.
-- the thinking-level border continues to be reapplied after Pi mounts a custom Editor.
-- Plan Review keeps its synchronous temporary Editor swap outside the shared Session contribution machinery.
+- engine-owned event producers are checked against one canonical event vocabulary;
+- durable JSONL remains forward-compatible with unknown event types and fields;
+- event interpretation, legacy aliases, usage normalization, live reduction, and replay live in one module;
+- the Workflow run lifecycle still owns when an event is recorded and the `append -> reduce -> projection` ordering;
+- `run-store.ts` still owns persistence, JSONL shape checks, and path safety, but no event interpretation;
+- recovery still treats `events.jsonl` as canonical and uses `state.json` only when the event log is missing;
+- raw event inspection keeps its existing JSON-cloned view of parsed JSONL records;
+- tests exercise event behavior through the event module's interface.
 
-## Why this change
+No event-log migration is required.
 
-The Editor slot registry is global because Pi loads each extension with its own copy of shared modules. The `Symbol.for("pi-config.editor-slot.v1")` key lets those copies coordinate one TUI Editor slot.
+## Why this is the right scope
 
-The registry currently owns winner selection and installation, but not the full contribution lifetime:
+Recent changes make Workflow runs a hot area. The current event seam is real and load-bearing:
 
-- `ui-message-history` calls `installSessionEditor()` on `session_start` and never removes its contribution on `session_shutdown`.
-- `ui-model-selector` removes its contribution from its Profile adapter's `dispose()` callback.
-- `ui-message-history/steer-recall.test.ts` compensates by importing `removeSessionEditor()` and manually removing the history contribution after firing shutdown.
-- `removeSessionEditor(ctx, id)` deletes by public id. A stale Session cleanup can therefore delete a newer Session's replacement with the same id.
-- a pending zero-delay flush remains scheduled when the last contribution is removed. It is a no-op if the map stays empty; if a new contribution arrives first, the old callback mounts from the new map. Timer ownership and Session currency are not explicit.
+- `WorkflowRun.recordOnQueue()` applies events during live execution.
+- `recoverWorkflowRunState()` replays the same events during durable recovery.
+- `/workflows raw <run-id>` exposes the records for inspection.
+- `FileRunPersistence` and `InMemoryRunPersistence` are two adapters at the existing persistence seam.
 
-The deletion test confirms the module is not deep enough: deleting the integration test's manual cleanup leaves global contribution state behind. Correct cleanup knowledge has leaked into a caller and a test.
-
-## Scope
-
-### In scope
-
-- Session editor contribution registration.
-- Session identity for contribution waves.
-- automatic contribution cleanup on `session_shutdown`.
-- ownership-safe early disposal for the Model selector's Profile lifecycle.
-- deferred flush cancellation and stale-callback rejection.
-- remounting the next priority winner after early disposal.
-- restoring Pi's built-in Editor when the current Session has no contributions.
-- focused unit, adapter, and cross-extension integration tests.
-- `CONTEXT.md` and module comments that describe the final interface and invariants.
-
-### Out of scope
-
-- changing Editor priority values.
-- changing prompt-history behavior or persistence format.
-- changing `/model` parsing or selection behavior.
-- changing the single streaming input-handler registry.
-- supporting multiple simultaneous input handlers.
-- moving Plan Review's synchronous command-submit bridge into the Session contribution registry.
-- introducing a port or filesystem adapter. The dependency category is in-process; Pi's TUI calls are already supplied by `ExtensionContext`.
-- changing Pi itself.
-
-## Recommended decisions
-
-The repository evidence below resolves the design decisions. Implement them as written.
-
-### 1. Identify a Session contribution wave with the exact `SessionStartEvent` object
-
-Use the `session_start` event object as the in-process Session token.
-
-Reasons:
-
-- Pi's extension runner emits one event object to every extension handler in the wave.
-- the token is naturally unique across startup, reload, new, resume, and fork starts.
-- `cwd` is not unique enough.
-- `ctx.sessionManager.getSessionId()` can remain the same across reload and therefore does not identify an extension-runtime lifetime.
-- public contributor ids identify adapters, not Session ownership.
-
-The token is internal to the module. Callers pass the event they already receive and never compare or store it themselves.
-
-### 2. Expose one lifetime object per contributing adapter
-
-Replace the shallow install/remove pair with this conceptual interface:
+The reducer has meaningful depth, but its interface is shallow:
 
 ```ts
-export interface SessionEditorLifetime {
-	install(
-		event: SessionStartEvent,
-		ctx: ExtensionContext,
-		contribution: SessionEditorContribution,
-	): void;
-	dispose(): void;
+export interface WorkflowRunEventView {
+  ts?: number;
+  type: string;
+  [key: string]: unknown;
 }
 
-export function createSessionEditorLifetime(
-	pi: Pick<ExtensionAPI, "on">,
-): SessionEditorLifetime;
+export type WorkflowRunEventToPersist = WorkflowRunEventView;
 ```
 
-Use these names and this responsibility split.
+Every event producer can miss a required field, misspell a type, or attach the wrong payload without a compile error. The reducer then recovers meaning through casts and coercions spread across a large switch.
 
-`createSessionEditorLifetime(pi)` registers the adapter's shutdown hook inside the Editor slot module. `install()` contributes an Editor for one Session wave and atomically replaces that lifetime's prior entry without restoring the built-in Editor between entries. `dispose()` supports early Profile disposal. It is idempotent and removes only the exact entry the lifetime currently owns.
+Applying the deletion test shows that reduction earns its seam. Deleting `applyEvent()` and `rebuildState()` would spread live state transitions and durable replay across lifecycle and recovery. The current Node integration helper also calls replay directly, but that helper duplicates production behavior and this plan removes it rather than treating it as a reason for another interface. The right change is to deepen the reducer module, not remove it and not add a pass-through module.
 
-Do not expose a separate lease object. There are exactly two production contributors, each owns at most one current contribution, and only the Model selector needs early disposal. A public lease would duplicate the lifetime's private current-entry state without serving a consumer. Do not keep `removeSessionEditor(ctx, id)` either. Deleting by id is the source of the stale-owner bug.
+## Verified source inventory
 
-### 3. Keep the global registry key compatible
+This inventory was derived from the current source with repository-wide `rg`, file reads, and counts. It is the migration checklist.
 
-Keep `Symbol.for("pi-config.editor-slot.v1")`. Extend the existing object with the optional `activeSessionToken` field rather than replacing it.
+- `workflow-run.ts` has 27 event-construction expressions: the initialization event plus 26 calls to `record()` or `recordOnQueue()`. Two expressions select between two names (`run_started`/`run_resumed` and `invalidated`/`dependency_invalidated`), and `run_paused` appears at two sites. Together they produce 28 unique event names and 29 literal name alternatives.
+- `workflow-run-state.ts` handles `run_created` before its switch and has 27 switch labels for the other 27 names. The producer and reducer vocabularies match exactly. There are no producer-only or reducer-only names.
+- `workflow-run-state.ts` is the sole current definition site for `WorkflowRunEventView` and `WorkflowRunEventToPersist`, the sole implementation site for `applyEvent()` and `rebuildState()`, and the sole implementation site for the three private reducer helpers `usageFromEvent()`, `addUsage()`, and `dependencyEdges()`.
+- Live reduction has exactly two call sites in `workflow-run.ts`: new-run initialization and `recordOnQueue()`. Durable replay has one production call site in `workflow-run-recovery.ts`.
+- The open persistence type is used by `run-store.ts` and `test-support.ts`. `run-store.ts` has the `RunPersistence` declaration and the `FileRunPersistence` method implementations. `test-support.ts` has the in-memory implementation, event getter, and seeding helpers.
+- `workflow-run.ts` re-exports `WorkflowRunEventView`. `commands.ts` consumes that re-export in `WorkflowCommandService` and renders raw records with `JSON.stringify(event)` in stored order. Production `readWorkflowEvents()` first applies `cloneJson(log.events)`, so raw output is not object-identical to `readEventLog()` output: JSON negative zero becomes zero and parsed numeric overflow such as `1e400` becomes `null` during the clone. No caller outside `extensions/workflows-engine` uses any current event or reducer symbol.
+- Tests call reduction directly at one `applyEvent()` site in `workflow-run.test.ts`, one `rebuildState()` helper in `workflow-run-recovery.test.ts`, and three `runState.rebuildState()` sites in `tests/runtime.test.mjs`.
+- Tests append open records directly through persistence at two fixture sites in `workflow-run.test.ts`, one site in `run-store.test.ts`, two sites in `workflow-run-recovery.test.ts`, and the two `TestStore` methods in `runtime.test.mjs`. These remain open-data callers; they must not be forced through `KnownWorkflowRunEvent`.
+- Existing tests cover supplied numeric timestamp preservation and missing versus empty logs in `run-store.test.ts`; recovery precedence and failure identity in `workflow-run-recovery.test.ts`; and lifecycle event order, append failure, projection recovery, stale-attempt suppression, progress mapping, restart, and worktree behavior in `workflow-run.test.ts` and `runtime.test.mjs`. They do not currently cover raw rendering of unknown fields, unknown-event replay, legacy aliases, malformed event record classes, most reducer branches, timestamp/coercion boundaries, or compile-time producer rejection.
+- `CONTEXT.md` names `workflow-run-state.ts` as reducer owner once. The Workflow README describes canonical `events.jsonl` once but does not describe the open-read/closed-write split. `.pi/package.json` lists seven Workflow Vitest files explicitly and then runs the unchanged `tests/*.test.mjs` Node glob.
 
-This matters during `/reload`: old extension code and new extension code can briefly reference the same global registry. A compatible extension lets a pending old callback safely observe the new contribution map.
+## Final design decisions
 
-Use this registry shape:
+These settle the design tree using the recommended answer for each choice.
+
+### 1. Keep the module pure and in-process
+
+Create `.pi/extensions/workflows-engine/lib/workflow-run-events.ts` as a pure in-process module.
+
+It owns:
+
+- the engine-owned event vocabulary;
+- typed event payloads for production writers;
+- interpretation of durable event records;
+- compatibility aliases and coercions;
+- one-event reduction;
+- ordered replay.
+
+It does not own:
+
+- persistence calls or JSONL/path validation;
+- queue or lease ownership;
+- operation-attempt suppression;
+- terminal settlement bookkeeping;
+- projection writes;
+- recovery precedence;
+- worktree behavior;
+- command rendering.
+
+This keeps the seam narrow. No new adapter is needed because the module has no I/O dependency.
+
+### 2. Separate trusted writes from durable reads
+
+Use two event types with different jobs.
+
+`KnownWorkflowRunEvent` is a closed discriminated union for events created by `WorkflowRun`. It catches misspelled event names, missing payload fields, and payload fields attached to the wrong event.
+
+`WorkflowRunEventView` remains an open JSON record for records read from `events.jsonl`:
 
 ```ts
-interface EditorSlotRegistry {
-	modelCommandHandler?: ModelCommandHandler;
-	editorInputHandler?: EditorInputHandler;
-	contributions: Map<string, ContributionEntry>;
-	nextOrder: number;
-	flushTimer?: ReturnType<typeof setTimeout>;
-	activeSessionToken?: object;
+export interface WorkflowRunEventView {
+  ts?: number;
+  type: string;
+  [key: string]: unknown;
 }
 ```
 
-Use these registry fields. Keep `contribution`, `ctx`, and `order` on each entry so a callback created by the currently installed v1 code can still read an entry during `/reload`.
+The open read type is required for forward compatibility. A newer process may have written an event that an older process does not know. The older process must still read it, show it through `/workflows raw`, and replay it as a no-op after `run_created`.
 
-### 4. Make contribution ownership object-based
+Do not use one closed union at the file adapter seam. That would make historical and future records pretend to be known events.
 
-Each registry entry must have a unique internal identity:
+### 3. Keep lifecycle ordering in `WorkflowRun`
+
+Do not adopt a stateful event journal that calls persistence itself. `WorkflowRun.recordOnQueue()` must remain the only ordinary lifecycle commit path:
+
+```text
+check stale attempt
+clone and stamp event
+append events.jsonl
+reduce the same stamped event
+mark terminal lifecycle state when applicable
+write state.json best-effort
+```
+
+Initialization keeps the same order after `initializeInput()`.
+
+This preserves the Workflow run lifecycle ownership recorded in `CONTEXT.md`: lifecycle writes and persistence ordering stay in `workflow-run.ts`. Moving reduction and replay from `workflow-run-state.ts` into the new Workflow run event module is an intentional ownership change. Materialized state shape, validation, and read-model projection remain in `workflow-run-state.ts`. The `CONTEXT.md` update in this plan is therefore mandatory.
+
+### 4. Do not add an event registry
+
+The Workflow engine has one built-in event vocabulary. There is no requirement for third-party event definitions or runtime registration.
+
+Do not add:
+
+- event definition registration;
+- canonical-name and alias maps;
+- injected event modules;
+- event factory objects;
+- runtime brands;
+- queue lease tokens;
+- global registries;
+- schema version envelopes;
+- event ids.
+
+Those ideas add interface area without a second implementation or a confirmed extension requirement. A discriminated union plus the private reducer implementation is enough.
+
+### 5. Preserve compatibility exactly
+
+This refactor must not change accepted logs or materialized state behavior.
+
+Keep these rules:
+
+- Every event, including an ignored or target-missing event, computes `Number(event.ts || Date.now())` and sets `state.updatedAt` once state exists. Missing, `null`, `0`, `false`, and `""` timestamps use `Date.now()`. Truthy numeric strings convert to numbers, negative numbers remain negative, and truthy nonnumeric values produce `NaN`; recovery later rejects non-finite projected timestamps through `validateProjection()`. `run_created` also calls `Date.now()` inside `initialState()` even when it has an explicit timestamp, then overwrites both state timestamps with the effective event timestamp. Preserve that call behavior by moving the code unchanged.
+- `run_created` is recognized before the switch. It may occur anywhere in a log, not only first. Every occurrence discards the accumulated state, creates a new initial state object, then applies its effective timestamp to both `startedAt` and `updatedAt`. Other events mutate and return the input state object.
+- `run_created` uses these exact conversions: `String(runId)`; `String(workflowName || workflow)`; `trust || "project"`; `String(args || "")`; `String(sourceHash || "")`; `String(description || "")`; `costShape || "unknown"`; and unchecked pass-through casts for `sourceSnapshotPath` and `canEditFiles`. A truthy `workflowName` wins; a missing or falsey value falls back to legacy `workflow`.
+- Usage reads `event.usage || {}`. `input`, `output`, `cacheRead`, and `cacheWrite` each use truthiness fallback to the corresponding legacy `*Tokens` name, then to zero. `turns` and `cost` use truthiness fallback to zero. `Number(...)` performs the final conversion, so a current zero falls back to a truthy legacy value and a truthy nonnumeric value produces `NaN`.
+- Unknown event names after creation change only `updatedAt`. An empty string is a valid persisted `type` because the adapter requires a string, not a non-empty string. Before creation, known, unknown, and empty-string types throw `Cannot apply <type> before run_created` using the type verbatim.
+- Fields converted with unconditional `String(...)` are `runId`, the selected Workflow name, phase names, step and agent keys, agent names on start/completion/failure, and artifact paths. Missing values therefore become `"undefined"`. Fields using truthiness fallback before `String(...)` are run args/source hash/description, failed/stopped/phase/step/agent/parallel error text, and log messages. `run_paused.error` instead becomes `undefined` when falsey. `parallel_started.count`, `parallel_started.concurrency`, and `parallel_completed.count` use `Number(value || 0)`, with the same falsey fallback and nonnumeric `NaN` behavior as usage. `prompt`, `sourceSnapshotPath`, `dependsOn`, `metadata`, `details`, `worktree`, `result`, `raw`, progress payloads, tool names/args, and the `stopped` flag retain their existing unchecked pass-through or truthiness behavior.
+- `dependsOn` uses `(dependsOn as string[] | undefined) || []` and iterates the value. Missing and falsey values add no edges; arrays work as expected; a string iterates by character; and a truthy non-iterable throws. Preserve that compatibility behavior rather than adding durable-read validation in this refactor. Dependency edge targets are deduplicated, while the `dependsOn` array stored on step or agent state is not normalized. Starting the same key again with different dependencies does not remove old reverse edges.
+- Target-missing cases retain their asymmetry. `step_reused`, `agent_reused`, `agent_progress`, and `agent_tool` make no target-specific change, but still update global `updatedAt`. Completion and failure events create a step or agent if one is absent and still change counters. Invalidation always adds its key once even if no matching step or agent exists. When a target exists, invalidation changes its status but not its own `updatedAt`.
+- Only `run_completed` writes `result`; every other noncreation run event retains an older result. Run completion does not clear an older error. Phase completion/failure does not clear `currentPhase`. Step completion replaces the whole prior step, while step failure merges prior fields. Agent start replaces the whole prior agent and increments both counters on every occurrence, even for the same key. Agent completion/failure merge prior fields, retain stale fields not overwritten by that arm, decrement running no lower than zero, and increment their terminal counter on every occurrence even if the target was absent. Parallel completion/failure merge prior fields. Artifact paths are unique by their converted string. Progress keeps the last 50 records.
+- Unknown fields remain in raw reads and are not written into `state.json` unless existing reduction already carries them into state through a pass-through field.
+- No existing event is renamed, wrapped, rejected, or normalized on write.
+
+Move the current reducer logic largely verbatim. Do not add a normalized-transition layer: it has no current consumer and would create a second representation whose compatibility would need separate proof.
+
+### 6. Make the event interface the test surface
+
+Add focused tests for the new module. These tests should call its exported one-event and replay functions rather than private helpers.
+
+Keep adapter tests focused on JSONL and path behavior. Keep lifecycle tests focused on ordering, operation policy, and observable run behavior. Keep recovery tests focused on canonical-log precedence and projection fallback.
+
+Do not add tests for private switch branches through exported implementation details.
+
+## Proposed module interface
+
+Add `.pi/extensions/workflows-engine/lib/workflow-run-events.ts` with this interface shape and these type names.
 
 ```ts
-interface ContributionEntry {
-	contribution: SessionEditorContribution;
-	ctx: ExtensionContext;
-	sessionToken: object;
-	order: number;
+import type { RunState } from "./workflow-run-state.ts";
+
+export interface WorkflowRunEventView {
+  ts?: number;
+  type: string;
+  [key: string]: unknown;
+}
+
+interface WorkflowRunEventPayloads {
+  run_created: {
+    runId: string;
+    workflowName: string;
+    trust: WorkflowTrust;
+    args: string;
+    sourceHash: string;
+    sourceSnapshotPath?: string;
+    description: string;
+    costShape: RegistryEntry["cost"];
+    canEditFiles?: boolean;
+  };
+  run_started: Record<never, never>;
+  run_pausing: { mode: "after-current" | "now" };
+  run_paused: { error?: string };
+  run_resumed: Record<never, never>;
+  run_completed: { result: unknown };
+  run_failed: { error: string };
+  run_stopped: { error: string };
+  phase_started: { name: string };
+  phase_completed: { name: string };
+  phase_failed: { name: string; error: string };
+  step_started: {
+    key: string;
+    dependsOn?: string[];
+    metadata?: Record<string, unknown>;
+  };
+  step_completed: { key: string; result: unknown };
+  step_failed: { key: string; error: string };
+  step_reused: { key: string };
+  agent_started: {
+    key: string;
+    agent: string;
+    prompt: string;
+    dependsOn?: string[];
+    metadata?: Record<string, unknown>;
+    worktree?: WorktreeInfo;
+  };
+  agent_progress: { key: string; event: SubagentProgressEvent };
+  agent_tool: {
+    key: string;
+    event: Extract<SubagentProgressEvent, { type: "tool_call" }>;
+    tool: string;
+    args?: string;
+  };
+  agent_completed: {
+    key: string;
+    agent: string;
+    result: unknown;
+    raw: AgentResult;
+    usage: AgentResult["usage"];
+  };
+  agent_failed: {
+    key: string;
+    agent: string;
+    error: string;
+    stopped: boolean;
+  };
+  agent_reused: { key: string; agent: string };
+  parallel_started: { key: string; count: number; concurrency: number };
+  parallel_completed: { key: string; count: number };
+  parallel_failed: { key: string; error: string };
+  artifact_written: { path: string };
+  log: { message: string; details?: Record<string, unknown> };
+  invalidated: { key: string; root: string };
+  dependency_invalidated: { key: string; root: string };
+}
+
+export type KnownWorkflowRunEvent = {
+  [K in keyof WorkflowRunEventPayloads]:
+    { type: K; ts?: number } & WorkflowRunEventPayloads[K]
+}[keyof WorkflowRunEventPayloads];
+
+export function applyWorkflowRunEvent(
+  state: RunState | undefined,
+  event: WorkflowRunEventView,
+): RunState;
+
+export function rebuildWorkflowRunState(
+  events: readonly WorkflowRunEventView[],
+): RunState;
+```
+
+Derive field types from the producer values in `workflow-run.ts`. Use type-only imports for `WorkflowTrust`, `RegistryEntry`, `AgentResult`, `SubagentProgressEvent`, and `WorktreeInfo`. Keep the pause mode payload as the same literal union used by the lifecycle rather than importing back from `workflow-run.ts` and creating a reverse dependency. Keep `WorkflowRunEventPayloads` private: no current caller needs the map itself, and exporting it would add a second public event vocabulary without a consumer.
+
+`Record<never, never>` was compiled against the repository's TypeScript 7.0.2 with this mapped union. Fresh no-payload literals containing an extra field fail with TS2353, as do wrong-family payload fields. Use it directly and retain compile-time assertions in the repository typecheck to prevent regression.
+
+The persistence seam should remain open:
+
+```ts
+export interface RunPersistence {
+  appendEvent(event: WorkflowRunEventView): Promise<void>;
+  readEventLog(): Promise<{
+    exists: boolean;
+    events: readonly WorkflowRunEventView[];
+  }>;
+  // existing methods unchanged
 }
 ```
 
-A lifetime captures the exact `ContributionEntry`. Disposal succeeds only when:
+The lifecycle seam becomes closed for ordinary engine writes:
 
 ```ts
-registry.contributions.get(entry.contribution.id) === entry
+private record(
+  event: KnownWorkflowRunEvent,
+  attempt?: number,
+): Promise<RunState>;
+
+private recordOnQueue(
+  event: KnownWorkflowRunEvent,
+  attempt?: number,
+): Promise<RunState>;
 ```
 
-If a newer Session or a newer registration replaced the id, cleanup from the old lifetime becomes an idempotent no-op.
+`run_created` initialization should also use `KnownWorkflowRunEvent`. Historical test fixtures and the file adapter may continue to accept `WorkflowRunEventView` because their purpose is to represent external durable data, including legacy and unknown records.
 
-This matches the ownership-safe behavior already used by `registerModelCommandHandler()` and `registerEditorInputHandler()`.
+## Canonical engine-owned event vocabulary
 
-### 5. Treat a new Session token as a new contribution wave
+Implement the write union from the events currently produced in `workflow-run.ts`. Preserve these names and fields.
 
-On the first installation for a token different from `registry.activeSessionToken`:
+| Event type | Engine-owned payload | State effect |
+| --- | --- | --- |
+| `run_created` | `runId`, `workflowName`, `trust`, `args`, `sourceHash`, `description`, `costShape`, optional `sourceSnapshotPath`, optional `canEditFiles` | Resets all accumulated state, creates initial state, and applies the timestamp |
+| `run_started` | none | Sets running; clears error and completion time; retains any result |
+| `run_pausing` | `mode` | Sets pausing; reducer ignores `mode` |
+| `run_paused` | optional `error` | Sets paused and completion time; falsey error becomes absent |
+| `run_resumed` | none | Sets running; clears error and completion time; retains any result |
+| `run_completed` | `result` | Sets completed, result, and completion time; does not clear an older error |
+| `run_failed` | `error` | Sets failed, fallback error text, and completion time |
+| `run_stopped` | `error` | Sets stopped, fallback error text, and completion time |
+| `phase_started` | `name` | Sets current phase and replaces that phase with running state |
+| `phase_completed` | `name` | Replaces phase state with completed; retains current phase |
+| `phase_failed` | `name`, `error` | Replaces phase state with failed/error; retains current phase |
+| `step_started` | `key`, optional `dependsOn`, optional `metadata` | Replaces step with running state; stores payload unchanged; adds deduplicated edges |
+| `step_completed` | `key`, `result` | Replaces the whole step with completed result and clears invalidation |
+| `step_failed` | `key`, `error` | Merges prior fields and marks failed; creates a minimal step if absent |
+| `step_reused` | `key` | Updates an existing step timestamp; absent target changes only global time |
+| `agent_started` | `key`, `agent`, `prompt`, optional `dependsOn`, optional `metadata`, optional `worktree` | Replaces agent with running state, increments started/running, adds edges |
+| `agent_progress` | `key`, `event` | Appends raw progress for an existing agent, capped at 50; absent target is ignored |
+| `agent_tool` | `key`, `event`, `tool`, optional `args` | Appends `{ type: "tool", tool, args }`, capped at 50; reducer ignores `event` |
+| `agent_completed` | `key`, `agent`, `result`, `raw`, `usage` | Merges/creates completed agent, updates counters, clears invalidation, accumulates usage |
+| `agent_failed` | `key`, `agent`, `error`, `stopped` | Merges/creates failed or stopped agent and updates counters |
+| `agent_reused` | `key`, `agent` | Updates an existing agent timestamp; absent target is ignored; reducer ignores `agent` |
+| `parallel_started` | `key`, `count`, `concurrency` | Replaces parallel state with running/count/concurrency |
+| `parallel_completed` | `key`, `count` | Merges/creates completed state and count, preserving prior concurrency/error |
+| `parallel_failed` | `key`, `error` | Merges/creates failed state and error, preserving prior count/concurrency |
+| `artifact_written` | `path` | Adds the converted string path once |
+| `log` | `message`, optional `details` | Appends a timestamped log; falsey message becomes empty string |
+| `invalidated` | `key`, `root` | Adds key once and marks matching step and agent; reducer ignores `root` |
+| `dependency_invalidated` | `key`, `root` | Same reducer behavior as `invalidated` |
 
-1. set the new active token;
-2. invalidate all prior Session contribution entries;
-3. cancel and clear any prior deferred flush handle;
-4. add the new entry;
-5. schedule one deferred flush for the new token.
+The reducer can continue ignoring fields that are durable diagnostics rather than state inputs. For example, `run_pausing.mode`, `agent_tool.event`, `agent_reused.agent`, and invalidation `root` are persisted for meaning even where current state reduction does not consume them.
 
-Do not call `setEditorComponent(undefined)` between clearing the old wave and scheduling the new wave. The new winner will replace the old Editor on the deferred flush, avoiding unnecessary visible churn.
+## File-by-file implementation plan
 
-A late cleanup from the old lifetime must not clear or remount anything after the token changes. Do not add a numeric generation. The start-event object is already a unique generation token; carrying both duplicates state and creates synchronization cases with no additional protection.
+### 1. Add `lib/workflow-run-events.ts`
 
-### 6. Preserve the existing winner rule
+Move event-specific code out of `workflow-run-state.ts`:
 
-Within the active Session wave:
+- `WorkflowRunEventView`;
+- `WorkflowRunEventToPersist`, which is deleted rather than forwarded because `KnownWorkflowRunEvent` replaces it for lifecycle writes and `WorkflowRunEventView` remains the persistence type;
+- `usageFromEvent()`;
+- `addUsage()`;
+- `dependencyEdges()`;
+- `applyEvent()`;
+- `rebuildState()`.
 
-1. highest `priority` wins;
-2. latest registration order wins a priority tie.
+Add the closed engine-write vocabulary and export it as `KnownWorkflowRunEvent`.
 
-Do not add automatic priority allocation or a public winner query.
+Rename the public reduction functions to state their domain:
 
-### 7. Make deferred flushes token-aware
+- `applyWorkflowRunEvent()`;
+- `rebuildWorkflowRunState()`.
 
-A scheduled callback must capture both its timer handle and the active Session token. Before mounting, it must verify that:
+Keep the single switch and its helpers private. Do not split it into one function per family or event during this move. Such a split would enlarge the diff without removing current duplication or changing the two-function interface.
 
-- its handle is still `registry.flushTimer`;
-- its token is still `registry.activeSessionToken`;
-- the active wave still has a winner for that token.
+Preserve the current mutation model inside reduction for this refactor. Changing to immutable state transitions at the same time would increase risk and is not needed to deepen the seam. Continue cloning at existing lifecycle, persistence, and read-model points.
 
-When the last active contribution is disposed before the flush:
+### 2. Narrow `lib/workflow-run-state.ts`
 
-- cancel the timer with `clearTimeout()`;
-- set `flushTimer` to `undefined` immediately;
-- restore the built-in Editor once;
-- ensure a later callback cannot mount the disposed factory.
+Leave state shape, projection validation, initial-state creation, read-model projection, path validation, and cleanup projection helpers in this file.
 
-When one contribution is disposed and another remains:
+Remove event vocabulary and reduction code after callers migrate.
 
-- keep or schedule one flush;
-- mount the remaining winner after the deferred wave;
-- do not restore the built-in Editor first.
+Expected retained responsibilities include:
 
-### 8. Make teardown best-effort after TUI destruction
+- `RunStatus` and all `Run*State` types;
+- `RunState`;
+- `WorkflowRunSummary` and detail view types;
+- `cloneJson()`;
+- `validateProjection()`;
+- `initialState()`;
+- `projectDetail()`, `projectSummary()`, and their validation/path-safety helpers.
 
-Add a catch around the cleanup call to `ctx.ui.setEditorComponent(undefined)`. The current module catches only the deferred installation call; `removeSessionEditor()` currently lets restoration errors escape. Pi may already be tearing down the TUI, so automatic shutdown cleanup must not fail the Session for this reason.
+This keeps materialized state meaning separate from event interpretation while avoiding a cycle. `workflow-run-events.ts` may import `RunState`, `RunUsage`, `RunStepState`, `RunAgentState`, `RunParallelState`, and `initialState()` from `workflow-run-state.ts`. `workflow-run-state.ts` must not import the event module.
 
-Keep the existing broad catch around deferred installation unchanged. Pi 0.84.4 constructs the factory synchronously inside `setEditorComponent(factory)`, so that catch currently contains both torn-down-TUI failures and contribution construction failures. Separating those error classes would change existing behavior and is outside this lifetime fix. Do not add validation or fallback behavior.
+### 3. Update `lib/workflow-run.ts`
 
-### 9. Keep history persistence outside the Editor slot module
+Import `KnownWorkflowRunEvent`, `WorkflowRunEventView`, and `applyWorkflowRunEvent()` from the new module.
 
-The Editor slot module owns Editor contribution lifetime, not history-file persistence.
+Change `record()` and `recordOnQueue()` to accept `KnownWorkflowRunEvent`.
 
-`ui-message-history` must retain its `session_shutdown` handler that calls `store.flush()`. The new automatic Editor cleanup and the existing store flush are separate responsibilities.
+Type the initialization event as `KnownWorkflowRunEvent`, or use `satisfies KnownWorkflowRunEvent`, so `run_created` receives the same compile-time check as later events.
 
-### 10. Keep Plan Review outside
+Replace live calls to `applyEvent()` with `applyWorkflowRunEvent()` in:
 
-`workflows-plan/plan-review.ts` temporarily installs a command-submit bridge, obtains Pi's synchronous submit callback, and restores the previous Editor factory in `finally`.
+- new-run initialization;
+- `recordOnQueue()`.
 
-Do not convert this bridge into a Session contribution. It has a shorter synchronous lifetime, does not compete by priority, and already restores the exact prior factory.
+Do not otherwise change `recordOnQueue()` ordering or policy:
 
-## Detailed implementation plan
+1. return current state for a terminal attempt;
+2. reject an uninitialized run;
+3. clone and stamp the event;
+4. append it;
+5. reduce it;
+6. set `terminalAttempt` and `settled` for terminal event types;
+7. write the projection best-effort.
 
-### Step 1: Lock the current failure down at the shared module interface
+Keep the event literal call sites inline. A factory call around every event would add syntax without hiding caller knowledge. The closed parameter type provides contextual checking.
 
-Modify `.pi/extensions/_shared/editor-slot.test.ts` before changing the implementation.
+Continue exporting `WorkflowRunEventView` from `workflow-run.ts` for command-facing compatibility, but source that export from `workflow-run-events.ts`.
 
-Add a Pi event harness that:
+Do not alter:
 
-- records multiple handlers for `session_start` and `session_shutdown`;
-- fires one shared `SessionStartEvent` object to all start handlers;
-- fires shutdown after start;
-- supplies separate `ExtensionContext` test doubles for replacement-runtime scenarios;
-- continues using fake timers so the zero-delay flush is deterministic.
+- `WorkflowRunHandle`;
+- `WorkflowRunModule`;
+- coordinator behavior;
+- pause, stop, resume, or restart semantics;
+- worktree admission and cleanup;
+- Subagent execution;
+- artifact writes;
+- status rendering.
 
-Add failing tests for the new lifetime interface.
+### 4. Update `lib/workflow-run-recovery.ts`
 
-#### Automatic shutdown after mount
+Import `rebuildWorkflowRunState()` from the new module.
 
-1. create a lifetime;
-2. install one contribution for a start event;
-3. flush timers and assert its factory mounted;
-4. fire `session_shutdown`;
-5. assert `setEditorComponent(undefined)` restored the built-in Editor;
-6. call shutdown again and assert cleanup is idempotent.
+Keep recovery flow exactly as it is:
 
-#### Shutdown before deferred flush
+- read the event log first;
+- throw `WorkflowEventLogEmptyError` if it exists with no parsed events;
+- replay and validate when it exists;
+- repair `state.json` best-effort;
+- consult `state.json` only when the event log is missing;
+- preserve error classes, codes, messages, and `isWorkflowRunNotFound()`.
 
-1. install one contribution;
-2. fire shutdown before timers run;
-3. drain timers;
-4. assert the contribution's factory never ran;
-5. assert the built-in Editor was restored once;
-6. assert no stale callback remains scheduled.
+Do not move recovery into the event module. Recovery depends on persistence availability and canonical-source policy, while the event module is pure.
 
-#### Stale lifetime cannot delete a newer same-id entry
+### 5. Update `lib/run-store.ts`
 
-1. create lifetime A and lifetime B;
-2. install id `history` through lifetime A for Session token A;
-3. install id `history` through lifetime B for Session token B;
-4. dispose lifetime A;
-5. flush timers;
-6. assert Session B's factory mounts;
-7. dispose lifetime B and assert the built-in Editor is restored.
+Import `WorkflowRunEventView` from `workflow-run-events.ts`.
 
-#### Re-registration within one Session is ownership-safe
+Keep `RunPersistence.appendEvent()` open to `WorkflowRunEventView`. The file adapter is a system seam for durable records, not only a sink for current engine writes.
 
-1. create lifetime A and lifetime B;
-2. install id `selector` through both lifetimes for the same Session token;
-3. dispose lifetime A;
-4. assert lifetime B's replacement remains the winner;
-5. reinstall through lifetime B before the pending flush and assert no intermediate `setEditorComponent(undefined)` call occurs;
-6. flush and assert only the latest factory mounts;
-7. dispose lifetime B and assert cleanup occurs.
+Keep all existing file behavior:
 
-#### Old timer cannot mount into a newer wave
+- append `{ ts: Date.now(), ...event }` so a supplied timestamp wins;
+- one JSON object per line;
+- skip blank lines;
+- reject malformed JSON with path and line number;
+- reject parsed values that are not objects with a string `type`;
+- accept unknown event names and fields;
+- distinguish missing and existing-empty logs;
+- retain symlink and path-containment checks.
 
-1. install a contribution for token A without flushing and capture its timer count;
-2. install a contribution for token B;
-3. assert only one timer remains pending;
-4. drain all timers;
-5. assert only B's factory is mounted;
-6. assert A's factory was never invoked.
+Do not validate known event payloads in `run-store.ts`. Event meaning belongs to the event module, and strict payload validation would risk rejecting old logs.
 
-#### Early winner disposal remounts the remaining adapter
+### 6. Update `lib/test-support.ts`
 
-1. create two lifetimes to model two extension adapters;
-2. install priority 10 Model selector and priority 20 history for the same token;
-3. flush and assert history wins;
-4. dispose history early and flush;
-5. assert Model selector mounts;
-6. dispose Model selector and assert the built-in Editor returns.
+Import `WorkflowRunEventView` from the event module.
 
-#### TUI restoration failure is contained
+Keep `InMemoryRunPersistence` as a persistence adapter with the same JSON serialization and timestamp-spread behavior as `FileRunPersistence`.
 
-1. install and flush one contribution;
-2. make `setEditorComponent(undefined)` throw;
-3. dispose its lifetime and assert disposal does not throw;
-4. fire shutdown again and assert repeated cleanup remains a no-op.
+Its `appendEvent()` should accept the open event view. Its seed methods must continue accepting arbitrary historical and unknown records so recovery tests can represent external data.
 
-Also preserve characterization tests for:
+Do not add reduction or event factories to the adapter.
 
-- same-tick flush coalescing;
-- higher-priority late registration;
-- latest-registration tie breaking;
-- thinking-border reapplication.
+### 7. Update `lib/commands.ts` and raw event consumers
 
-Rewrite those tests through `SessionEditorLifetime.install()` instead of calling a lower-level install function. The interface is the test surface.
+Keep `commands.ts` behavior unchanged and continue receiving `WorkflowRunEventView` through the exported Workflow run module interface.
 
-Delete tests whose only purpose is the old public `removeSessionEditor(ctx, id)` interface.
+Verify `/workflows raw <run-id>` still:
 
-### Step 2: Deepen `_shared/editor-slot.ts`
+- returns every event in stored order after the existing `cloneJson(log.events)` step;
+- uses `JSON.stringify(event)` without further normalization;
+- returns unknown fields, subject to the existing JSON clone's value semantics;
+- returns an empty notification body for an existing empty log;
+- reports a missing event log through the existing not-found path.
 
-Modify `.pi/extensions/_shared/editor-slot.ts`.
+### 8. Update `CONTEXT.md`
 
-#### Add the lifetime type
+Replace the current Workflow run state sentence with explicit ownership for the deepened module. Keep the recorded persistence and lifecycle decisions.
 
-Import the Pi event types needed by the interface:
+Add wording equivalent to:
 
-```ts
-import type {
-	ExtensionAPI,
-	ExtensionContext,
-	SessionStartEvent,
-} from "@earendil-works/pi-coding-agent";
-```
+> **Workflow run event module**: the pure in-process module in `workflows-engine/lib/workflow-run-events.ts` that owns the engine event vocabulary, compatibility interpretation, live reduction, and durable replay behind a typed write interface and an open durable-read interface. Unknown events remain replayable no-ops after `run_created`; legacy Workflow and usage aliases remain event interpretation. The Workflow run lifecycle retains append, reduction, and projection ordering. Run persistence owns file I/O, JSONL record-shape checks, and path safety, but not event interpretation.
 
-Type the factory parameter as `Pick<ExtensionAPI, "on">`, as shown in the interface above. Import `ExtensionAPI` only for that type.
+Update the Workflow run persistence entry, which currently names `workflow-run-state.ts` as the reducer owner.
 
-Export:
+No ADR is needed. This refactor follows, rather than reverses, the existing recorded ownership.
 
-- `SessionEditorLifetime`;
-- `createSessionEditorLifetime()`;
-- the existing `SessionEditorContribution`.
+### 9. Update `workflows-engine/README.md`
 
-Stop exporting:
+Keep the run directory and canonical-log sections. Add one concise implementation note near the `events.jsonl` paragraph:
 
-- `installSessionEditor()`;
-- `removeSessionEditor()`.
+- engine writes use a closed event vocabulary;
+- durable reads remain open for forward compatibility;
+- unknown events are visible in raw output and do not change known state after creation.
 
-The raw registry mutation functions should become private implementation details.
+Do not turn the README into an event schema reference. The event payload map in code is authoritative.
 
-#### Add Session token state
+## Test plan
 
-Extend each contribution entry with the exact start-event token. The entry object itself is its unique ownership identity.
+### A. Add `lib/workflow-run-events.test.ts`
 
-Extend the registry with the active token. Initialize the missing field lazily so the existing v1 global object remains usable during hot reload. On the first installation after migration, an undefined active token counts as a different wave: clear legacy entries and cancel the legacy pending timer before adding the new entry.
+This becomes the event module's main test surface.
 
-#### Implement active-wave transition
+#### Creation and ordering
 
-Create one private function that establishes the active Session wave. It must:
+- `run_created` builds the full initial state from current fields, including optional source snapshot and edit capability.
+- The event timestamp becomes `startedAt` and `updatedAt`.
+- A second `run_created` later in the log resets all accumulated state and starts from the second record.
+- Assert object identity: creation returns a new state and does not mutate a prior state object, while each noncreation event mutates and returns the supplied state.
+- With mocked time, assert creation's existing `initialState()` clock call even when `event.ts` is explicit, and both clock calls when the timestamp is falsey.
+- A noncreation event before `run_created` throws the exact existing message.
+- Unknown and empty-string event names before `run_created` throw with the supplied type in that message.
+- Replay applies events in input order; order-sensitive pairs include start/completion, invalidation/completion, and completion/failure.
+- Replay of an empty array throws `Workflow event log is empty`.
 
-- do nothing when the token is already active;
-- invalidate prior contribution entries when the token changes;
-- cancel and clear a pending flush from the prior token;
-- preserve model-command and input-handler registries;
-- preserve monotonic registration order;
-- avoid clearing the visible Editor before the new winner flushes.
+#### Run and phase transitions
 
-Keep all wave-transition rules in this function for locality.
+Cover started, pausing, paused, resumed, completed, failed, and stopped status effects. Assert the fields each arm deliberately retains: start/resume retain result, completion retains an older error, pausing changes no terminal fields beyond status, and paused applies its distinct falsey-error rule.
 
-#### Implement exact-entry disposal
+Cover phase start, completion, and failure, including replacement of phase state, timestamps, fallback error text, and retention of `currentPhase` after completion or failure.
 
-Create a private `disposeContribution(entry)` function.
+#### Step and dependency transitions
 
-Required ordering:
+- `step_started` replaces prior step state while storing dependencies and metadata unchanged.
+- Dependency edge targets are deduplicated without normalizing the stored `dependsOn` array. Re-starting one key with new dependencies leaves its old reverse edges in place.
+- Missing/falsey `dependsOn` adds no edges, a string iterates by character, and a truthy non-iterable throws.
+- `step_completed` replaces all prior step fields with status/result/time and removes every matching key from `invalidatedKeys`.
+- `step_failed` retains prior fields and creates a minimal failed step when no prior step exists.
+- `step_reused` updates only an existing step; an absent target still advances global time.
+- Both invalidation names add an absent target key once, deduplicate repeated invalidation, and mark matching steps and agents without changing target timestamps.
+- Re-completion clears step or agent invalidation; step/agent failure does not.
 
-1. return if the current map entry for the id is not the exact entry;
-2. delete the entry;
-3. return without UI effects if the entry's token is no longer active;
-4. if no active entries remain, cancel the pending flush and restore the built-in Editor best-effort;
-5. otherwise schedule one flush so the next winner remounts.
+#### Agent transitions and usage
 
-The lifetime closes over this function and its current entry. It needs no public id or context parameters.
+- `agent_started` increments `agentsStarted` and `agentsRunning`.
+- Progress and tool events ignore an unknown agent except for global time.
+- Raw progress appends for a known agent and retains only the last 50 records; cover exactly 50 and 51 records.
+- Tool progress stores `{ type: "tool", tool, args }` and ignores the durable diagnostic `event` field during reduction.
+- Repeated start for the same key still replaces the agent and increments started/running each time.
+- Completion decrements running without going negative, increments completed, stores result/raw, clears invalidation, and creates a minimal agent when absent. Repeated completion increments again and preserves stale prior fields such as an error.
+- Failure decrements running without going negative, increments failed, maps truthy `stopped` to stopped, and creates a minimal agent when absent. Repeated failure increments again and preserves stale prior fields such as result/raw.
+- Reuse updates only an existing agent and ignores its diagnostic `agent` field during reduction.
+- Current usage names accumulate correctly.
+- Legacy usage names accumulate to the same state.
+- Multiple completions accumulate usage and update total tokens and cost.
 
-#### Implement the lifetime
+#### Parallel, artifact, and log transitions
 
-`createSessionEditorLifetime(pi)` keeps only the adapter's current entry in its closure.
+- Parallel start replaces prior state. Completion and failure merge existing state, including stale fields, and also create state when no start exists.
+- Duplicate artifact paths are stored once after unconditional string conversion.
+- Logs preserve details and effective timestamp; falsey messages become `""`.
 
-Its `install(event, ctx, contribution)` method:
+#### Compatibility
 
-1. capture and clear the lifetime's prior entry;
-2. establish the active Session wave from `event`;
-3. if the prior entry is still the exact current map entry, delete it without triggering restoration or a remount;
-4. create and add the replacement contribution entry;
-5. store that exact entry;
-6. schedule the deferred flush.
+- `run_created.workflow` works when `workflowName` is absent or falsey, and a truthy `workflowName` wins when both names exist.
+- Characterize every `run_created` fallback and pass-through listed in Final design decision 5, including missing values, falsey current values, and invalid trust reaching later projection validation.
+- Current usage fields keep their truthiness fallback to legacy usage fields, including current zero with truthy legacy data. Cover missing, falsey primitive, truthy primitive, and array `usage` values as well as current-only, legacy-only, mixed, numeric strings, negative values, and truthy nonnumeric fields.
+- Unknown and empty-string event names after creation do not change known state except `updatedAt`; unknown fields on known and unknown events do not cause rejection.
+- Characterize unconditional String conversion with missing values and truthiness-based String fallback with `undefined`, `null`, `false`, `0`, and `""`. Cover `run_paused.error` separately because it becomes absent rather than fallback text.
+- Characterize timestamps with an omitted value, each JSON falsey value (`null`, `0`, `false`, `""`), a numeric string, a negative number, and a truthy nonnumeric string. Inject or mock `Date.now()` so falsey cases are deterministic. Assert that pure reduction can contain `NaN` while recovery rejects it during projection validation.
+- Characterize parallel count/concurrency conversion with zero, numeric strings, negative numbers, and truthy nonnumeric strings.
+- Characterize unchecked pass-through fields with representative noncanonical durable data. The event module must neither clone nor normalize those values.
 
-Do not implement replacement by calling public `dispose()`. If the lifetime is the only contributor, that would restore the built-in Editor before immediately scheduling its replacement. It would also break the existing same-tick re-registration behavior by adding an observable `undefined` slot write.
+#### Compile-time write vocabulary
 
-Its public `dispose()` method and internally registered `session_shutdown` handler use the same private closure operation:
+Add type assertions in the test file or a small compile-only block using `satisfies KnownWorkflowRunEvent` and `// @ts-expect-error`.
 
-1. capture the current entry;
-2. clear the closure's reference before disposal;
-3. dispose the captured exact entry if one exists;
-4. tolerate repeated calls.
+Prove that:
 
-The hook must not delete by id and must not inspect mutable global winner state to infer ownership.
+- the mapped union contains all 28 valid event names and representative run, step, agent, and no-payload literals accept their required payloads;
+- an unknown engine event name is rejected;
+- a required field omission is rejected;
+- a phase field cannot be attached to a step event;
+- no-payload events reject accidental payload fields;
+- optional fields remain optional;
+- `WorkflowRunEventView` still accepts unknown durable event names and fields.
 
-#### Make scheduling explicit
+Do not add one compile assertion per trivial field. The private payload map is the exhaustive 28-name inventory; representative positive and negative assertions prove the mapped-union mechanics, while runtime reducer tests provide the behavior matrix.
 
-Refactor `scheduleFlush()` so a callback captures its timer handle and Session token, then verifies both before calling `flushSessionEditor(token)`.
+### B. Refocus `lib/workflow-run.test.ts`
 
-Refactor `flushSessionEditor(token)` to mount only a winner whose entry token equals both the captured token and the registry's active token.
+Keep lifecycle and integration tests. They verify behavior that the pure event module cannot:
 
-Add a private cancellation function that always both clears the timer and resets the registry field.
+- event append order produced by real workflow execution;
+- durable reuse and restart;
+- append failure does not advance state;
+- projection failure leaves canonical events recoverable;
+- terminal attempts suppress late writes;
+- parallel admission limits;
+- pause, stop, and resume behavior;
+- Subagent progress mapping;
+- worktree cleanup and projection fallback.
 
-Preserve the existing broad try/catch around deferred TUI installation and the existing thinking-border behavior. Add a separate best-effort catch around restoration with `undefined`.
+Remove direct reducer setup from this file where it only exists to build fixture state. Prefer one of:
 
-### Step 3: Move `ui-message-history` onto the lifetime interface
+- `rebuildWorkflowRunState()` with an explicit fixture log;
+- `InMemoryRunPersistence.seedProjection()` with a validated fixture;
+- focused event-module helpers local to the test.
 
-Modify `.pi/extensions/ui-message-history/index.ts`.
+For the projection-fallback worktree cleanup test, use the new event module name rather than importing `applyEvent()` from the state module.
 
-At extension construction:
+Add an instrumented persistence test for both creation and an ordinary `recordOnQueue()` event. For each event, assert `appendEvent` precedes `writeProjection` and inspect the projection argument to prove reduction occurred between those calls. Keep the existing late-write test as the proof of terminal-attempt suppression.
 
-```ts
-const editorLifetime = createSessionEditorLifetime(pi);
-```
+The existing append-failure test covers creation only. Keep it and add an ordinary-event append failure test that proves neither private state nor projection advances. Strengthen projection-failure coverage so an ordinary event's failed projection remains recoverable from its appended canonical event; initialization-only failure is not enough.
 
-In `session_start`:
+### C. Keep and update `lib/workflow-run-recovery.test.ts`
 
-- keep the TUI guard;
-- call `store.load()` as today;
-- capture `const cwd = ctx.cwd` locally;
-- call `editorLifetime.install(event, ctx, contribution)`;
-- do not call `dispose()` from this adapter because ordinary shutdown is automatic.
+Change imports and helper names from `rebuildState()` to `rebuildWorkflowRunState()`.
 
-Remove the mutable `currentCwd` variable. The Editor factory and record callback should close over the Session's local `cwd`:
+Keep all canonical-source tests:
 
-```ts
-const cwd = ctx.cwd;
+- event log wins over conflicting projection;
+- missing event log permits projection fallback;
+- missing both reports stable not-found details;
+- existing empty log is authoritative;
+- reducer failures do not fall back;
+- run-id mismatch does not fall back;
+- projection repair is best-effort;
+- malformed JSONL does not fall back;
+- whitespace-only JSONL is existing-empty;
+- projection validation failures propagate;
+- compatibility error exports remain identical.
 
-createEditor: (...) => {
-	const editor = new PreviousMessageEditor(...);
-	editor.attach(
-		store.listFor(cwd),
-		(text) => store.record(cwd, text),
-		getModelCommandHandler(),
-	);
-	return editor;
-}
-```
+Add an event-log recovery case with an unknown event after `run_created`. Assert recovery succeeds, the unknown event advances `updatedAt`, unknown fields do not enter projected state, and projection repair writes the rebuilt state.
 
-This prevents a deferred factory from reading a cwd changed by a later Session start.
+Add one file-backed recovery case that crosses JSONL parsing with legacy `workflow` and legacy usage aliases. Also add a truthy nonnumeric timestamp case and assert recovery rejects it through projection validation without consulting fallback state. Focused event tests alone do not cover these adapter/recovery seams.
 
-Keep the existing independent shutdown handler:
+### D. Keep `lib/run-store.test.ts` adapter-focused
 
-```ts
-pi.on("session_shutdown", () => store.flush());
-```
+Update imports through `run-store.ts` as needed, but do not move event semantics into this suite.
 
-Do not call the lifetime's manual `dispose()` from this adapter. Automatic shutdown is the point of the deepened interface.
+Add focused read tests for the external-data seam:
 
-Update the file's design comment to say the Editor slot module owns Session registration, wave selection, and teardown.
+- table-test `null`, arrays, strings, numbers, and booleans as invalid top-level records, with file and line in every error;
+- reject objects with missing, `null`, numeric, boolean, array, or object `type` values;
+- accept an empty-string `type`, because the current check requires only a string;
+- accept an unknown type with nested unknown fields unchanged;
+- preserve supplied timestamp values unchanged, including zero and a numeric string.
 
-### Step 4: Move `ui-model-selector` onto the lifetime interface
+Keep existing layout, missing-versus-empty, artifact, and run-id tests.
 
-Modify `.pi/extensions/ui-model-selector/index.ts`.
+### E. Update `tests/runtime.test.mjs`
 
-Replace imports of `installSessionEditor` and `removeSessionEditor` with `createSessionEditorLifetime`.
+Import the new event module and replace the `readPersistedState()` replay call with `runEvents.rebuildWorkflowRunState()`.
 
-Create one lifetime inside the extension factory before registering the Profile binding:
+Keep the Node integration suite. It covers plain Node loading, bundled workflows, registered Subagent behavior, durable resume, worktree artifacts, and the real file adapter in combinations not duplicated by focused Vitest tests.
 
-```ts
-const editorLifetime = createSessionEditorLifetime(pi);
-```
+Delete `TestStore` and its two reducer-heavy tests. That helper reimplements initialize/append/replay/projection behavior outside production, and the two tests duplicate the new event matrix plus existing file-adapter and real-lifecycle coverage. Other Node tests already exercise file-backed replay through `createWorkflowRun()`. Keep `readPersistedState()` and `readPersistedEvents()` as read-only integration helpers, importing replay from the event module.
 
-In the Profile adapter's `initialize(binding, event, ctx)`, preserve all old-state cleanup before the non-TUI return. Use this exact order:
+### F. Commands tests
 
-1. call `editorLifetime.dispose()` so a prior routing Editor cannot remain mounted while lifecycle cleanup waits;
-2. unregister and clear the prior Model command handler;
-3. capture, clear, and await the prior `activeLifecycle`;
-4. construct Session persistence as today;
-5. return if the new Session is non-TUI;
-6. construct and store the new selection lifecycle and `/model` handler;
-7. register the Model command handler;
-8. install the priority 10 Editor through `editorLifetime.install(event, ctx, ...)`;
-9. continue with conversation-history detection and lifecycle initialization.
+Current command coverage checks only the missing raw-log path. Add a raw-log success case with two records, an unknown type, nested unknown fields, and deliberate field order. Assert the exact newline-joined `JSON.stringify` output and stored order. Add an existing-empty case and assert the info notification body is exactly `""`.
 
-Steps 1 through 3 must run even for a non-TUI replacement. Otherwise a TUI Session followed by a print, JSON, or RPC Session would leave old routing state active. Install before awaiting `lifecycle.initializeSession()`, preserving the current ordering and avoiding an unnecessary delay before the routing Editor can participate in the start wave.
+In `workflow-run.test.ts`, characterize the production raw-read clone once with a file-backed log containing unknown fields whose JSON values include `-0` and `1e400`. Assert `workflowRunModule.readEvents()` retains the fields and order but returns zero and `null`, respectively. This prevents the refactor from accidentally promising or introducing byte-preserving raw reads.
 
-In Profile adapter `dispose(binding, ctx)`:
+### G. Update the Workflow test script
 
-1. call `editorLifetime.dispose()` before awaiting longer lifecycle cleanup;
-2. capture and clear `activeLifecycle`;
-3. await lifecycle disposal;
-4. unregister and clear the Model command handler;
-5. remove the old `removeSessionEditor(ctx, "ui-model-selector")` call and the now-unused `ctx` parameter name.
+Add `extensions/workflows-engine/lib/workflow-run-events.test.ts` to the explicit Vitest file list in `.pi/package.json` under `test:workflows`. Keep the Node test glob unchanged.
 
-Exact-entry disposal ensures an old Profile cleanup cannot remove a newer selector entry. Clearing `activeLifecycle` before awaiting prevents re-entrant cleanup from targeting a replacement.
+This makes `pnpm test:workflows` include the new event module test rather than relying only on the separate focused command.
 
-Because `createSessionEditorLifetime(pi)` runs before `wireSessionProfileBinding(pi, ...)`, Pi invokes the lifetime's automatic shutdown handler before the Profile binding's shutdown handler in this adapter. The second `editorLifetime.dispose()` is therefore an idempotent no-op on ordinary shutdown. Tests must also cover Profile disposal directly through replacement initialization, where it runs before Session shutdown.
+## Implementation sequence
 
-Do not add a `try/finally` for lifecycle rejection. `ModelSelectionLifecycle.dispose()` uses `Promise.allSettled([...operations]).then(...)` and cannot reject through an operation failure. Preserve the existing command-handler cleanup order; only Editor disposal moves before the await.
+Implement this as one coherent refactor, with checks after each stable step.
 
-### Step 5: Remove manual cleanup from the cross-extension integration test
+1. Add `workflow-run-events.ts` with moved reducer behavior, the open durable-read view, and the closed engine-write union.
+2. Add `workflow-run-events.test.ts` by moving reducer expectations from broad integration fixtures where appropriate and adding compatibility and compile-time coverage.
+3. Update `workflow-run-recovery.ts` and its tests to replay through the new module.
+4. Update `run-store.ts` and `test-support.ts` to import the open view from the new module.
+5. Update `workflow-run.ts` to type ordinary writes with the closed union and reduce through the new module while preserving ordering.
+6. Update Workflow run lifecycle tests and add the missing raw-command success/empty coverage.
+7. Update the Node integration suite import, delete `TestStore` and its duplicate reducer tests, and keep the real end-to-end coverage.
+8. Remove event exports and implementation from `workflow-run-state.ts` once `rg` shows no callers.
+9. Update `CONTEXT.md` and the Workflow engine README.
+10. Add the new event test file to `.pi/package.json`'s `test:workflows` Vitest list.
+11. Run focused tests, typechecking, then the broader Workflow suite.
 
-Modify `.pi/extensions/ui-message-history/steer-recall.test.ts`.
+Do not leave temporary compatibility aliases in `workflow-run-state.ts`. The repository-wide caller audit found no consumer outside the mapped Workflow engine files, so all callers move atomically.
 
-Remove:
+## Verification commands
 
-```ts
-import { removeSessionEditor } from "../_shared/editor-slot.ts";
-```
+Run from `.pi/` unless noted.
 
-Change `disposeSession()` to fire only the real shutdown event:
-
-```ts
-async function disposeSession(session: SessionHarness): Promise<void> {
-	await session.pi.fire("session_shutdown");
-}
-```
-
-Strengthen the harness so shutdown behavior is observable:
-
-- create one default event object per `fire()` call before iterating listeners, so every handler receives the same object exactly as Pi's runner does;
-- retain access to `ctx.ui.setEditorComponent`;
-- after shutdown, assert its last call restores the built-in Editor with `undefined`;
-- continue asserting `getEditorInputHandler()` is undefined after every test;
-- continue verifying the history store flushes to the temporary file.
-
-This is the deletion-test proof: the integration test must clean up through the production interface with no test-only registry call.
-
-Add or adapt a reload test that uses two complete Session harness instances:
-
-1. start and mount the first Session;
-2. fire first shutdown with reason `reload`;
-3. start and mount the second Session;
-4. assert the second Editor recalls history and handles streaming Tab;
-5. assert the first Session's later repeated cleanup cannot clear the second Editor.
-
-The existing harness can keep both runtime closures alive because each `createSession()` call owns its listener map while the registries are global. Implement the supported shutdown-then-start order above and fire the first harness's shutdown a second time after Session 2 mounts. Cover the harder start-new-before-old-cleanup race with two lifetimes in `_shared/editor-slot.test.ts`.
-
-### Step 6: Update Model selector adapter tests
-
-Modify `.pi/extensions/ui-model-selector/index.test.ts`.
-
-Preserve the existing tests for:
-
-- no Editor in print, JSON, or RPC modes;
-- command handler and routing Editor installation;
-- command ownership replacement on reload;
-- waiting for in-flight lifecycle disposal;
-- rejecting a captured old handler after Session replacement;
-- command and Editor cleanup on shutdown.
-
-The current harness stores one handler per event in a `Map`, but the new lifetime and `wireSessionProfileBinding()` each register their own `session_shutdown` handler. Change it to arrays, invoke every handler in registration order, and pass one shared event object and context to all handlers. Without this change, the later Profile wiring silently overwrites the lifetime cleanup hook and the adapter tests exercise the wrong runtime behavior.
-
-Change assertions to observe behavior through the lifetime interface:
-
-- after startup, wait for a function factory to be installed;
-- after shutdown, assert the built-in Editor is restored exactly once even though both shutdown handlers call the idempotent lifetime cleanup path;
-- on a TUI-to-non-TUI replacement start, assert the old Editor and command handler are removed;
-- after reload, assert the newer routing factory remains; simulate stale old-lifetime disposal in the shared module suite, where two independent lifetimes can be retained accurately.
-
-Do not mock the lifetime module. The test should cross the real shared seam.
-
-### Step 7: Confirm `ui-steer-input` needs no implementation change
-
-Do not modify `.pi/extensions/ui-steer-input/index.ts`.
-
-It uses the separate ownership-safe `registerEditorInputHandler()` interface and already unregisters on shutdown. It does not contribute an Editor and must not acquire a `SessionEditorLifetime`.
-
-Run its tests because Editor lifetime changes can affect the mounted routing Editor.
-
-### Step 8: Confirm Plan Review remains isolated
-
-Run the Plan Review tests that cover `submitEditorCommand()` in `.pi/extensions/workflows-plan/plan-review.test.ts`.
-
-The temporary bridge must still:
-
-- capture the current factory;
-- install its bridge synchronously;
-- obtain the submit callback;
-- restore the exact previous factory in `finally`.
-
-Do not edit Plan Review production code. The swap and restoration contain no `await`, timer, or callback yield, so Session cleanup cannot interleave with the temporary bridge on JavaScript's event loop. Do not introduce an Editor stack.
-
-### Step 9: Update domain and module documentation
-
-Modify `CONTEXT.md` under **TUI editor slot**.
-
-Update the Editor slot module definition to include:
-
-- Session-event-token ownership;
-- automatic shutdown cleanup;
-- ownership-safe lifetime disposal;
-- token- and timer-handle-guarded deferred flushes;
-- history and Model selector as adapters;
-- streaming input interception as a separate registry;
-- Plan Review as the only external synchronous swap.
-
-Update the header comment in `_shared/editor-slot.ts` to state the same invariants concisely.
-
-Do not add a new domain term. The implementation uses only the existing **Editor slot module** and Session vocabulary.
-
-## Test strategy
-
-### Shared module tests
-
-Run:
+### Static caller audit
 
 ```bash
-cd .pi
-pnpm exec vitest run extensions/_shared/editor-slot.test.ts
+rg -n 'WorkflowRunEventView|WorkflowRunEventToPersist|KnownWorkflowRunEvent|applyEvent|rebuildState|applyWorkflowRunEvent|rebuildWorkflowRunState' extensions/workflows-engine
 ```
 
-The suite must prove:
+Expected result:
 
-- same-wave coalescing;
-- priority and tie behavior;
-- late higher-priority remount;
-- exact-entry lifetime ownership;
-- atomic same-lifetime replacement without an `undefined` slot write;
-- automatic shutdown cleanup;
-- shutdown-before-flush cancellation;
-- old-wave timer invalidation;
-- stale lifetime safety;
-- remaining-winner remount;
-- built-in Editor restoration;
-- containment of restoration errors after TUI teardown;
-- thinking-border reapplication;
-- `/model` and input handler registries remain unchanged.
+- event types and reducer functions originate in `workflow-run-events.ts`;
+- `workflow-run-state.ts` has no event reducer implementation;
+- ordinary `WorkflowRun` recording accepts `KnownWorkflowRunEvent`;
+- persistence and raw readers use `WorkflowRunEventView`;
+- no stale `WorkflowRunEventToPersist`, `applyEvent`, or `rebuildState` definitions, imports, or calls remain.
 
-### Adapter tests
-
-Run:
+### Focused tests
 
 ```bash
-cd .pi
 pnpm exec vitest run \
-  extensions/ui-message-history \
-  extensions/ui-model-selector/index.test.ts \
-  extensions/ui-steer-input
+  extensions/workflows-engine/lib/workflow-run-events.test.ts \
+  extensions/workflows-engine/lib/run-store.test.ts \
+  extensions/workflows-engine/lib/workflow-run-recovery.test.ts \
+  extensions/workflows-engine/lib/workflow-run.test.ts \
+  extensions/workflows-engine/lib/commands.test.ts
 ```
 
-These tests must exercise the real shared interface rather than mocked removal.
-
-### Plan Review regression tests
-
-Run the narrow Plan Review suite:
+### Typecheck
 
 ```bash
-cd .pi
-pnpm exec vitest run extensions/workflows-plan/plan-review.test.ts
-```
-
-### Repository checks
-
-Run:
-
-```bash
-cd .pi
 pnpm typecheck
-pnpm test:message-history
-pnpm test:steer
-pnpm test:features
-pnpm test:plan
 ```
 
-`test:features` includes the Model selector tests in this repository's scripts.
+The typecheck is required because the main benefit includes compile-time rejection of malformed engine-owned event literals.
 
-Then run the full suite:
+### Workflow integration suite
 
 ```bash
-cd .pi
-pnpm test
+pnpm test:workflows
 ```
 
-Finally run:
+This runs both the selected Vitest files and `node --test extensions/workflows-engine/tests/*.test.mjs` through the repository script.
 
-```bash
-git diff --check
-git status --short
-```
+The verified caller set is confined to `workflows-engine`. `pnpm test:workflows` plus `pnpm typecheck` is the required broad check; the full repository suite is not required for this internal refactor.
 
-Do not alter, stage, or discard unrelated user changes.
+## Risks and mitigations
 
-## Manual TUI verification
+### Persisted event drift
 
-Automated tests do not prove the visible TUI flow. In an interactive Pi session with `ui-message-history`, `ui-model-selector`, and `ui-steer-input` enabled:
+Risk: typed event construction or reducer movement accidentally changes field names, omitted fields, or timestamps.
 
-1. submit a normal prompt;
-2. press Up in an empty Editor and confirm the prompt returns;
-3. run `/model`, select or cancel, and confirm the command does not enter normal transcript submission;
-4. start an agent response, type a follow-up, press Tab, and confirm the mounted history Editor remains active;
-5. run `/reload` immediately after startup and again after normal use;
-6. confirm the Editor still supports history, `/model`, and streaming Tab after each reload;
-7. use `/new`, `/resume`, and `/fork` once each and confirm no old Editor reappears;
-8. quit and confirm no teardown error is printed.
+Mitigation:
 
-If an interactive TUI is unavailable in the implementation environment, state that limitation in the final result rather than treating tests as equivalent.
+- keep inline event literals and the existing clone/stamp logic;
+- add exact raw event assertions around representative lifecycle flows;
+- retain file adapter timestamp tests;
+- do not add an envelope or normalization write step.
 
-## Edge cases and invariants checklist
+### Compatibility rejection
 
-Implementation is complete only when all of these hold:
+Risk: the moved reducer becomes stricter than the current reducer and rejects old logs.
 
-- [ ] a contribution is associated with exactly one `SessionStartEvent` token;
-- [ ] the first contribution for a new token invalidates the prior wave;
-- [ ] all adapters in one start wave share the same active token;
-- [ ] an old lifetime cannot remove a replacement with the same public id;
-- [ ] lifetime disposal is idempotent;
-- [ ] automatic shutdown disposal is idempotent;
-- [ ] shutdown before the zero-delay flush prevents the removed factory from mounting;
-- [ ] a timer from an old Session token cannot mount into a new Session wave;
-- [ ] removing the winner remounts the next winner without a built-in-Editor flash;
-- [ ] removing the last active contribution restores the built-in Editor;
-- [ ] a torn-down TUI does not turn cleanup into a Session shutdown failure;
-- [ ] history captures the Session-local cwd, not a mutable cross-Session variable;
-- [ ] history persistence still flushes independently on shutdown;
-- [ ] the Model selector can dispose its contribution before Session shutdown;
-- [ ] Model command and streaming input-handler ownership remain safe;
-- [ ] Plan Review remains outside the contribution registry;
-- [ ] non-TUI modes never install a Session Editor;
-- [ ] no test imports a low-level removal escape hatch.
+Mitigation:
 
-## Expected files changed
+- preserve the characterized legacy aliases and coercions listed in Final design decision 5;
+- accept open durable views;
+- preserve unknown-event behavior;
+- keep strict shape validation limited to materialized projections, as today.
 
-Production:
+### Import cycle
 
-- `.pi/extensions/_shared/editor-slot.ts`
-- `.pi/extensions/ui-message-history/index.ts`
-- `.pi/extensions/ui-model-selector/index.ts`
-- `CONTEXT.md`
+Risk: event payload types import runtime values from state or registry and create a cycle.
 
-Tests:
+Mitigation:
 
-- `.pi/extensions/_shared/editor-slot.test.ts`
-- `.pi/extensions/ui-message-history/steer-recall.test.ts`
-- `.pi/extensions/ui-model-selector/index.test.ts`
+- use type-only imports for payload vocabulary;
+- keep `workflow-run-state.ts` independent of the event module;
+- let the event module depend one way on state types and `initialState()`;
+- run the Node integration suite to prove the new import graph loads.
 
-Do not change `ui-steer-input`, `history-store`, Plan Review production code, or nearby files.
+### False type safety at the adapter seam
 
-## Completion criteria
+Risk: making `RunPersistence.appendEvent()` accept only known events suggests that historical and future records cannot pass through it.
 
-The refactor is finished when:
+Mitigation:
 
-1. `removeSessionEditor(ctx, id)` no longer exists as a public interface.
-2. both Session Editor adapters use the lifetime interface.
-3. history teardown happens through the module's automatic shutdown wiring.
-4. Model selector early disposal uses its exact-entry lifetime.
-5. no stale lifetime or old flush can mutate the current Session Editor.
-6. the integration test no longer performs manual registry cleanup.
-7. focused tests, typecheck, and the relevant repository suites pass.
-8. the manual TUI flow is exercised or explicitly reported as unavailable.
-9. `CONTEXT.md` describes the final deepened module accurately.
+- keep persistence on `WorkflowRunEventView`;
+- apply `KnownWorkflowRunEvent` only to lifecycle production methods;
+- keep seed helpers open.
+
+### Overgrown interface
+
+Risk: one constructor or method per event makes the event module shallow.
+
+Mitigation:
+
+- export a discriminated union and two reduction functions;
+- keep reducer helpers private;
+- add no registry or factory object.
+
+### Test duplication
+
+Risk: exhaustive reducer tests are copied into lifecycle, recovery, file adapter, and Node suites.
+
+Mitigation:
+
+- event tests own transition semantics;
+- lifecycle tests own ordering and control policy;
+- recovery tests own source precedence;
+- adapter tests own JSONL parsing and paths;
+- Node tests retain representative end-to-end behavior.
+
+## Non-goals
+
+This plan does not:
+
+- change Workflow behavior;
+- migrate or rewrite existing run directories;
+- validate every known payload at JSONL parse time;
+- add event schema versions;
+- add cross-process locking;
+- make projection writes canonical;
+- change state mutation to immutable transitions;
+- redesign `RunState` or command detail views;
+- merge Workflow worktree policies with `tools-worktree`;
+- change Subagent progress meaning;
+- introduce extensible event registration;
+- move queue, persistence, or recovery policy into the event module.
+
+## Acceptance criteria
+
+The work is complete when all of the following hold:
+
+1. `.pi/extensions/workflows-engine/lib/workflow-run-events.ts` is the single owner of Workflow run event vocabulary, compatibility interpretation, live reduction, and replay.
+2. `WorkflowRun` engine-owned event writes are compile-checked through `KnownWorkflowRunEvent`.
+3. File and in-memory persistence continue accepting open `WorkflowRunEventView` records.
+4. Existing `events.jsonl` records replay without migration.
+5. Unknown event names and fields remain present through the existing JSON-cloned raw read and replay as no-ops after `run_created`.
+6. Legacy `workflow` and usage aliases produce the same materialized state as before.
+7. `WorkflowRun.recordOnQueue()` still owns and preserves append, reduction, terminal bookkeeping, and best-effort projection ordering.
+8. Recovery behavior, error identity, and fallback rules do not change.
+9. `workflow-run-state.ts` no longer carries event vocabulary or reducer implementation.
+10. Focused event, lifecycle, recovery, adapter, commands, and Node integration tests pass.
+11. `pnpm typecheck` passes and includes compile-time malformed-event assertions.
+12. `CONTEXT.md` and the Workflow engine README describe the final ownership accurately.

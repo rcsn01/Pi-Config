@@ -396,6 +396,30 @@ describe("workflow command adapter", () => {
 		expect(current.notifications.at(-1)?.message).toMatch(/^Workflow command failed:/);
 	});
 
+	it("renders raw records in order without discarding unknown fields", async () => {
+		const events = [
+			{ type: "run_created", ts: 1, runId: "run-raw" },
+			{ type: "future_event", ts: 2, future: { nested: true }, tail: "last" },
+		];
+		const commandService = { ...service(), readEvents: async () => events };
+		const currentRegistration = register(new FakeRunControl(), commandService);
+		const current = context();
+
+		await currentRegistration.commands.get("workflows")("raw run-raw", current.ctx);
+
+		expect(current.notifications.at(-1)).toEqual({
+			message: events.map((event) => JSON.stringify(event)).join("\n"),
+			level: "info",
+		});
+	});
+
+	it("renders an existing empty raw log as an empty info notification", async () => {
+		const currentRegistration = register(new FakeRunControl(), service());
+		const current = context();
+		await currentRegistration.commands.get("workflows")("raw run-empty", current.ctx);
+		expect(current.notifications.at(-1)).toEqual({ message: "", level: "info" });
+	});
+
 	it("reports a missing raw log through the not-found message", async () => {
 		const commandService: WorkflowCommandService = {
 			prepareNew: async () => undefined,

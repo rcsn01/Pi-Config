@@ -45,6 +45,32 @@ describe("FileRunPersistence", () => {
 		expect(await persistence.readEventLog()).toEqual({ exists: true, events: [] });
 	});
 
+	it("rejects every invalid top-level JSON record class with path and line", async () => {
+		const cwd = await project();
+		temporary.push(cwd);
+		const persistence = new FileRunPersistence(cwd, "run-invalid-records");
+		await ensureDir(path.dirname(persistence.paths().events));
+		for (const value of [null, [], "text", 1, true]) {
+			await writeFile(persistence.paths().events, `${JSON.stringify(value)}\n`, "utf8");
+			await expect(persistence.readEventLog()).rejects.toThrow(`Invalid workflow event JSONL at ${persistence.paths().events}:1`);
+		}
+	});
+
+	it("rejects every non-string type and accepts empty and unknown types unchanged", async () => {
+		const cwd = await project();
+		temporary.push(cwd);
+		const persistence = new FileRunPersistence(cwd, "run-event-shapes");
+		await ensureDir(path.dirname(persistence.paths().events));
+		for (const type of [undefined, null, 1, true, [], {}]) {
+			const record = type === undefined ? { value: 1 } : { type, value: 1 };
+			await writeFile(persistence.paths().events, `${JSON.stringify(record)}\n`, "utf8");
+			await expect(persistence.readEventLog()).rejects.toThrow(`Invalid workflow event JSONL at ${persistence.paths().events}:1`);
+		}
+		const records = [{ type: "", ts: 0 }, { type: "future", ts: "12", nested: { value: true } }];
+		await writeFile(persistence.paths().events, records.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
+		expect(await persistence.readEventLog()).toEqual({ exists: true, events: records });
+	});
+
 	it("writes artifacts only below the run artifact directory", async () => {
 		const cwd = await project();
 		temporary.push(cwd);

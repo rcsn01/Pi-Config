@@ -7,14 +7,12 @@ import type { RegistryEntry } from "./registry.ts";
 import { runGit } from "../../_shared/git.ts";
 import type { AgentResult, RunSubagentOptions, SubagentProgressEvent } from "../../_shared/subagent-service.ts";
 import { collectWorktreeArtifacts, type WorktreeInfo } from "./worktree-artifacts.ts";
+import { applyWorkflowRunEvent, type KnownWorkflowRunEvent, type WorkflowRunEventView } from "./workflow-run-events.ts";
 import {
-	applyEvent,
 	cloneJson,
 	projectDetail,
 	type RunState,
 	type WorkflowRunDetail,
-	type WorkflowRunEventToPersist,
-	type WorkflowRunEventView,
 	type WorkflowRunSummary,
 	type WorkflowWorktreeView,
 } from "./workflow-run-state.ts";
@@ -268,7 +266,7 @@ class WorkflowRun implements WorkflowRunHandle {
 					workflowName: this.options.entry.name,
 					sourceHash: this.options.entry.sourceHash,
 				});
-				const event: WorkflowRunEventToPersist = {
+				const event: KnownWorkflowRunEvent = {
 					runId: this.options.runId,
 					workflowName: this.options.entry.name,
 					trust: this.options.entry.trust,
@@ -282,7 +280,7 @@ class WorkflowRun implements WorkflowRunHandle {
 				};
 				const stamped = { ts: Date.now(), ...event };
 				await this.options.persistence.appendEvent(stamped);
-				this.state = applyEvent(undefined, stamped);
+				this.state = applyWorkflowRunEvent(undefined, stamped);
 				await this.tryWriteProjectionOnQueue();
 			}
 			this.initialized = true;
@@ -623,16 +621,16 @@ class WorkflowRun implements WorkflowRunHandle {
 		if (!key || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(key)) throw new Error(`Invalid durable key: ${key}`);
 	}
 
-	private async record(event: WorkflowRunEventToPersist, attempt?: number): Promise<RunState> {
+	private async record(event: KnownWorkflowRunEvent, attempt?: number): Promise<RunState> {
 		return this.coordinator.queue.run(() => this.recordOnQueue(event, attempt));
 	}
 
-	private async recordOnQueue(event: WorkflowRunEventToPersist, attempt?: number): Promise<RunState> {
+	private async recordOnQueue(event: KnownWorkflowRunEvent, attempt?: number): Promise<RunState> {
 		if (attempt !== undefined && this.terminalAttempt === attempt) return this.state;
 		if (!this.state) throw new Error(`Workflow run ${this.runId} is not initialized`);
 		const stamped = cloneJson({ ts: Date.now(), ...event });
 		await this.options.persistence.appendEvent(stamped);
-		this.state = applyEvent(this.state, stamped);
+		this.state = applyWorkflowRunEvent(this.state, stamped);
 		if (event.type === "run_completed" || event.type === "run_paused" || event.type === "run_failed" || event.type === "run_stopped") {
 			this.terminalAttempt = attempt;
 			this.settled = true;

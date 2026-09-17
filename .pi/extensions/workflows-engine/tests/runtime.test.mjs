@@ -15,7 +15,7 @@ const definition = await import('../lib/definition.ts');
 const registry = await import('../lib/registry.ts');
 const approval = await import('../lib/approval.ts');
 const runStore = await import('../lib/run-store.ts');
-const runState = await import('../lib/workflow-run-state.ts');
+const runEvents = await import('../lib/workflow-run-events.ts');
 const workflowRun = await import('../lib/workflow-run.ts');
 const scheduler = await import('../lib/scheduler.ts');
 const subagentService = await import('../../_shared/subagent-service.ts');
@@ -139,33 +139,9 @@ function registerFailedStatusSubagents(result = failedStatusResult()) {
   return { result, unregister };
 }
 
-class TestStore {
-  constructor(cwd, runId) {
-    this.persistence = new runStore.FileRunPersistence(cwd, runId);
-    this.runId = runId;
-    this.paths = this.persistence.paths();
-  }
-  async initialize(entry, args, sourceSnapshotPath) {
-    await this.persistence.initializeInput({ args, workflowName: entry.name, sourceHash: entry.sourceHash });
-    const event = {
-      type: 'run_created', runId: this.runId, workflowName: entry.name, trust: entry.trust,
-      args, sourceHash: entry.sourceHash, sourceSnapshotPath, description: entry.description,
-      costShape: entry.cost, canEditFiles: entry.canEditFiles,
-    };
-    await this.persistence.appendEvent(event);
-    return runState.rebuildState((await this.persistence.readEventLog()).events);
-  }
-  async append(event) {
-    await this.persistence.appendEvent(event);
-    const state = runState.rebuildState((await this.persistence.readEventLog()).events);
-    await this.persistence.writeProjection(state);
-    return state;
-  }
-}
-
 async function readPersistedState(cwd, runId) {
   const persistence = new runStore.FileRunPersistence(cwd, runId);
-  return runState.rebuildState((await persistence.readEventLog()).events);
+  return runEvents.rebuildWorkflowRunState((await persistence.readEventLog()).events);
 }
 
 async function readPersistedEvents(cwd, runId) {
@@ -291,60 +267,6 @@ test('project workflow import uses approved snapshot and enforces filename-deriv
     };
     const badSnapshot = await registry.writeWorkflowSnapshot(runStore.runPaths(cwd, 'run-2').root, badEntry);
     await assert.rejects(() => registry.loadWorkflowFromEntry(badEntry, badSnapshot), /must match filename-derived invocation name/);
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
-test('run store projects progress, reuse, pause, dependencies, and agent running counts', async () => {
-  const cwd = await tempProject();
-  try {
-    const entry = { name: 'demo', trust: 'bundled', description: 'demo', cost: 'quick', canEditFiles: false, source: 'source', sourceHash: registry.hash('source') };
-    const store = new TestStore(cwd, 'run-events');
-    assert.equal(store.paths.root.startsWith(stateRoot), true);
-    assert.equal(store.paths.root.startsWith(path.join(cwd, '.pi')), false);
-    await store.initialize(entry, 'args', path.join(cwd, 'source.txt'));
-    await store.append({ type: 'run_started' });
-    await store.append({ type: 'step_started', key: 's1', dependsOn: ['a1'] });
-    await store.append({ type: 'step_completed', key: 's1', result: 'done' });
-    await store.append({ type: 'step_reused', key: 's1' });
-    await store.append({ type: 'agent_started', key: 'a1', agent: 'default', dependsOn: ['root'], prompt: 'hello' });
-    await store.append({ type: 'agent_progress', key: 'a1', event: { type: 'message', message: 'hi' } });
-    await store.append({ type: 'agent_tool', key: 'a1', tool: 'read', args: 'file' });
-    await store.append({ type: 'agent_completed', key: 'a1', agent: 'default', result: 'ok', usage: { input: 3, output: 4, cost: 0.01, turns: 1 } });
-    await store.append({ type: 'agent_reused', key: 'a1', agent: 'default' });
-    await store.append({ type: 'run_pausing', mode: 'after-current' });
-    await store.append({ type: 'run_paused' });
-    const state = await readPersistedState(cwd, store.runId);
-    assert.equal(state.status, 'paused');
-    assert.equal(state.steps.s1.status, 'completed');
-    assert.equal(state.agents.a1.status, 'completed');
-    assert.equal(state.agentsRunning, 0);
-    assert.equal(state.tokens, 7);
-    assert.equal(state.dependencies.a1.includes('s1'), true);
-    assert.equal(state.dependencies.root.includes('a1'), true);
-    assert.ok(state.agents.a1.progress.length >= 2);
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
-test('run store appends JSONL, rebuilds state, handles invalidation, and protects artifacts', async () => {
-  const cwd = await tempProject();
-  try {
-    const entry = { name: 'demo', trust: 'bundled', description: 'demo', cost: 'quick', canEditFiles: false, source: 'source', sourceHash: registry.hash('source') };
-    const store = new TestStore(cwd, 'run-1');
-    await store.initialize(entry, 'args', path.join(cwd, 'source.txt'));
-    await store.append({ type: 'step_started', key: 's1' });
-    await store.append({ type: 'step_completed', key: 's1', result: 42 });
-    await store.append({ type: 'invalidated', key: 's1' });
-    let state = await readPersistedState(cwd, store.runId);
-    assert.equal(state.steps.s1.status, 'invalidated');
-    await store.append({ type: 'step_completed', key: 's1', result: 43 });
-    state = await readPersistedState(cwd, store.runId);
-    assert.equal(state.steps.s1.result, 43);
-    assert.deepEqual(state.invalidatedKeys, []);
-    assert.throws(() => runStore.safeArtifactPath(store.paths.artifacts, '../escape.txt'), /escapes/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

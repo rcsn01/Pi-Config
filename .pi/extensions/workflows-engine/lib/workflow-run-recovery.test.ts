@@ -14,7 +14,7 @@ import {
 	WorkflowEventLogEmptyError as CompatibilityEmptyError,
 	WorkflowRunNotFoundError as CompatibilityNotFoundError,
 } from "./workflow-run.ts";
-import { rebuildState, type WorkflowRunEventView } from "./workflow-run-state.ts";
+import { rebuildWorkflowRunState, type WorkflowRunEventView } from "./workflow-run-events.ts";
 import { InMemoryRunPersistence } from "./test-support.ts";
 
 const temporary: string[] = [];
@@ -40,7 +40,7 @@ function runCreated(runId: string, overrides: Record<string, unknown> = {}): Wor
 }
 
 function stateFrom(runId: string, ...events: WorkflowRunEventView[]) {
-	return rebuildState([runCreated(runId), ...events]);
+	return rebuildWorkflowRunState([runCreated(runId), ...events]);
 }
 
 async function filePersistence(runId: string): Promise<FileRunPersistence> {
@@ -106,6 +106,31 @@ describe("recoverWorkflowRunState", () => {
 
 		expect(state.status).toBe("running");
 		expect(persistence.projection).toEqual(state);
+	});
+
+	it("replays unknown events and repairs only known projected state", async () => {
+		const persistence = new InMemoryRunPersistence(process.cwd(), "run-future");
+		persistence.seedEvents([runCreated("run-future"), { type: "future_event", ts: 9, future: { value: true } }]);
+
+		const state = await recoverWorkflowRunState(persistence, "run-future");
+
+		expect(state.updatedAt).toBe(9);
+		expect(state).not.toHaveProperty("future");
+		expect(persistence.projection).toEqual(state);
+	});
+
+	it("replays legacy aliases through the file adapter", async () => {
+		const persistence = await filePersistence("run-legacy");
+		await persistence.appendEvent(runCreated("run-legacy", { workflowName: "", workflow: "legacy-workflow" }));
+		await persistence.appendEvent({
+			type: "agent_completed", key: "agent", agent: "worker", ts: 2,
+			usage: { inputTokens: 2, outputTokens: 3, cacheReadTokens: 4, cacheWriteTokens: 5, turns: 1, cost: 0.25 },
+		});
+
+		const state = await recoverWorkflowRunState(persistence, "run-legacy");
+
+		expect(state.workflowName).toBe("legacy-workflow");
+		expect(state.usage).toEqual({ inputTokens: 2, outputTokens: 3, cacheReadTokens: 4, cacheWriteTokens: 5, turns: 1, cost: 0.25 });
 	});
 
 	it("uses a valid projection only when the event log is missing", async () => {
@@ -178,6 +203,17 @@ describe("recoverWorkflowRunState", () => {
 		await expect(recoverWorkflowRunState(persistence, "run-reducer"))
 			.rejects.toThrow("Cannot apply run_started before run_created");
 		expect(persistence.projection).toEqual(stateFrom("run-reducer"));
+	});
+
+	it("does not use a fallback projection after a nonnumeric canonical timestamp", async () => {
+		const persistence = new InMemoryRunPersistence(process.cwd(), "run-invalid-time");
+		const projection = stateFrom("run-invalid-time");
+		persistence.seedEvents([runCreated("run-invalid-time"), { type: "future", ts: "bad" } as unknown as WorkflowRunEventView]);
+		persistence.seedProjection(projection);
+
+		await expect(recoverWorkflowRunState(persistence, "run-invalid-time"))
+			.rejects.toThrow("Invalid workflow projection: updatedAt must be a number");
+		expect(persistence.projection).toEqual(projection);
 	});
 
 	it("does not use a fallback projection after canonical run-id mismatch", async () => {

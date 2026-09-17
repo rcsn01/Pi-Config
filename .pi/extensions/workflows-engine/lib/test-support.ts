@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import { runPaths, safeArtifactPath, type InternalRunPaths, type RunInput, type RunPersistence } from "./run-store.ts";
-import type { WorkflowRunEventToPersist, WorkflowRunEventView } from "./workflow-run-state.ts";
+import type { WorkflowRunEventView } from "./workflow-run-events.ts";
 
 export interface InMemoryRunPersistenceOptions {
 	paths?: InternalRunPaths;
@@ -47,7 +47,7 @@ export class InMemoryRunPersistence implements RunPersistence {
 		}));
 	}
 
-	async appendEvent(event: WorkflowRunEventToPersist): Promise<void> {
+	async appendEvent(event: WorkflowRunEventView): Promise<void> {
 		if (this.failAppend || this.failNextAppend) {
 			this.failNextAppend = false;
 			throw new Error("Injected in-memory event append failure");
