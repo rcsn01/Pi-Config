@@ -58,14 +58,17 @@ extension.
   routing editor base class and grammar, the `/model` handler registry and
   the single input-interception handler registry (both backed by a
   `globalThis` symbol key, because the extension loader gives each extension
-  its own copy of shared modules), and wave-coordinated session editor
-  installation — contributors register `{id, priority, createEditor}` during
-  the `session_start` wave and the deferred flush mounts the
-  highest-priority contributor's editor once, reapplying the thinking border
-  itself. ui-model-selector and ui-message-history are adapters at its seam;
-  ui-steer-input registers a Tab input handler that the routing base class
-  consults while the agent streams, so no streaming editor swap exists. The
-  only external swap left is the synchronous Plan Review command bridge.
+  its own copy of shared modules), and Session editor lifetimes. A lifetime
+  registers `{id, priority, createEditor}` against the exact
+  `SessionStartEvent` token, cleans up automatically on shutdown, and supports
+  ownership-safe early disposal. Token- and timer-handle-guarded deferred
+  flushes reject stale work; the highest-priority current contribution wins,
+  with latest registration breaking ties, and the module reapplies the
+  thinking border. ui-model-selector and ui-message-history are adapters at
+  its seam; ui-steer-input registers a separate Tab input handler that the
+  routing base class consults while the agent streams, so no streaming editor
+  swap exists. The only external swap is the synchronous Plan Review command
+  bridge.
 
 ## Status line
 

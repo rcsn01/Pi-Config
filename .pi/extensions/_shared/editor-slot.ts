@@ -15,11 +15,11 @@
  *   plain module state is per-extension. The registry is keyed on
  *   `Symbol.for` in `globalThis`, which resolves identically across module
  *   copies (the same mechanism `_shared/subagent-service.ts` uses).
- * - Wave-coordinated session editor installation: contributors register
- *   `{id, priority, createEditor}` during the `session_start` wave and one
- *   deferred flush mounts the highest-priority contributor's editor,
- *   reapplying the thinking border. A late registration re-flushes and still
- *   wins by priority — ownership is decided by priority, never by timing.
+ * - Session editor lifetimes: each adapter installs one exact-entry
+ *   contribution for a `SessionStartEvent` token. The module owns automatic
+ *   shutdown cleanup, stale-owner rejection, and token-guarded deferred
+ *   flushing. The highest-priority contribution wins, with latest registration
+ *   breaking ties, and the mounted editor receives the thinking border.
  * - Input interception: one optional `EditorInputHandler` lives in the same
  *   shared registry (`registerEditorInputHandler`). `ModelCommandRoutingEditor`
  *   consults it on every keypress, before /model routing and the built-in
@@ -36,7 +36,12 @@
  * synchronous submit call, so terminal input cannot reach the bridge editor.
  */
 
-import { CustomEditor, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	CustomEditor,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type SessionStartEvent,
+} from "@earendil-works/pi-coding-agent";
 import type { EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { reapplyThinkingBorder } from "./editor-border.ts";
 
@@ -76,9 +81,19 @@ export interface SessionEditorContribution {
 	createEditor: EditorFactory;
 }
 
+export interface SessionEditorLifetime {
+	install(
+		event: SessionStartEvent,
+		ctx: ExtensionContext,
+		contribution: SessionEditorContribution,
+	): void;
+	dispose(): void;
+}
+
 interface ContributionEntry {
 	contribution: SessionEditorContribution;
 	ctx: ExtensionContext;
+	sessionToken: SessionStartEvent;
 	/** Monotonic registration order; ties in priority break by latest. */
 	order: number;
 }
@@ -89,6 +104,7 @@ interface EditorSlotRegistry {
 	contributions: Map<string, ContributionEntry>;
 	nextOrder: number;
 	flushTimer?: ReturnType<typeof setTimeout>;
+	activeSessionToken?: SessionStartEvent;
 }
 
 function getRegistry(): EditorSlotRegistry {
@@ -132,9 +148,13 @@ export function getEditorInputHandler(): EditorInputHandler | undefined {
 
 // -------------------------------------------------------- wave coordination ---
 
-function pickWinner(registry: EditorSlotRegistry): ContributionEntry | undefined {
+function pickWinner(
+	registry: EditorSlotRegistry,
+	sessionToken: SessionStartEvent,
+): ContributionEntry | undefined {
 	let winner: ContributionEntry | undefined;
 	for (const entry of registry.contributions.values()) {
+		if (entry.sessionToken !== sessionToken) continue;
 		if (
 			!winner ||
 			entry.contribution.priority > winner.contribution.priority ||
@@ -146,9 +166,10 @@ function pickWinner(registry: EditorSlotRegistry): ContributionEntry | undefined
 	return winner;
 }
 
-function flushSessionEditor(): void {
+function flushSessionEditor(sessionToken: SessionStartEvent): void {
 	const registry = getRegistry();
-	const winner = pickWinner(registry);
+	if (registry.activeSessionToken !== sessionToken) return;
+	const winner = pickWinner(registry, sessionToken);
 	if (!winner) return;
 	const { contribution, ctx } = winner;
 	try {
@@ -162,48 +183,87 @@ function flushSessionEditor(): void {
 			return editor;
 		});
 	} catch {
-		// The TUI may already be torn down (e.g. immediate quit); leave the slot alone.
+		// setEditorComponent constructs the factory synchronously. Preserve the
+		// existing best-effort behavior for a torn-down TUI or invalid factory.
 	}
 }
 
-function scheduleFlush(): void {
+function cancelFlush(registry: EditorSlotRegistry): void {
+	if (registry.flushTimer === undefined) return;
+	clearTimeout(registry.flushTimer);
+	registry.flushTimer = undefined;
+}
+
+function scheduleFlush(sessionToken: SessionStartEvent): void {
 	const registry = getRegistry();
 	if (registry.flushTimer !== undefined) return;
-	registry.flushTimer = setTimeout(() => {
+	const timer = setTimeout(() => {
+		if (registry.flushTimer !== timer || registry.activeSessionToken !== sessionToken) return;
 		registry.flushTimer = undefined;
-		flushSessionEditor();
+		flushSessionEditor(sessionToken);
 	}, 0);
+	registry.flushTimer = timer;
 }
 
-/**
- * Register this session's editor contributor and coordinate the
- * session_start wave: one deferred flush mounts the highest-priority
- * contributor's editor, reapplying the thinking border. The slot is written
- * exactly once per wave — no caller-owned timing. Re-registering an id
- * replaces its contribution and re-flushes.
- */
-export function installSessionEditor(ctx: ExtensionContext, contribution: SessionEditorContribution): void {
+function establishSessionWave(sessionToken: SessionStartEvent): EditorSlotRegistry {
 	const registry = getRegistry();
-	registry.contributions.set(contribution.id, {
-		contribution,
-		ctx,
-		order: registry.nextOrder++,
-	});
-	scheduleFlush();
+	if (registry.activeSessionToken === sessionToken) return registry;
+	cancelFlush(registry);
+	registry.contributions.clear();
+	registry.activeSessionToken = sessionToken;
+	return registry;
 }
 
-/**
- * Unregister a contributor; restore Pi's built-in editor when none remain,
- * otherwise re-flush so the remaining winner remounts.
- */
-export function removeSessionEditor(ctx: ExtensionContext, id: string): void {
+function disposeContribution(entry: ContributionEntry): void {
 	const registry = getRegistry();
-	if (!registry.contributions.delete(id)) return;
-	if (registry.contributions.size === 0) {
-		ctx.ui.setEditorComponent(undefined);
+	if (registry.contributions.get(entry.contribution.id) !== entry) return;
+	registry.contributions.delete(entry.contribution.id);
+	if (registry.activeSessionToken !== entry.sessionToken) return;
+	if (pickWinner(registry, entry.sessionToken)) {
+		scheduleFlush(entry.sessionToken);
 		return;
 	}
-	scheduleFlush();
+	cancelFlush(registry);
+	try {
+		entry.ctx.ui.setEditorComponent(undefined);
+	} catch {
+		// Pi may have torn down the TUI before Session cleanup runs.
+	}
+}
+
+/** Own one adapter's Session editor contribution through shutdown. */
+export function createSessionEditorLifetime(
+	pi: Pick<ExtensionAPI, "on">,
+): SessionEditorLifetime {
+	let current: ContributionEntry | undefined;
+
+	const dispose = (): void => {
+		const owned = current;
+		current = undefined;
+		if (owned) disposeContribution(owned);
+	};
+
+	pi.on("session_shutdown", dispose);
+	return {
+		install(event, ctx, contribution) {
+			const previous = current;
+			current = undefined;
+			const registry = establishSessionWave(event);
+			if (previous && registry.contributions.get(previous.contribution.id) === previous) {
+				registry.contributions.delete(previous.contribution.id);
+			}
+			const entry: ContributionEntry = {
+				contribution,
+				ctx,
+				sessionToken: event,
+				order: registry.nextOrder++,
+			};
+			registry.contributions.set(contribution.id, entry);
+			current = entry;
+			scheduleFlush(event);
+		},
+		dispose,
+	};
 }
 
 // ---------------------------------------------------------- routing editor ---

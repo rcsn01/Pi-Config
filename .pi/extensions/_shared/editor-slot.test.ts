@@ -1,19 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionContext, KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	KeybindingsManager,
+	SessionStartEvent,
+} from "@earendil-works/pi-coding-agent";
 import type { EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import {
 	KeybindingsManager as TuiKeybindingsManager,
 	TUI_KEYBINDINGS,
 } from "@earendil-works/pi-tui";
 import {
+	createSessionEditorLifetime,
 	getEditorInputHandler,
 	getModelCommandHandler,
-	installSessionEditor,
 	ModelCommandRoutingEditor,
 	parseModelCommand,
 	registerEditorInputHandler,
 	registerModelCommandHandler,
-	removeSessionEditor,
 	type EditorInputHandler,
 	type ModelCommandHandler,
 	type SessionEditorContribution,
@@ -23,9 +27,12 @@ import {
 
 interface Harness {
 	ctx: ExtensionContext;
+	event: SessionStartEvent;
 	setEditorComponent: ReturnType<typeof vi.fn>;
 	getThinkingBorderColor: ReturnType<typeof vi.fn>;
 	install: (contribution: SessionEditorContribution) => void;
+	createLifetime: () => ReturnType<typeof createSessionEditorLifetime>;
+	shutdown: () => Promise<void>;
 	flush: () => Promise<void>;
 }
 
@@ -57,14 +64,33 @@ function createHarness(): Harness {
 			theme: { getThinkingBorderColor },
 		},
 	} as unknown as ExtensionContext;
-	const ids: string[] = [];
+	const event = { type: "session_start", reason: "startup" } as SessionStartEvent;
+	const listeners = new Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>();
+	const pi = {
+		on: (type: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
+			const handlers = listeners.get(type) ?? [];
+			handlers.push(handler);
+			listeners.set(type, handlers);
+		},
+	} as unknown as Pick<ExtensionAPI, "on">;
+	const lifetimes: ReturnType<typeof createSessionEditorLifetime>[] = [];
+	const createLifetime = () => {
+		const lifetime = createSessionEditorLifetime(pi);
+		lifetimes.push(lifetime);
+		return lifetime;
+	};
 	const harness: Harness = {
 		ctx,
+		event,
 		setEditorComponent,
 		getThinkingBorderColor,
-		install: (contribution) => {
-			installSessionEditor(ctx, contribution);
-			ids.push(contribution.id);
+		install: (contribution) => createLifetime().install(event, ctx, contribution),
+		createLifetime,
+		shutdown: async () => {
+			const shutdownEvent = { type: "session_shutdown", reason: "quit" };
+			for (const handler of listeners.get("session_shutdown") ?? []) {
+				await handler(shutdownEvent, ctx);
+			}
 		},
 		// Run the deferred flush and drain the border microtasks it schedules.
 		flush: async () => {
@@ -72,7 +98,7 @@ function createHarness(): Harness {
 		},
 	};
 	harnessCleanups.push(() => {
-		for (const id of ids.splice(0)) removeSessionEditor(ctx, id);
+		for (const lifetime of lifetimes) lifetime.dispose();
 	});
 	return harness;
 }
@@ -375,35 +401,148 @@ describe("session editor wave", () => {
 	});
 });
 
-describe("removeSessionEditor", () => {
-	it("restores Pi's built-in editor when the last contributor is removed", async () => {
+describe("SessionEditorLifetime", () => {
+	it("automatically restores Pi's editor on repeated shutdown", async () => {
 		const harness = createHarness();
-		harness.install({ id: "a", priority: 10, createEditor: () => markerEditor("a") });
+		harness.install({ id: "owned", priority: 10, createEditor: () => markerEditor("owned") });
 		await harness.flush();
-		expect(harness.setEditorComponent).toHaveBeenCalledTimes(1);
 
-		removeSessionEditor(harness.ctx, "a");
+		await harness.shutdown();
+		await harness.shutdown();
+
 		expect(harness.setEditorComponent).toHaveBeenLastCalledWith(undefined);
+		expect(harness.setEditorComponent).toHaveBeenCalledTimes(2);
 	});
 
-	it("re-flushes so the remaining contributor remounts", async () => {
+	it("cancels a deferred factory when shutdown happens before the flush", async () => {
 		const harness = createHarness();
-		const editorA = markerEditor("a");
-		const editorB = markerEditor("b");
-		harness.install({ id: "a", priority: 10, createEditor: () => editorA });
-		harness.install({ id: "b", priority: 20, createEditor: () => editorB });
+		const createEditor = vi.fn(() => markerEditor("owned"));
+		harness.install({ id: "owned", priority: 10, createEditor });
+
+		await harness.shutdown();
 		await harness.flush();
 
-		removeSessionEditor(harness.ctx, "b");
+		expect(createEditor).not.toHaveBeenCalled();
+		expect(harness.setEditorComponent).toHaveBeenCalledOnce();
+		expect(harness.setEditorComponent).toHaveBeenCalledWith(undefined);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("does not let stale cleanup delete a newer Session's same-id entry", async () => {
+		const first = createHarness();
+		const second = createHarness();
+		const firstLifetime = first.createLifetime();
+		const secondLifetime = second.createLifetime();
+		const newer = markerEditor("newer");
+		firstLifetime.install(first.event, first.ctx, {
+			id: "history",
+			priority: 20,
+			createEditor: () => markerEditor("older"),
+		});
+		secondLifetime.install(second.event, second.ctx, {
+			id: "history",
+			priority: 20,
+			createEditor: () => newer,
+		});
+
+		firstLifetime.dispose();
+		await second.flush();
+
+		expect(mount(second.setEditorComponent)).toBe(newer);
+		secondLifetime.dispose();
+		expect(second.setEditorComponent).toHaveBeenLastCalledWith(undefined);
+	});
+
+	it("replaces one lifetime atomically and ignores cleanup from an overwritten lifetime", async () => {
+		const harness = createHarness();
+		const staleLifetime = harness.createLifetime();
+		const activeLifetime = harness.createLifetime();
+		staleLifetime.install(harness.event, harness.ctx, {
+			id: "selector",
+			priority: 10,
+			createEditor: () => markerEditor("stale"),
+		});
+		activeLifetime.install(harness.event, harness.ctx, {
+			id: "selector",
+			priority: 10,
+			createEditor: () => markerEditor("first"),
+		});
+		staleLifetime.dispose();
+		const latest = markerEditor("latest");
+		activeLifetime.install(harness.event, harness.ctx, {
+			id: "selector",
+			priority: 10,
+			createEditor: () => latest,
+		});
+
+		expect(harness.setEditorComponent).not.toHaveBeenCalled();
+		await harness.flush();
+		expect(harness.setEditorComponent).toHaveBeenCalledOnce();
+		expect(mount(harness.setEditorComponent)).toBe(latest);
+	});
+
+	it("invalidates the prior Session timer when a new wave starts", async () => {
+		const first = createHarness();
+		const second = createHarness();
+		const firstFactory = vi.fn(() => markerEditor("first"));
+		const secondFactory = vi.fn(() => markerEditor("second"));
+		first.install({ id: "first", priority: 20, createEditor: firstFactory });
+		expect(vi.getTimerCount()).toBe(1);
+		second.install({ id: "second", priority: 20, createEditor: secondFactory });
+		expect(vi.getTimerCount()).toBe(1);
+
+		await second.flush();
+
+		expect(firstFactory).not.toHaveBeenCalled();
+		expect(first.setEditorComponent).not.toHaveBeenCalled();
+		expect(second.setEditorComponent).toHaveBeenCalledOnce();
+		mount(second.setEditorComponent);
+		expect(secondFactory).toHaveBeenCalledOnce();
+	});
+
+	it("remounts the remaining contributor when the winner is disposed", async () => {
+		const harness = createHarness();
+		const selectorLifetime = harness.createLifetime();
+		const historyLifetime = harness.createLifetime();
+		const selector = markerEditor("selector");
+		const history = markerEditor("history");
+		selectorLifetime.install(harness.event, harness.ctx, {
+			id: "selector",
+			priority: 10,
+			createEditor: () => selector,
+		});
+		historyLifetime.install(harness.event, harness.ctx, {
+			id: "history",
+			priority: 20,
+			createEditor: () => history,
+		});
+		await harness.flush();
+		expect(mount(harness.setEditorComponent)).toBe(history);
+
+		historyLifetime.dispose();
+		expect(harness.setEditorComponent).toHaveBeenCalledTimes(1);
 		await harness.flush();
 
 		expect(harness.setEditorComponent).toHaveBeenCalledTimes(2);
-		expect(mount(harness.setEditorComponent)).toBe(editorA);
+		expect(mount(harness.setEditorComponent)).toBe(selector);
+		selectorLifetime.dispose();
+		expect(harness.setEditorComponent).toHaveBeenLastCalledWith(undefined);
 	});
 
-	it("is a no-op for an unknown id", () => {
+	it("contains restoration failures after the TUI is torn down", async () => {
 		const harness = createHarness();
-		removeSessionEditor(harness.ctx, "never-registered");
-		expect(harness.setEditorComponent).not.toHaveBeenCalled();
+		const lifetime = harness.createLifetime();
+		lifetime.install(harness.event, harness.ctx, {
+			id: "owned",
+			priority: 10,
+			createEditor: () => markerEditor("owned"),
+		});
+		await harness.flush();
+		harness.setEditorComponent.mockImplementation((factory) => {
+			if (factory === undefined) throw new Error("TUI disposed");
+		});
+
+		expect(() => lifetime.dispose()).not.toThrow();
+		expect(() => lifetime.dispose()).not.toThrow();
 	});
 });

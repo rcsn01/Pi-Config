@@ -22,7 +22,7 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
-import { getEditorInputHandler, removeSessionEditor } from "../_shared/editor-slot.ts";
+import { getEditorInputHandler } from "../_shared/editor-slot.ts";
 import messageHistoryExtension from "./index.ts";
 import steerInputExtension from "../ui-steer-input/index.ts";
 
@@ -88,7 +88,7 @@ function createAppKeybindings(): KeybindingsManager {
 	}) as unknown as KeybindingsManager;
 }
 
-async function createSession(): Promise<SessionHarness> {
+async function createSession(cwd = `/tmp/steer-recall-${++cwdSequence}`): Promise<SessionHarness> {
 	const listeners = new Map<string, Handler[]>();
 	const register = (event: string, handler: Handler) => {
 		const existing = listeners.get(event);
@@ -103,7 +103,7 @@ async function createSession(): Promise<SessionHarness> {
 
 	const ctx = {
 		mode: "tui",
-		cwd: `/tmp/steer-recall-${++cwdSequence}`,
+		cwd,
 		thinkingLevel: "max",
 		ui: {
 			setWidget: vi.fn(),
@@ -116,12 +116,13 @@ async function createSession(): Promise<SessionHarness> {
 	};
 
 	const fire = async (event: string, eventArg?: unknown) => {
+		const sharedEvent = eventArg ?? {};
 		for (const handler of listeners.get(event) ?? []) {
-			await handler(eventArg ?? {}, ctx);
+			await handler(sharedEvent, ctx);
 		}
 	};
 
-	await fire("session_start");
+	await fire("session_start", { type: "session_start", reason: "startup" });
 
 	// The editor-slot wave mounts the winner through a deferred macrotask.
 	await new Promise((resolve) => setTimeout(resolve, 0));
@@ -138,9 +139,10 @@ async function createSession(): Promise<SessionHarness> {
 	};
 }
 
-async function disposeSession(session: SessionHarness): Promise<void> {
-	await session.pi.fire("session_shutdown");
-	removeSessionEditor(session.ctx as never, "ui-message-history");
+async function disposeSession(session: SessionHarness, reason = "quit"): Promise<void> {
+	await session.pi.fire("session_shutdown", { type: "session_shutdown", reason });
+	const setEditorComponent = (session.ctx.ui as Record<string, ReturnType<typeof vi.fn>>).setEditorComponent;
+	expect(setEditorComponent).toHaveBeenLastCalledWith(undefined);
 }
 
 afterEach(async () => {
@@ -270,6 +272,28 @@ describe("steer input keeps the mounted history editor recallable", () => {
 		expect(editor.getText()).toBe("my draft in progress");
 
 		await disposeSession(session);
+	});
+
+	it("keeps the replacement Session active after repeated old-runtime cleanup", async () => {
+		const cwd = `/tmp/steer-recall-reload-${++cwdSequence}`;
+		const first = await createSession(cwd);
+		first.editor.addToHistory("before reload");
+		await disposeSession(first, "reload");
+
+		const second = await createSession(cwd);
+		second.editor.handleInput(UP);
+		expect(second.editor.getText()).toBe("before reload");
+		second.editor.handleInput(DOWN);
+		await second.pi.fire("agent_start");
+		second.editor.setText("after reload");
+		second.editor.handleInput("\t");
+		expect(second.pi.sendUserMessage).toHaveBeenCalledWith("after reload", { deliverAs: "followUp" });
+
+		await first.pi.fire("session_shutdown", { type: "session_shutdown", reason: "reload" });
+		const secondSetEditor = (second.ctx.ui as Record<string, ReturnType<typeof vi.fn>>).setEditorComponent;
+		expect(secondSetEditor).not.toHaveBeenLastCalledWith(undefined);
+
+		await disposeSession(second);
 	});
 
 	it("recorded entries persist through the real store file after shutdown", async () => {
