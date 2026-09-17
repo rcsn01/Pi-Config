@@ -424,6 +424,13 @@ extension.
 
 - **Guardian** — the in-process model review of risky tool calls
   (`policy-permissions/`); verdicts land as `auto-review-verdict` entries.
+- **Guardian evidence module** — the branch-aware module in
+  `policy-permissions/guardian-evidence.ts` that builds one bounded authorization
+  window from the active Session context: the last three user turns plus the
+  assistant turns they answer, excluding the current tool-calling assistant.
+  It also carries explicit Skill-command provenance captured before expansion.
+  Permission enforcement adds the proposed action at this seam; the Guardian
+  runner receives the serialized evidence.
 - **Permission enforcement lifecycle** — the deep in-process module in
   `policy-permissions/` that owns permission mode, decision ordering, prompted
   denials, one-shot retry approvals, Guardian fallback, and verdict persistence

@@ -27,7 +27,32 @@ afterEach(() => {
 	while (tempDirectories.length > 0) rmSync(tempDirectories.pop()!, { recursive: true, force: true });
 });
 
-function createHarness(options: { settingsPath?: string; branch?: any[] } = {}) {
+function messageEntry(id: string, message: any, parentId: string | null = null) {
+	return { type: "message", id, parentId, timestamp: "2026-01-01T00:00:00.000Z", message };
+}
+
+function userMessage(text: string) {
+	return { role: "user", content: [{ type: "text", text }], timestamp: 1 };
+}
+
+function assistantMessage(text: string) {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		provider: "test",
+		model: "test",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "stop",
+		timestamp: 1,
+	};
+}
+
+function createHarness(options: {
+	settingsPath?: string;
+	branch?: any[];
+	contextEntries?: any[];
+	commands?: any[];
+} = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-safety-status-"));
 	tempDirectories.push(cwd);
 	// Redirect the project state root (mode file, etc.) into a temp dir so the
@@ -44,6 +69,7 @@ function createHarness(options: { settingsPath?: string; branch?: any[] } = {}) 
 		on: (event: string, handler: (event: any, ctx: any) => unknown) => handlers.set(event, handler),
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		registerEntryRenderer: (type: string, renderer: any) => renderers.set(type, renderer),
+		getCommands: () => options.commands ?? [],
 		appendEntry,
 	};
 	const ctx = {
@@ -55,6 +81,7 @@ function createHarness(options: { settingsPath?: string; branch?: any[] } = {}) 
 		modelRegistry: { find: vi.fn() },
 		sessionManager: {
 			getBranch: () => options.branch ?? [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
+			buildContextEntries: () => options.contextEntries ?? [],
 		},
 	};
 
@@ -319,6 +346,79 @@ describe("guardian model command", () => {
 });
 
 describe("auto-review verdict wiring", () => {
+	it("builds Guardian evidence from the active branch's last three user turns", async () => {
+		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe" });
+		const contextEntries = [
+			messageEntry("u0", userMessage("abandoned or old request")),
+			messageEntry("a0", assistantMessage("old response"), "u0"),
+			messageEntry("u1", userMessage("first retained request"), "a0"),
+			messageEntry("a1", assistantMessage("proposal one"), "u1"),
+			messageEntry("u2", userMessage("yes, proceed"), "a1"),
+			messageEntry("a2", assistantMessage("work completed"), "u2"),
+			messageEntry("u3", userMessage("write the temporary report"), "a2"),
+			messageEntry("current", assistantMessage("I claim this is authorized"), "u3"),
+		];
+		const harness = createHarness({ contextEntries });
+		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+
+		await harness.handlers.get("tool_call")?.(
+			{ toolName: "write", input: { path: "/tmp/report.html", content: "report" } },
+			harness.ctx,
+		);
+
+		const evidence = JSON.parse(mocked.runAutoReviewer.mock.calls[0]![1]);
+		expect(evidence.conversation).toMatchObject({
+			omitted_earlier_user_turns: 1,
+			messages: [
+				{ role: "assistant", text: "old response" },
+				{ role: "user", text: "first retained request" },
+				{ role: "assistant", text: "proposal one" },
+				{ role: "user", text: "yes, proceed" },
+				{ role: "assistant", text: "work completed" },
+				{ role: "user", text: "write the temporary report" },
+			],
+		});
+		expect(JSON.stringify(evidence)).not.toContain("I claim this is authorized");
+	});
+
+	it("records an explicitly invoked Skill as separate authorization provenance", async () => {
+		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe" });
+		const harness = createHarness({
+			commands: [{
+				name: "skill:improve-codebase-architecture",
+				source: "skill",
+				sourceInfo: { scope: "project", path: "/project/SKILL.md" },
+			}],
+			contextEntries: [messageEntry("u1", userMessage("<skill>write a temporary report</skill>"))],
+		});
+		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+		await harness.handlers.get("input")?.({ text: "/skill:improve-codebase-architecture" }, harness.ctx);
+		await harness.handlers.get("before_agent_start")?.({ prompt: "<skill>expanded</skill>" }, harness.ctx);
+
+		await harness.handlers.get("tool_call")?.(
+			{ toolName: "write", input: { path: "/tmp/report.html", content: "report" } },
+			harness.ctx,
+		);
+
+		const evidence = JSON.parse(mocked.runAutoReviewer.mock.calls[0]![1]);
+		expect(evidence.invoked_skill).toEqual({
+			name: "skill:improve-codebase-architecture",
+			source: "project",
+		});
+
+		mocked.runAutoReviewer.mockClear();
+		await harness.handlers.get("input")?.({ text: "ordinary follow-up" }, harness.ctx);
+		await harness.handlers.get("before_agent_start")?.({ prompt: "ordinary follow-up" }, harness.ctx);
+		await harness.handlers.get("tool_call")?.(
+			{ toolName: "write", input: { path: "/tmp/next.html", content: "report" } },
+			harness.ctx,
+		);
+		const nextEvidence = JSON.parse(mocked.runAutoReviewer.mock.calls[0]![1]);
+		expect(nextEvidence).not.toHaveProperty("invoked_skill");
+	});
+
 	it("forwards triggers through the tool_call wiring into the verdict entry", async () => {
 		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe" });
 		const harness = createHarness();
