@@ -14,7 +14,9 @@
     "keepRecentTokens": 20000
   },
   "retry": {
-    "enabled": false
+    "enabled": true,
+    "maxRetries": 5,
+    "baseDelayMs": 2000
   },
   "configProfiles": {
     "active": "ollama"
