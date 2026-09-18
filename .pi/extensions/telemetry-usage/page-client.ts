@@ -461,7 +461,9 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		panel.replaceChildren();
 		const activityView = renderActivityView();
 		activityView.id = "activity-view";
-		panel.append(element("h2", "", "Token activity"), activityControls(), activityView);
+		const activityHeader = element("div", "activity-header");
+		activityHeader.append(element("h2", "", "Token activity"), activityControls());
+		panel.append(activityHeader, activityView);
 		const lower = element("div", "overview-lower");
 		lower.append(renderInsights(), renderTools());
 		panel.append(lower);

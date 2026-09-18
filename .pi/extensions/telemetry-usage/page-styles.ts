@@ -19,7 +19,9 @@ export const TELEMETRY_USAGE_PAGE_STYLES = String.raw`${DASHBOARD_BASE_STYLES}${
 .panel h2 { margin-bottom: 14px; font-size: 1.1rem; font-weight: 570; }
 .panel h3 { margin-bottom: 9px; font-size: .92rem; color: var(--page-text-soft); }
 .section-heading { margin-top: 22px !important; }
-.activity-controls { justify-content: flex-end; margin: -42px 0 16px; }
+.activity-header { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; margin-bottom: 16px; }
+.activity-header h2 { margin-bottom: 0; }
+.activity-controls { justify-content: flex-end; }
 .activity-tab { padding: 3px 0; border: 0; border-radius: 0; background: transparent; color: var(--page-text-muted); }
 .activity-tab:hover:not(:disabled) { background: transparent; color: var(--page-text-soft); }
 .activity-tab.dash-tab-selected { color: var(--page-accent); }
@@ -92,7 +94,9 @@ tbody tr:hover td { background: var(--page-surface-raised); }
 	.cards { grid-template-columns: repeat(2, minmax(110px, 1fr)); gap: 20px; }
 	.card { padding: 3px 0; }
 	.card:nth-child(n + 3) { margin-top: 14px; }
-	.activity-controls { justify-content: flex-start; margin: -4px 0 16px; }
+	.activity-header { display: block; }
+	.activity-header h2 { margin-bottom: 9px; }
+	.activity-controls { justify-content: flex-start; }
 	.sessions-layout { grid-template-columns: 1fr; }
 	.session-list { max-height: 300px; }
 	.panel { padding: 11px 0; }

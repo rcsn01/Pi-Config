@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DASHBOARD_CLIENT_HELPERS } from "../_shared/dashboard-client.ts";
 import { TELEMETRY_USAGE_PAGE } from "./page.ts";
 import { TELEMETRY_USAGE_PAGE_CLIENT } from "./page-client.ts";
+import { TELEMETRY_USAGE_PAGE_STYLES } from "./page-styles.ts";
 
 const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tokens: 0, cost: 0, turns: 0 };
 const used = { input: 1000, output: 50, cacheRead: 200, cacheWrite: 25, tokens: 1275, cost: 1.2345, turns: 3 };
@@ -174,6 +175,10 @@ describe("telemetry usage page", () => {
 		await flush();
 
 		expect(document.querySelectorAll(".overview-card")).toHaveLength(5);
+		const activityHeader = document.querySelector(".activity-header");
+		expect(activityHeader?.querySelector("h2")?.textContent).toBe("Token activity");
+		expect(activityHeader?.querySelector(".activity-controls")).not.toBeNull();
+		expect(TELEMETRY_USAGE_PAGE_STYLES).not.toMatch(/\.activity-controls\s*\{[^}]*margin:\s*-/);
 		expect(document.getElementById("cards")?.textContent).toContain("Lifetime tokens");
 		expect(document.getElementById("cards")?.textContent).toContain("Peak day");
 		expect(document.getElementById("cards")?.textContent).toContain("assistant turns");
