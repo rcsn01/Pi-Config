@@ -46,7 +46,7 @@
   "guardian": {
     "provider": "ollama-cloud",
     "modelId": "glm-5.3-flash",
-    "thinkingLevel": "max",
+    "thinkingLevel": "high",
     "contextWindow": 262144
   }
 }
