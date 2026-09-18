@@ -10,6 +10,7 @@
  */
 
 import {
+	blockGoal,
 	checkpointGoal,
 	clearGoal,
 	editGoal,
@@ -54,8 +55,9 @@ function applied(
 	transition: AppliedGoalTransition,
 	text: string,
 	kickoff: string | null = null,
+	severity: GoalNotification["severity"] = "info",
 ): GoalCommandOutcome {
-	return { notification: { text, severity: "info" }, transition, kickoff };
+	return { notification: { text, severity }, transition, kickoff };
 }
 
 /** Run one /goal invocation. `now` flows into every transition; the module
@@ -132,6 +134,20 @@ export async function runGoalCommand(
 		return applied(outcome, `Checkpoint saved: ${outcome.state.checkpointProgress}`);
 	}
 
+	// /goal blocked <reason>
+	if (trimmedArgs === "blocked") {
+		return said("Usage: /goal blocked <reason>", "warning");
+	}
+	if (trimmedArgs.startsWith("blocked ")) {
+		const reason = trimmedArgs.slice("blocked ".length).trim();
+		const outcome = blockGoal(goal, reason, now);
+		if (!outcome.ok) {
+			if (outcome.reason === "empty-reason") return said("Usage: /goal blocked <reason>", "warning");
+			return said("Only an active goal can be blocked.", "warning");
+		}
+		return applied(outcome, `Goal blocked: ${outcome.state.blockedReason}`, null, "warning");
+	}
+
 	// /goal clear
 	if (trimmedArgs === "clear") {
 		const wasCompleted = goal?.status === "completed";
@@ -183,6 +199,14 @@ function formatGoalStatus(g: GoalState): string {
 	}
 	if (g.completionSummary && g.status === "completed") {
 		lines.push(`Completed: ${g.completionSummary}`);
+	}
+	if (g.blockedReason && g.status === "blocked") lines.push(`Blocked: ${g.blockedReason}`);
+	if (g.limitReason && g.status === "budget_limited") lines.push(`Limit: ${g.limitReason}`);
+	if (g.completionEvidence?.length) {
+		lines.push("Evidence:");
+		for (const item of g.completionEvidence) {
+			lines.push(`- [${item.result}] ${item.requirement}: ${item.verification}`);
+		}
 	}
 	return lines.join("\n");
 }

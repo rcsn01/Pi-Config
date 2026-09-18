@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+	blockGoal,
 	checkpointGoal,
 	clearGoal,
 	completeGoal,
 	editGoal,
 	GOAL_CUSTOM_TYPE,
 	MAX_OBJECTIVE_LENGTH,
+	limitGoal,
 	pauseGoal,
 	reconstructGoalState,
 	resumeGoal,
@@ -17,6 +19,7 @@ const NOW = 1_000;
 
 function goalState(overrides: Partial<GoalState> = {}): GoalState {
 	return {
+		goalId: "goal-1",
 		objective: "Ship the release",
 		status: "active",
 		createdAt: 500,
@@ -180,7 +183,7 @@ describe("clearGoal", () => {
 			ok: true,
 			goal: null,
 			action: "clear",
-			state: { objective: "", status: "cleared", createdAt: 0, updatedAt: NOW },
+			state: { goalId: "goal-1", objective: "", status: "cleared", createdAt: 0, updatedAt: NOW },
 		});
 	});
 
@@ -192,13 +195,13 @@ describe("clearGoal", () => {
 
 describe("setGoal", () => {
 	it("creates an active goal with deterministic timestamps", () => {
-		const outcome = setGoal("Write the docs", NOW);
+		const outcome = setGoal("Write the docs", NOW, () => "goal-new");
 
 		expect(outcome).toEqual({
 			ok: true,
-			goal: { objective: "Write the docs", status: "active", createdAt: NOW, updatedAt: NOW },
+			goal: { goalId: "goal-new", objective: "Write the docs", status: "active", createdAt: NOW, updatedAt: NOW },
 			action: "set",
-			state: { objective: "Write the docs", status: "active", createdAt: NOW, updatedAt: NOW },
+			state: { goalId: "goal-new", objective: "Write the docs", status: "active", createdAt: NOW, updatedAt: NOW },
 		});
 	});
 
@@ -206,6 +209,77 @@ describe("setGoal", () => {
 		expect(setGoal("", NOW)).toEqual({ ok: false, reason: "empty-objective" });
 		expect(setGoal("x".repeat(MAX_OBJECTIVE_LENGTH), NOW).ok).toBe(true);
 		expect(setGoal("x".repeat(MAX_OBJECTIVE_LENGTH + 1), NOW)).toEqual({ ok: false, reason: "too-long" });
+	});
+});
+
+describe("goal identity and terminal runtime states", () => {
+	it("creates a fresh ID and preserves it across same-goal transitions", () => {
+		const created = setGoal("Write the docs", NOW, () => "generated-id");
+		expect(created.ok && created.goal?.goalId).toBe("generated-id");
+		if (!created.ok || !created.goal) throw new Error("expected goal");
+		for (const outcome of [
+			pauseGoal(created.goal, NOW + 1),
+			editGoal(created.goal, "Edited", NOW + 1),
+			checkpointGoal(created.goal, "Progress", NOW + 1),
+			completeGoal(created.goal, "Done", NOW + 1, [{ requirement: "Docs", verification: "Read", result: "passed" }]),
+			blockGoal(created.goal, "Needs input", NOW + 1),
+			limitGoal(created.goal, "30 continuations used", NOW + 1),
+		]) {
+			expect(outcome.ok && outcome.state.goalId).toBe("generated-id");
+		}
+	});
+
+	it("blocks and limits only active goals with non-empty reasons", () => {
+		expect(blockGoal(goalState(), "Needs credentials", NOW)).toMatchObject({
+			ok: true,
+			action: "block",
+			state: { status: "blocked", blockedReason: "Needs credentials" },
+		});
+		expect(limitGoal(goalState(), "30 continuations used", NOW)).toMatchObject({
+			ok: true,
+			action: "limit",
+			state: { status: "budget_limited", limitReason: "30 continuations used" },
+		});
+		expect(blockGoal(goalState(), "  ", NOW)).toEqual({ ok: false, reason: "empty-reason" });
+		expect(limitGoal(goalState({ status: "paused" }), "limit", NOW)).toEqual({ ok: false, reason: "not-active" });
+	});
+
+	it("resumes paused, blocked, and budget-limited goals and clears terminal reasons", () => {
+		for (const state of [
+			goalState({ status: "paused" }),
+			goalState({ status: "blocked", blockedReason: "Needs input" }),
+			goalState({ status: "budget_limited", limitReason: "Limit" }),
+		]) {
+			const outcome = resumeGoal(state, NOW);
+			expect(outcome).toMatchObject({ ok: true, action: "resume", state: { status: "active" } });
+			expect(outcome.ok && outcome.state.blockedReason).toBeUndefined();
+			expect(outcome.ok && outcome.state.limitReason).toBeUndefined();
+		}
+	});
+
+	it("derives stable legacy IDs and ignores malformed goal entries", () => {
+		const legacy = { objective: "Legacy", status: "active", createdAt: 1, updatedAt: 1 };
+		const entries = [
+			{ type: "custom", id: "entry-1", customType: GOAL_CUSTOM_TYPE, data: { action: "set", state: legacy } },
+			entry({ action: "set", state: { objective: 42, status: "active", createdAt: 2, updatedAt: 2 } }),
+		];
+		expect(reconstructGoalState(entries)).toMatchObject({ ...legacy, goalId: "legacy:entry-1" });
+		expect(reconstructGoalState(entries)?.goalId).toBe(reconstructGoalState(entries)?.goalId);
+	});
+
+	it("keeps a valid tombstone authoritative and sanitizes invalid optional evidence", () => {
+		const tombstone = { objective: "", status: "cleared", createdAt: 0, updatedAt: 2 };
+		const reconstructed = reconstructGoalState([
+			{ type: "custom", id: "live", customType: GOAL_CUSTOM_TYPE, data: { action: "set", state: goalState() } },
+			{ type: "custom", id: "clear", customType: GOAL_CUSTOM_TYPE, data: { action: "clear", state: tombstone } },
+		]);
+		expect(reconstructed).toMatchObject({ status: "cleared", goalId: "legacy:clear" });
+
+		const completed = reconstructGoalState([{ type: "custom", id: "done", customType: GOAL_CUSTOM_TYPE, data: {
+			action: "complete",
+			state: { ...goalState({ status: "completed" }), completionEvidence: [{ nope: true }] },
+		} }]);
+		expect(completed?.completionEvidence).toBeUndefined();
 	});
 });
 
@@ -218,7 +292,7 @@ describe("timestamp determinism", () => {
 			checkpointGoal(goalState(), "Progress", NOW),
 			completeGoal(goalState(), "Done", NOW),
 			clearGoal(goalState(), NOW),
-			setGoal("New", NOW),
+			setGoal("New", NOW, () => "goal-new"),
 		]) {
 			expect(outcome.ok).toBe(true);
 			if (outcome.ok) {

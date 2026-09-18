@@ -92,6 +92,7 @@ function makeExtensionHarness(options: {
 	const compactions: any[] = [];
 	const providerCalls: any[] = [];
 	const sendMessage = vi.fn();
+	const emittedEvents: Array<{ channel: string; data: unknown }> = [];
 	let usage = options.usage ?? { tokens: 799, contextWindow: 1_000, percent: 79.9 };
 	let idle = options.idle ?? true;
 	const ctx: any = {
@@ -126,6 +127,7 @@ function makeExtensionHarness(options: {
 			{ name: "read", description: "Read", parameters: { type: "object" }, sourceInfo: {} },
 		]),
 		getThinkingLevel: vi.fn(() => "high"),
+		events: { emit: vi.fn((channel: string, data: unknown) => emittedEvents.push({ channel, data })) },
 	};
 	autoCompactExtension(pi);
 	return {
@@ -133,6 +135,7 @@ function makeExtensionHarness(options: {
 		compactions,
 		providerCalls,
 		sendMessage,
+		emittedEvents,
 		ctx,
 		setUsage(nextUsage: typeof usage) {
 			usage = nextUsage;
@@ -291,6 +294,50 @@ describe("auto-compact extension events", () => {
 		expect(harness.compactions[0].customInstructions).toBe(SEMANTIC_COMPACTION_FOCUS);
 	});
 
+	it("publishes balanced turn-end lifecycle events on successful resumed compaction", () => {
+		const harness = makeExtensionHarness({
+			usage: { tokens: 800, contextWindow: 1_000, percent: 80 },
+		});
+		emitTurn(harness, assistantMessage({ stopReason: "toolUse" }), [{}]);
+		expect(harness.emittedEvents).toEqual([{
+			channel: "session-compaction:state",
+			data: { inProgress: true, source: "turn_end", resumesRun: true },
+		}]);
+		completeCompaction(harness);
+		expect(harness.emittedEvents).toEqual([
+			{ channel: "session-compaction:state", data: { inProgress: true, source: "turn_end", resumesRun: true } },
+			{ channel: "session-compaction:state", data: { inProgress: false, source: "turn_end", resumesRun: true, succeeded: true } },
+		]);
+	});
+
+	it("publishes a failed finish event with error text", () => {
+		const harness = makeExtensionHarness({
+			usage: { tokens: 800, contextWindow: 1_000, percent: 80 },
+		});
+		emitTurn(harness, assistantMessage({ stopReason: "toolUse" }), [{}]);
+		failCompaction(harness);
+		expect(harness.emittedEvents.at(-1)).toEqual({
+			channel: "session-compaction:state",
+			data: {
+				inProgress: false,
+				source: "turn_end",
+				resumesRun: true,
+				succeeded: false,
+				error: "compaction failed",
+			},
+		});
+	});
+
+	it("marks successful silent-overflow compaction as non-resuming", () => {
+		const harness = makeExtensionHarness();
+		emitTurn(harness, assistantMessage({ usage: { input: 1_001, output: 50 } }));
+		completeCompaction(harness);
+		expect(harness.emittedEvents.map(({ data }) => data)).toEqual([
+			{ inProgress: true, source: "turn_end", resumesRun: false },
+			{ inProgress: false, source: "turn_end", resumesRun: false, succeeded: true },
+		]);
+	});
+
 	it("sends the hidden continuation after successful mid-turn compaction", () => {
 		const harness = makeExtensionHarness({
 			usage: { tokens: 800, contextWindow: 1_000, percent: 80 },
@@ -303,7 +350,7 @@ describe("auto-compact extension events", () => {
 		);
 	});
 
-	it("uses identical semantic instructions and awaits pre-turn compaction", async () => {
+	it("uses identical semantic instructions, publishes lifecycle events, and awaits pre-turn compaction", async () => {
 		const harness = makeExtensionHarness({
 			usage: { tokens: 800, contextWindow: 1_000, percent: 80 },
 		});
@@ -321,10 +368,18 @@ describe("auto-compact extension events", () => {
 		expect(harness.compactions).toHaveLength(1);
 		expect(harness.compactions[0].customInstructions).toBe(SEMANTIC_COMPACTION_FOCUS);
 		expect(settled).toBe(false);
+		expect(harness.emittedEvents.at(-1)).toEqual({
+			channel: "session-compaction:state",
+			data: { inProgress: true, source: "before_agent_start", resumesRun: false },
+		});
 
 		completeCompaction(harness);
 		await pending;
 		expect(settled).toBe(true);
+		expect(harness.emittedEvents.at(-1)).toEqual({
+			channel: "session-compaction:state",
+			data: { inProgress: false, source: "before_agent_start", resumesRun: false, succeeded: true },
+		});
 	});
 
 	it("recovers explicit overflow without tool results and resumes once compacted", () => {

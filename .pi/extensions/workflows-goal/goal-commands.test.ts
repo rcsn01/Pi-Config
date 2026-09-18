@@ -6,6 +6,7 @@ const NOW = 1_700_000_000_000;
 
 function goal(overrides: Partial<GoalState> = {}): GoalState {
 	return {
+		goalId: "goal-1",
 		objective: "Ship the release",
 		status: "active",
 		createdAt: 1,
@@ -15,7 +16,7 @@ function goal(overrides: Partial<GoalState> = {}): GoalState {
 }
 
 function cleared(): GoalState {
-	return { objective: "", status: "cleared", createdAt: 0, updatedAt: 1 };
+	return { goalId: "goal-1", objective: "", status: "cleared", createdAt: 0, updatedAt: 1 };
 }
 
 function host(confirm: (title: string, body: string) => Promise<boolean> = vi.fn(async () => true)) {
@@ -151,6 +152,20 @@ describe("runGoalCommand arms", () => {
 		}
 	});
 
+	it("blocks an active goal with a required reason", async () => {
+		const h = host();
+		const blocked = await runGoalCommand(goal(), "blocked Needs credentials", NOW, h);
+		expect(blocked.notification).toEqual({ text: "Goal blocked: Needs credentials", severity: "warning" });
+		expect(blocked.transition).toMatchObject({ action: "block", state: { status: "blocked", blockedReason: "Needs credentials" } });
+
+		const usage = await runGoalCommand(goal(), "blocked", NOW, h);
+		expect(usage.notification).toEqual({ text: "Usage: /goal blocked <reason>", severity: "warning" });
+		expect(usage.transition).toBeNull();
+
+		const rejected = await runGoalCommand(goal({ status: "paused" }), "blocked Not now", NOW, h);
+		expect(rejected.notification).toEqual({ text: "Only an active goal can be blocked.", severity: "warning" });
+	});
+
 	it("clears live goals with the tombstone transition and maps rejections", async () => {
 		const h = host();
 
@@ -159,7 +174,7 @@ describe("runGoalCommand arms", () => {
 		expect(done.transition).toMatchObject({
 			goal: null,
 			action: "clear",
-			state: { objective: "", status: "cleared", createdAt: 0, updatedAt: NOW },
+			state: { goalId: "goal-1", objective: "", status: "cleared", createdAt: 0, updatedAt: NOW },
 		});
 
 		const completedCleared = await runGoalCommand(

@@ -265,14 +265,14 @@
 			"pack": "autonomy",
 			"defaultEnabled": false,
 			"requires": ["policy-permissions"],
-			"conflicts": ["integration-fleet"]
+			"conflicts": ["integration-fleet", "workflows-plan"]
 		},
 		"workflows-plan": {
 			"displayName": "Plan Mode",
 			"pack": "planning",
 			"defaultEnabled": false,
 			"requires": ["policy-permissions", "tools-ask-user"],
-			"conflicts": []
+			"conflicts": ["workflows-goal"]
 		},
 		"workflows-side-conversation": {
 			"displayName": "Side Conversation",
