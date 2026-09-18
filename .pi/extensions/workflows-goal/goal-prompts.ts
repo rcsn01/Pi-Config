@@ -1,69 +1,62 @@
-/**
- * Pure goal prompt builders: own the status→prompt injection decision.
- *
- * `goalPromptAddendum` returns the system-prompt addendum for a live goal and
- * null when nothing should be injected (no goal, cleared, or completed). The
- * "\n\n" joiner and the `{ systemPrompt }` return stay in the adapter
- * (index.ts) as Pi assembly mechanics.
- */
-
 import type { GoalState } from "./goal-state.ts";
 
-/** System-prompt addendum for a live goal; null when nothing should be injected. */
+/** System-prompt addendum for a goal that should affect the next ordinary run. */
 export function goalPromptAddendum(goal: GoalState | null): string | null {
-	if (!goal || goal.status === "cleared" || goal.status === "completed") {
+	if (!goal || goal.status === "cleared" || goal.status === "completed" || goal.status === "budget_limited") {
 		return null;
 	}
-	return goal.status === "paused" ? buildPausedGoalPrompt(goal) : buildActiveGoalPrompt(goal);
+	if (goal.status === "paused") return buildPausedGoalPrompt(goal);
+	if (goal.status === "blocked") return buildBlockedGoalPrompt(goal);
+	return buildActiveGoalPrompt(goal);
+}
+
+function checkpointSuffix(goal: GoalState): string {
+	return goal.checkpointProgress ? `\n\n**Last Checkpoint:** ${goal.checkpointProgress}` : "";
 }
 
 function buildActiveGoalPrompt(goal: GoalState): string {
-	let instructions = `## Active Goal
+	return `## Active Goal
 
-You are working toward a persistent goal. Focus on this objective and continue
-making progress without asking for permission to proceed. Work independently
-and keep going until the goal is achieved.
+You are working toward a persistent goal. Continue independently until the
+objective is achieved or a concrete blocker requires user input or external state.
 
 **Goal Objective:** ${goal.objective}
 
-### How to Work on This Goal
+### Goal protocol
 
-1. **Plan first.** Before implementing, understand what needs to be done.
-2. **Work in checkpoints.** After each meaningful step, use the goal tool with
-   action=checkpoint to report your progress. Name what you verified and what remains.
-3. **Validate your work.** Run tests, builds, or checks after each checkpoint.
-4. **Know when you're done.** Only mark the goal complete when you're confident
-   the objective is fully achieved.
+1. Inspect authoritative current state before implementing or claiming completion.
+2. After meaningful work, call the goal tool with action=checkpoint and name what
+   you verified. A status call or prose summary is not progress.
+3. Run the relevant tests, builds, checks, or other verification.
+4. Call action=complete only when every claimed requirement has structured passing evidence.
+5. Call action=blocked only when no meaningful action remains without user input
+   or an external state change, and give the specific reason.
 
 ### Rules
 
-- Do NOT stop after one turn — keep working until the goal is complete.
-- Do NOT ask the user for permission to proceed on routine steps within scope.
-- If you encounter a blocker you cannot resolve, explain it clearly.
-- Stay focused on the goal. Don't do unrelated work.`;
-
-	if (goal.checkpointProgress) {
-		instructions += `\n\n**Last Checkpoint:** ${goal.checkpointProgress}`;
-	}
-
-	return instructions;
+- Do not stop at a prose summary while the goal remains active.
+- Do not ask permission for routine work within scope.
+- Stay focused on the goal and avoid unrelated work.${checkpointSuffix(goal)}`;
 }
 
 function buildPausedGoalPrompt(goal: GoalState): string {
-	let instructions = `## Paused Goal
+	return `## Paused Goal
 
-The following goal is paused. Do NOT work on it unless the user explicitly
-asks you to resume it with /goal resume or gives you a direct instruction
-related to this goal.
+The following goal is paused. Do not work on it unless the user explicitly
+resumes it with /goal resume or gives a direct instruction related to it.
 
 **Goal Objective:** ${goal.objective}
 
-If the user asks about this goal, remind them it's paused and ask if they
-want to resume it.`;
+If the user asks about this goal, state that it is paused and ask whether they
+want to resume it.${checkpointSuffix(goal)}`;
+}
 
-	if (goal.checkpointProgress) {
-		instructions += `\n\n**Last Checkpoint:** ${goal.checkpointProgress}`;
-	}
+function buildBlockedGoalPrompt(goal: GoalState): string {
+	return `## Blocked Goal
 
-	return instructions;
+The following goal is blocked. Do not continue it until the user resolves the
+blocker and runs /goal resume.
+
+**Goal Objective:** ${goal.objective}
+**Blocker:** ${goal.blockedReason ?? "User input or external state is required."}${checkpointSuffix(goal)}`;
 }

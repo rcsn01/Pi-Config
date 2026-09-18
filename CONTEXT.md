@@ -404,12 +404,18 @@ extension.
 ## Goal tracking
 
 - **Goal state module** — the pure module in `workflows-goal/goal-state.ts`
-  that owns the persisted Goal state shape, session-entry reconstruction
-  (including the cleared tombstone), and every
-  set/pause/resume/edit/checkpoint/complete/clear transition as immutable
-  operations with injected timestamps. Pi wiring, notification delivery,
-  persistence, widget and tool rendering, and the `appendEntry` side effect
-  stay in the extension adapter.
+  that owns validated persisted Goal state, stable goal identity, legacy
+  session-entry migration (including the cleared tombstone), structured
+  completion evidence, and every set/pause/resume/edit/checkpoint/complete/
+  block/limit/clear transition as immutable operations with injected
+  timestamps. Pi wiring, notification delivery, persistence, widget and tool
+  rendering, and the `appendEntry` side effect stay in the extension adapter.
+- **Goal runtime module** — the pure module in `workflows-goal/goal-runtime.ts`
+  that owns persisted automatic-run counters, matching-goal reconstruction,
+  multi-turn progress/failure classification, continuation charging, and the
+  bounded continue/skip/stop decision. The adapter identifies hidden Goal runs,
+  persists runtime snapshots, coordinates with extension-owned compaction, and
+  sends at most one continuation after `agent_settled`.
 - **Goal command module** — the pure module in
   `workflows-goal/goal-commands.ts` that owns the `/goal` command surface
   behind `runGoalCommand(goal, args, now, host)`: subcommand parsing, the
@@ -422,7 +428,8 @@ extension.
   adapter — so the module owns the question's text and the adapter owns the
   asking. Goal prompts live beside it in `workflows-goal/goal-prompts.ts`:
   `goalPromptAddendum(goal)` owns the status→prompt decision (none for no
-  goal, cleared, or completed).
+  goal, cleared, completed, or budget-limited; distinct instructions for
+  active, paused, and blocked goals).
 
 ## Safety
 

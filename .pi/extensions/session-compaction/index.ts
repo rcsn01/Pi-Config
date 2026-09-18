@@ -25,6 +25,9 @@ import { isRecord, readSettingsDocument, writeSettingsDocument } from "../_share
 
 const CONTINUE_MESSAGE = "Continue the task using the compacted context.";
 const CONTINUE_CUSTOM_TYPE = "auto-compact-continue";
+const COMPACTION_STATE_EVENT = "session-compaction:state";
+
+type CompactionSource = "turn_end" | "before_agent_start";
 
 // Canonical definition lives in _shared/auto-compact.ts; re-exported for this
 // module's existing consumers.
@@ -124,6 +127,25 @@ export default function autoCompactExtension(pi: ExtensionAPI): void {
 	let overflowRecoveryAttempted = false;
 	const cacheAwareCompaction = createCacheAwareCompaction(pi);
 
+	const publishCompactionStart = (source: CompactionSource, resumesRun: boolean): void => {
+		pi.events.emit(COMPACTION_STATE_EVENT, { inProgress: true, source, resumesRun });
+	};
+	const publishCompactionFinish = (
+		source: CompactionSource,
+		resumesRun: boolean,
+		error?: unknown,
+	): void => {
+		pi.events.emit(COMPACTION_STATE_EVENT, error === undefined
+			? { inProgress: false, source, resumesRun, succeeded: true }
+			: {
+				inProgress: false,
+				source,
+				resumesRun,
+				succeeded: false,
+				error: error instanceof Error ? error.message : String(error),
+			});
+	};
+
 	const sendContinuation = (ctx: { isIdle(): boolean }): void => {
 		if (!ctx.isIdle()) return;
 		pi.sendMessage(
@@ -186,14 +208,17 @@ export default function autoCompactExtension(pi: ExtensionAPI): void {
 			if (shouldResume) overflowRecoveryAttempted = true;
 
 			compactionInProgress = true;
+			publishCompactionStart("turn_end", shouldResume);
 			ctx.compact({
 				customInstructions: SEMANTIC_COMPACTION_FOCUS,
 				onComplete: () => {
 					compactionInProgress = false;
+					publishCompactionFinish("turn_end", shouldResume);
 					if (shouldResume) sendContinuation(ctx);
 				},
-				onError: () => {
+				onError: (error) => {
 					compactionInProgress = false;
+					publishCompactionFinish("turn_end", shouldResume, error);
 				},
 			});
 			return;
@@ -203,14 +228,17 @@ export default function autoCompactExtension(pi: ExtensionAPI): void {
 		if (!shouldCompactNow(ctx.getContextUsage())) return;
 
 		compactionInProgress = true;
+		publishCompactionStart("turn_end", true);
 		ctx.compact({
 			customInstructions: SEMANTIC_COMPACTION_FOCUS,
 			onComplete: () => {
 				compactionInProgress = false;
+				publishCompactionFinish("turn_end", true);
 				sendContinuation(ctx);
 			},
-			onError: () => {
+			onError: (error) => {
 				compactionInProgress = false;
+				publishCompactionFinish("turn_end", true, error);
 			},
 		});
 	});
@@ -224,11 +252,18 @@ export default function autoCompactExtension(pi: ExtensionAPI): void {
 		if (!shouldCompactNow(ctx.getContextUsage())) return;
 
 		compactionInProgress = true;
+		publishCompactionStart("before_agent_start", false);
 		await new Promise<void>((resolve) => {
 			ctx.compact({
 				customInstructions: SEMANTIC_COMPACTION_FOCUS,
-				onComplete: () => resolve(),
-				onError: () => resolve(),
+				onComplete: () => {
+					publishCompactionFinish("before_agent_start", false);
+					resolve();
+				},
+				onError: (error) => {
+					publishCompactionFinish("before_agent_start", false, error);
+					resolve();
+				},
 			});
 		});
 		compactionInProgress = false;

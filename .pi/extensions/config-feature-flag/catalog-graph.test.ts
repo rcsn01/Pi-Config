@@ -70,6 +70,12 @@ describe("explicit extension dependency policy", () => {
 		expect(catalog.extensions["integration-fleet"]?.conflicts).toContain("workflows-goal");
 		expect(catalog.extensions["workflows-goal"]?.conflicts).toContain("integration-fleet");
 	});
+
+	it("keeps Goal and Plan Mode mutually exclusive", () => {
+		const catalog = loadExtensionCatalog(repositoryRoot);
+		expect(catalog.extensions["workflows-goal"]?.conflicts).toContain("workflows-plan");
+		expect(catalog.extensions["workflows-plan"]?.conflicts).toContain("workflows-goal");
+	});
 });
 
 function catalogWithoutRequirement(consumer: string, provider: string): ExtensionCatalog {
