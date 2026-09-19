@@ -38,7 +38,7 @@ afterEach(() => {
 });
 
 describe("Child observation Pi adapter", () => {
-	it("relays the five observed Pi event types", () => {
+	it("relays provider, user, and tool observation events", () => {
 		const { pi, handlers } = extensionHarness();
 		childObservationExtension(pi);
 
@@ -48,14 +48,18 @@ describe("Child observation Pi adapter", () => {
 			model: { provider: "openai", api: "openai-responses", id: "gpt" },
 		});
 		handlers.get("after_provider_response")!({ status: 200 });
+		handlers.get("message_end")!({ message: { role: "user", content: "hello" } });
 		handlers.get("message_end")!({ message: { role: "assistant", content: "done" } });
+		handlers.get("message_end")!({ message: { role: "toolResult", toolCallId: "call-1", toolName: "read" } });
 
 		expect(writtenEvents()).toEqual([
 			{ type: "agent_start" },
 			{ type: "turn_start", turnIndex: 2, at: 123 },
 			{ type: "request", provider: "openai", api: "openai-responses", model: "gpt", payload: { prompt: true } },
 			{ type: "response", status: 200 },
+			{ type: "activity", activity: { kind: "user-input" } },
 			{ type: "assistant", message: { role: "assistant", content: "done" } },
+			{ type: "activity", activity: { kind: "tool-result", toolCallId: "call-1", toolName: "read" } },
 		]);
 	});
 

@@ -60,6 +60,7 @@ describe("Child observation module", () => {
 		const request = JSON.stringify({ type: "request", provider: "openai", api: "openai-responses", model: "gpt", payload: { exact: true } });
 		relay.write("{bad}\n" + JSON.stringify({ type: "agent_start" }) + "\n" + request.slice(0, 17));
 		relay.write(request.slice(17) + "\n" + JSON.stringify({ type: "response", status: 200 }) + "\n");
+		relay.write(JSON.stringify({ type: "activity", activity: { kind: "tool-result", toolCallId: "call-1", toolName: "read" } }) + "\n");
 		relay.write("x".repeat(8 * 1024 * 1024 + 1));
 		relay.write("\n" + JSON.stringify({ type: "turn_start", turnIndex: 4 }) + "\n");
 		const unicode = Buffer.from(JSON.stringify({ type: "assistant", message: { role: "assistant", content: "café" } }) + "\n");
@@ -68,7 +69,11 @@ describe("Child observation module", () => {
 		relay.end(unicode.subarray(split));
 
 		const events = publish.mock.calls.map(([event]) => event as ObservabilityEvent);
-		expect(events.map((event) => event.type)).toEqual(["agent_start", "request", "response", "turn_start", "assistant"]);
+		expect(events.map((event) => event.type)).toEqual(["agent_start", "request", "response", "activity", "turn_start", "assistant"]);
+		expect(events[3]).toMatchObject({
+			type: "activity",
+			activity: { kind: "tool-result", toolCallId: "call-1", toolName: "read" },
+		});
 		expect(events[1]).toMatchObject({
 			source: { channel: "subagent", displayLabel: "worker" },
 			payload: { exact: true },

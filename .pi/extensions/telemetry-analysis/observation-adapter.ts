@@ -42,8 +42,23 @@ export function registerAnalysisObservationAdapter(
 		dependencies.observability.publish({ type: "response", source: mainSource, status: event.status });
 	});
 	pi.on("message_end", (event) => {
-		if (event.message.role !== "assistant") return;
-		dependencies.observability.publish({ type: "assistant", source: mainSource, message: event.message });
+		if (event.message.role === "assistant") {
+			dependencies.observability.publish({ type: "assistant", source: mainSource, message: event.message });
+			return;
+		}
+		if (event.message.role === "user") {
+			dependencies.observability.publish({
+				type: "activity",
+				source: mainSource,
+				activity: { kind: "user-input" },
+			});
+		} else if (event.message.role === "toolResult") {
+			dependencies.observability.publish({
+				type: "activity",
+				source: mainSource,
+				activity: { kind: "tool-result", toolCallId: event.message.toolCallId, toolName: event.message.toolName },
+			});
+		}
 	});
 	pi.on("session_before_compact", (event, ctx) => {
 		pendingCompaction = undefined;

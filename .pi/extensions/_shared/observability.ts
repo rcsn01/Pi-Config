@@ -6,9 +6,14 @@ export interface ObservabilitySource {
 	displayLabel: string;
 }
 
+export type ObservabilityActivity =
+	| { kind: "user-input" }
+	| { kind: "tool-result"; toolCallId: string; toolName: string };
+
 export type ObservabilityEvent =
 	| { type: "agent_start"; source: ObservabilitySource; at?: number }
 	| { type: "turn_start"; source: ObservabilitySource; turnIndex: number; at?: number }
+	| { type: "activity"; source: ObservabilitySource; activity: ObservabilityActivity; at?: number }
 	| { type: "request"; source: ObservabilitySource; provider: string; api: string; model: string; payload: unknown; fidelity?: "exact-provider" | "pi-preparation"; at?: number }
 	| { type: "response"; source: ObservabilitySource; status?: number; at?: number }
 	| { type: "assistant"; source: ObservabilitySource; message: unknown; at?: number };

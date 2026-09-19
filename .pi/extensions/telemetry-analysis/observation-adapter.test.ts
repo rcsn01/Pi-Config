@@ -91,13 +91,30 @@ describe("analysis observation adapter", () => {
 		]);
 	});
 
-	it("observes without replacing values and ignores missing models and non-assistant messages", () => {
+	it("observes user input and tool results without replacing values", () => {
+		const h = harness();
+		h.handlers.get("message_end")!({ message: { role: "user", content: "hello" } }, h.ctx);
+		h.handlers.get("message_end")!({ message: { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [], isError: false } }, h.ctx);
+
+		expect(h.events).toEqual([
+			{
+				type: "activity",
+				source: { channel: "main", invocationId: "main-id", displayLabel: "Main agent" },
+				activity: { kind: "user-input" },
+			},
+			{
+				type: "activity",
+				source: { channel: "main", invocationId: "main-id", displayLabel: "Main agent" },
+				activity: { kind: "tool-result", toolCallId: "call-1", toolName: "read" },
+			},
+		]);
+	});
+
+	it("ignores requests when the model is missing", () => {
 		const h = harness();
 		expect(h.handlers.get("before_provider_request")!({ payload: { one: 1 } }, h.ctx)).toBeUndefined();
-		expect(h.handlers.get("message_end")!({ message: { role: "assistant", content: [] } }, h.ctx)).toBeUndefined();
 		const published = h.events.length;
 		expect(h.handlers.get("before_provider_request")!({ payload: { two: 2 } }, { ...h.ctx, model: undefined })).toBeUndefined();
-		expect(h.handlers.get("message_end")!({ message: { role: "user", content: [] } }, h.ctx)).toBeUndefined();
 		expect(h.events).toHaveLength(published);
 	});
 

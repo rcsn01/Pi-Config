@@ -92,9 +92,15 @@ extension.
 - **Analysis dashboard** — the `/analysis` dashboard: captures provider
   request/response events as inspectable records.
 - **Analysis capture module** — the deep in-process module that owns event
-  correlation, record retention, payload analysis, byte accounting, pause state,
-  and diagnostics behind one synchronous interface. Analysis dashboard lifecycle
-  and Pi event adaptation stay outside.
+  correlation, record retention, payload analysis, activity classification,
+  byte accounting, pause state, and diagnostics behind one synchronous
+  interface. Analysis dashboard lifecycle and Pi event adaptation stay
+  outside.
+- **Analysis activities** — provider-request signals are user input and tool
+  results; provider-response signals are thinking, assistant output, and
+  tool-call requests. Local tool execution is intentionally not a separate
+  activity because a tool result is the provider-visible evidence of execution;
+  tool schemas remain payload sections.
 - **Analysis observation adapter**: the deep Pi-facing module that registers
   observation hooks, owns Main and Compaction source identity, translates Pi events
   into Observability events, and pairs Compaction preparation with success or failure
