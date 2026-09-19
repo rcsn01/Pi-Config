@@ -61,6 +61,7 @@ function harness(initialBranch: any[] = []) {
 		setBranch(next: any[]) { branch = next; },
 		setIdle(next: boolean) { idle = next; },
 		setPending(next: boolean) { pending = next; },
+		setConfirm(next: () => Promise<boolean>) { ctx.ui.confirm.mockImplementation(next); },
 	};
 }
 
@@ -108,6 +109,14 @@ describe("goal tool rendering and failure states", () => {
 		expect(result).toMatchObject({ isError: true, details: { action: "checkpoint", error: "No active goal." } });
 		expect(tool.renderResult(result, { expanded: false, isPartial: false }, theme(), { isError: false })
 			.render(80).join("\\n")).toContain("✗ No active goal.");
+	});
+
+	it("preserves the empty checkpoint error shape", async () => {
+		const h = harness([activeGoalEntry(), runtimeEntry()]);
+		await h.emit("session_start");
+		const result = await h.tool.execute("call", { action: "checkpoint", summary: "  " }, undefined, undefined, h.ctx);
+		expect(result).toMatchObject({ isError: true, details: { action: "checkpoint", error: "Cannot checkpoint: a non-empty summary is required." } });
+		expect(result.details).not.toHaveProperty("state");
 	});
 
 	it("marks rejected checkpoint transitions as tool errors", async () => {
@@ -165,199 +174,63 @@ describe("goal status widget", () => {
 	});
 });
 
-describe("automatic goal continuation", () => {
-	it("sends exactly one hidden continuation for an active settled goal", async () => {
+describe("goal adapter boundaries", () => {
+	it("ignores malformed compaction payloads at the bus boundary", async () => {
 		const h = harness([activeGoalEntry(), runtimeEntry()]);
 		await h.emit("session_start");
-		await h.emit("agent_settled");
-
-		expect(h.sendMessage).toHaveBeenCalledTimes(1);
-		expect(h.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ customType: "goal-continuation", display: false, details: { goalId: "goal-1" } }),
-			{ deliverAs: "followUp", triggerTurn: true },
-		);
-		expect(h.appendEntry).toHaveBeenCalledWith("goal-runtime", expect.objectContaining({ goalId: "goal-1", continuationRuns: 1 }));
-
-		await h.emit("agent_settled");
-		expect(h.sendMessage).toHaveBeenCalledTimes(1);
+		h.emitBus("session-compaction:state", { inProgress: true, source: "turn_end", resumesRun: true, succeeded: undefined });
+		h.emitBus("session-compaction:state", { inProgress: false, source: "turn_end", resumesRun: false, error: 3 });
+		expect(h.sendMessage).not.toHaveBeenCalled();
+		expect(h.appendEntry).not.toHaveBeenCalled();
 	});
 
-	it("gives pending user work priority and skips every non-active status", async () => {
-		const pending = harness([activeGoalEntry(), runtimeEntry()]);
-		pending.setPending(true);
-		await pending.emit("session_start");
-		await pending.emit("agent_settled");
-		expect(pending.sendMessage).not.toHaveBeenCalled();
-
-		for (const status of ["paused", "blocked", "completed", "budget_limited", "cleared"]) {
-			const extra = status === "blocked" ? { blockedReason: "Needs input" }
-				: status === "budget_limited" ? { limitReason: "Limit" } : {};
-			const entry = activeGoalEntry("Ship", status);
-			entry.data.state = { ...entry.data.state, ...extra };
-			const h = harness([entry, runtimeEntry()]);
-			await h.emit("session_start");
-			await h.emit("agent_settled");
-			expect(h.sendMessage).not.toHaveBeenCalled();
-		}
-	});
-
-	it("identifies the custom run, aggregates turns, and charges one settled run", async () => {
+	it("applies an idle compaction finish before the bus emit returns", async () => {
 		const h = harness([activeGoalEntry(), runtimeEntry()]);
 		await h.emit("session_start");
 		await h.emit("agent_settled");
 		await h.emit("message_start", { message: { role: "custom", customType: "goal-continuation", details: { goalId: "goal-1" } } });
 		h.setIdle(true);
-		await h.emit("turn_end", {
-			message: { role: "assistant", stopReason: "toolUse" },
-			toolResults: [{ toolName: "bash", isError: true }],
-		});
-		await h.emit("turn_end", {
-			message: { role: "assistant", stopReason: "stop" },
-			toolResults: [{ toolName: "read", isError: false }],
-		});
-		h.sendMessage.mockClear();
+		h.emitBus("session-compaction:state", { inProgress: true, source: "turn_end", resumesRun: false });
 		await h.emit("agent_settled");
-
-		expect(h.appendEntry).toHaveBeenCalledWith("goal-runtime", expect.objectContaining({
-			continuationRuns: 1,
-			consecutiveNoProgressRuns: 0,
-			consecutiveFailureRuns: 0,
-		}));
+		h.sendMessage.mockClear();
+		h.emitBus("session-compaction:state", { inProgress: false, source: "turn_end", resumesRun: false, succeeded: true });
 		expect(h.sendMessage).toHaveBeenCalledTimes(1);
 	});
 
-	it("clears the pending marker after a synchronous send failure", async () => {
-		const h = harness([activeGoalEntry(), runtimeEntry()]);
-		h.sendMessage.mockImplementationOnce(() => { throw new Error("send failed"); });
-		await h.emit("session_start");
-		await h.emit("agent_settled");
-		expect(h.ctx.ui.notify).toHaveBeenCalledWith("Goal continuation failed: send failed", "error");
-		h.setIdle(true);
-		await h.emit("agent_settled");
-		expect(h.sendMessage).toHaveBeenCalledTimes(2);
-	});
-
-	it("turn_end never sends and a nonmatching message clears a stranded pending marker", async () => {
+	it("reinstalls the compaction listener after a normal shutdown", async () => {
 		const h = harness([activeGoalEntry(), runtimeEntry()]);
 		await h.emit("session_start");
-		await h.emit("agent_settled");
-		h.sendMessage.mockClear();
-		await h.emit("turn_end", { message: { role: "assistant", stopReason: "stop" }, toolResults: [] });
-		expect(h.sendMessage).not.toHaveBeenCalled();
-		await h.emit("message_start", { message: { role: "user", content: "User work" } });
-		h.setIdle(true);
-		await h.emit("agent_settled");
-		expect(h.sendMessage).toHaveBeenCalledTimes(1);
-	});
-
-	it("defers settlement to extension compaction and resumes only when compaction will not", async () => {
-		const h = harness([activeGoalEntry(), runtimeEntry()]);
+		await h.emit("session_shutdown");
 		await h.emit("session_start");
 		await h.emit("agent_settled");
 		await h.emit("message_start", { message: { role: "custom", customType: "goal-continuation", details: { goalId: "goal-1" } } });
 		h.setIdle(true);
-		h.emitBus("session-compaction:state", { inProgress: true, source: "turn_end", resumesRun: true });
-		await h.emit("turn_end", { message: { role: "assistant", stopReason: "length" }, toolResults: [] });
-		h.sendMessage.mockClear();
-		h.appendEntry.mockClear();
+		h.emitBus("session-compaction:state", { inProgress: true, source: "turn_end", resumesRun: false });
 		await h.emit("agent_settled");
-		expect(h.sendMessage).not.toHaveBeenCalled();
-		expect(h.appendEntry).not.toHaveBeenCalledWith("goal-state", expect.objectContaining({ action: "block" }));
-
-		h.emitBus("session-compaction:state", {
-			inProgress: false, source: "turn_end", resumesRun: true, succeeded: true,
-		});
-		expect(h.sendMessage).not.toHaveBeenCalled();
+		h.sendMessage.mockClear();
+		h.emitBus("session-compaction:state", { inProgress: false, source: "turn_end", resumesRun: false, succeeded: true });
+		expect(h.sendMessage).toHaveBeenCalledTimes(1);
 	});
 
-	it("does not defer a goal decision for pre-run compaction", async () => {
+	it("does not let an old shutdown remove a replacement host's compaction listener", async () => {
 		const h = harness([activeGoalEntry(), runtimeEntry()]);
 		await h.emit("session_start");
-		h.emitBus("session-compaction:state", { inProgress: true, source: "before_agent_start", resumesRun: false });
-		await h.emit("agent_settled");
-		h.emitBus("session-compaction:state", {
-			inProgress: false, source: "before_agent_start", resumesRun: false, succeeded: true,
-		});
-		expect(h.sendMessage).not.toHaveBeenCalled();
-	});
-
-	it("continues after non-resuming compaction and blocks after failed compaction", async () => {
-		const succeeded = harness([activeGoalEntry(), runtimeEntry()]);
-		await succeeded.emit("session_start");
-		await succeeded.emit("agent_settled");
-		await succeeded.emit("message_start", { message: { role: "custom", customType: "goal-continuation", details: { goalId: "goal-1" } } });
-		succeeded.setIdle(true);
-		succeeded.emitBus("session-compaction:state", { inProgress: true, source: "turn_end", resumesRun: false });
-		await succeeded.emit("agent_settled");
-		succeeded.sendMessage.mockClear();
-		succeeded.emitBus("session-compaction:state", {
-			inProgress: false, source: "turn_end", resumesRun: false, succeeded: true,
-		});
-		expect(succeeded.sendMessage).toHaveBeenCalledTimes(1);
-
-		const failed = harness([activeGoalEntry(), runtimeEntry()]);
-		await failed.emit("session_start");
-		await failed.emit("agent_settled");
-		await failed.emit("message_start", { message: { role: "custom", customType: "goal-continuation", details: { goalId: "goal-1" } } });
-		failed.setIdle(true);
-		failed.emitBus("session-compaction:state", { inProgress: true, source: "turn_end", resumesRun: true });
-		await failed.emit("agent_settled");
-		failed.appendEntry.mockClear();
-		failed.emitBus("session-compaction:state", {
-			inProgress: false, source: "turn_end", resumesRun: true, succeeded: false, error: "summary failed",
-		});
-		expect(failed.appendEntry).toHaveBeenCalledWith("goal-state", expect.objectContaining({
-			action: "block",
-			state: expect.objectContaining({ status: "blocked", blockedReason: "summary failed" }),
-		}));
-
-		const stale = harness([activeGoalEntry(), runtimeEntry()]);
-		await stale.emit("session_start");
-		stale.emitBus("session-compaction:state", { inProgress: true, source: "turn_end", resumesRun: true });
-		await stale.emit("agent_settled");
-		await stale.emit("session_tree");
-		stale.appendEntry.mockClear();
-		stale.emitBus("session-compaction:state", {
-			inProgress: false, source: "turn_end", resumesRun: true, succeeded: false, error: "stale failure",
-		});
-		expect(stale.appendEntry).not.toHaveBeenCalledWith("goal-state", expect.objectContaining({ action: "block" }));
-	});
-
-	it("blocks after the third automatic no-progress run and notifies once", async () => {
-		const h = harness([activeGoalEntry(), runtimeEntry({ consecutiveNoProgressRuns: 2 })]);
-		await h.emit("session_start");
+		let resolveConfirmation!: (accepted: boolean) => void;
+		h.setConfirm(() => new Promise<boolean>((resolve) => { resolveConfirmation = resolve; }));
+		const command = h.runCommand("Replace this goal");
+		await vi.waitFor(() => expect(h.ctx.ui.confirm).toHaveBeenCalledOnce());
+		const shutdown = h.handlers.get("session_shutdown")?.[0]?.();
+		const replacement = h.emit("session_start");
+		resolveConfirmation(true);
+		await Promise.all([command, shutdown, replacement]);
 		await h.emit("agent_settled");
 		await h.emit("message_start", { message: { role: "custom", customType: "goal-continuation", details: { goalId: "goal-1" } } });
 		h.setIdle(true);
-		await h.emit("turn_end", { message: { role: "assistant", stopReason: "stop" }, toolResults: [] });
-		h.appendEntry.mockClear();
+		h.emitBus("session-compaction:state", { inProgress: true, source: "turn_end", resumesRun: false });
 		await h.emit("agent_settled");
-		expect(h.appendEntry).toHaveBeenCalledWith("goal-state", expect.objectContaining({
-			action: "block",
-			state: expect.objectContaining({ status: "blocked" }),
-		}));
-		expect(h.ctx.ui.notify).toHaveBeenCalledTimes(1);
-	});
-
-	it("persists budget exhaustion and pauses an aborted automatic run", async () => {
-		const limited = harness([activeGoalEntry(), runtimeEntry({ continuationRuns: 30 })]);
-		await limited.emit("session_start");
-		await limited.emit("agent_settled");
-		expect(limited.appendEntry).toHaveBeenCalledWith("goal-state", expect.objectContaining({
-			action: "limit",
-			state: expect.objectContaining({ status: "budget_limited" }),
-		}));
-		expect(limited.sendMessage).not.toHaveBeenCalled();
-
-		const aborted = harness([activeGoalEntry(), runtimeEntry()]);
-		await aborted.emit("session_start");
-		await aborted.emit("agent_settled");
-		await aborted.emit("message_start", { message: { role: "custom", customType: "goal-continuation", details: { goalId: "goal-1" } } });
-		aborted.setIdle(true);
-		await aborted.emit("turn_end", { message: { role: "assistant", stopReason: "aborted" }, toolResults: [] });
-		await aborted.emit("agent_settled");
-		expect(aborted.appendEntry).toHaveBeenCalledWith("goal-state", expect.objectContaining({ action: "pause" }));
-		expect(aborted.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("interrupted"), "warning");
+		h.sendMessage.mockClear();
+		h.emitBus("session-compaction:state", { inProgress: false, source: "turn_end", resumesRun: false, succeeded: true });
+		expect(h.sendMessage).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -387,6 +260,18 @@ describe("goal command surface", () => {
 });
 
 describe("goal completion contract", () => {
+	it("preserves checkpoint remaining text and trims mutation inputs", async () => {
+		const checkpoint = harness([activeGoalEntry(), runtimeEntry()]);
+		await checkpoint.emit("session_start");
+		const saved = await checkpoint.tool.execute("call", { action: "checkpoint", summary: " Progress ", remaining: "  investigate the cache  " }, undefined, undefined, checkpoint.ctx);
+		expect(saved).toMatchObject({ content: [{ text: "Checkpoint: Progress\nRemaining:   investigate the cache  " }], details: { state: { checkpointProgress: "Progress" } } });
+
+		const blocked = harness([activeGoalEntry(), runtimeEntry()]);
+		await blocked.emit("session_start");
+		const stopped = await blocked.tool.execute("call", { action: "blocked", reason: " Needs access " }, undefined, undefined, blocked.ctx);
+		expect(stopped).toMatchObject({ content: [{ text: "Goal blocked: Needs access" }], details: { state: { blockedReason: "Needs access" } } });
+	});
+
 	it("rejects missing or failed evidence and accepts passing evidence", async () => {
 		const h = harness([activeGoalEntry(), runtimeEntry()]);
 		await h.emit("session_start");

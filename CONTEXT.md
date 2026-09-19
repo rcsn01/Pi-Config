@@ -413,25 +413,36 @@ extension.
   session-entry migration (including the cleared tombstone), structured
   completion evidence, and every set/pause/resume/edit/checkpoint/complete/
   block/limit/clear transition as immutable operations with injected
-  timestamps. Pi wiring, notification delivery, persistence, widget and tool
-  rendering, and the `appendEntry` side effect stay in the extension adapter.
+  timestamps. The lifecycle requests state-entry writes; the Pi adapter
+  performs those writes and renders the widget/tool result.
 - **Goal runtime module** — the pure module in `workflows-goal/goal-runtime.ts`
   that owns persisted automatic-run counters, matching-goal reconstruction,
-  multi-turn progress/failure classification, continuation charging, and the
-  bounded continue/skip/stop decision. The adapter identifies hidden Goal runs,
-  persists runtime snapshots, coordinates with extension-owned compaction, and
-  sends at most one continuation after `agent_settled`.
+  multi-turn progress/failure classification, continuation charging, bounded
+  continue/skip/stop decisions, and shared runtime-line formatting. The Goal
+  lifecycle identifies hidden runs, persists runtime snapshots through its host,
+  coordinates extension-owned compaction, and sends at most one continuation
+  after `agent_settled`.
+- **Goal continuation lifecycle** — the deep in-process module in
+  `workflows-goal/goal-lifecycle.ts`. `GoalLifecycle` owns the live Goal and
+  runtime aggregate, Session reconstruction/reset, hidden-run correlation,
+  compaction deferral, settlement ordering, runtime persistence requests, and
+  at-most-one continuation scheduling. Its host interface keeps Pi effects and
+  current Session facts out of the module and gives tests a deterministic seam.
+- **Goal Pi adapter** — `workflows-goal/index.ts` registers Pi events, the Goal
+  command and tool, TypeBox schemas, host effects, `GoalStatusWidget`, and
+  Pi-facing tool rendering. It holds the current host reference but no live
+  Goal or runtime lifecycle state.
 - **Goal command module** — the pure module in
   `workflows-goal/goal-commands.ts` that owns the `/goal` command surface
   behind `runGoalCommand(goal, args, now, host)`: subcommand parsing, the
   transition→message policy for every arm, the replacement-confirmation
   requirement and its question text, the kickoff message, and status
   formatting. One outcome carries the notification (text plus
-  `info`/`warning`/`error`), the transition for the adapter to persist and
-  adopt, and the kickoff message; a null notification means stay silent. Its
-  host supplies `confirm(title, body)` — UI-backed and `hasUI`-guarded in the
-  adapter — so the module owns the question's text and the adapter owns the
-  asking. Goal prompts live beside it in `workflows-goal/goal-prompts.ts`:
+  `info`/`warning`/`error`), the transition for the lifecycle to apply, and the
+  kickoff message; a null notification means stay silent. Its host supplies
+  `confirm(title, body)` — UI-backed and `hasUI`-guarded in the adapter — so
+  the module owns the question's text and the adapter owns the asking. Goal
+  prompts live beside it in `workflows-goal/goal-prompts.ts`:
   `goalPromptAddendum(goal)` owns the status→prompt decision (none for no
   goal, cleared, completed, or budget-limited; distinct instructions for
   active, paused, and blocked goals).
