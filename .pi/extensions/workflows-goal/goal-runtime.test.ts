@@ -7,6 +7,7 @@ import {
 	reconstructGoalRuntime,
 	recordContinuationRequested,
 	recordGoalTurn,
+	runtimeLines,
 	startAutomaticRun,
 } from "./goal-runtime.ts";
 
@@ -105,6 +106,17 @@ describe("automatic goal run accounting", () => {
 			const run = recordGoalTurn(startAutomaticRun("goal-1"), { message: assistant(stopReason), toolResults: [] });
 			expect(finalizeAutomaticRun(runtime(), run, 2).terminalStopReason).toBe(stopReason);
 		}
+	});
+});
+
+describe("goal runtime formatting", () => {
+	it("formats the shared runtime lines for command and tool output", () => {
+		expect(runtimeLines(null)).toEqual([]);
+		expect(runtimeLines(runtime({ continuationRuns: 2, consecutiveNoProgressRuns: 1, consecutiveFailureRuns: 2 }))).toEqual([
+			"Continuation runs: 2/30",
+			"Consecutive no-progress runs: 1",
+			"Consecutive failure runs: 2",
+		]);
 	});
 });
 

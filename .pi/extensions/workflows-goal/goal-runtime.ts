@@ -14,6 +14,14 @@ export const DEFAULT_GOAL_RUNTIME_CONFIG: GoalRuntimeConfig = {
 	maxFailureRuns: 3,
 };
 
+export function runtimeLines(runtime: GoalRuntimeSnapshot | null): string[] {
+	if (!runtime) return [];
+	const lines = [`Continuation runs: ${runtime.continuationRuns}/${DEFAULT_GOAL_RUNTIME_CONFIG.maxContinuationRuns}`];
+	if (runtime.consecutiveNoProgressRuns > 0) lines.push(`Consecutive no-progress runs: ${runtime.consecutiveNoProgressRuns}`);
+	if (runtime.consecutiveFailureRuns > 0) lines.push(`Consecutive failure runs: ${runtime.consecutiveFailureRuns}`);
+	return lines;
+}
+
 export interface GoalRuntimeSnapshot {
 	goalId: string;
 	continuationRuns: number;

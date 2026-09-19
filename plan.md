@@ -1,776 +1,1062 @@
-# Deepen the Editor slot handler lifetime
+# Implementation plan: deepen Goal continuation orchestration
 
-## Goal
+## Outcome
 
-Make the shared Editor slot module own the lifetime of every Session-scoped Editor slot registration, not only custom Editor contributions. A single registration will be able to provide any combination of:
+Extract the live Goal continuation lifecycle from
+`.pi/extensions/workflows-goal/index.ts` into a deep in-process module at
+`.pi/extensions/workflows-goal/goal-lifecycle.ts`.
 
-- a custom Editor contribution;
-- the silent `/model` command handler;
-- the streaming input-interception handler.
+The new module will own the live Goal aggregate and the ordering between Goal
+state, automatic-run accounting, compaction deferral, persistence requests,
+continuation scheduling, and terminal transitions. The Pi extension entry point
+will remain an adapter: it will register Pi callbacks, translate them into
+semantic lifecycle events, provide a narrow host for Pi effects, and keep TUI
+schemas/rendering at the Pi seam.
 
-Every new registration will be tied to the exact `SessionStartEvent` object, cleaned up automatically on `session_shutdown`, and disposed safely when a Profile transition replaces the current Session state. Older extension copies remain a compatibility exception during an in-flight reload.
-
-The user-visible behavior must remain unchanged:
-
-- `ui-message-history` remains the priority-20 Editor winner.
-- `ui-model-selector` remains the priority-10 Editor contributor.
-- standalone `/model` submissions still route silently to model selection.
-- streaming Tab input still queues follow-up work without replacing the mounted Editor.
-- the input handler remains a single replaceable handler; this plan does not introduce handler composition or handler priority.
-- the thinking-level border is still reapplied after Pi mounts a custom Editor.
-- Plan Review's synchronous temporary Editor swap remains outside the Session registration machinery.
-- persisted message history and model-selection lifecycle behavior do not change.
-
-## Current baseline
-
-The repository was clean before this plan was written, and `plan.md` was absent, so there was no pre-existing plan to remove.
-
-The focused baseline passed:
-
-```text
-pnpm exec vitest run extensions/_shared/editor-slot.test.ts extensions/ui-model-selector/index.test.ts extensions/ui-steer-input/index.test.ts extensions/ui-message-history/steer-recall.test.ts
-4 test files passed
-70 tests passed
-```
-
-The typecheck also passed:
-
-```text
-cd .pi && pnpm typecheck
-```
-
-All commands in this plan that use package scripts run from `.pi`, because the package manifest lives there.
-
-## Why this change
-
-The Editor slot module uses a `Symbol.for("pi-config.editor-slot.v1")` registry on `globalThis` because the extension loader gives each extension its own copy of shared modules. That shared registry is the correct seam for the single Pi Editor slot and its related handlers.
-
-The module already owns custom Editor contribution lifetimes through `createSessionEditorLifetime()`. The two handler registries are shallower:
-
-- `registerModelCommandHandler()` stores a process-global function and returns a caller-owned unregister callback.
-- `registerEditorInputHandler()` does the same for the streaming input handler.
-- `ui-model-selector/index.ts` keeps `uninstallModelCommandHandler` beside its Profile lifecycle and must remember every replacement and disposal path.
-- `ui-steer-input/index.ts` keeps `unregisterInputHandler` beside its Session handlers and must clean it on every shutdown path.
-- `ui-model-selector/index.test.ts` and `ui-steer-input/index.test.ts` directly mutate the shared registry to reset test state.
-- `ui-message-history/steer-recall.test.ts` asserts that the global input handler has been cleaned, showing that cleanup is an externally visible invariant rather than a local implementation detail.
-
-The deletion test is clear: delete the caller-owned unregister calls and stale `/model` or Tab behavior survives a Session replacement. Delete the raw registration functions and replace them with the lifetime seam; the complexity remains in the Editor slot module because the registry still must coordinate ownership, replacement, exact Session tokens, and stale cleanup. The module earns depth by concentrating that complexity once rather than deleting useful behavior.
-
-## Dependency category and seam
-
-This is an **in-process** deepening:
-
-- the registry is in-memory;
-- the handlers are callbacks supplied by Pi-facing adapters;
-- the Editor slot module does not need a remote port or a new external adapter;
-- tests can exercise the complete behavior through the lifetime interface with in-memory callback and TUI doubles.
-
-The new ownership seam is the Editor slot module's lifetime interface. Its implementation keeps handler and Editor registries, Session-token ownership, winner selection, deferred flush, and teardown details private while the existing dispatch getters remain public.
-
-The interface is the test surface. Adapter tests should verify observable routing and cleanup through that interface rather than importing a low-level registry mutation function.
+This is an orchestration deepening, not a rewrite of Goal persistence or Goal
+policy. The existing `goal-state.ts`, `goal-runtime.ts`, `goal-commands.ts`,
+and `goal-prompts.ts` modules remain the policy modules behind the new seam.
 
 ## Resolved design decisions
 
-The clarification frontier was resolved with the recommended answers below. No design question remains open for implementation.
+The design tree was resolved with the recommended answer for every clarification
+question, as requested.
 
-### 1. Deepen both handler registries
+### 1. Scope
 
-Own both the `/model` handler and the input-interception handler in the same Editor slot lifetime. Do not limit the change to Tab input.
+**Chosen:** extract Goal continuation and live-state orchestration only.
 
-Both registries have the same ownership problem, both live in the same `Symbol.for` registry, and two production adapters already exercise the seam:
+Keep these responsibilities where they are:
 
-- `ui-model-selector` supplies the `/model` handler;
-- `ui-steer-input` supplies the input handler.
+- `goal-state.ts`: validated persisted Goal state, reconstruction, immutable
+  transitions, legacy identity migration, tombstones, and evidence state.
+- `goal-runtime.ts`: runtime reconstruction, automatic-run observation,
+  progress/failure classification, continuation charging, and bounded
+  continue/skip/stop decisions.
+- `goal-commands.ts`: `/goal` parsing, confirmation text, notification policy,
+  transitions, kickoff text, and command status formatting.
+- `goal-prompts.ts`: status-to-prompt policy.
+- `index.ts`: Pi registration, TypeBox schemas, Pi tool result wrappers,
+  `GoalStatusWidget`, and host methods that perform Pi effects.
 
-The two handlers remain separate slots. The registration does not combine them and does not change their dispatch order.
+The new module will coordinate these existing modules. It will not absorb the
+whole Goal extension into one undifferentiated implementation.
 
-### 2. Extend the existing lifetime instead of adding a second lifetime module
+### 2. Module shape and seam
 
-Extend `SessionEditorLifetime` and `createSessionEditorLifetime()` with one registration description that can contain an optional Editor contribution, an optional model handler, and an optional input handler.
+**Chosen:** follow the existing `workflows-plan/plan-lifecycle.ts` pattern:
+semantic events enter one `GoalLifecycle.dispatch()` interface, and the module
+serializes them through one lifecycle queue.
 
-Do not add a parallel `SessionHandlerLifetime`. A second lifetime abstraction would duplicate Session-token and stale-owner logic and make callers learn two seams for one Editor slot module. One lifetime gives the Editor slot module more depth and gives all three adapters one ownership rule.
+This gives the Goal module a small external seam while hiding:
 
-### 3. Use the exact `SessionStartEvent` object as the Session token
+- the mutable Goal and runtime aggregate;
+- hidden continuation identity;
+- automatic-run accumulation;
+- compaction deferral;
+- terminal-stop policy;
+- persistence and effect ordering;
+- Session reset and shutdown invalidation.
 
-Every new registration receives the `SessionStartEvent` object already supplied to its `session_start` callback. The registry compares token identity, not `cwd`, a Session id string, a Profile name, or a numeric generation.
+The new module has two adapters at its seam:
 
-This matches the existing Editor contribution lifetime and the Session profile binding machinery. The installed Pi 0.84.4 runner passes the same event object to every handler in one `emit` call. Its reload and Session-replacement paths await the old `session_shutdown` before constructing and emitting the next `session_start`, so the production registrations in this plan arrive in start order. Reload, new, resume, and fork starts receive distinct objects even when a Session id or working directory is reused.
+1. the production Pi host created by `index.ts`;
+2. a deterministic in-memory host used by `goal-lifecycle.test.ts`.
 
-The object is a wave identity, not a general ordering signal. Treat the first installation of a different token as the next wave under Pi's verified lifecycle ordering. Do not claim to support an arbitrary caller that delivers an older `SessionStartEvent` after a newer one. Callers pass the event they already have; they do not store or compare it themselves.
+Tests use the lifecycle interface with the in-memory host instead of reaching
+into private state.
 
-### 4. One registration may own several related slots
+### 3. Effect ownership
 
-Use a registration shape equivalent to:
+**Chosen:** the lifecycle owns *when* effects happen and in what order; the Pi
+adapter owns *how* those effects reach Pi.
+
+The lifecycle will not import `ExtensionContext` or call `ctx.ui`, `pi`, or
+`appendEntry` directly. It will call a narrow `GoalLifecycleHost` supplied by
+the adapter. The host will perform:
+
+- Goal-state entry writes;
+- runtime entry writes;
+- notifications;
+- widget refreshes;
+- hidden continuation sends;
+- `/goal` kickoff sends;
+- idle and pending-message reads;
+- confirmation prompts.
+
+The host object is Session/branch-scoped for active lifecycle events. The
+adapter will create one host for each Session/branch lifecycle and reuse that
+object for every event from that lifecycle. The lifecycle will ignore an active
+Session event whose host/generation is not current. This keeps old queued
+callbacks from mutating a newer Session without exposing an `ExtensionContext`
+or a separate currency module.
+
+The command and tool adapters also have a narrow pre-Session path. They pass a
+distinct ephemeral host while no Session is active, but that host is never
+installed as `activeHost` and the lifecycle generation invalidates it when a
+Session starts or stops. All other event types require the active Session/branch
+host.
+
+A failed host continuation send throws synchronously. The lifecycle must
+preserve the current failure behavior: clear the pending continuation marker and
+notify the user; a later settled event retries.
+
+### 4. State ownership
+
+**Chosen:** `goal-lifecycle.ts` becomes the sole owner of the live `goal`,
+`runtime`, pending-continuation marker, automatic-run accumulator, compaction
+flags, deferred Goal id, and active-host currency.
+
+`index.ts` will hold none of the Goal or runtime lifecycle variables. It retains
+only a routing reference to the current host and adapter-owned UI/rendering
+state such as the `GoalStatusWidget` handle. The adapter does not inspect or
+mutate the lifecycle's aggregate. This prevents the command tool, event
+handlers, and continuation path from adopting different copies of the current
+Goal.
+
+On shutdown the lifecycle will clear its live aggregate and transient markers,
+not merely clear the pending run. A subsequent Session reconstructs from its
+own branch through `sessionStarted` or `branchChanged`.
+
+### 5. Serialization and Session currency
+
+**Chosen:** lifecycle effects are serialized, but Session/branch invalidation is
+synchronous and happens before a reset task enters the queue.
+
+Use an immediate-first, rejection-tolerant queue:
+
+- when idle, begin the event task immediately so synchronous effects such as a
+  compaction-state update happen before the surrounding Pi callback returns;
+- when another lifecycle task is in flight, append the task after either
+  fulfillment or rejection of the previous task. A bus callback queued behind
+  an in-flight confirmation or event does not claim to finish synchronously;
+  test that the queued compaction event still runs before later queued Goal
+  work and that the queue recovers after rejection;
+- return the current task's result to its caller;
+- never leave the queue permanently rejected;
+- preserve thrown errors for the caller-owned error handling.
+
+Keep a private monotonic lifecycle generation alongside the active
+Session-scoped host. `sessionStarted`, `branchChanged`, and `sessionStopping`
+invalidate the previous generation synchronously. Every queued task captures
+its host/generation and rechecks both before applying an effect. An awaited
+command confirmation must recheck after the confirmation resolves before it
+commits a transition. The lifecycle admits a pre-Session command or tool only
+in the inactive generation in which it arrived; a Session start invalidates it
+before reconstruction begins. This prevents an old command from committing into
+a new Session while still allowing the existing pre-Session command behavior.
+
+This combines Plan Mode's serialized ordering with its currency principle
+without adding a second shared currency module for Goal. It preserves
+synchronous `session-compaction:state` effects when the lifecycle queue is idle
+and defines the queued behavior when another lifecycle task is active. The
+supported ordering is Pi's serialized Session lifecycle. The plan does not claim
+to make arbitrarily out-of-order Session-start callbacks safe.
+
+### 6. Persistence compatibility
+
+**Chosen:** retain the current persisted custom entry types and data shapes:
+
+- `goal-state` entries continue to carry `{ action, state }`;
+- `goal-runtime` entries continue to carry the runtime snapshot fields;
+- legacy Goal ids, cleared tombstones, and latest-valid-entry reconstruction
+  remain unchanged;
+- no migration or replay format is introduced.
+
+The lifecycle only centralizes when the existing writes occur.
+
+### 7. Compaction ownership
+
+**Chosen:** retain the existing `session-compaction:state` event contract and
+its source semantics.
+
+`session-compaction/index.ts` will not be redesigned. Keep the
+`CompactionStateEvent` type and its raw-value validator in the lifecycle module;
+the adapter calls that validator but must not duplicate its rules. The bus
+adapter captures the current host when it receives a valid event; lifecycle
+`dispatch` captures and checks its private generation before running the event.
+If no active host exists, the adapter drops the bus event rather than creating a
+Session host for it.
+
+Validate every optional field at this boundary: an omitted `succeeded` or
+`error` is allowed, but an own supplied `succeeded` must be a boolean and an own
+supplied `error` must be a string. Preserve the current fallback
+for a finish event that omits `succeeded`: treat it as a failure, using the
+trimmed string error when present and `Session compaction failed.` otherwise. Do not
+require the completion `source` to equal the start source; the current code
+uses the start source only to decide whether `agent_settled` defers, and uses
+the completion's `succeeded`/`resumesRun` values to decide what happens next.
+
+The lifecycle will preserve the current distinction:
+
+- `turn_end` compaction defers an automatic Goal settlement when the active
+  Goal and source guards pass;
+- `before_agent_start` compaction never defers that settlement;
+- a successful compaction that resumes the run does not schedule another Goal
+  continuation;
+- a successful non-resuming compaction enters the normal scheduling guards and
+  sends one continuation when those guards pass;
+- a matching compaction failure blocks the active Goal;
+- Session/branch reset invalidates a deferred compaction decision.
+
+The producer prevents overlapping operations within its extension instance, but
+the payload has no operation id. If an old completion arrives after a reset and
+a newer deferral has the same Goal id, the lifecycle cannot distinguish them and
+must not claim that case is safe.
+
+### 8. Time and test determinism
+
+**Chosen:** inject `now` through `GoalLifecycleDependencies`, defaulting to
+`Date.now` in production. All lifecycle-created Goal and runtime timestamps
+will use that function. Existing pure modules already accept timestamps; this
+keeps the new lifecycle tests deterministic without relying on wall-clock
+assertions.
+
+### 9. Documentation
+
+**Chosen:** update `CONTEXT.md` after implementation. It will describe
+`Goal continuation lifecycle` as the deep module and revise the current Goal
+runtime wording so it no longer attributes lifecycle orchestration to the thin
+Pi adapter.
+
+No ADR is present in `docs/adr/`, so there is no recorded decision to reopen.
+
+## Current evidence and friction
+
+`workflows-goal/index.ts` is currently a Pi adapter in name, but it also owns a
+large live aggregate and the cross-event rules around it:
+
+- `goal`, `runtime`, `pendingAutomaticGoalId`, and `automaticRun`;
+- `extensionCompactionInProgress`, `extensionCompactionSource`, and
+  `deferredCompactionGoalId`;
+- the adapter's `runtimeContext` and `GoalStatusWidget` UI handle;
+- reconstruction on `session_start` and `session_tree`;
+- hidden-run recognition at `message_start`;
+- multi-turn recording at `turn_end`;
+- finalization, terminal handling, and continuation scheduling at
+  `agent_settled`;
+- compaction completion handling through a separate event bus listener;
+- transition persistence and terminal cleanup used by both the tool and the
+  command.
+
+The pure modules already provide good policy boundaries, but the critical
+behavior is how those policies are sequenced with Pi effects. That behavior is
+spread across nested functions and event callbacks in `index.ts`. The existing
+adapter tests prove the behavior, but most of their harness complexity exists
+because they must construct the whole Pi registration surface to reach the
+lifecycle.
+
+The current adapter has two `pi.appendEntry` sites, one `pi.sendMessage` site,
+two `pi.sendUserMessage` sites, three `ctx.ui.notify` sites, three
+`ctx.ui.setWidget` sites, two `ctx.isIdle` sites, one
+`ctx.hasPendingMessages` site, and one `ctx.ui.confirm` site. The host methods
+must account for each effect without leaving a second implementation in the
+adapter.
+
+Deletion test: there is one current closure, so this is not a claim that several
+Goal owners already disagree. Deleting the proposed lifecycle module would put
+the same aggregate, ordering, stale-marker, command, and tool coordination back
+inside the Pi callbacks and would remove the deterministic host seam. The
+extraction earns its depth only if those cross-event rules stay behind the one
+lifecycle interface; it must not grow into a second policy implementation.
+
+## Target implementation
+
+### New file: `workflows-goal/goal-lifecycle.ts`
+
+Add a deep in-process module with the following public vocabulary and field
+names. The responsibilities and semantics below are fixed.
+
+#### Host interface
+
+Define a narrow host interface that contains only effects and current Pi facts
+that the lifecycle cannot own itself:
 
 ```ts
-export interface SessionEditorContribution {
-	id: string;
-	editor?: {
-		priority: number;
-		createEditor: EditorFactory;
-	};
-	modelCommandHandler?: ModelCommandHandler;
-	editorInputHandler?: EditorInputHandler;
+export interface GoalLifecycleHost extends GoalCommandHost {
+	appendGoalTransition(outcome: AppliedGoalTransition): void;
+	appendRuntime(snapshot: GoalRuntimeSnapshot): void;
+	updateWidget(goal: GoalState | null): void;
+	notify(message: string, severity: "info" | "warning" | "error"): void;
+	sendContinuation(goalId: string): void;
+	sendKickoff(message: string, queued: boolean): void;
+	isIdle(): boolean;
+	hasPendingMessages(): boolean;
 }
 ```
 
-The existing `SessionEditorLifetime` remains:
+The host implementation in `index.ts` will translate these semantic calls to
+Pi:
+
+- `appendGoalTransition` writes `GOAL_CUSTOM_TYPE` with the existing
+  `{ action, state }` data.
+- `appendRuntime` writes `GOAL_RUNTIME_CUSTOM_TYPE` with the existing snapshot.
+- `updateWidget` calls the existing widget updater with the current Session
+  context and Goal snapshot; it is a no-op without UI, and `null` clears the
+  widget.
+- `sendContinuation` sends the existing hidden `goal-continuation` custom
+  message as a `followUp` with `triggerTurn: true`.
+- `sendKickoff(message, queued)` calls `pi.sendUserMessage`; `queued` selects
+  the existing `deliverAs: "followUp"` option.
+- `confirm` remains the `hasUI`-guarded `ctx.ui.confirm` adapter already used by
+  `runGoalCommand`.
+
+The lifecycle will own the hidden continuation message and its custom type
+constant, so there is one source of truth for hidden-run identity and prompt
+text. `goal-state.ts` and `goal-runtime.ts` retain ownership of the persisted
+`goal-state` and `goal-runtime` custom type constants.
+
+#### Dependencies
 
 ```ts
-export interface SessionEditorLifetime {
-	install(
-		event: SessionStartEvent,
-		ctx: ExtensionContext,
-		contribution: SessionEditorContribution,
-	): void;
-	dispose(): void;
+export interface GoalLifecycleDependencies {
+	now?: () => number;
 }
 ```
 
-The registration invariant is that at least one of `editor`, `modelCommandHandler`, or `editorInputHandler` is present. Enforce this before changing the lifetime or global registry: `install()` must throw for an all-empty description and leave the previous registration untouched. A fresh handler-only registration and its disposal do not mount or clear an Editor. If installation replaces an Editor-bearing registration, the replacement path must still reconcile the removed Editor, by remounting another active winner or restoring Pi's built-in Editor when no winner remains. An Editor registration retains the existing priority and latest-registration tie rule.
+Use `dependencies.now ?? Date.now` once at construction. Do not inject the
+pure Goal state/runtime/command modules; importing them directly keeps the
+lifecycle implementation cohesive and leaves the test seam at the lifecycle
+interface.
 
-Use the nested `editor` shape at the registration seam shown above. Keep the existing internal `ContributionEntry` shape nested as `{ contribution: { id, priority, createEditor }, ctx, sessionToken, order }` so the global v1 registry remains readable by an older extension copy during reload. The exported type name is not a second seam: it describes one registration, not an Editor-only map entry.
+#### Semantic events
 
-### 5. Preserve one current handler per handler kind
-
-The model handler and input handler keep their current replacement semantics:
-
-- a later model-handler registration replaces the active model handler;
-- a later input-handler registration replaces the active input handler;
-- an old lifetime can remove only its exact entry;
-- no handler list, priority, fan-out, or composition is introduced.
-
-The existing `getModelCommandHandler()` and `getEditorInputHandler()` getters remain available. `ModelCommandRoutingEditor` reads the input-handler getter; `ui-message-history` reads the model-handler getter when its factory creates an editor; and `ui-steer-input` reads the model-handler getter while classifying a queued slash command. The getters continue returning handler functions, not registry entries.
-
-### 6. Remove new callers' raw registration escape hatch
-
-Stop exporting the direct `registerModelCommandHandler()` and `registerEditorInputHandler()` functions from the new Editor slot module implementation. Migrate all production and test callers to `SessionEditorLifetime.install()`.
-
-The getters remain. The new public seam is ownership-aware installation and disposal, not a raw global setter with a cleanup callback.
-
-During an in-flight reload, already-loaded extension instances retain the old function exports in their own module copies. The shared registry representation must therefore tolerate the old raw handler fields during that transition, as described below. This is compatibility for the extension loader, not a reason to retain the shallow new source interface.
-
-### 7. Keep the global registry key and make its fields reload-tolerant
-
-Keep `Symbol.for("pi-config.editor-slot.v1")`. Do not create a second key or strand old extension copies in a second registry.
-
-Keep the existing raw handler fields as the values returned by the getters, and add private owner-entry fields beside them. This lets old code that still reads a raw function continue to work while the new lifetime code tracks exact ownership.
-
-Conceptually:
+Define a discriminated event union, modeled after `PlanLifecycleEvent`:
 
 ```ts
-interface EditorSlotRegistry {
-	modelCommandHandler?: ModelCommandHandler;
-	modelCommandHandlerEntry?: HandlerEntry<ModelCommandHandler>;
-	editorInputHandler?: EditorInputHandler;
-	editorInputHandlerEntry?: HandlerEntry<EditorInputHandler>;
-	contributions: Map<string, ContributionEntry>;
-	nextOrder: number;
-	flushTimer?: ReturnType<typeof setTimeout>;
-	activeSessionToken?: SessionStartEvent;
+export type GoalLifecycleEvent =
+	| { type: "sessionStarted"; branch: readonly unknown[]; host: GoalLifecycleHost }
+	| { type: "branchChanged"; branch: readonly unknown[]; host: GoalLifecycleHost }
+	| { type: "sessionStopping"; host: GoalLifecycleHost }
+	| { type: "agentPromptConstruction"; systemPrompt: string; host: GoalLifecycleHost }
+	| { type: "messageStarted"; role?: string; customType?: string; goalId?: string; host: GoalLifecycleHost }
+	| { type: "turnEnded"; observation: GoalTurnObservation; host: GoalLifecycleHost }
+	| { type: "agentSettled"; host: GoalLifecycleHost }
+	| { type: "compactionStateChanged"; event: CompactionStateEvent; host: GoalLifecycleHost }
+	| { type: "commandRequested"; args: string; host: GoalLifecycleHost; preSession?: true }
+	| { type: "toolRequested"; request: GoalToolRequest; host: GoalLifecycleHost; preSession?: true };
+```
+
+The adapter will translate Pi event objects to these small semantic values. Do
+not pass a whole `ExtensionContext` through the new module. The lifecycle only
+needs the branch at reconstruction, the fields used by `GoalTurnObservation`,
+and the host's narrow effect/fact interface. An active host-bearing event with
+a stale host/generation must return its neutral result without applying effects.
+For a stale `toolRequested`, use the same structured result as a null Goal:
+status has no error, and a mutation has `No active goal.` with `isError: true`.
+A stale command completes silently, and prompt construction returns `undefined`.
+Only `commandRequested` and `toolRequested` set `preSession: true`; the
+lifecycle admits that form only while no Session is active and never installs
+its host as `activeHost`. Compaction events are host-bearing too, so a queued
+old bus event cannot change a newer Session's compaction flags.
+
+Define the result mapping explicitly so the implementation does not invent a
+second result protocol:
+
+```ts
+export type GoalLifecycleResult<E extends GoalLifecycleEvent> =
+	E extends { type: "agentPromptConstruction" }
+		? { systemPrompt?: string } | undefined
+		: E extends { type: "toolRequested" }
+			? GoalToolOutcome
+			: void;
+```
+
+`agentPromptConstruction` returns `undefined` when no addendum applies. It must
+not return the incoming system prompt merely to signal "unchanged", because Pi
+marks a returned prompt as modified and passes it through the other
+`before_agent_start` handlers.
+
+`GoalToolRequest` should represent the already-schema-validated actions and
+fields without importing TypeBox or Pi result types:
+
+```ts
+export interface GoalToolRequest {
+	action: "status" | "checkpoint" | "complete" | "blocked";
+	summary?: string;
+	remaining?: string;
+	reason?: string;
+	evidence?: GoalEvidence[];
 }
 ```
 
-The optional owner fields are absent in an old global object and must be initialized lazily. A new Session wave clears both raw fields and owner fields before accepting new registrations. New lifetime disposal clears a raw handler only when the corresponding owner field is the exact entry being disposed and the raw field still equals that entry's handler. If an older raw registration overwrote the function field without updating the new owner field, disposal clears only the owner marker and leaves the legacy raw function untouched when the legacy function is a different object. A legacy overwrite that reuses the exact same function object is indistinguishable from the new owner still being current; do not promise to preserve that impossible-to-distinguish case without adding a separate write-observation mechanism.
-
-The existing `contributions` map should continue to contain normalized Editor contribution entries rather than handler-only entries. That preserves the current map shape for a briefly live older extension copy while handler ownership is held in separate private entry fields.
-
-### 8. New-wave invalidation is centralized
-
-The first registration for a token different from `activeSessionToken` establishes a new wave:
-
-1. invalidate prior Editor contribution entries;
-2. clear prior handler values and handler owner entries;
-3. cancel and clear the prior deferred Editor flush;
-4. set the new active token;
-5. install the new registration;
-6. schedule a flush only when the registration contains an Editor.
-
-Do not restore the built-in Editor merely because a new wave was established. The new Session's Editor contributor will replace the old visible Editor through its deferred flush. This preserves the current no-flash behavior.
-
-A stale lifetime from an older extension runtime that later receives `session_shutdown` must see that its exact entry is no longer current and become a no-op. It must not clear a replacement handler or remount an older Editor. This relies on the verified Pi ordering above for a lifetime reused by one runtime; the registry does not pretend that a shutdown event carries the earlier start token.
-
-### 9. Preserve the existing Editor behavior
-
-Keep these rules unchanged:
-
-- priority wins over registration order;
-- latest registration wins equal-priority ties;
-- a higher-priority late registration schedules one remount;
-- removing any active Editor contribution remounts the remaining winner;
-- removing the last active Editor contribution restores Pi's built-in Editor best-effort;
-- deferred flushes verify both timer handle and Session token;
-- the thinking border is reapplied;
-- TUI installation remains best-effort when Pi is tearing down.
-
-A fresh handler-only installation must not schedule an Editor flush. Disposing a registration that never owned an Editor must not call `setEditorComponent(undefined)`. If a handler-only replacement removes an Editor owned by the replaced registration, reconciliation is required for that removed Editor and is not an unnecessary handler-only effect.
-
-### 10. Keep adjacent responsibilities outside this change
-
-Do not change:
-
-- `/model` parsing;
-- model selection lifecycle or Profile persistence;
-- steering queue semantics, including history recording before clearing the Editor;
-- persisted message history;
-- Plan Review's synchronous temporary Editor swap;
-- the Editor's dynamic input dispatch order;
-- the number of handler slots.
-
-## Detailed implementation plan
-
-### Step 1: Add shared-module tests at the new lifetime seam
-
-Modify `.pi/extensions/_shared/editor-slot.test.ts` before changing production code so the ownership contract is explicit.
-
-Keep the existing fake-timer setup and global cleanup, but replace direct calls to the raw registration functions with lifetime installations. Add a small registration helper that can install:
-
-- an Editor-only contribution;
-- a model-handler-only registration;
-- an input-handler-only registration;
-- one combined Editor plus model-handler registration.
-
-The test Pi harness must retain multiple listeners per event and invoke them in registration order. It must pass one shared `SessionStartEvent` object to every handler in a start wave. This is important because the implementation relies on object identity, and a `Map<string, handler>` test harness would silently discard one of the lifetime's automatic shutdown listeners.
-
-Add or adapt these cases:
-
-#### Model-handler lifetime ownership
-
-1. Create a lifetime and a Session start event.
-2. Install a model-handler-only registration.
-3. Assert `getModelCommandHandler()` returns the handler.
-4. Dispose the lifetime.
-5. Assert the getter is undefined.
-6. Dispose again and assert the second call is a no-op.
-
-#### Input-handler lifetime ownership
-
-Repeat the same sequence for `getEditorInputHandler()` and an input handler.
-
-#### Automatic shutdown cleanup
-
-1. Create a lifetime through a Pi harness.
-2. Install a model handler and an input handler in separate lifetimes for the same event.
-3. Fire `session_shutdown` without calling either lifetime's public `dispose()`.
-4. Assert both getters are undefined.
-5. Fire shutdown again and assert no new side effect occurs.
-
-This proves the lifetime, rather than an adapter, owns ordinary shutdown cleanup.
-
-#### Combined registration cleanup
-
-1. Install one registration containing an Editor contribution and a model handler.
-2. Flush the deferred Editor mount.
-3. Assert the Editor factory mounted and the model getter is active.
-4. Dispose the lifetime.
-5. Assert the built-in Editor was restored and the model getter was cleared.
-
-#### Invalid registration is rejected atomically
-
-Call `install()` with no `editor`, `modelCommandHandler`, or `editorInputHandler`. Assert it throws before changing the current registration, observable handler, mounted Editor, or pending timer. This enforces the valid-combination invariant instead of allowing a silent no-op that first discards an active registration.
-
-#### Handler-only registration does not touch the Editor
-
-Install and dispose a fresh input-only registration. Assert `setEditorComponent` was never called and no Editor timer was scheduled. Also replace an Editor-bearing registration with a handler-only registration in the same active Session. Assert the removed Editor is reconciled by the remaining winner or built-in restoration, while the handler-only part does not create an additional Editor effect.
-
-#### Same-slot replacement is exact-entry safe
-
-For the model handler and input handler independently:
-
-1. Install handler A through lifetime A.
-2. Install handler B through lifetime B for the same Session token.
-3. Assert the getter returns B.
-4. Dispose lifetime A.
-5. Assert B remains active.
-6. Dispose lifetime B.
-7. Assert the getter becomes undefined.
-
-Repeat each handler case with the same function object used for A and B. Disposal must compare the owner entry, not only the callback identity, so disposing A cannot clear B when both registrations happen to supply the same function.
-
-Also cover the reload boundary: after a lifetime-owned handler is installed, use a registry compatibility fixture to overwrite only the corresponding legacy raw field with a distinct legacy function, with no owner-entry update. Dispose the lifetime and assert that the legacy raw function remains available; the exact owner marker is still cleared. Do not claim the same-function legacy overwrite case is distinguishable, and do not add a write-observation mechanism solely for it. This fixture must not call a raw registration setter.
-
-For Editor contributions, install A and then a same-id replacement B, dispose B, and then dispose stale A. Assert the stale disposal produces no additional Editor restoration or remount beyond B's disposal.
-
-This is the deletion-test regression for caller-owned stale cleanup.
-
-#### New Session replacement is exact-token safe
-
-1. Through lifetime A, install handlers and an Editor contribution for token A.
-2. Through lifetime B, install replacement handlers and an Editor contribution for token B.
-3. Assert the getters expose only token B's handlers and the deferred flush mounts token B's Editor.
-4. Dispose lifetime A after token B is active.
-5. Assert token B's handlers and Editor remain active.
-6. Dispose lifetime B and assert ordinary cleanup.
-
-#### Same-wave registration does not invalidate other adapters
-
-Install the priority-10 model-selector registration, the priority-20 history registration, and the input-only steering registration with the same event object. Assert:
-
-- the history Editor wins;
-- the model handler is available;
-- the input handler is available;
-- no same-wave registration clears another slot.
-
-#### Existing Editor characterization cases
-
-Continue covering:
-
-- deferred installation;
-- same-tick flush coalescing;
-- priority winner selection;
-- latest-registration tie breaking;
-- late higher-priority remount;
-- winner disposal and remaining-winner remount;
-- non-winner disposal remounting the remaining winner;
-- shutdown before deferred flush;
-- old timer invalidation;
-- restoration failure after TUI teardown;
-- thinking-border reapplication;
-- the existing `ModelCommandRoutingEditor` order and the `PreviousMessageEditor` delegation boundary, where Up, Down, history bindings, and Ctrl+C are handled before the shared input hook;
-- repeated disposal.
-
-Delete tests whose only purpose is the old direct register/unregister return value. Retain ownership behavior through the new lifetime interface instead.
-
-### Step 2: Deepen `.pi/extensions/_shared/editor-slot.ts`
-
-#### Define the registration and ownership entries
-
-Preserve `EditorFactory`, `ModelCommandHandler`, and `EditorInputHandler`.
-
-Refine the exported `SessionEditorContribution` so it describes one registration with optional Editor, model-handler, and input-handler contributions. Keep the public `SessionEditorLifetime.install(event, ctx, contribution)` and `.dispose()` shape small. Validate that at least one optional contribution is present before clearing the lifetime's current state or touching the global registry; throw a `TypeError` for an empty description.
-
-Add private ownership entries that capture:
-
-- the exact handler or Editor factory;
-- the registration id;
-- the exact `SessionStartEvent` token;
-- the normalized Editor contribution entry where applicable;
-- the registration order for Editor winner selection.
-
-Do not expose owner entries through the getters.
-
-#### Normalize Editor contributions
-
-When `install()` receives an `editor` field, normalize it to the existing internal `ContributionEntry` shape with nested `contribution: { id, priority, createEditor }`, plus `ctx`, `sessionToken`, and `order`. Store only these normalized Editor entries in the existing `contributions` map.
-
-When a registration is handler-only, do not add it to the Editor winner map. It still belongs to the lifetime and still participates in Session-token invalidation through its handler owner entry.
-
-#### Add exact-owner handler fields
-
-Keep `modelCommandHandler` and `editorInputHandler` as raw function fields for getter and reload compatibility. Add owner-entry fields that identify which lifetime registration currently owns each raw function.
-
-Add private helpers with single responsibilities:
-
-- establish or reuse the active Session wave;
-- detach a model-handler entry only if it is the current owner;
-- detach an input-handler entry only if it is the current owner;
-- detach an Editor contribution only if the map still points to the exact entry;
-- remove a whole registration without intermediate UI effects while it is being replaced;
-- reconcile an Editor removed by a handler-only replacement;
-- dispose a whole registration with the correct Editor remount or built-in restoration behavior.
-
-The helpers must distinguish replacement from disposal. Replacing an Editor with another Editor in the same lifetime must not briefly restore the built-in Editor before scheduling the replacement. A fresh handler-only registration must not schedule a flush, but replacing an active Editor with handler-only must not leave the old Editor mounted.
-
-#### Establish a new Session wave
-
-Centralize the new-token transition in the existing wave-coordination area:
-
-- compare token identity with `activeSessionToken`;
-- cancel a pending timer from the prior token;
-- clear prior Editor contribution entries;
-- clear raw handler fields and owner fields;
-- store the new active token;
-- leave the visible Editor alone until a new Editor winner flushes.
-
-If an old global object has no owner fields, treat those fields as empty. If an old raw handler is present when the first new wave starts, clear it before installing the new registration.
-
-Treat a different token as the next wave only under the Pi event ordering verified above. An arbitrary late installation for an older token is outside this interface and must not be described as safe. Do not introduce a second numeric generation beside the event token. Within the supported lifecycle, the event object is the generation token and avoids two pieces of state that can disagree.
-
-#### Install one registration atomically
-
-`install(event, ctx, contribution)` should:
-
-1. validate that the description contains at least one contribution before mutating anything;
-2. capture and clear the lifetime's previous owned registration;
-3. establish the event's active Session wave;
-4. remove the previous registration and any same-id registration from the Editor and handler slots without an intermediate UI restoration, using exact owner-entry checks and raw-function identity checks for handlers;
-5. normalize and store the optional Editor entry;
-6. replace the model-handler slot if supplied, recording the exact owner entry;
-7. replace the input-handler slot if supplied, recording the exact owner entry;
-8. retain the exact entries in the lifetime's private current state;
-9. schedule one Editor flush when the new registration contains an Editor;
-10. if no Editor is supplied but an active Editor entry was removed in the same Session wave, reconcile that removal by flushing the remaining winner or restoring Pi's built-in Editor when no winner remains.
-
-A fresh handler-only registration must not call `setEditorComponent` or schedule an Editor timer. The reconciliation in step 10 is required only because that operation removed an Editor; it is not a handler-only side effect. If the removed Editor belonged to the prior token and a new wave was just established, leave the visible Editor alone until a new Editor contributor arrives, preserving no-flash wave replacement.
-
-If a new registration replaces a same-id Editor contribution owned by another lifetime, the old lifetime's later disposal must be a no-op. If a new handler replaces an old handler in the same slot, the old lifetime's later disposal must not clear the new raw function, even when both registrations use the same function object.
-
-#### Dispose one registration
-
-`dispose()` and the lifetime's automatic `session_shutdown` callback must use the same idempotent operation:
-
-1. capture the current owned entries;
-2. clear the lifetime's current reference before doing any work;
-3. for each handler whose owner field is the exact entry, clear the owner field; clear the raw handler field only when it still equals that entry's handler;
-4. detach the Editor only when the contribution map still points to the exact Editor entry, and record whether this exact entry was actually removed;
-5. stop Editor processing when that exact entry was not removed or its Session token is inactive;
-6. if the exact active Editor entry was removed and another Editor contribution remains, schedule one flush for the active token;
-7. if no active Editor contribution remains, cancel the timer and restore the built-in Editor with a catch around `setEditorComponent(undefined)`;
-8. tolerate repeated calls and stale owners.
-
-A handler-only registration stops after step 3. It must not trigger Editor restoration.
-
-#### Preserve the dispatch getters
-
-Keep `getModelCommandHandler()` and `getEditorInputHandler()` returning the raw handler functions. `ModelCommandRoutingEditor.handleInput()` must retain its current order:
-
-1. consult the current input handler;
-2. route standalone `/model` if its captured model handler is present;
-3. delegate to Pi's normal Editor behavior.
-
-The input hook still sees only keys that a subclass delegates to this base method. `PreviousMessageEditor` handles Up, Down, its dedicated history bindings, and Ctrl+C before it calls `super.handleInput()`. Do not move the hook into that subclass or turn it into a universal preprocessor. Do not use this change to make the model handler dynamically looked up on every keypress. `ui-message-history` intentionally captures the model getter when its Editor factory runs, while `ui-steer-input` intentionally reads the getter when it classifies a queued slash command. Those are existing, different dispatch points.
-
-#### Remove raw new-source registration exports
-
-Remove new-source imports and exports for `registerModelCommandHandler()` and `registerEditorInputHandler()`. The old functions remain reachable only from an already-loaded older extension module during reload; the new source must not use them.
-
-Update the module header comment to document that the Editor slot module owns:
-
-- the Editor winner registry;
-- the model-handler slot;
-- the input-handler slot;
-- exact Session-token ownership;
-- automatic shutdown cleanup;
-- ownership-safe early disposal;
-- token- and timer-handle-guarded deferred flushing.
-
-### Step 3: Move `ui-model-selector` onto the combined lifetime registration
-
-Modify `.pi/extensions/ui-model-selector/index.ts`.
-
-Create one `const editorLifetime = createSessionEditorLifetime(pi)` as the existing Editor lifetime, and remove the `uninstallModelCommandHandler` variable and direct registration import.
-
-In the Profile binding `initialize(binding, event, ctx)`, preserve this ordering:
-
-1. dispose the previous combined Editor/model-handler registration immediately;
-2. capture and clear `activeLifecycle`;
-3. await the prior lifecycle's disposal;
-4. construct Profile-aware persistence;
-5. if the new context is non-TUI, return without installing a registration;
-6. construct and store the new model-selection lifecycle;
-7. create the `/model` handler closure exactly as today;
-8. install one registration containing:
-   - id `ui-model-selector`;
-   - Editor priority 10 and the existing `ModelCommandRoutingEditor` factory;
-   - the model command handler;
-9. continue with conversation-history detection and lifecycle initialization.
-
-The combined install must happen before awaiting `initializeSession()`, as today, so the routing Editor participates in the same Session start wave. When this combined contribution is later disposed while the priority-20 history contribution remains, the slot lifetime must re-flush the history winner so its factory captures the current model-handler getter.
-
-In the Profile binding `dispose()` callback:
-
-1. dispose the combined Editor/model-handler registration before awaiting longer lifecycle cleanup;
-2. capture and clear `activeLifecycle`;
-3. await its disposal;
-4. leave no direct registry cleanup in the adapter.
-
-The automatic `session_shutdown` callback installed by `createSessionEditorLifetime()` and the Profile binding cleanup both call disposal. That is intentional; disposal must be idempotent. The existing model-selector harness already preserves both listeners in registration-order arrays; retain that behavior while adding real shutdown cleanup.
-
-Keep all model-selection lifecycle errors, notices, persistence ordering, and non-TUI behavior unchanged.
-
-### Step 4: Move `ui-steer-input` onto the input-handler lifetime
-
-Modify `.pi/extensions/ui-steer-input/index.ts`.
-
-Create `const editorLifetime = createSessionEditorLifetime(pi)` near the extension's local state. Use the existing Editor slot lifetime implementation even though this adapter contributes only a handler.
-
-Change the `session_start` handler to receive the event object:
-
-1. call `editorLifetime.dispose()` first so a prior registration cannot survive a repeated initialization without a preceding shutdown;
-2. if the context is not TUI, return without installing the input handler;
-3. preserve `sessionCtx`, widget, and queue state behavior;
-4. install one handler-only registration with id `ui-steer-input` and `editorInputHandler: handleSteerInput`.
-
-Remove `unregisterInputHandler` and its direct registration call.
-
-Keep the local `session_shutdown` handler responsible for:
-
-- setting `agentActive` false;
-- clearing queued slash commands and the Session context;
-- clearing the steering widget.
-
-The lifetime's automatically registered shutdown listener owns the global input-handler cleanup. The local handler must not call `editorLifetime.dispose()` or reimplement registry ownership. Test both listeners rather than duplicating cleanup.
-
-Do not change Tab queueing, `/model` recognition, Enter steering, FIFO drain order, or history recording.
-
-### Step 5: Move `ui-message-history` to the normalized Editor contribution shape
-
-Modify `.pi/extensions/ui-message-history/index.ts` only as needed for the new registration description.
-
-Keep:
-
-- the priority-20 Editor contribution;
-- the Session-local `cwd` capture;
-- `store.load()` on Session start;
-- the independent `store.flush()` shutdown handler;
-- `getModelCommandHandler()` lookup when the Editor factory is created.
-
-Wrap the existing Editor factory data in the new `editor` field. Do not give this registration a model or input handler.
-
-The history module should continue to rely on the Editor slot lifetime for Editor restoration and on its own shutdown handler for history persistence. These are separate responsibilities.
-
-### Step 6: Update shared and adapter tests without low-level registry cleanup
-
-#### `.pi/extensions/_shared/editor-slot.test.ts`
-
-Use the real lifetime interface for every handler installation. Remove imports and helpers for the raw register functions. Add the exact-owner and new-wave cases from Step 1.
-
-Ensure fake timers are drained before global cleanup. Dispose all created lifetimes in reverse order so a stale cleanup cannot hide an ownership bug.
-
-#### `.pi/extensions/ui-model-selector/index.test.ts`
-
-Remove the `afterEach` raw-handler reset and direct `registerModelCommandHandler` import.
-
-Retain the harness's existing array-backed event storage and shared `SessionStartEvent` per start wave. It must invoke both the lifetime's automatic shutdown callback and the Profile binding's shutdown callback in registration order. Do not regress this existing harness correction.
-
-Make harness cleanup call the real Session shutdown path for every created harness, including tests that already shut down explicitly; repeated shutdown must be harmless. Keep the current assertions for:
-
-- no selector registration in print, JSON, or RPC modes;
-- model handler and routing Editor installation;
-- replacement on reload;
-- waiting for an in-flight lifecycle disposal;
-- old handler rejection after replacement;
-- TUI-to-non-TUI cleanup;
-- exactly one visible built-in Editor restoration.
-
-Do not mock `createSessionEditorLifetime()`. These tests should cross the real seam.
-
-#### `.pi/extensions/ui-steer-input/index.test.ts`
-
-Remove direct register imports and the `handlerUnregisters` cleanup list.
-
-Update the harness to retain multiple listeners, expose its shared Session start event, and fire the real shutdown sequence. For tests that need a model handler while testing queued `/model`, install a model-handler-only registration through a test lifetime using the same Session start token as the steering handler. Let the lifetime shutdown callback clean it up.
-
-Keep the existing behavior assertions for:
-
-- TUI versus non-TUI registration;
-- automatic shutdown cleanup;
-- replacement where an old Session shutdown cannot remove a newer handler;
-- empty and whitespace Tab consumption;
-- follow-up queueing and history recording;
-- slash-command FIFO drain and re-entrancy;
-- `/model` dispatch;
-- normal Enter submission;
-- steering notifications.
-
-#### `.pi/extensions/ui-message-history/steer-recall.test.ts`
-
-No edit is required in this file. Its current harness already stores listener arrays, passes one event object to every listener, fires the real Session shutdown sequence, and contains no low-level removal import or direct registry reset. Retain the existing assertion that the input handler is undefined after Session cleanup. If the production migration makes that assertion fail, fix the lifetime wiring rather than adding test-only registry cleanup.
-
-### Step 7: Preserve Plan Review isolation
-
-Inspect and run the Plan Review tests that cover the synchronous temporary Editor swap in `.pi/extensions/workflows-plan/plan-review.test.ts`.
-
-Do not change Plan Review production code. Its bridge:
-
-1. captures the current Editor factory;
-2. installs a temporary command-submit Editor;
-3. obtains the synchronous submit callback;
-4. restores the exact prior factory in `finally`.
-
-It has no `await`, timer, or callback yield inside the swap, does not compete by Editor priority, and is not a Session contribution. Moving it into the lifetime registration would reduce locality by mixing two different lifetimes.
-
-Extend the existing Plan Review failure characterization in `.pi/extensions/workflows-plan/plan-review.test.ts`: for the fresh-prompt failure case, seed the harness with a distinct existing Editor factory, capture `const previousFactory = harness.getEditorComponent()` before `agent_settled`, assert the command submission still rejects, then assert `harness.getEditorComponent()` is `previousFactory` and `harness.setEditorComponent` was last called with `previousFactory`. This verifies restoration of a non-default factory in `finally` when submission fails, without changing Plan Review production code.
-
-### Step 8: Update `CONTEXT.md` and module comments
-
-Modify the existing **TUI editor slot** entry in `CONTEXT.md` after implementation. Do not invent a separate domain concept. Sharpen the existing Editor slot module definition to say that:
-
-- the model-handler and input-handler registries are Session-owned registrations;
-- each registration is associated with the exact `SessionStartEvent` token;
-- automatic shutdown and ownership-safe early disposal are inside the module;
-- a registration can provide an Editor, a model handler, an input handler, or a valid combination;
-- replacement and stale cleanup are identity-safe;
-- history and model selection remain adapters at the Editor slot seam;
-- the streaming input handler remains a separate single slot;
-- Plan Review remains the only external synchronous Editor swap.
-
-Update the header comment in `.pi/extensions/_shared/editor-slot.ts` to match the final invariants without adding implementation detail that belongs in tests.
-
-There are no ADR files under `docs/adr`, so no decision conflict needs to be reopened.
-
-## Test strategy
-
-### Shared module checks
-
-Run from `.pi`:
-
-```bash
-pnpm exec vitest run extensions/_shared/editor-slot.test.ts
+Keep the defensive `evidenceError` checks at this seam rather than assuming a
+direct test or another caller has run TypeBox validation.
+
+`GoalToolOutcome` should carry the action, current Goal snapshot, runtime
+snapshot, optional error text, `isError` state, and completion evidence needed by
+`index.ts` to preserve the existing Pi tool result shape:
+
+```ts
+export interface GoalToolOutcome {
+	action: GoalToolRequest["action"];
+	state: GoalState | null;
+	runtime: GoalRuntimeSnapshot | null;
+	error?: string;
+	isError?: boolean;
+	evidence?: GoalEvidence[];
+}
 ```
 
-The shared suite must prove:
+The `state` snapshot is the reconstructed cleared tombstone when one exists;
+it is `null` only when the lifecycle's current pointer is null. When that pointer
+is null, return `runtime: null` as well, even if a prior clear left an old
+in-memory runtime unused by the current adapter. The adapter will keep
+constructing `content`, `details`, and `isError` around that outcome, including
+the existing no-goal and validation-error shapes.
 
-- handler-only registration and disposal;
-- rejection of an all-empty registration before state changes;
-- combined registration cleanup;
-- combined-to-handler-only replacement reconciliation;
-- automatic shutdown cleanup;
-- exact-owner stale cleanup safety, including two registrations that use the same function object;
-- distinct-function legacy raw overwrite compatibility during extension reload;
-- new Session-token invalidation under Pi's serialized Session ordering;
-- same-wave coexistence of Editor, model, and input registrations;
-- no Editor effect or timer for a fresh handler-only registration;
-- deferred flush cancellation;
-- old timer rejection;
-- priority and tie behavior;
-- late higher-priority remount;
-- remaining-winner remount;
-- built-in Editor restoration;
-- restoration-error containment;
-- thinking-border reapplication;
-- idempotent repeated disposal.
+#### Public lifecycle interface
 
-### Adapter checks
+```ts
+export interface GoalLifecycle {
+	dispatch<E extends GoalLifecycleEvent>(event: E): Promise<GoalLifecycleResult<E>>;
+}
 
-Run:
-
-```bash
-pnpm exec vitest run \
-  extensions/ui-model-selector/index.test.ts \
-  extensions/ui-steer-input \
-  extensions/ui-message-history/steer-recall.test.ts
+export function createGoalLifecycle(
+	dependencies?: GoalLifecycleDependencies,
+): GoalLifecycle;
 ```
 
-These tests must use the real lifetime seam. No test should call a raw global handler setter or an old removal escape hatch.
+Keep private state inside the factory:
 
-### Plan Review regression check
-
-Run:
-
-```bash
-pnpm exec vitest run extensions/workflows-plan/plan-review.test.ts
+```ts
+let goal: GoalState | null = null;
+let runtime: GoalRuntimeSnapshot | null = null;
+let pendingAutomaticGoalId: string | null = null;
+let automaticRun: AutomaticGoalRun | null = null;
+let extensionCompactionInProgress = false;
+let extensionCompactionSource: CompactionStateEvent["source"] | null = null;
+let deferredCompactionGoalId: string | null = null;
+let activeHost: GoalLifecycleHost | undefined;
+let activeSession = false;
+let lifecycleGeneration = 0;
+let lifecycleQueue = Promise.resolve();
 ```
 
-Confirm that the synchronous temporary Editor swap still restores the prior factory even when command submission reports an error, using the explicit assertion added to `plan-review.test.ts`.
+`activeSession` is intentional rather than a duplicate of `activeHost`: it
+separates the narrow pre-Session command/tool admission path from events that
+belong to an active Session. `lifecycleGeneration` invalidates an awaited
+pre-Session confirmation and any queued work during Session reset.
 
-### Typecheck and focused package scripts
+Keep these fields private to the factory. `index.ts` must not regain access to
+them.
 
-Run:
+### Lifecycle behavior to preserve
 
-```bash
-pnpm typecheck
-pnpm test:message-history
-pnpm test:steer
-pnpm test:features
-pnpm test:plan
+#### Session start and branch change
+
+For `sessionStarted` and `branchChanged`, perform this synchronous reset
+prologue before queueing reconstruction:
+
+1. increment the lifecycle generation;
+2. clear the pending continuation marker, automatic run, and deferred
+   compaction decision;
+3. clear compaction-in-progress/source flags;
+4. install the supplied Session-scoped host as the active host and mark the
+   lifecycle active.
+
+Then queue the reconstruction task:
+
+5. reconstruct the latest valid Goal state from `branch`;
+6. reconstruct a matching runtime snapshot when the Goal exists and is not
+   `cleared`; otherwise set `runtime = null`;
+7. update the widget once with the reconstructed live Goal, or pass `null` to
+   the host for a missing or `cleared` Goal so the widget is removed.
+
+Keep a reconstructed `cleared` tombstone in the lifecycle's Goal pointer. Do
+not normalize it to `null`: `/goal` status and the Goal tool have different
+existing behavior for a reconstructed tombstone. A reconstructed tombstone
+returns the current cleared state for tool status and the existing
+`Cannot ...: goal is cleared.` mutation errors, while a successful `clear`
+transition leaves the pointer `null` until the next reconstruction.
+
+Any queued event carrying the previous host/generation becomes a neutral no-op.
+If a newer reset arrives before reconstruction runs, the older reconstruction
+must also abandon itself.
+
+`sessionStarted` and `branchChanged` must not append entries merely because a
+runtime snapshot was initialized in memory. Preserve the current lazy runtime
+persistence behavior.
+
+A branch change must invalidate any old automatic run and any compaction finish
+that was waiting on it. The stale-compaction behavior currently covered in
+`index.test.ts` must remain green in the lifecycle suite; the adapter suite keeps
+only the Pi bus-ordering assertion.
+
+#### Session shutdown
+
+For `sessionStopping`:
+
+1. ignore the event if its host is not the active host;
+2. invalidate the lifecycle generation synchronously;
+3. clear all live Goal/runtime and transient state;
+4. mark the lifecycle inactive and clear the active host;
+5. ensure queued work cannot emit Goal effects after shutdown.
+
+Do not add a new persistence entry or a widget effect solely for shutdown. Pi
+teardown owns the Session UI lifecycle; later reconstruction clears or remounts
+the widget through the normal Session path. The lifecycle itself must not retain
+a Session host after shutdown.
+
+The Pi adapter will unregister its compaction bus listener during shutdown, but
+only if the host captured by that shutdown callback is still the adapter's
+current host. An old shutdown callback must not clear a newer host or remove the
+listener needed by a newer Session.
+
+#### Prompt construction
+
+For `agentPromptConstruction`, call the existing `goalPromptAddendum(goal)`
+with the lifecycle-owned Goal. Return `undefined` when there is no addendum. When
+one exists, return this object, retaining the existing two-newline format:
+
+```ts
+{ systemPrompt: `${event.systemPrompt}\n\n${addendum}` }
 ```
 
-`test:features` covers the Model selector tests through the repository's existing package script. Do not add a new test script for this refactor.
+The adapter will return the lifecycle result to Pi without adding prompt policy
+itself.
 
-### Full repository verification
+#### Hidden continuation recognition
 
-Run:
+For `messageStarted`, preserve this complete role/type/id matrix:
+
+- a custom `goal-continuation` with a string Goal id that equals both the
+  pending marker and the current Goal id creates `startAutomaticRun(goalId)` and
+  clears `pendingAutomaticGoalId`;
+- a user message clears `pendingAutomaticGoalId`;
+- any custom message that is not that exact matching continuation also clears
+  it, including a missing, non-string, or wrong Goal id;
+- assistant, tool-result, and any other non-user/non-custom roles leave the
+  pending marker unchanged.
+
+A continuation must become an automatic run only when both the custom type and
+Goal id match the pending marker. Do not add a Goal-status check to this
+recognition step; the current code correlates by Goal id, and terminal
+transitions already clear the marker.
+
+#### Turn end
+
+For `turnEnded`:
+
+1. if an automatic run exists, pass the semantic observation to
+   `recordGoalTurn`;
+2. refresh the widget through the host;
+3. never send a continuation from `turnEnded` itself.
+
+The `GoalTurnObservation` shape remains the one already consumed by
+`goal-runtime.ts`: assistant role/stop reason plus tool result name, error flag,
+and details.
+
+#### Agent settled
+
+For `agentSettled`, preserve the current ordering exactly:
+
+1. capture the automatic run's Goal id;
+2. if the automatic run still matches `runtime.goalId`, finalize it with the
+   injected clock;
+3. adopt the returned snapshot and persist the finalized runtime snapshot;
+4. clear `automaticRun` before deciding what happens next;
+5. if turn-end compaction is in progress and the Goal is active, store the
+   current Goal id as deferred and return without scheduling;
+6. if the settled matching automatic run ended with `aborted`, pause the
+   matching active Goal, persist the transition, refresh the widget, notify
+   once, and return;
+7. if it ended with `error` or `length`, block the matching active Goal with
+   the existing reason, persist the transition and runtime, refresh the widget,
+   notify once, and return;
+8. otherwise evaluate continuation scheduling.
+
+A finalized ordinary automatic run writes runtime once before scheduling; a
+successful continuation then writes a second snapshot for the continuation
+charge. An automatic `error` or `length` path likewise writes once at
+finalization and once in `stopGoal`; an `aborted` path writes only the
+finalization snapshot before its pause transition. A run whose Goal id does not
+match the runtime is cleared without finalization or runtime persistence, but
+the active current Goal still reaches the ordinary scheduling path. These
+write counts and orders are observable Session-entry behavior and must be tested.
+
+When there is no matching run to finalize, the active Goal still schedules one
+continuation after an ordinary run settles when the existing scheduling guards
+allow it. This is intentional and must remain.
+
+#### Continuation scheduling
+
+Keep the current guard order:
+
+1. active Goal exists;
+2. runtime exists and has the same Goal id;
+3. extension-owned compaction is not in progress;
+4. the host reports idle;
+5. the host reports no pending user messages;
+6. no continuation is already pending.
+
+Then call `decideGoalContinuation`:
+
+- `skip`: do nothing;
+- `stop`: apply the returned `block` or `limit` transition through the common
+  transition path;
+- `continue`: increment and persist the continuation counter first, set the
+  pending Goal id, then ask the host to send exactly one hidden continuation.
+
+If the host send throws synchronously, clear the pending marker and notify
+`Goal continuation failed: <message>` at error severity. Do not undo the
+already-persisted continuation charge; preserve the current retry behavior on a
+later settlement.
+
+#### Compaction state
+
+Keep `CompactionStateEvent` and its validation in the lifecycle module. Export
+`isCompactionStateEvent(value: unknown): value is CompactionStateEvent` for the
+adapter's raw bus boundary. The adapter calls that validator, captures the
+current host, and dispatches only a valid semantic event. Lifecycle dispatch
+captures and checks its private generation. Do not duplicate the optional-field
+validation in `index.ts`.
+
+On `inProgress`, record the source and set the in-progress flag. The start
+`resumesRun` value is carried through the event but does not need a second live
+flag because the current code uses the completion's `resumesRun` value. On
+completion:
+
+- clear the in-progress/source flags;
+- take and clear the deferred Goal id;
+- ignore the event when there is no matching deferred active Goal;
+- on successful `resumesRun: true`, do not schedule;
+- on successful `resumesRun: false`, schedule through the same guard path;
+- on failure, block the matching Goal with the trimmed error or
+  `Session compaction failed.`, then persist, refresh, and notify.
+
+A completion after `branchChanged` or `sessionStopping` must be a no-op when
+there is no newer matching deferral. Do not add an operation id to the existing
+bus payload in this extraction: the compaction producer prevents overlapping
+operations within its extension instance, and the current event contract cannot
+distinguish an old completion from a newer operation with the same Goal id. The
+lifecycle must not claim stronger stale-completion guarantees than that contract
+supports.
+
+#### Common transition path
+
+Move the current `applyTransition` behavior into one private lifecycle helper:
+
+1. remember the previous Goal id;
+2. adopt `outcome.goal`, retaining `null` for a successful clear transition
+   while retaining a reconstructed `cleared` tombstone until the next Session
+   reset;
+3. ask the host to append exactly `{ action: outcome.action, state: outcome.state }`
+   under the existing `goal-state` custom type;
+4. clear pending/automatic/deferred transient state for terminal actions or a
+   changed Goal id;
+5. leave transient state intact for `checkpoint`, `edit`, and `resume`.
+
+Keep the current terminal action set: `pause`, `clear`, `block`, `complete`,
+and `limit`.
+
+`stopGoal` should use this helper, then persist the current runtime, update the
+widget, and notify in the same order as today. Preserve the existing terminal
+labels (`Goal blocked`, `Goal budget limited`, `Goal paused`, and
+`Goal completed`); completed notifications use `info`, and the other terminal
+notifications use `warning`.
+
+### Command and tool integration
+
+The lifecycle will receive `/goal` and Goal-tool requests so it remains the
+single owner of the live Goal aggregate.
+
+#### `/goal` command
+
+For `commandRequested`:
+
+1. call `runGoalCommand(goal, args, now(), host)`;
+2. if it returns a transition for `set` (a new objective or `edit`), `pause`,
+   `resume`, `checkpoint`, `block`, or `clear`, apply it through the common
+   transition path;
+3. if the new Goal id has no matching runtime, initialize an in-memory runtime
+   snapshot exactly as the current adapter does;
+4. on `resume`, call `resetGoalRuntime` with the existing rule: reset the
+   continuation count only when the previous status was `budget_limited`, while
+   always resetting no-progress and failure counters;
+5. persist the reset runtime when required;
+6. deliver the outcome notification through the host. For a blank command with
+   a non-null current Goal, append the existing runtime lines to the
+   notification before notifying, including the current empty suffix behavior
+   for a reconstructed cleared tombstone;
+7. refresh the widget after a transition;
+8. send the kickoff through the host, using queued delivery when the host is not
+   idle.
+
+The confirmation prompt remains supplied by the host, so the command module
+still owns its question text and the Pi adapter still owns the actual prompt.
+The lifecycle queue must keep the whole confirmation-to-commit sequence ordered.
+A confirmation that resolves after Session currency changes completes silently
+and performs no transition, write, notification, widget update, or kickoff.
+
+#### Pre-Session command and tool calls
+
+Preserve the current adapter behavior before the first `session_start`. Existing
+harness tests invoke `/goal` before Session reconstruction, and a tool call with
+no Goal before reconstruction must still return `No active goal.` rather than
+throwing. When no active Session host exists, the adapter creates a distinct
+ephemeral host and marks the command/tool event `preSession: true`. The
+lifecycle applies a pre-Session command transition and appends it through that
+host, but it must not install that host as the active Session host or create a
+second Goal state. A Session start invalidates any pre-Session event that is
+still waiting for confirmation. Once a Session is active, host/generation checks
+apply normally. This compatibility path is narrow and must not become a second
+live Goal owner.
+
+#### Goal tool
+
+Move the current tool state/transition switch and `evidenceError` validation
+behind `toolRequested`. Keep the exact externally visible behavior:
+
+- status with a null Goal returns `No active goal.` without an error flag;
+- a reconstructed `cleared` tombstone remains visible to status and uses the
+  existing `Cannot ...: goal is cleared.` mutation errors;
+- mutating actions with a null Goal return the existing no-active-goal details;
+- checkpoint trims the summary, rejects an empty summary at the tool seam,
+  appends a truthy `remaining` value verbatim to the result text, omits the
+  suffix for an empty string, and applies `checkpointGoal`;
+- completion validates the summary and evidence before checking Goal status;
+  it requires a non-empty trimmed summary, a non-empty evidence array whose
+  every item is a non-null, non-array object, `string` requirement and
+  verification fields whose trimmed values are nonempty, and `passed` on every
+  evidence result. Preserve the original evidence strings in the transition
+  after validation;
+- blocked requires a non-empty trimmed reason;
+- every successful mutation appends one Goal entry and refreshes the widget;
+- completion and blocked transitions notify once;
+- a successful completion does not trigger a later automatic terminal notification
+  from `turn_end`.
+
+The lifecycle returns a structured outcome. `index.ts` converts it into the
+existing Pi tool result and keeps `renderCall`/`renderResult` unchanged except
+for reading the returned outcome. Preserve the details shapes: any non-null
+Goal status, including a reconstructed tombstone, returns
+`{ action, state, runtime }`, while null-Goal status returns only `{ action }`;
+checkpoint and blocked return `{ action, state }`; completion
+returns `{ action, state, evidence }`; validation and no-goal mutations add
+`error` and `isError` exactly as today. Move the one plain-text
+`runtimeLines` helper to the runtime module and use it for both the lifecycle's
+blank-command notification and the adapter's status rendering; do not duplicate
+that helper in both files.
+
+### Adapter rewrite: `workflows-goal/index.ts`
+
+Refactor the extension entry point into a thin Pi adapter:
+
+1. import and construct `createGoalLifecycle({ now: Date.now })`;
+2. retain `GoalStatusWidget`, TypeBox schemas, glyphs, and render helpers;
+3. replace the live Goal/runtime/transient variables with a Session-scoped
+   `currentHost` and a `createHost(ctx)` helper implementing
+   `GoalLifecycleHost`;
+4. map `session_start` to `sessionStarted` with
+   `ctx.sessionManager.getBranch()` and install a fresh host for that Session;
+5. map `session_tree` to `branchChanged` with the new branch and replace the
+   host for that Session/branch;
+6. map `session_shutdown` to `sessionStopping` with the captured host. In the
+   `finally` path, clear `currentHost` and unregister the compaction listener
+   only when `currentHost` is still that captured host. An old shutdown callback
+   must not tear down a newer Session's host or listener;
+7. map `before_agent_start`, `message_start`, `turn_end`, and `agent_settled`
+   to the corresponding semantic events using the same current host, and
+   return/await lifecycle results. A missing current host returns the event's
+   neutral result instead of manufacturing one for an active event;
+8. keep the `pi.events.on("session-compaction:state", ...)` registration, call
+   the lifecycle-owned validator, capture the current host, and dispatch only
+   semantic compaction events. The lifecycle captures and checks its private
+   generation. Drop the event when no active host exists;
+9. map the registered Goal tool's `execute` call to `toolRequested` and adapt
+   its structured result to the existing Pi shape;
+10. map the `/goal` command to `commandRequested`, using a distinct ephemeral
+    host and `preSession: true` only when no Session-scoped host exists;
+11. map pre-Session tool execution the same way; when the lifecycle has no
+    Goal, return the existing no-Goal result without throwing;
+12. retain `registerToolErrorHandler` and all Pi registration metadata;
+13. remove the now-dead local helpers and state variables from the adapter. Keep
+    `GoalStatusWidget`, its width-safe rendering, the shared runtime formatter,
+    and adapter-only rendering state at this seam.
+
+The adapter must not decide when to persist, when to clear a marker, when to
+block/pause a Goal, or when to schedule a continuation. `createHost(ctx)` must
+guard the widget close callback with host identity so an old widget cannot clear
+a newer Session's widget after a Session/branch replacement. The lifecycle passes
+`null` to `updateWidget` for a missing or `cleared` Goal, and the host also treats
+any received `cleared` snapshot as a clear request.
+
+### Existing pure modules
+
+Do not change policy behavior in these modules:
+
+- `.pi/extensions/workflows-goal/goal-state.ts`
+- `.pi/extensions/workflows-goal/goal-runtime.ts`
+- `.pi/extensions/workflows-goal/goal-commands.ts`
+- `.pi/extensions/workflows-goal/goal-prompts.ts`
+
+Make only the required seam adjustments. Move the unchanged `runtimeLines`
+formatter into `goal-runtime.ts` beside `DEFAULT_GOAL_RUNTIME_CONFIG` so the
+lifecycle and adapter share one formatter; this is not a change to runtime
+policy or persisted data. Move `CompactionStateEvent` and its validator into
+`goal-lifecycle.ts`; preserve the event shape and valid-payload behavior, while
+using the specified boundary rejection for malformed optional fields.
+
+## Test migration and additions
+
+Use replace-don't-duplicate testing. First move the continuation behavior behind
+the new lifecycle interface and make the new seam tests pass; then remove duplicate
+continuation assertions from the Pi adapter test rather than maintaining two
+large copies of the same state machine tests.
+
+### New `goal-lifecycle.test.ts`
+
+Create a focused deterministic host harness with:
+
+- a mutable branch supplied to Session events;
+- injected `now` values;
+- an ordered effect log plus captured Goal/runtime writes;
+- captured widget snapshots;
+- captured notifications;
+- captured continuation/kickoff sends;
+- controllable `isIdle` and `hasPendingMessages` values;
+- configurable confirmation result;
+- a send failure hook;
+- malformed raw compaction values, including wrong optional `succeeded` or
+  `error` types, for direct validator tests;
+- an event helper that awaits `dispatch` and a bus helper that observes
+  synchronous effects before `emit` returns.
+
+Cover these cases through `GoalLifecycle.dispatch`:
+
+1. Session start reconstructs an active Goal/runtime without appending an
+   initialized runtime snapshot, updates the widget once, and clears the widget
+   for a missing or reconstructed `cleared` Goal.
+2. Branch change clears pending/automatic/deferred state and reconstructs the
+   new branch.
+3. Shutdown clears the live aggregate, leaves no retained host, and prevents
+   later effects.
+4. Prompt construction appends the addendum for active, paused, and blocked
+   states, returns `undefined` for cleared/completed/budget-limited/no-Goal
+   states, and preserves the incoming prompt when no addendum applies.
+5. A matching hidden continuation with the matching string Goal id starts one
+   automatic run.
+6. The message role/type/id matrix is preserved: user and nonmatching custom
+   messages clear a stranded marker, while assistant and tool-result messages
+   leave it alone.
+7. Multiple `turnEnded` events aggregate one automatic run.
+8. `turnEnded` never sends a continuation directly.
+9. `agentSettled` preserves the exact runtime write counts and order: ordinary
+   continuation and error/length paths write a finalized snapshot and then a
+   second scheduling/stop snapshot, aborted work writes only the finalized
+   snapshot before pausing, and a mismatched run is not finalized.
+10. Ordinary settled work schedules one continuation when the existing guards
+    pass.
+11. A second settlement cannot duplicate a pending continuation.
+12. Pending user work, non-idle state, compaction, inactive Goals, and stale
+    runtime suppress continuation; the continuation limit stops the Goal through
+    the `limit` transition with its existing persistence, widget, and
+    notification effects.
+13. Synchronous continuation-send failure clears the marker, notifies, and
+    permits a later retry without undoing the persisted charge; a rejected
+    lifecycle task does not permanently reject later dispatches.
+14. Aborted automatic work pauses once and notifies once.
+15. Error and length stops block once with the existing reasons and persistence
+    order.
+16. The third no-progress and third failure thresholds each block through the
+    common transition path with their distinct existing reasons.
+17. Turn-end compaction defers settlement; resuming success does not schedule,
+    non-resuming success does schedule, and failure blocks.
+18. Pre-agent compaction does not defer settlement and does not later schedule
+    from an empty deferred marker.
+19. A branch change or shutdown before compaction completion makes the stale
+    completion a no-op when no newer matching deferral exists. Do not assert a
+    stronger guarantee for an old completion that races a newer same-Goal-id
+    deferral because the bus payload has no operation id.
+20. Every `/goal` transition arm (`set`, `pause`, `resume`, `edit`,
+    `checkpoint`, `block`, and `clear`) preserves persistence, reset rules,
+    notification text/severity, blank-command runtime lines, widget refresh,
+    and kickoff ordering.
+21. Busy `/goal` kickoff uses follow-up delivery; idle kickoff does not.
+22. A confirmation and a queued compaction event serialize in admission
+    order. A competing Session reset then invalidates any remaining queued work
+    and the stale confirmation, which completes silently without a transition or
+    effect.
+23. Pre-Session command and tool calls use the ephemeral host without installing
+    it as the active host; a pre-Session command write is reconstructed by the
+    following Session when the Session branch contains that write.
+24. Tool status and mutating no-Goal outcomes preserve the null-Goal result,
+    while a reconstructed cleared tombstone preserves its distinct status and
+    error results.
+25. Tool checkpoint, complete, and blocked validation preserves trimmed
+    summaries/reasons, verbatim `remaining` and evidence strings, exact error
+    details, and the completion evidence requirement.
+26. Successful tool mutations append one Goal entry and refresh the widget;
+    completion and blocked transitions notify once, and completion does not
+    cause a later terminal notification from `turn_end`.
+
+The test names should describe observable lifecycle behavior rather than private
+field names.
+
+### `workflows-goal/index.test.ts`
+
+Keep adapter-level coverage for the Pi seam, but reduce it to behavior that
+requires Pi registration or rendering:
+
+- registration of the Goal tool, command, and event handlers;
+- TypeBox-facing tool execution/result adaptation;
+- compact and expanded tool rendering, including failure classification;
+- Goal widget creation and width-safe rendering;
+- one synchronous compaction-bus ordering test: a non-resuming successful
+  finish is observable before the bus emit returns, while a resuming finish
+  does not create a duplicate Goal continuation;
+- malformed compaction payloads are ignored, including wrong optional field
+  types;
+- stale shutdown cleanup does not clear a replacement host or remove its
+  compaction listener.
+
+Remove the duplicated continuation state-machine tests once the new lifecycle
+suite covers them.
+
+### `workflows-goal/index.host.test.ts`
+
+Keep the installed-host integration test. Update its harness expectations for
+the new dispatch adapter without weakening its assertions. It must continue to
+prove:
+
+- one ordinary run produces one hidden continuation;
+- the continuation receives the Goal prompt addendum;
+- runtime entries are persisted and capped at the existing limit;
+- the Goal becomes `budget_limited` at the existing threshold.
+
+Add no new persistence format to make this test pass.
+
+### Existing pure tests
+
+Run and preserve:
+
+- `goal-state.test.ts` for reconstruction and transitions;
+- `goal-runtime.test.ts` for counters, classification, limits, and the shared
+  runtime-line formatter;
+- `goal-commands.test.ts` for command policy;
+- `goal-prompts.test.ts` for prompt policy.
+
+Add the shared formatter assertions to `goal-runtime.test.ts` with the existing
+runtime policy tests. Limit other changes in these files to type exports or test
+helpers required by the seam; do not move their policy assertions into the
+lifecycle suite.
+
+## Documentation update
+
+After the implementation, update the Goal tracking section of `CONTEXT.md`:
+
+1. Keep the Goal state module entry, but describe persistence and Pi effects as
+   owned by the lifecycle/adapter rather than the old monolithic extension
+   callback.
+2. Keep the Goal runtime module entry focused on counters, classification, and
+   bounded decisions.
+3. Add a `Goal continuation lifecycle` entry naming
+   `workflows-goal/goal-lifecycle.ts` as the deep in-process module. Document
+   that it owns the live aggregate, Session reconstruction/reset, hidden-run
+   correlation, compaction deferral, settlement ordering, runtime persistence
+   requests, and at-most-one continuation scheduling behind `GoalLifecycle`.
+4. State that `workflows-goal/index.ts` is the Pi adapter for event registration,
+   host effects, schemas, and TUI/tool rendering.
+5. Keep the Goal command and prompt entries accurate: they remain policy modules
+   consumed by the lifecycle and adapter.
+
+Do not add a new ADR for this extraction; no existing ADR conflicts with it.
+
+## Implementation order
+
+1. **Create the new seam tests.** Extract the current continuation scenarios into
+   `goal-lifecycle.test.ts` and define the deterministic host/event vocabulary.
+   Keep the existing adapter tests temporarily so behavior remains observable
+   while the new seam is built.
+2. **Add `goal-lifecycle.ts`.** Implement the private aggregate, injected clock,
+   serialized dispatch queue, Session reconstruction/reset, common transition
+   helper, and command/tool result types.
+3. **Migrate continuation events.** Move hidden-run recognition, turn recording,
+   settlement finalization, scheduling, terminal handling, and compaction
+   deferral into the new module. Make the new lifecycle tests pass.
+4. **Migrate command and tool mutations.** Route `/goal` and Goal-tool requests
+   through the lifecycle so the adapter no longer owns live state or transition
+   ordering.
+5. **Rewrite the adapter.** Add the narrow host, map Pi events, preserve
+   registration order and rendering, and remove duplicate state/effect logic.
+6. **Slim duplicate tests.** Keep Pi registration/rendering/host smoke coverage;
+   delete only the continuation assertions now replaced by lifecycle tests.
+7. **Update `CONTEXT.md`.** Record the final module, interface, seam, adapters,
+   and ownership invariants.
+8. **Run focused verification, then the full suite.** Do not commit as part of
+   this implementation plan. Handle commits only through a separate request.
+
+## Compatibility and non-goals
+
+- No change to the `goal-state` or `goal-runtime` persisted custom entry
+  formats.
+- No change to Goal ids, legacy migration, cleared tombstones, status names,
+  runtime limits, continuation prompt text, or terminal notification wording.
+- No change to the `session-compaction:state` event payload or compaction
+  implementation.
+- No change to Plan Mode or the catalog conflict rule.
+- No change to Goal widget layout or tool rendering beyond adapting the new
+  structured lifecycle outcome.
+- No new dependency.
+- No handler composition or priority system.
+- No second source of Goal state in the Pi adapter.
+- No direct Pi context dependency in the new lifecycle module.
+
+## Verification checklist
+
+Run package commands from `.pi`.
+
+### Narrow checks
 
 ```bash
-pnpm test
+(cd .pi && pnpm exec vitest run extensions/workflows-goal)
+(cd .pi && pnpm typecheck)
+```
+
+Expected result: all Goal tests pass, including the new lifecycle suite and the
+installed-host test; TypeScript emits no errors.
+
+### Repository checks
+
+```bash
+(cd .pi && pnpm test)
 git diff --check
 git status --short
 ```
 
-The final status should show only the intended implementation files and documentation changes, plus the untracked `plan.md` if it remains as the working plan. Do not stage, commit, or discard changes.
+The full suite must have no failures. Inspect the final status for the intended
+Goal lifecycle implementation, tests, documentation, and `plan.md`, while
+leaving any pre-existing unrelated changes untouched.
 
-## Manual TUI verification
+### Manual TUI flow when available
 
-Automated tests cover the ownership seam but not the visible Pi TUI. If an interactive Pi session is available after implementation:
+Exercise the primary user-visible path in a real TUI Session:
 
-1. start a TUI Session with `ui-message-history`, `ui-model-selector`, and `ui-steer-input` enabled;
-2. submit a normal prompt;
-3. press Up in an empty Editor and confirm the previous prompt returns;
-4. submit `/model` and confirm it routes silently rather than becoming a normal prompt;
-5. start an agent response, type a follow-up, and press Tab;
-6. confirm the follow-up is queued, recorded in history, and the mounted history Editor remains active;
-7. run `/reload` during normal use and repeat the `/model`, Up, and Tab checks;
-8. exercise `/new`, `/resume`, and `/fork` once each, checking that no old handler or Editor reappears;
-9. switch to a non-TUI Session if supported and confirm the model and input getters no longer dispatch the prior TUI handlers;
-10. quit and confirm TUI teardown does not report an Editor restoration error.
+1. set a Goal with `/goal <objective>`;
+2. let one ordinary run settle and confirm one hidden continuation begins;
+3. observe a checkpoint and confirm counters reset as expected;
+4. queue a user message while the agent is active and confirm it prevents an
+   extra continuation;
+5. trigger or wait for extension-owned compaction and confirm the Goal waits for
+   the matching compaction result;
+6. pause, resume, block, complete, and clear the Goal and verify widget and
+   notification ordering;
+7. shut down and start a fresh Session to confirm no pending continuation or
+   stale Goal host survives.
 
-If an interactive TUI is unavailable, report that limitation separately. Passing typecheck and focused tests is not evidence that the visible workflow was manually exercised.
-
-## Edge cases and invariants checklist
-
-Implementation is complete only when all of these hold:
-
-- [ ] the Editor slot module owns both handler lifetimes;
-- [ ] every new production handler registration carries the exact `SessionStartEvent` token;
-- [ ] one registration may contain an Editor, model handler, input handler, or a valid combination;
-- [ ] fresh handler-only registrations never mount or clear an Editor;
-- [ ] replacing an Editor-bearing registration with handler-only reconciles the removed Editor without an extra handler-only mount;
-- [ ] an all-empty registration is rejected before it can discard an active registration;
-- [ ] the model handler remains a single replaceable slot;
-- [ ] the input handler remains a single replaceable slot;
-- [ ] under Pi's serialized Session lifecycle, a new Session token invalidates all old Editor and handler entries;
-- [ ] same-wave registrations do not invalidate one another;
-- [ ] the plan does not claim arbitrary out-of-order old-token installations are supported;
-- [ ] an old lifetime cannot clear a newer handler with the same slot;
-- [ ] an old lifetime cannot delete a newer Editor contribution with the same id;
-- [ ] lifetime disposal is idempotent;
-- [ ] automatic shutdown cleanup is idempotent;
-- [ ] shutdown before the deferred flush prevents a disposed Editor factory from mounting;
-- [ ] a timer from an old Session cannot mount into a new Session;
-- [ ] removing any active Editor contribution remounts the current winner without a built-in-Editor flash;
-- [ ] removing the final active Editor contribution restores the built-in Editor best-effort;
-- [ ] a torn-down TUI cannot turn handler or Editor cleanup into a Session failure;
-- [ ] getter behavior remains compatible with `ModelCommandRoutingEditor` and `ui-message-history`;
-- [ ] the model selector disposes its combined registration before its lifecycle wait;
-- [ ] steering local queue and widget cleanup remain separate from global handler ownership;
-- [ ] non-TUI Sessions never install TUI handlers or Editor contributions;
-- [ ] the `Symbol.for` registry key remains unchanged;
-- [ ] legacy raw handler fields are tolerated during extension reload;
-- [ ] a legacy raw overwrite using a different function cannot be cleared by disposing an unrelated new owner;
-- [ ] the legacy compatibility guarantee does not claim to distinguish an identical-function overwrite;
-- [ ] no new production or test source caller uses a raw registration setter;
-- [ ] Plan Review remains outside the Session lifetime;
-- [ ] `CONTEXT.md` accurately describes the final Editor slot module.
-
-## Expected files changed
-
-Production:
-
-- `.pi/extensions/_shared/editor-slot.ts`
-- `.pi/extensions/ui-model-selector/index.ts`
-- `.pi/extensions/ui-steer-input/index.ts`
-- `.pi/extensions/ui-message-history/index.ts`
-- `CONTEXT.md`
-
-Tests:
-
-- `.pi/extensions/_shared/editor-slot.test.ts`
-- `.pi/extensions/ui-model-selector/index.test.ts`
-- `.pi/extensions/ui-steer-input/index.test.ts`
-- `.pi/extensions/workflows-plan/plan-review.test.ts`
-
-Do not change:
-
-- `.pi/extensions/_shared/editor-border.ts`;
-- `.pi/extensions/ui-message-history/history-store.ts`;
-- model-selection lifecycle implementation;
-- Plan Review production code;
-- Pi itself;
-- unrelated files or existing user changes.
+If an interactive TUI is unavailable, report that limitation rather than
+claiming manual validation.
 
 ## Completion criteria
 
-The implementation is finished when:
+The extraction is complete when:
 
-1. `SessionEditorLifetime.install()` is the only new production seam for Editor, model-handler, and input-handler ownership.
-2. all new handler registrations are tied to exact Session tokens and cleaned automatically on shutdown.
-3. `ui-model-selector` uses one combined registration and no longer owns an unregister callback.
-4. `ui-steer-input` uses a handler-only registration and no longer owns an unregister callback.
-5. `ui-message-history` remains an Editor-only registration and continues to flush history independently.
-6. stale Session cleanup cannot remove a current handler or Editor.
-7. the raw registration functions are gone from new production and test source.
-8. the global `Symbol.for` registry remains compatible with older extension copies during the supported reload transition.
-9. focused tests, typecheck, package scripts, and the full suite pass.
-10. the manual TUI flow is exercised or explicitly reported as unavailable.
-11. `CONTEXT.md` documents the final deep Editor slot module accurately.
+- `goal-lifecycle.ts` is the only owner of live Goal continuation state;
+- `index.ts` only adapts Pi callbacks/effects and renders Pi-facing results;
+- lifecycle tests cross the `GoalLifecycle` interface and cover every current
+  continuation, compaction, terminal, Session, command, and tool path;
+- installed-host behavior and persisted entry formats remain compatible;
+- `CONTEXT.md` names the final module and seam;
+- focused tests, typecheck, full tests, and diff checks pass;
+- manual TUI verification is attempted and reported when available.
