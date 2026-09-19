@@ -19,6 +19,6 @@
     "baseDelayMs": 2000
   },
   "configProfiles": {
-    "active": "openai-cheap"
+    "active": "ollama"
   }
 }
