@@ -237,14 +237,6 @@ function sectionDetails(section, root) {
 
 function sectionView(detail, openPointers) {
 	const box = element('div', 'sections');
-	const title = document.createElement('h2');
-	title.textContent = detail.apiLabel + ' request parts';
-	let explanation = 'Expand a row to inspect the exact value sent in the provider payload. '
-		+ 'Tool rows include each transmitted tool description and parameter schema.';
-	if (detail.cachePlacement === 'estimated') {
-		explanation += ' Section-level cache placement is estimated from aggregate provider usage and payload order.';
-	}
-	box.append(title, element('div', 'muted', explanation));
 
 	const controls = element('div', 'section-controls');
 	const expand = document.createElement('button');
@@ -477,14 +469,16 @@ function renderRequestList() {
 			const selected = item.sequence === selectedSequence && part === selectedPart;
 			const button = document.createElement('button');
 			button.type = 'button';
+			button.dataset.part = part;
+			button.dataset.sequence = String(item.sequence);
 			button.className = 'request-row dash-row' + (selected ? ' selected' : '');
 			button.setAttribute('aria-pressed', selected ? 'true' : 'false');
 
 			const title = document.createElement('strong');
-			title.textContent = '#' + item.sequence + ' ' + (part === 'request' ? 'Request' : 'Response') + ' · ' + (item.source?.displayLabel || item.provider) + ' · ' + item.provider + '/' + item.model;
+			title.textContent = item.provider + '/' + item.model;
 			const meta = document.createElement('span');
 			const at = part === 'response' ? (item.completedAt ?? item.requestedAt) : item.requestedAt;
-			meta.textContent = item.apiLabel + ' · ' + (part === 'request' ? 'outbound' : 'inbound') + ' · ' + item.state + ' · ' + new Date(at).toLocaleTimeString();
+			meta.textContent = new Date(at).toLocaleTimeString();
 			const activities = part === 'request'
 				? activityGroups(item.requestActivities, [])
 				: activityGroups([], item.responseActivities);
@@ -541,7 +535,7 @@ function renderDetail(item, part) {
 				metric('Retained bytes', fmt(detail.bytes)),
 			);
 			overview.append(grid);
-			if (!isRequest && detail.usage) overview.append(usageView(detail.usage));
+			if (detail.usage) overview.append(usageView(detail.usage));
 			detailPane.replaceChildren(heading, overview);
 
 			if (detail.diagnostic) detailPane.append(element('div', 'alert', detail.diagnostic));

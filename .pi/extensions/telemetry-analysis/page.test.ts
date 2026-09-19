@@ -20,9 +20,9 @@ describe("analysis page", () => {
 		expect(ANALYSIS_PAGE).not.toContain("OpenAI request analysis");
 		expect(ANALYSIS_PAGE).not.toContain("Pi provider request analysis");
 		expect(ANALYSIS_PAGE).not.toContain("Captured prompts and tool data may contain secrets.");
-		expect(ANALYSIS_PAGE).toContain("Section-level cache placement is estimated");
-		expect(ANALYSIS_PAGE).toContain("request parts");
-		expect(ANALYSIS_PAGE).toContain("Tool rows include each transmitted tool description and parameter schema");
+		expect(ANALYSIS_PAGE).not.toContain("Section-level cache placement is estimated");
+		expect(ANALYSIS_PAGE).not.toContain("request parts");
+		expect(ANALYSIS_PAGE).not.toContain("Tool rows include each transmitted tool description and parameter schema");
 		expect(ANALYSIS_PAGE).toContain("Expand all");
 		expect(ANALYSIS_PAGE).toContain("Collapse all");
 		expect(ANALYSIS_PAGE).toContain("details.analysis-section[open]");
@@ -85,7 +85,10 @@ describe("analysis page", () => {
 		expect(requestBars[2]!.classList.contains("usage-unavailable")).toBe(true);
 		expect(requestBars[3]!.classList.contains("usage-unavailable")).toBe(true);
 		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Response #2");
-		expect(document.querySelector(".request-row.selected strong")?.textContent).toContain("#2 Response");
+		expect(document.querySelector(".request-row.selected strong")?.textContent).toBe("openai/main");
+		expect(Array.from(document.querySelectorAll<HTMLButtonElement>(".request-row"), (row) => [row.dataset.sequence, row.dataset.part])).toEqual([
+			["2", "response"], ["2", "request"], ["1", "response"], ["1", "request"],
+		]);
 		expect(Array.from(document.querySelectorAll(".request-row.selected .activity-badge"), (row) => row.textContent)).toEqual([
 			"Thinking", "Tool request: bash", "Output",
 		]);
@@ -105,7 +108,7 @@ describe("analysis page", () => {
 			["metric token-metric token-output", "Output"],
 			["metric token-metric token-reasoning", "Reasoning, subset of output"],
 		]);
-		const requestRow = Array.from(document.querySelectorAll<HTMLButtonElement>(".request-row")).find((row) => row.querySelector("strong")?.textContent?.includes("#2 Request"))!;
+		const requestRow = document.querySelector<HTMLButtonElement>('.request-row[data-sequence="2"][data-part="request"]')!;
 		requestRow.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #2");
@@ -116,7 +119,8 @@ describe("analysis page", () => {
 			"Provider request activities: User input, Tool result: read",
 		);
 		expect(document.querySelector(".request-row.selected .response-activities")).toBeNull();
-		expect(document.querySelector(".request-overview .summary-label")).toBeNull();
+		expect(document.querySelector(".request-overview .summary-label")?.textContent).toBe("Exact provider-reported usage");
+		expect(document.querySelectorAll(".request-overview .usage-grid > .metric")).toHaveLength(7);
 
 		expect(document.getElementById("subagentList")?.classList.contains("hidden")).toBe(true);
 		tabs[1]!.click();
@@ -130,14 +134,14 @@ describe("analysis page", () => {
 		]);
 		expect(document.querySelector(".subagent-row.selected strong")?.textContent).toBe("explorer");
 		expect(Array.from(document.querySelectorAll(".request-row strong"), (row) => row.textContent)).toEqual([
-			"#4 Response · explorer · openai/explorer",
-			"#4 Request · explorer · openai/explorer",
+			"openai/explorer",
+			"openai/explorer",
 		]);
 		document.querySelectorAll<HTMLButtonElement>(".subagent-row")[1]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(Array.from(document.querySelectorAll(".request-row strong"), (row) => row.textContent)).toEqual([
-			"#3 Response · worker · openai/worker",
-			"#3 Request · worker · openai/worker",
+			"openai/worker",
+			"openai/worker",
 		]);
 		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Response #3");
 		tabs[0]!.click();
@@ -145,7 +149,7 @@ describe("analysis page", () => {
 		tabs[1]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(document.querySelector(".subagent-row.selected strong")?.textContent).toBe("worker");
-		expect(document.querySelector(".request-row.selected strong")?.textContent).toContain("#3 Response · worker");
+		expect(document.querySelector(".request-row.selected strong")?.textContent).toBe("openai/worker");
 
 		tabs[2]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
