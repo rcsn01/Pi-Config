@@ -8,9 +8,11 @@ import {
 	profilePath,
 	profilesDirectoryFor,
 	readActiveProfileName,
+	readProjectProfile,
 	sessionProfileName,
 	validateProfileName,
 } from "./profile-document.ts";
+import { piConfigPath } from "./pi-config.ts";
 
 const roots: string[] = [];
 
@@ -22,6 +24,14 @@ function fixture(marker?: unknown) {
 	mkdirSync(profilesDirectory);
 	writeFileSync(settingsPath, `${JSON.stringify(marker === undefined ? {} : marker, null, 2)}\n`);
 	return { settingsPath, profilesDirectory };
+}
+
+function projectFixture(contents: string): string {
+	const root = mkdtempSync(join(tmpdir(), "profile-document-project-"));
+	roots.push(root);
+	mkdirSync(join(root, ".pi"), { recursive: true });
+	writeFileSync(piConfigPath(root), contents);
+	return root;
 }
 
 const entry = (active: unknown) => ({
@@ -73,5 +83,26 @@ describe("Profile document helpers", () => {
 	it("builds Profile paths from validated names", () => {
 		expect(profilePath("/p", "focused")).toBe(join("/p", "focused.json"));
 		expect(() => profilePath("/p", "a/b")).toThrow(/Invalid profile name/);
+	});
+});
+
+describe("readProjectProfile", () => {
+	it("returns the validated declaration for a trusted project", () => {
+		expect(readProjectProfile(projectFixture(JSON.stringify({ profile: "research" })), true)).toBe("research");
+	});
+
+	it("returns undefined for an untrusted project even with a valid declaration", () => {
+		expect(readProjectProfile(projectFixture(JSON.stringify({ profile: "research" })), false)).toBeUndefined();
+	});
+
+	it("returns undefined for missing and malformed documents", () => {
+		const emptyRoot = mkdtempSync(join(tmpdir(), "profile-document-project-"));
+		roots.push(emptyRoot);
+		expect(readProjectProfile(emptyRoot, true)).toBeUndefined();
+		expect(readProjectProfile(projectFixture("{ not json"), true)).toBeUndefined();
+	});
+
+	it("returns undefined for an invalid profile name", () => {
+		expect(readProjectProfile(projectFixture(JSON.stringify({ profile: "../escape" })), true)).toBeUndefined();
 	});
 });

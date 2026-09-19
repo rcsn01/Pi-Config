@@ -162,6 +162,20 @@ extension.
   read/mutate machinery in `_shared/settings-document.ts`; its canonical path
   is composed at extension entry points and passed through their dependency
   interfaces rather than rediscovered by leaf stores.
+- **Per-project document** — the `.pi/pi-config.json` document and the deep
+  trust-gated module in `_shared/pi-config.ts` that owns it: path composition,
+  the project-trust capability probe, trust-gated document reads and namespace
+  mutations, atomic writes, and sibling/unknown-key preservation behind one
+  interface. Every accessor takes an explicit `projectTrusted` input and
+  treats untrusted projects as "nothing declared" without touching the file.
+  Namespace semantics stay with their domain owners (Profile validation in
+  profile-document, approval mode in mode-store, exec rules in command-policy);
+  the module owns document mechanics and the trust gate. Mutation is a
+  synchronous read-modify-write, atomic per call because it never interleaves
+  in-process; cross-process concurrent writes to one document remain
+  unsupported. Trust-evaluation timing (frozen per session start in the
+  Session profile binding, re-evaluated per event in the enforcement
+  lifecycle) is caller-owned.
 - **Profile** — a full settings document in `.pi/profiles/<name>.json`;
   switching replaces the active document.
 - **Profile transition lifecycle** — the deep in-process module in

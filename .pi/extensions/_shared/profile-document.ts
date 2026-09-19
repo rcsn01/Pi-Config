@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
-import { readPiConfigDocument } from "./pi-config.ts";
+import { readProjectDocument } from "./pi-config.ts";
 /** Top-level settings.json key holding the active profile marker. */
 export const CONFIG_PROFILES_KEY = "configProfiles";
 /** Custom session entry type recording the session's profile name. */
@@ -68,13 +68,14 @@ export function profilePath(profilesDirectory: string, name: string): string {
 }
 
 /**
- * Return the validated Profile name declared in the project Pi-Config document
- * (`<project>/.pi/pi-config.json`), or undefined for a missing, malformed, or
- * invalid declaration. Callers must only consult this for trusted projects.
+ * Return the validated Profile name declared in the per-project document
+ * (`<project>/.pi/pi-config.json`), or undefined for an untrusted project or
+ * a missing, malformed, or invalid declaration. Untrusted projects never
+ * touch the file.
  */
-export function readProjectProfileName(documentPath: string): string | undefined {
-	const document = readPiConfigDocument(documentPath);
-	const profile = document?.profile;
+export function readProjectProfile(cwd: string, projectTrusted: boolean): string | undefined {
+	if (!projectTrusted) return undefined;
+	const profile = readProjectDocument(cwd, true)?.profile;
 	if (typeof profile !== "string") return undefined;
 	try {
 		return validateProfileName(profile);

@@ -58,15 +58,23 @@ Notes:
   `/execpolicy add` writes the project layer in trusted projects and the
   global file otherwise; `rules` lists both layers with `p<n>`/`g<n>` ids;
   `remove` accepts the same ids (a bare numeric id means global).
-- Writes are atomic (temp file + rename) and merge — sibling namespaces
-  survive (e.g. saving the mode preserves `profile`).
+- Writes are trust-gated in `_shared/pi-config.ts`: untrusted projects are
+  read as "nothing declared" and never touch the file. Mutation is a
+  synchronous read-modify-write, atomic per call (temp file + rename) because
+  it never interleaves in-process; concurrent writes from two processes
+  remain unsupported. Sibling namespaces survive (e.g. saving the mode
+  preserves `profile`).
 
 ## Code map
 
-- `_shared/pi-config.ts` — path, read, merge-write (document primitives), trust probe.
-- `_shared/profile-document.ts` → `readProjectProfileName` — validated `profile`.
+- `_shared/pi-config.ts` — path, trust probe, trust-gated reads
+  (`readProjectDocument`), trust-gated namespace mutation
+  (`mutateProjectNamespace`) — the per-project trust gate and document
+  mechanics live here.
+- `_shared/profile-document.ts` → `readProjectProfile(cwd, projectTrusted)` —
+  validated `profile`.
 - `_shared/command-policy.ts` — `loadExecPolicyLayers` / `loadExecPolicy` merge,
-  `saveProjectExecPolicyRules` write.
+  `saveProjectExecPolicyRules(cwd, rules, projectTrusted)` write.
 - `policy-permissions/mode-store.ts` — `permissions.mode` read/write
   (`ModePersistenceOptions.projectTrusted`).
 - `_shared/session-profile-binding.ts` — project layer in Profile resolution

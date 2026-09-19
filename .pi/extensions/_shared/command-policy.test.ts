@@ -123,7 +123,7 @@ describe("exec policy layers", () => {
 		fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
 		fs.writeFileSync(piConfigPath(cwd), JSON.stringify({ profile: "research", permissions: { mode: "default" } }));
 
-		saveProjectExecPolicyRules(cwd, [PROJECT_RULE]);
+		saveProjectExecPolicyRules(cwd, [PROJECT_RULE], true);
 
 		expect(JSON.parse(fs.readFileSync(piConfigPath(cwd), "utf-8"))).toEqual({
 			profile: "research",

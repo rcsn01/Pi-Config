@@ -11,7 +11,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isApprovalMode, type ApprovalMode } from "./mode-registry.ts";
-import { mutatePiConfigDocument, piConfigPath, readPiConfigDocument } from "../_shared/pi-config.ts";
+import { mutateProjectNamespace, readProjectDocument } from "../_shared/pi-config.ts";
 import { isRecord } from "../_shared/settings-document.ts";
 import { projectStatePath } from "../_shared/state-paths.ts";
 
@@ -35,27 +35,20 @@ function parseModeState(raw: unknown): ModeState | null {
 	return { mode: raw.mode, setAt: typeof raw.setAt === "number" ? raw.setAt : Date.now() };
 }
 
-/** Read the mode declared in the trusted project document, or null. */
-function readProjectMode(cwd: string): ModeState | null {
-	return parseModeState(readPiConfigDocument(piConfigPath(cwd))?.permissions);
-}
-
 export function saveModeToFile(
 	cwd: string,
 	mode: ModeState,
 	options: ModePersistenceOptions = {},
 ): void {
-	if (options.projectTrusted) {
-		// Merge-write so sibling namespaces (e.g. "profile") survive.
-		mutatePiConfigDocument(piConfigPath(cwd), (document) => ({
-			...document,
-			permissions: {
-				...(isRecord(document.permissions) ? document.permissions : {}),
-				mode: mode.mode,
-			},
-		}));
-		return;
-	}
+	// The module gates untrusted projects to a no-op; their state stays in the
+	// hashed store below. Namespace merge preserves siblings (e.g. "profile").
+	const applied = mutateProjectNamespace(
+		cwd,
+		options.projectTrusted === true,
+		"permissions",
+		(namespace) => ({ ...namespace, mode: mode.mode }),
+	);
+	if (applied !== undefined) return;
 	try {
 		const filePath = projectStatePath(cwd, MODE_FILE);
 		fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -67,10 +60,10 @@ export function loadModeFromFile(
 	cwd: string,
 	options: ModePersistenceOptions = {},
 ): ModeState | null {
-	if (options.projectTrusted) {
-		const declared = readProjectMode(cwd);
-		if (declared) return declared;
-	}
+	const declared = options.projectTrusted === true
+		? parseModeState(readProjectDocument(cwd, true)?.permissions)
+		: undefined;
+	if (declared) return declared;
 	try {
 		const filePath = projectStatePath(cwd, MODE_FILE);
 		const legacyPath = path.join(cwd, LEGACY_MODE_FILE);

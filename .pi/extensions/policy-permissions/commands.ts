@@ -173,7 +173,7 @@ export function registerPermissionCommands(pi: ExtensionAPI, service: CommandSer
 					try { new RegExp(pattern); } catch (error: any) { return ctx.ui.notify(`Invalid regex pattern: ${error.message || String(error)}`, "warning"); }
 					if (projectTrusted) {
 						const id = String(Math.max(0, ...layers.project.map((r) => Number(r.id) || 0)) + 1);
-						saveProjectExecPolicyRules(ctx.cwd, [...layers.project, { id, pattern, action, reason }]);
+						saveProjectExecPolicyRules(ctx.cwd, [...layers.project, { id, pattern, action, reason }], projectTrusted);
 						ctx.ui.notify(`Project rule added (.pi/pi-config.json): [p${id}] ${action.toUpperCase()}: ${pattern}`, "info");
 						return;
 					}
@@ -192,7 +192,7 @@ export function registerPermissionCommands(pi: ExtensionAPI, service: CommandSer
 						const index = layers.project.findIndex((r) => r.id === ref.id);
 						if (index < 0) return ctx.ui.notify(`Project rule not found: p${ref.id}`, "warning");
 						const [removed] = layers.project.splice(index, 1);
-						saveProjectExecPolicyRules(ctx.cwd, layers.project);
+						saveProjectExecPolicyRules(ctx.cwd, layers.project, projectTrusted);
 						ctx.ui.notify(`Removed project rule [p${removed.id}]: ${removed.pattern}`, "info");
 						return;
 					}

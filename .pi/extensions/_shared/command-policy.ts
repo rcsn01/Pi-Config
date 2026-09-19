@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { dangerousCommandReason } from "./security.ts";
-import { mutatePiConfigDocument, piConfigPath, readPiConfigDocument } from "./pi-config.ts";
+import { mutateProjectNamespace, readProjectDocument } from "./pi-config.ts";
 import { isRecord } from "./settings-document.ts";
 
 export type ExecPolicyAction = "allow" | "prompt" | "block";
@@ -294,8 +294,8 @@ function isExecPolicyRule(value: unknown): value is ExecPolicyRule {
 }
 
 /** Execpolicy rules declared in the trusted project document. */
-function projectExecPolicyRules(cwd: string): ExecPolicyRule[] {
-	const namespace = readPiConfigDocument(piConfigPath(cwd))?.execPolicy;
+function projectExecPolicyRules(cwd: string, projectTrusted: boolean): ExecPolicyRule[] {
+	const namespace = readProjectDocument(cwd, projectTrusted)?.execPolicy;
 	if (!isRecord(namespace) || !Array.isArray(namespace.rules)) return [];
 	return namespace.rules.filter(isExecPolicyRule);
 }
@@ -319,8 +319,8 @@ export function loadExecPolicyLayers(options: ExecPolicyLayerOptions = {}): Exec
 	const global = loadGlobalExecPolicy();
 	return {
 		global,
-		project: options.cwd !== undefined && options.projectTrusted === true
-			? projectExecPolicyRules(options.cwd)
+		project: options.cwd !== undefined
+			? projectExecPolicyRules(options.cwd, options.projectTrusted === true)
 			: [],
 	};
 }
@@ -339,13 +339,14 @@ export function loadExecPolicy(options: ExecPolicyLayerOptions = {}): ExecPolicy
 }
 
 /** Write the project rule set, preserving sibling namespaces in the document. */
-export function saveProjectExecPolicyRules(cwd: string, rules: ExecPolicyRule[]): void {
-	mutatePiConfigDocument(piConfigPath(cwd), (document) => ({
-		...document,
-		execPolicy: {
-			...(isRecord(document.execPolicy) ? document.execPolicy : {}),
-			rules,
-		},
+export function saveProjectExecPolicyRules(
+	cwd: string,
+	rules: ExecPolicyRule[],
+	projectTrusted: boolean,
+): void {
+	mutateProjectNamespace(cwd, projectTrusted, "execPolicy", (namespace) => ({
+		...namespace,
+		rules,
 	}));
 }
 
@@ -355,7 +356,10 @@ export function saveExecPolicy(config: ExecPolicyConfig): void {
 	fs.writeFileSync(rulesFile(), JSON.stringify(config, null, 2));
 }
 
-export function evaluateExecPolicy(command: string, config = loadExecPolicy()): { matched: boolean; action: ExecPolicyAction; rule?: ExecPolicyRule } {
+export function evaluateExecPolicy(
+	command: string,
+	config: ExecPolicyConfig,
+): { matched: boolean; action: ExecPolicyAction; rule?: ExecPolicyRule } {
 	for (const rule of config.rules) {
 		try {
 			const regex = new RegExp(rule.pattern, "i");
