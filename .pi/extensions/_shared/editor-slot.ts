@@ -15,13 +15,15 @@
  *   plain module state is per-extension. The registry is keyed on
  *   `Symbol.for` in `globalThis`, which resolves identically across module
  *   copies (the same mechanism `_shared/subagent-service.ts` uses).
- * - Session editor lifetimes: each adapter installs one exact-entry
- *   contribution for a `SessionStartEvent` token. The module owns automatic
- *   shutdown cleanup, stale-owner rejection, and token-guarded deferred
- *   flushing. The highest-priority contribution wins, with latest registration
- *   breaking ties, and the mounted editor receives the thinking border.
+ * - Session slot lifetimes: each adapter installs one registration that may
+ *   contain an Editor, a model-command handler, an input handler, or a valid
+ *   combination for a `SessionStartEvent` token. The module owns automatic
+ *   shutdown cleanup, exact-owner disposal, raw-field reload compatibility,
+ *   and token- and timer-guarded deferred flushing. The highest-priority Editor
+ *   contribution wins, with latest registration breaking ties, and the mounted
+ *   editor receives the thinking border.
  * - Input interception: one optional `EditorInputHandler` lives in the same
- *   shared registry (`registerEditorInputHandler`). `ModelCommandRoutingEditor`
+ *   shared registry. `ModelCommandRoutingEditor`
  *   consults it on every keypress, before /model routing and the built-in
  *   editor handling; returning `true` consumes the key. ui-steer-input uses
  *   this to intercept Tab while the agent streams — the mounted editor is
@@ -74,11 +76,15 @@ export function parseModelCommand(text: string): string | undefined {
 const REGISTRY_KEY = Symbol.for("pi-config.editor-slot.v1");
 
 export interface SessionEditorContribution {
-	/** Stable contributor id ("ui-message-history", "ui-model-selector"); re-registering replaces. */
+	/** Stable registration id; re-registering replaces the same id. */
 	id: string;
-	/** Higher priority wins the flush. */
-	priority: number;
-	createEditor: EditorFactory;
+	editor?: {
+		/** Higher priority wins the flush. */
+		priority: number;
+		createEditor: EditorFactory;
+	};
+	modelCommandHandler?: ModelCommandHandler;
+	editorInputHandler?: EditorInputHandler;
 }
 
 export interface SessionEditorLifetime {
@@ -91,16 +97,28 @@ export interface SessionEditorLifetime {
 }
 
 interface ContributionEntry {
-	contribution: SessionEditorContribution;
+	contribution: {
+		id: string;
+		priority: number;
+		createEditor: EditorFactory;
+	};
 	ctx: ExtensionContext;
 	sessionToken: SessionStartEvent;
 	/** Monotonic registration order; ties in priority break by latest. */
 	order: number;
 }
 
+interface HandlerEntry<T> {
+	registrationId: string;
+	handler: T;
+	sessionToken: SessionStartEvent;
+}
+
 interface EditorSlotRegistry {
 	modelCommandHandler?: ModelCommandHandler;
+	modelCommandHandlerEntry?: HandlerEntry<ModelCommandHandler>;
 	editorInputHandler?: EditorInputHandler;
+	editorInputHandlerEntry?: HandlerEntry<EditorInputHandler>;
 	contributions: Map<string, ContributionEntry>;
 	nextOrder: number;
 	flushTimer?: ReturnType<typeof setTimeout>;
@@ -109,37 +127,14 @@ interface EditorSlotRegistry {
 
 function getRegistry(): EditorSlotRegistry {
 	const globalRegistry = globalThis as typeof globalThis & { [REGISTRY_KEY]?: EditorSlotRegistry };
-	return globalRegistry[REGISTRY_KEY] ??= { contributions: new Map(), nextOrder: 0 };
-}
-
-/**
- * Register the /model handler every editor routes to. Ownership-safe: the
- * returned unregister only removes this handler, never a newer replacement.
- */
-export function registerModelCommandHandler(handler: ModelCommandHandler): () => void {
-	const registry = getRegistry();
-	registry.modelCommandHandler = handler;
-	return () => {
-		if (registry.modelCommandHandler === handler) registry.modelCommandHandler = undefined;
-	};
+	const registry = globalRegistry[REGISTRY_KEY] ??= { contributions: new Map(), nextOrder: 0 };
+	if (!(registry.contributions instanceof Map)) registry.contributions = new Map();
+	if (typeof registry.nextOrder !== "number") registry.nextOrder = 0;
+	return registry;
 }
 
 export function getModelCommandHandler(): ModelCommandHandler | undefined {
 	return getRegistry().modelCommandHandler;
-}
-
-/**
- * Register the input handler every ModelCommandRoutingEditor consults before
- * its own key handling. Ownership-safe, like the /model handler registry: a
- * later registration replaces the active handler, and the returned unregister
- * only removes this handler, never a newer replacement.
- */
-export function registerEditorInputHandler(handler: EditorInputHandler): () => void {
-	const registry = getRegistry();
-	registry.editorInputHandler = handler;
-	return () => {
-		if (registry.editorInputHandler === handler) registry.editorInputHandler = undefined;
-	};
 }
 
 export function getEditorInputHandler(): EditorInputHandler | undefined {
@@ -210,57 +205,174 @@ function establishSessionWave(sessionToken: SessionStartEvent): EditorSlotRegist
 	if (registry.activeSessionToken === sessionToken) return registry;
 	cancelFlush(registry);
 	registry.contributions.clear();
+	registry.modelCommandHandler = undefined;
+	registry.modelCommandHandlerEntry = undefined;
+	registry.editorInputHandler = undefined;
+	registry.editorInputHandlerEntry = undefined;
 	registry.activeSessionToken = sessionToken;
 	return registry;
 }
 
-function disposeContribution(entry: ContributionEntry): void {
+interface OwnedRegistration {
+	id: string;
+	sessionToken: SessionStartEvent;
+	editor?: ContributionEntry;
+	modelCommandHandler?: HandlerEntry<ModelCommandHandler>;
+	editorInputHandler?: HandlerEntry<EditorInputHandler>;
+}
+
+function detachModelHandler(entry: HandlerEntry<ModelCommandHandler>): void {
 	const registry = getRegistry();
-	if (registry.contributions.get(entry.contribution.id) !== entry) return;
+	if (registry.modelCommandHandlerEntry !== entry) return;
+	registry.modelCommandHandlerEntry = undefined;
+	if (registry.modelCommandHandler === entry.handler) registry.modelCommandHandler = undefined;
+}
+
+function detachEditorInputHandler(entry: HandlerEntry<EditorInputHandler>): void {
+	const registry = getRegistry();
+	if (registry.editorInputHandlerEntry !== entry) return;
+	registry.editorInputHandlerEntry = undefined;
+	if (registry.editorInputHandler === entry.handler) registry.editorInputHandler = undefined;
+}
+
+function detachHandlerForId(id: string): void {
+	const registry = getRegistry();
+	if (registry.modelCommandHandlerEntry?.registrationId === id) {
+		detachModelHandler(registry.modelCommandHandlerEntry);
+	}
+	if (registry.editorInputHandlerEntry?.registrationId === id) {
+		detachEditorInputHandler(registry.editorInputHandlerEntry);
+	}
+}
+
+function detachEditorContribution(entry: ContributionEntry): boolean {
+	const registry = getRegistry();
+	if (registry.contributions.get(entry.contribution.id) !== entry) return false;
 	registry.contributions.delete(entry.contribution.id);
+	return true;
+}
+
+function removeForReplacement(
+	previous: OwnedRegistration | undefined,
+	id: string,
+): ContributionEntry[] {
+	const removedEditors: ContributionEntry[] = [];
+	if (previous?.modelCommandHandler) detachModelHandler(previous.modelCommandHandler);
+	if (previous?.editorInputHandler) detachEditorInputHandler(previous.editorInputHandler);
+	if (previous?.editor && detachEditorContribution(previous.editor)) {
+		removedEditors.push(previous.editor);
+	}
+
+	const registry = getRegistry();
+	const sameId = registry.contributions.get(id);
+	if (sameId && detachEditorContribution(sameId)) removedEditors.push(sameId);
+	detachHandlerForId(id);
+	return removedEditors;
+}
+
+function restoreBuiltInEditor(ctx: ExtensionContext): void {
+	try {
+		ctx.ui.setEditorComponent(undefined);
+	} catch {
+		// Pi may have torn down the TUI before Session cleanup runs.
+	}
+}
+
+function reconcileEditorRemoval(entry: ContributionEntry): void {
+	const registry = getRegistry();
 	if (registry.activeSessionToken !== entry.sessionToken) return;
 	if (pickWinner(registry, entry.sessionToken)) {
 		scheduleFlush(entry.sessionToken);
 		return;
 	}
 	cancelFlush(registry);
-	try {
-		entry.ctx.ui.setEditorComponent(undefined);
-	} catch {
-		// Pi may have torn down the TUI before Session cleanup runs.
-	}
+	restoreBuiltInEditor(entry.ctx);
 }
 
-/** Own one adapter's Session editor contribution through shutdown. */
+function disposeOwnedRegistration(owned: OwnedRegistration): void {
+	if (owned.modelCommandHandler) detachModelHandler(owned.modelCommandHandler);
+	if (owned.editorInputHandler) detachEditorInputHandler(owned.editorInputHandler);
+	if (!owned.editor) return;
+
+	const removed = detachEditorContribution(owned.editor);
+	const registry = getRegistry();
+	if (!removed || registry.activeSessionToken !== owned.editor.sessionToken) return;
+	reconcileEditorRemoval(owned.editor);
+}
+
+/** Own one adapter's Session editor, model-handler, and input-handler registration. */
 export function createSessionEditorLifetime(
 	pi: Pick<ExtensionAPI, "on">,
 ): SessionEditorLifetime {
-	let current: ContributionEntry | undefined;
+	let current: OwnedRegistration | undefined;
 
 	const dispose = (): void => {
 		const owned = current;
 		current = undefined;
-		if (owned) disposeContribution(owned);
+		if (owned) disposeOwnedRegistration(owned);
 	};
 
 	pi.on("session_shutdown", dispose);
 	return {
 		install(event, ctx, contribution) {
+			if (!contribution.editor && !contribution.modelCommandHandler && !contribution.editorInputHandler) {
+				throw new TypeError("SessionEditorLifetime.install() requires an Editor or handler contribution");
+			}
 			const previous = current;
 			current = undefined;
 			const registry = establishSessionWave(event);
-			if (previous && registry.contributions.get(previous.contribution.id) === previous) {
-				registry.contributions.delete(previous.contribution.id);
+			const removedEditors = removeForReplacement(previous, contribution.id);
+			const editor = contribution.editor
+				? {
+					contribution: {
+						id: contribution.id,
+						priority: contribution.editor.priority,
+						createEditor: contribution.editor.createEditor,
+					},
+					ctx,
+					sessionToken: event,
+					order: registry.nextOrder++,
+				}
+				: undefined;
+			const modelCommandHandler = contribution.modelCommandHandler
+				? {
+					registrationId: contribution.id,
+					handler: contribution.modelCommandHandler,
+					sessionToken: event,
+				}
+				: undefined;
+			const editorInputHandler = contribution.editorInputHandler
+				? {
+					registrationId: contribution.id,
+					handler: contribution.editorInputHandler,
+					sessionToken: event,
+				}
+				: undefined;
+
+			if (editor) registry.contributions.set(contribution.id, editor);
+			if (modelCommandHandler) {
+				registry.modelCommandHandler = modelCommandHandler.handler;
+				registry.modelCommandHandlerEntry = modelCommandHandler;
 			}
-			const entry: ContributionEntry = {
-				contribution,
-				ctx,
+			if (editorInputHandler) {
+				registry.editorInputHandler = editorInputHandler.handler;
+				registry.editorInputHandlerEntry = editorInputHandler;
+			}
+			current = {
+				id: contribution.id,
 				sessionToken: event,
-				order: registry.nextOrder++,
+				editor,
+				modelCommandHandler,
+				editorInputHandler,
 			};
-			registry.contributions.set(contribution.id, entry);
-			current = entry;
-			scheduleFlush(event);
+
+			if (editor) {
+				scheduleFlush(event);
+			} else {
+				const activeRemoved = removedEditors.find((entry) =>
+					entry.sessionToken === event && registry.activeSessionToken === event);
+				if (activeRemoved) reconcileEditorRemoval(activeRemoved);
+			}
 		},
 		dispose,
 	};

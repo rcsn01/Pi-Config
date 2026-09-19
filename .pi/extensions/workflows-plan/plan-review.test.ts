@@ -335,6 +335,21 @@ describe("simple plan review UI", () => {
 		expect(persistedStates.at(-1)).toMatchObject({ mode: "default" });
 	});
 
+	it("restores the prior Editor factory when fresh command submission fails", async () => {
+		const harness = createHarness({
+			selection: "Clear context and implement (recommended)",
+			freshSendUserMessageError: new Error("fresh prompt failed"),
+		});
+		await initializeAndExtract(harness, "# Failed Fresh Plan");
+		const existingFactory = vi.fn(() => ({ onSubmit: undefined }));
+		harness.setEditorComponent(existingFactory);
+		const previousFactory = harness.getEditorComponent();
+
+		await expect(harness.emit("agent_settled")).rejects.toThrow("fresh prompt failed");
+		expect(harness.getEditorComponent()).toBe(previousFactory);
+		expect(harness.setEditorComponent).toHaveBeenLastCalledWith(previousFactory);
+	});
+
 	it("restores Plan Mode and the reviewed plan when fresh-session creation is cancelled", async () => {
 		const stores = createProfileDependencies();
 		const harness = createHarness({

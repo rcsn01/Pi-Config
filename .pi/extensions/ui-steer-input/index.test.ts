@@ -2,12 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
-import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import type { KeybindingsManager, SessionStartEvent } from "@earendil-works/pi-coding-agent";
 import {
+	createSessionEditorLifetime,
 	getEditorInputHandler,
 	ModelCommandRoutingEditor,
-	registerEditorInputHandler,
-	registerModelCommandHandler,
 	type EditorInputHandler,
 	type ModelCommandHandler,
 } from "../_shared/editor-slot.ts";
@@ -17,8 +16,12 @@ import steerInputExtension from "./index.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
+type SessionLifetime = ReturnType<typeof createSessionEditorLifetime>;
+
 interface SteerHarness {
-	handlers: Map<string, Handler>;
+	handlers: Map<string, Handler[]>;
+	sessionStartEvent: SessionStartEvent;
+	createLifetime: () => SessionLifetime;
 	sendUserMessage: ReturnType<typeof vi.fn>;
 	ctx: {
 		mode: "tui" | "rpc";
@@ -36,7 +39,6 @@ interface SteerHarness {
 }
 
 const createdInstances: SteerHarness[] = [];
-const handlerUnregisters: Array<() => void> = [];
 
 function theme() {
 	return {
@@ -58,14 +60,17 @@ function createKeybindings(): KeybindingsManager {
 }
 
 function createHarness(mode: "tui" | "rpc" = "tui"): SteerHarness {
-	const handlers = new Map<string, Handler>();
+	const handlers = new Map<string, Handler[]>();
 	const sendUserMessage = vi.fn();
-	steerInputExtension({
+	const pi = {
 		on: (event: string, handler: Handler) => {
-			handlers.set(event, handler);
+			const eventHandlers = handlers.get(event) ?? [];
+			eventHandlers.push(handler);
+			handlers.set(event, eventHandlers);
 		},
 		sendUserMessage,
-	} as any);
+	} as any;
+	steerInputExtension(pi);
 	const ctx = {
 		mode,
 		thinkingLevel: "max",
@@ -80,11 +85,13 @@ function createHarness(mode: "tui" | "rpc" = "tui"): SteerHarness {
 	} as SteerHarness["ctx"];
 	const harness: SteerHarness = {
 		handlers,
+		sessionStartEvent: { type: "session_start", reason: "startup" } as SessionStartEvent,
+		createLifetime: () => createSessionEditorLifetime(pi),
 		sendUserMessage,
 		ctx,
 		fire: async (event: string, eventArg?: unknown) => {
-			const handler = handlers.get(event);
-			if (handler) await handler(eventArg ?? {}, ctx);
+			const payload = eventArg ?? {};
+			for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
 		},
 	};
 	createdInstances.push(harness);
@@ -101,12 +108,11 @@ function createEditor(modelCommandHandler?: ModelCommandHandler) {
 }
 
 afterEach(async () => {
-	// Shut instances down in reverse creation order so the newest handler is
-	// removed first; owner-safe unregistration keeps stale cleanups no-ops.
+	// Shut instances down in reverse creation order so the newest Session wave
+	// is disposed first; every registered shutdown listener must run.
 	for (const harness of createdInstances.splice(0).reverse()) {
-		await harness.handlers.get("session_shutdown")?.({}, harness.ctx);
+		await harness.fire("session_shutdown", { type: "session_shutdown", reason: "quit" });
 	}
-	for (const unregister of handlerUnregisters.splice(0)) unregister();
 });
 
 // ------------------------------------------------------------------ tests ---
@@ -311,9 +317,13 @@ describe("Tab interception while streaming", () => {
 
 	it("a queued /model drains through the registered model handler, not the generic submit", async () => {
 		const modelHandler = vi.fn<(args: string) => Promise<void>>(async () => {});
-		handlerUnregisters.push(registerModelCommandHandler(modelHandler));
 		const harness = createHarness();
-		await harness.fire("session_start");
+		const modelLifetime = harness.createLifetime();
+		modelLifetime.install(harness.sessionStartEvent, harness.ctx as any, {
+			id: "test-model-handler",
+			modelCommandHandler: modelHandler,
+		});
+		await harness.fire("session_start", harness.sessionStartEvent);
 		await harness.fire("agent_start");
 		const { editor, onSubmit } = createEditor();
 		editor.onSubmit = onSubmit;
@@ -382,9 +392,13 @@ describe("steer notification", () => {
 describe("/model routing through the editor-slot registry", () => {
 	it("routes an Enter /model submit to the registered handler while streaming", async () => {
 		const handler = vi.fn<(args: string) => Promise<void>>(async () => {});
-		handlerUnregisters.push(registerModelCommandHandler(handler));
 		const harness = createHarness();
-		await harness.fire("session_start");
+		const modelLifetime = harness.createLifetime();
+		modelLifetime.install(harness.sessionStartEvent, harness.ctx as any, {
+			id: "test-model-handler",
+			modelCommandHandler: handler,
+		});
+		await harness.fire("session_start", harness.sessionStartEvent);
 		await harness.fire("agent_start");
 
 		const editor = new ModelCommandRoutingEditor(stubTui(), stubTheme(), createKeybindings(), handler);

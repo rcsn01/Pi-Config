@@ -206,15 +206,17 @@ export default function (pi: ExtensionAPI) {
 		// disposing ui-model-selector).
 		editorLifetime.install(event, ctx, {
 			id: "ui-message-history",
-			priority: 20,
-			createEditor: (tui, theme, keybindings) => {
-				const editor = new PreviousMessageEditor(tui, theme, keybindings);
-				editor.attach(
-					store.listFor(cwd),
-					(text) => store.record(cwd, text),
-					getModelCommandHandler(),
-				);
-				return editor;
+			editor: {
+				priority: 20,
+				createEditor: (tui, theme, keybindings) => {
+					const editor = new PreviousMessageEditor(tui, theme, keybindings);
+					editor.attach(
+						store.listFor(cwd),
+						(text) => store.record(cwd, text),
+						getModelCommandHandler(),
+					);
+					return editor;
+				},
 			},
 		});
 	});
