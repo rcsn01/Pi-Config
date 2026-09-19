@@ -1,7 +1,7 @@
 import type { ExecPolicyConfig } from "../_shared/command-policy.ts";
 import type { GuardianReviewResult } from "./guardian-runner.ts";
 import { approvalDisposition, type ApprovalMode } from "./mode-registry.ts";
-import { DEFAULT_MODE_STATE, type ModeState } from "./mode-store.ts";
+import { DEFAULT_MODE_STATE, type ModePersistenceOptions, type ModeState } from "./mode-store.ts";
 import { evaluateToolCall } from "./permission-policy.ts";
 import type { ApprovalResult, ToolCallInput } from "./policy-types.ts";
 import {
@@ -40,8 +40,8 @@ export interface ModeChangeOutcome {
 }
 
 export interface PermissionEnforcementLifecycleAdapter<HostContext> {
-	loadMode(cwd: string): ModeState | undefined;
-	saveMode(cwd: string, mode: ModeState): void;
+	loadMode(cwd: string, options: ModePersistenceOptions): ModeState | undefined;
+	saveMode(cwd: string, mode: ModeState, options: ModePersistenceOptions): void;
 	requestUserConfirmation(host: HostContext, title: string, message: string): Promise<boolean>;
 	runGuardianReview(
 		host: HostContext,
@@ -60,8 +60,10 @@ export interface PermissionEnforcementLifecycle<HostContext> {
 	synchronizeSession(input: {
 		cwd: string;
 		resetTransientApprovals: boolean;
+		/** Enables the trusted per-project `.pi/pi-config.json` document. */
+		projectTrusted?: boolean;
 	}): ModeState;
-	changeMode(mode: ModeState): ModeChangeOutcome;
+	changeMode(mode: ModeState, options?: ModePersistenceOptions): ModeChangeOutcome;
 	evaluate(
 		call: ToolCallInput,
 		environment: PermissionEnforcementEnvironment<HostContext>,
@@ -190,8 +192,9 @@ export function createPermissionEnforcementLifecycle<HostContext>(
 		},
 		synchronizeSession(input) {
 			currentCwd = input.cwd;
+			const persistence: ModePersistenceOptions = { projectTrusted: input.projectTrusted ?? false };
 			try {
-				currentMode = adapter.loadMode(input.cwd) ?? { ...DEFAULT_MODE_STATE };
+				currentMode = adapter.loadMode(input.cwd, persistence) ?? { ...DEFAULT_MODE_STATE };
 			} catch {
 				currentMode = { ...DEFAULT_MODE_STATE };
 			}
@@ -202,13 +205,13 @@ export function createPermissionEnforcementLifecycle<HostContext>(
 			}
 			return { ...currentMode };
 		},
-		changeMode(mode) {
+		changeMode(mode, options = {}) {
 			currentMode = { ...mode };
 			authorizationGeneration++;
 			lastDeniedAction = undefined;
 			oneShotApprovals.clear();
 			try {
-				adapter.saveMode(currentCwd, currentMode);
+				adapter.saveMode(currentCwd, currentMode, options);
 			} catch {
 				// Permission mode remains live when best-effort persistence fails.
 			}

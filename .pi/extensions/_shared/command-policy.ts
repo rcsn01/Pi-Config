@@ -2,6 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { dangerousCommandReason } from "./security.ts";
+import { mutatePiConfigDocument, piConfigPath, readPiConfigDocument } from "./pi-config.ts";
+import { isRecord } from "./settings-document.ts";
 
 export type ExecPolicyAction = "allow" | "prompt" | "block";
 
@@ -17,7 +19,10 @@ export interface ExecPolicyConfig {
 	defaultAction: ExecPolicyAction;
 }
 
-const RULES_FILE = path.join(os.homedir(), ".pi", "execpolicy.json");
+function rulesFile(): string {
+	// Test seam: redirect the global rules file (real HOME otherwise).
+	return process.env.PI_EXECPOLICY_FILE ?? path.join(os.homedir(), ".pi", "execpolicy.json");
+}
 
 const READ_ONLY_COMMAND_RE = /^(ls|cat|head|tail|find|grep|rg|git\s+(log|status|diff|show|branch|tag|stash\s+list)|wc|sort|uniq|file|which|type|echo|pwd|whoami|date|env|printenv|du|df|ps|top|htop|tree|stat|pnpm|npm|npx|node|python|python3|pip|pip3|make|cargo|go|rustc|cc|gcc|clang)\b/;
 
@@ -265,10 +270,10 @@ export function dangerousShellReason(command: string): string | undefined {
 	return dangerousCommandReason(command) ?? undefined;
 }
 
-export function loadExecPolicy(): ExecPolicyConfig {
+function loadGlobalExecPolicy(): ExecPolicyConfig {
 	try {
-		if (fs.existsSync(RULES_FILE)) {
-			const data = JSON.parse(fs.readFileSync(RULES_FILE, "utf-8"));
+		if (fs.existsSync(rulesFile())) {
+			const data = JSON.parse(fs.readFileSync(rulesFile(), "utf-8"));
 			return {
 				rules: data.rules || [],
 				defaultAction: data.defaultAction || "allow",
@@ -280,10 +285,74 @@ export function loadExecPolicy(): ExecPolicyConfig {
 	return { rules: [], defaultAction: "allow" };
 }
 
+function isExecPolicyRule(value: unknown): value is ExecPolicyRule {
+	return isRecord(value)
+		&& typeof value.id === "string"
+		&& typeof value.pattern === "string"
+		&& typeof value.reason === "string"
+		&& (value.action === "allow" || value.action === "prompt" || value.action === "block");
+}
+
+/** Execpolicy rules declared in the trusted project document. */
+function projectExecPolicyRules(cwd: string): ExecPolicyRule[] {
+	const namespace = readPiConfigDocument(piConfigPath(cwd))?.execPolicy;
+	if (!isRecord(namespace) || !Array.isArray(namespace.rules)) return [];
+	return namespace.rules.filter(isExecPolicyRule);
+}
+
+export interface ExecPolicyLayerOptions {
+	cwd?: string;
+	projectTrusted?: boolean;
+}
+
+export interface ExecPolicyLayers {
+	global: ExecPolicyConfig;
+	/** Project rules; empty when the project is untrusted or declares none. */
+	project: ExecPolicyRule[];
+}
+
+/**
+ * Load both exec policy layers. The project layer is honored only for trusted
+ * projects; `cwd` is required to resolve `.pi/pi-config.json`.
+ */
+export function loadExecPolicyLayers(options: ExecPolicyLayerOptions = {}): ExecPolicyLayers {
+	const global = loadGlobalExecPolicy();
+	return {
+		global,
+		project: options.cwd !== undefined && options.projectTrusted === true
+			? projectExecPolicyRules(options.cwd)
+			: [],
+	};
+}
+
+/**
+ * Merged exec policy: global rules are authoritative (evaluated first),
+ * project rules fill gaps, and the global defaultAction decides leftovers.
+ * A repo file can therefore add coverage but never neutralize a global rule.
+ */
+export function loadExecPolicy(options: ExecPolicyLayerOptions = {}): ExecPolicyConfig {
+	const layers = loadExecPolicyLayers(options);
+	return {
+		rules: [...layers.global.rules, ...layers.project],
+		defaultAction: layers.global.defaultAction,
+	};
+}
+
+/** Write the project rule set, preserving sibling namespaces in the document. */
+export function saveProjectExecPolicyRules(cwd: string, rules: ExecPolicyRule[]): void {
+	mutatePiConfigDocument(piConfigPath(cwd), (document) => ({
+		...document,
+		execPolicy: {
+			...(isRecord(document.execPolicy) ? document.execPolicy : {}),
+			rules,
+		},
+	}));
+}
+
 export function saveExecPolicy(config: ExecPolicyConfig): void {
-	const dir = path.dirname(RULES_FILE);
+	const dir = path.dirname(rulesFile());
 	if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-	fs.writeFileSync(RULES_FILE, JSON.stringify(config, null, 2));
+	fs.writeFileSync(rulesFile(), JSON.stringify(config, null, 2));
 }
 
 export function evaluateExecPolicy(command: string, config = loadExecPolicy()): { matched: boolean; action: ExecPolicyAction; rule?: ExecPolicyRule } {

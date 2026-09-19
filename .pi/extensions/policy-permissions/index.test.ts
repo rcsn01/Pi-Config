@@ -52,6 +52,7 @@ function createHarness(options: {
 	branch?: any[];
 	contextEntries?: any[];
 	commands?: any[];
+	projectTrusted?: boolean;
 } = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-safety-status-"));
 	tempDirectories.push(cwd);
@@ -77,6 +78,7 @@ function createHarness(options: {
 		hasUI: true,
 		mode: "tui",
 		scopedModels: [],
+		isProjectTrusted: () => options.projectTrusted ?? false,
 		ui: { setStatus, notify: vi.fn(), confirm: vi.fn(async () => false) },
 		modelRegistry: { find: vi.fn() },
 		sessionManager: {
@@ -97,6 +99,17 @@ describe("safety permission status", () => {
 			style: "muted",
 			order: 20,
 		});
+	});
+
+	it("persists /permissions switches to the project document for trusted projects", async () => {
+		const harness = createHarness({ projectTrusted: true });
+		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+
+		await harness.commands.get("permissions").handler("read-only", harness.ctx);
+
+		expect(JSON.parse(readFileSync(join(harness.ctx.cwd, ".pi", "pi-config.json"), "utf-8")))
+			.toMatchObject({ permissions: { mode: "read-only" } });
+		expect(harness.setStatus).toHaveBeenCalledWith("approval-mode", "read-only");
 	});
 
 	it("publishes only the permission mode, not a profile-qualified label", async () => {

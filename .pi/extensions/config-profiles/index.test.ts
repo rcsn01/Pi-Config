@@ -12,6 +12,8 @@ interface HarnessOptions {
 	normalizedSettingsPath?: boolean;
 	profiles?: string[];
 	active?: string;
+	cwd?: string;
+	projectTrusted?: boolean;
 	switchError?: Error;
 	createError?: Error;
 	deleteError?: Error;
@@ -93,6 +95,8 @@ function createHarness(options: HarnessOptions = {}) {
 	const ctx = {
 		hasUI: true,
 		mode: "tui",
+		cwd: options.cwd ?? "/project",
+		isProjectTrusted: vi.fn(() => options.projectTrusted ?? false),
 		ui: { notify, select, input, confirm, setStatus },
 		reload,
 		model: options.model ?? DEFAULT_MODEL,
@@ -203,6 +207,8 @@ describe("config profiles extension", () => {
 		const ctx = {
 			hasUI: true,
 			ui: { notify: vi.fn(), setStatus: vi.fn() },
+			cwd: "/project",
+			isProjectTrusted: () => false,
 			sessionManager: { getBranch: vi.fn(() => []) },
 		} as any;
 		const event = { type: "session_start", reason: "startup" } as any;

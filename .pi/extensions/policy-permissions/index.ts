@@ -29,6 +29,7 @@ import { resolveModelReference } from "../_shared/model-reference.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
 import { renderTranscriptCard } from "../_shared/transcript-card.ts";
 import { loadExecPolicy } from "../_shared/command-policy.ts";
+import { isProjectTrustedContext } from "../_shared/pi-config.ts";
 import { runGuardianReview } from "./approvals.ts";
 import { registerPermissionCommands, type CommandService } from "./commands.ts";
 import {
@@ -113,8 +114,8 @@ function installSafetyPermissions(
 	let currentSkillInvocation: GuardianSkillInvocation | undefined;
 
 	const enforcement = createPermissionEnforcementLifecycle<ExtensionContext>({
-		loadMode: (cwd) => loadModeFromFile(cwd) ?? undefined,
-		saveMode: (cwd, mode) => saveModeToFile(cwd, mode),
+		loadMode: (cwd, options) => loadModeFromFile(cwd, options) ?? undefined,
+		saveMode: (cwd, mode, options) => saveModeToFile(cwd, mode, options),
 		requestUserConfirmation: (ctx, title, message) => ctx.ui.confirm(title, message),
 		runGuardianReview: (ctx, title, evaluationMessage) =>
 			runGuardianReview(ctx, guardianSettings, title, evaluationMessage),
@@ -140,8 +141,8 @@ function installSafetyPermissions(
 
 	const commandService: CommandService = {
 		getMode: () => enforcement.mode,
-		changeMode: (mode) => {
-			enforcement.changeMode(mode);
+		changeMode: (mode, ctx) => {
+			enforcement.changeMode(mode, { projectTrusted: isProjectTrustedContext(ctx) });
 		},
 		updateStatus,
 		approveLastDenied: () => enforcement.approveLastDenied(),
@@ -155,7 +156,11 @@ function installSafetyPermissions(
 				guardianSettingsPath = binding.settingsPath;
 			},
 			initialize: async (_binding, _event, ctx) => {
-				enforcement.synchronizeSession({ cwd: ctx.cwd, resetTransientApprovals: true });
+				enforcement.synchronizeSession({
+					cwd: ctx.cwd,
+					resetTransientApprovals: true,
+					projectTrusted: isProjectTrustedContext(ctx),
+				});
 				profileBindingGeneration++;
 				try {
 					guardianSettings = loadGuardianSettings(guardianSettingsPath);
@@ -179,7 +184,11 @@ function installSafetyPermissions(
 
 	wireSessionProfileBinding(pi, profileInitialization);
 	pi.on("session_tree", async (_event, ctx) => {
-		enforcement.synchronizeSession({ cwd: ctx.cwd, resetTransientApprovals: false });
+		enforcement.synchronizeSession({
+			cwd: ctx.cwd,
+			resetTransientApprovals: false,
+			projectTrusted: isProjectTrustedContext(ctx),
+		});
 		updateStatus(ctx);
 	});
 	pi.on("turn_end", async (_event, ctx) => updateStatus(ctx));
@@ -217,7 +226,7 @@ function installSafetyPermissions(
 			{
 				cwd: ctx.cwd,
 				hasUI: ctx.hasUI,
-				execPolicy: loadExecPolicy(),
+				execPolicy: loadExecPolicy({ cwd: ctx.cwd, projectTrusted: isProjectTrustedContext(ctx) }),
 				guardianContext: {
 					conversation: buildGuardianConversationEvidence(branchMessages),
 					...(currentSkillInvocation ? { invokedSkill: currentSkillInvocation } : {}),
