@@ -85,7 +85,10 @@ describe("analysis page", () => {
 		expect(requestBars[2]!.classList.contains("usage-unavailable")).toBe(true);
 		expect(requestBars[3]!.classList.contains("usage-unavailable")).toBe(true);
 		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Response #2");
-		expect(document.querySelector(".request-row.selected strong")?.textContent).toBe("openai/main");
+		expect(document.querySelector(".request-row.selected")?.parentElement?.querySelector(".request-group-title")?.textContent).toBe("openai/main");
+		expect(Array.from(document.querySelectorAll(".request-group-title"), (row) => row.textContent)).toEqual([
+			"openai/main", "openai/main",
+		]);
 		expect(Array.from(document.querySelectorAll<HTMLButtonElement>(".request-row"), (row) => [row.dataset.sequence, row.dataset.part])).toEqual([
 			["2", "response"], ["2", "request"], ["1", "response"], ["1", "request"],
 		]);
@@ -133,14 +136,12 @@ describe("analysis page", () => {
 			["explorer", "explorer-1 · 1 request"], ["worker", "worker-1 · 1 request"],
 		]);
 		expect(document.querySelector(".subagent-row.selected strong")?.textContent).toBe("explorer");
-		expect(Array.from(document.querySelectorAll(".request-row strong"), (row) => row.textContent)).toEqual([
-			"openai/explorer",
+		expect(Array.from(document.querySelectorAll(".request-group-title"), (row) => row.textContent)).toEqual([
 			"openai/explorer",
 		]);
 		document.querySelectorAll<HTMLButtonElement>(".subagent-row")[1]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(Array.from(document.querySelectorAll(".request-row strong"), (row) => row.textContent)).toEqual([
-			"openai/worker",
+		expect(Array.from(document.querySelectorAll(".request-group-title"), (row) => row.textContent)).toEqual([
 			"openai/worker",
 		]);
 		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Response #3");
@@ -149,7 +150,7 @@ describe("analysis page", () => {
 		tabs[1]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(document.querySelector(".subagent-row.selected strong")?.textContent).toBe("worker");
-		expect(document.querySelector(".request-row.selected strong")?.textContent).toBe("openai/worker");
+		expect(document.querySelector(".request-row.selected")?.parentElement?.querySelector(".request-group-title")?.textContent).toBe("openai/worker");
 
 		tabs[2]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));

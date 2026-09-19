@@ -465,6 +465,11 @@ function renderRequestList() {
 		return;
 	}
 	visible.forEach((item) => {
+		const group = element('div', 'request-group');
+		group.dataset.sequence = String(item.sequence);
+		group.setAttribute('role', 'group');
+		group.setAttribute('aria-label', item.provider + '/' + item.model);
+		group.append(element('strong', 'request-group-title', item.provider + '/' + item.model));
 		for (const part of ['response', 'request']) {
 			const selected = item.sequence === selectedSequence && part === selectedPart;
 			const button = document.createElement('button');
@@ -474,18 +479,15 @@ function renderRequestList() {
 			button.className = 'request-row dash-row' + (selected ? ' selected' : '');
 			button.setAttribute('aria-pressed', selected ? 'true' : 'false');
 
-			const title = document.createElement('strong');
-			title.textContent = item.provider + '/' + item.model;
-			const meta = document.createElement('span');
 			const at = part === 'response' ? (item.completedAt ?? item.requestedAt) : item.requestedAt;
-			meta.textContent = new Date(at).toLocaleTimeString();
+			const time = new Date(at).toLocaleTimeString();
+			const meta = document.createElement('span');
+			meta.textContent = time;
 			const activities = part === 'request'
 				? activityGroups(item.requestActivities, [])
 				: activityGroups([], item.responseActivities);
-			button.append(title);
 			if (activities) button.append(activities);
-			button.append(meta);
-			button.append(usageBar(item.usage, 'request-usage-bar', part));
+			button.append(meta, usageBar(item.usage, 'request-usage-bar', part));
 			button.addEventListener('click', () => {
 				selectedSequence = item.sequence;
 				selectedPart = part;
@@ -494,8 +496,9 @@ function renderRequestList() {
 				renderRequestList();
 				renderDetail(item, part);
 			});
-			requestList.append(button);
+			group.append(button);
 		}
+		requestList.append(group);
 	});
 }
 
