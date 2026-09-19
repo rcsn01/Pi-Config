@@ -1,16 +1,14 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SEMANTIC_COMPACTION_FOCUS } from "../_shared/auto-compact.ts";
-import {
-	getModelCommandHandler,
-	registerModelCommandHandler,
-} from "../_shared/editor-slot.ts";
+import { getModelCommandHandler } from "../_shared/editor-slot.ts";
 import { createModelSelectorExtension } from "./index.ts";
 import { formatTokenCount } from "../_shared/model-picker.ts";
 
-afterEach(() => {
-	const clearActiveHandler = registerModelCommandHandler(async () => {});
-	clearActiveHandler();
+const harnesses: Array<{ emitShutdown: () => Promise<void> }> = [];
+
+afterEach(async () => {
+	for (const harness of harnesses.splice(0).reverse()) await harness.emitShutdown();
 });
 
 const models = [
@@ -148,7 +146,7 @@ function createAdapterHarness(options: {
 	} as unknown as ExtensionAPI;
 	createModelSelectorExtension({ createModelSelectionPersistence })(pi);
 
-	return {
+	const harness = {
 		ctx,
 		custom,
 		select,
@@ -173,6 +171,8 @@ function createAdapterHarness(options: {
 			for (const handler of handlers.get("session_shutdown") ?? []) await handler(event, ctx);
 		},
 	};
+	harnesses.push(harness);
+	return harness;
 }
 
 describe("Pi model-selection adapter", () => {

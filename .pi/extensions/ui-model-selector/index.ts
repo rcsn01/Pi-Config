@@ -11,7 +11,6 @@ import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import {
 	createSessionEditorLifetime,
-	registerModelCommandHandler,
 	ModelCommandRoutingEditor,
 } from "../_shared/editor-slot.ts";
 import { createPiModelRuntime } from "../_shared/model-selection-runtime.ts";
@@ -125,7 +124,6 @@ export function createModelSelectorExtension(
 	const settingsPath = dependencies.settingsPath ?? PROJECT_SETTINGS_PATH;
 	const persistenceFactory = dependencies.createModelSelectionPersistence ?? createModelSelectionPersistence;
 	return function modelSelectorExtension(pi: ExtensionAPI) {
-		let uninstallModelCommandHandler: (() => void) | undefined;
 		let activeLifecycle: ModelSelectionLifecycle | undefined;
 		const editorLifetime = createSessionEditorLifetime(pi);
 
@@ -135,8 +133,6 @@ export function createModelSelectorExtension(
 				name: "ui-model-selector",
 				initialize: async (binding, event, ctx) => {
 					editorLifetime.dispose();
-					uninstallModelCommandHandler?.();
-					uninstallModelCommandHandler = undefined;
 					const previousLifecycle = activeLifecycle;
 					activeLifecycle = undefined;
 					await previousLifecycle?.dispose();
@@ -160,12 +156,14 @@ export function createModelSelectorExtension(
 							}
 						}
 					};
-					uninstallModelCommandHandler = registerModelCommandHandler(handler);
 					editorLifetime.install(event, ctx, {
 						id: "ui-model-selector",
-						priority: 10,
-						createEditor: (tui, theme, keybindings) =>
-							new ModelCommandRoutingEditor(tui, theme, keybindings, handler),
+						editor: {
+							priority: 10,
+							createEditor: (tui, theme, keybindings) =>
+								new ModelCommandRoutingEditor(tui, theme, keybindings, handler),
+						},
+						modelCommandHandler: handler,
 					});
 
 					const hasConversationHistory = buildSessionContext(
@@ -190,8 +188,6 @@ export function createModelSelectorExtension(
 					const lifecycle = activeLifecycle;
 					activeLifecycle = undefined;
 					await lifecycle?.dispose();
-					uninstallModelCommandHandler?.();
-					uninstallModelCommandHandler = undefined;
 				},
 			},
 		);

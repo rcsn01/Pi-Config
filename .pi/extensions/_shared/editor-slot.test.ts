@@ -16,8 +16,6 @@ import {
 	getModelCommandHandler,
 	ModelCommandRoutingEditor,
 	parseModelCommand,
-	registerEditorInputHandler,
-	registerModelCommandHandler,
 	type EditorInputHandler,
 	type ModelCommandHandler,
 	type SessionEditorContribution,
@@ -37,7 +35,6 @@ interface Harness {
 }
 
 const harnessCleanups: Array<() => void> = [];
-const handlerCleanups: Array<() => void> = [];
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -50,7 +47,6 @@ afterEach(async () => {
 	for (const cleanup of harnessCleanups.splice(0).reverse()) cleanup();
 	await vi.runAllTimersAsync();
 	vi.useRealTimers();
-	for (const cleanup of handlerCleanups.splice(0).reverse()) cleanup();
 });
 
 function createHarness(): Harness {
@@ -103,16 +99,14 @@ function createHarness(): Harness {
 	return harness;
 }
 
-function registerHandler(handler: ModelCommandHandler): () => void {
-	const unregister = registerModelCommandHandler(handler);
-	handlerCleanups.push(unregister);
-	return unregister;
+let handlerRegistrationId = 0;
+
+function registerHandler(harness: Harness, handler: ModelCommandHandler): void {
+	harness.install({ id: `model-${handlerRegistrationId++}`, modelCommandHandler: handler });
 }
 
-function registerInputHandler(handler: EditorInputHandler): () => void {
-	const unregister = registerEditorInputHandler(handler);
-	handlerCleanups.push(unregister);
-	return unregister;
+function registerInputHandler(harness: Harness, handler: EditorInputHandler): void {
+	harness.install({ id: `input-${handlerRegistrationId++}`, editorInputHandler: handler });
 }
 
 function stubTui(): TUI {
@@ -146,48 +140,71 @@ function mount(setEditorComponent: ReturnType<typeof vi.fn>): EditorComponent {
 	return factory(stubTui(), stubTheme(), createKeybindings());
 }
 
+interface RegistryFixture {
+	modelCommandHandler?: ModelCommandHandler;
+	modelCommandHandlerEntry?: unknown;
+	editorInputHandler?: EditorInputHandler;
+	editorInputHandlerEntry?: unknown;
+}
+
+function registryFixture(): RegistryFixture {
+	const key = Symbol.for("pi-config.editor-slot.v1");
+	return (globalThis as unknown as Record<PropertyKey, unknown>)[key] as RegistryFixture;
+}
+
 // ------------------------------------------------------------------ tests ---
 
-describe("model command handler registry", () => {
+describe("model command handler lifetime", () => {
 	it("exposes the registered handler and replaces it on re-register", () => {
+		const harness = createHarness();
 		const first: ModelCommandHandler = async () => {};
 		const second: ModelCommandHandler = async () => {};
-		registerHandler(first);
+		registerHandler(harness, first);
 		expect(getModelCommandHandler()).toBe(first);
-		registerHandler(second);
+		registerHandler(harness, second);
 		expect(getModelCommandHandler()).toBe(second);
 	});
 
 	it("does not let stale cleanup remove a newer active handler", () => {
+		const harness = createHarness();
 		const first: ModelCommandHandler = async () => {};
 		const second: ModelCommandHandler = async () => {};
-		const unregisterFirst = registerHandler(first);
-		registerHandler(second);
-		unregisterFirst();
+		const firstLifetime = harness.createLifetime();
+		const secondLifetime = harness.createLifetime();
+		firstLifetime.install(harness.event, harness.ctx, { id: "first", modelCommandHandler: first });
+		secondLifetime.install(harness.event, harness.ctx, { id: "second", modelCommandHandler: second });
+
+		firstLifetime.dispose();
 		expect(getModelCommandHandler()).toBe(second);
+		secondLifetime.dispose();
+		expect(getModelCommandHandler()).toBeUndefined();
 	});
 });
 
-describe("editor input handler registry", () => {
+describe("editor input handler lifetime", () => {
 	it("exposes the registered handler and replaces it on re-register", () => {
+		const harness = createHarness();
 		const first: EditorInputHandler = () => false;
 		const second: EditorInputHandler = () => false;
-		registerInputHandler(first);
+		registerInputHandler(harness, first);
 		expect(getEditorInputHandler()).toBe(first);
-		registerInputHandler(second);
+		registerInputHandler(harness, second);
 		expect(getEditorInputHandler()).toBe(second);
 	});
 
-	it("does not let stale cleanup remove a newer active handler; the active unregister removes itself", () => {
+	it("does not let stale cleanup remove a newer active handler; the active owner removes itself", () => {
+		const harness = createHarness();
 		const first: EditorInputHandler = () => false;
 		const second: EditorInputHandler = () => false;
-		const unregisterFirst = registerInputHandler(first);
-		const unregisterSecond = registerInputHandler(second);
+		const firstLifetime = harness.createLifetime();
+		const secondLifetime = harness.createLifetime();
+		firstLifetime.install(harness.event, harness.ctx, { id: "first", editorInputHandler: first });
+		secondLifetime.install(harness.event, harness.ctx, { id: "second", editorInputHandler: second });
 
-		unregisterFirst();
+		firstLifetime.dispose();
 		expect(getEditorInputHandler()).toBe(second);
 
-		unregisterSecond();
+		secondLifetime.dispose();
 		expect(getEditorInputHandler()).toBeUndefined();
 	});
 });
@@ -289,7 +306,8 @@ describe("ModelCommandRoutingEditor", () => {
 		expect(onSubmit).toHaveBeenCalledTimes(1);
 
 		const handler = vi.fn<EditorInputHandler>(() => false);
-		registerInputHandler(handler);
+		const harness = createHarness();
+		registerInputHandler(harness, handler);
 		editor.setText("world");
 		editor.handleInput("\r");
 		expect(handler).toHaveBeenCalledWith("\r", editor);
@@ -298,9 +316,10 @@ describe("ModelCommandRoutingEditor", () => {
 
 	it("a handler returning true prevents /model routing and built-in submit", () => {
 		const modelHandler = vi.fn<(args: string) => Promise<void>>(async () => {});
-		registerHandler(modelHandler);
+		const harness = createHarness();
+		registerHandler(harness, modelHandler);
 		const consumed = vi.fn<EditorInputHandler>(() => true);
-		registerInputHandler(consumed);
+		registerInputHandler(harness, consumed);
 		const { editor, onSubmit } = createRoutingEditor(modelHandler);
 
 		editor.setText("/model gpt-5.6-sol");
@@ -313,8 +332,9 @@ describe("ModelCommandRoutingEditor", () => {
 
 	it("a handler returning false preserves /model routing and ordinary built-in input", () => {
 		const modelHandler = vi.fn<(args: string) => Promise<void>>(async () => {});
-		registerHandler(modelHandler);
-		registerInputHandler(() => false);
+		const harness = createHarness();
+		registerHandler(harness, modelHandler);
+		registerInputHandler(harness, () => false);
 		const { editor, onSubmit } = createRoutingEditor(modelHandler);
 
 		editor.setText("/model gpt-5.6-sol");
@@ -333,7 +353,7 @@ describe("ModelCommandRoutingEditor", () => {
 describe("session editor wave", () => {
 	it("defers the install: nothing is written before the flush fires", () => {
 		const harness = createHarness();
-		harness.install({ id: "a", priority: 10, createEditor: () => markerEditor("a") });
+		harness.install({ id: "a", editor: { priority: 10, createEditor: () => markerEditor("a") } });
 		expect(harness.setEditorComponent).not.toHaveBeenCalled();
 	});
 
@@ -341,8 +361,8 @@ describe("session editor wave", () => {
 		const harness = createHarness();
 		const editorA = markerEditor("a");
 		const editorB = markerEditor("b");
-		harness.install({ id: "a", priority: 10, createEditor: () => editorA });
-		harness.install({ id: "b", priority: 20, createEditor: () => editorB });
+		harness.install({ id: "a", editor: { priority: 10, createEditor: () => editorA } });
+		harness.install({ id: "b", editor: { priority: 20, createEditor: () => editorB } });
 
 		await harness.flush();
 
@@ -362,8 +382,8 @@ describe("session editor wave", () => {
 		const harness = createHarness();
 		const first = markerEditor("a1");
 		const second = markerEditor("a2");
-		harness.install({ id: "a", priority: 10, createEditor: () => first });
-		harness.install({ id: "a", priority: 20, createEditor: () => second });
+		harness.install({ id: "a", editor: { priority: 10, createEditor: () => first } });
+		harness.install({ id: "a", editor: { priority: 20, createEditor: () => second } });
 
 		await harness.flush();
 
@@ -375,8 +395,8 @@ describe("session editor wave", () => {
 		const harness = createHarness();
 		const editorA = markerEditor("a");
 		const editorB = markerEditor("b");
-		harness.install({ id: "a", priority: 5, createEditor: () => editorA });
-		harness.install({ id: "b", priority: 5, createEditor: () => editorB });
+		harness.install({ id: "a", editor: { priority: 5, createEditor: () => editorA } });
+		harness.install({ id: "b", editor: { priority: 5, createEditor: () => editorB } });
 
 		await harness.flush();
 
@@ -387,14 +407,14 @@ describe("session editor wave", () => {
 		const harness = createHarness();
 		const editorLow = markerEditor("low");
 		const editorHigh = markerEditor("high");
-		harness.install({ id: "low", priority: 10, createEditor: () => editorLow });
+		harness.install({ id: "low", editor: { priority: 10, createEditor: () => editorLow } });
 		await harness.flush();
 		expect(harness.setEditorComponent).toHaveBeenCalledTimes(1);
 		expect(mount(harness.setEditorComponent)).toBe(editorLow);
 
 		// The common production path: the low-priority contributor crosses a
 		// macrotask boundary before the high-priority one registers.
-		harness.install({ id: "high", priority: 20, createEditor: () => editorHigh });
+		harness.install({ id: "high", editor: { priority: 20, createEditor: () => editorHigh } });
 		await harness.flush();
 		expect(harness.setEditorComponent).toHaveBeenCalledTimes(2);
 		expect(mount(harness.setEditorComponent)).toBe(editorHigh);
@@ -404,7 +424,7 @@ describe("session editor wave", () => {
 describe("SessionEditorLifetime", () => {
 	it("automatically restores Pi's editor on repeated shutdown", async () => {
 		const harness = createHarness();
-		harness.install({ id: "owned", priority: 10, createEditor: () => markerEditor("owned") });
+		harness.install({ id: "owned", editor: { priority: 10, createEditor: () => markerEditor("owned") } });
 		await harness.flush();
 
 		await harness.shutdown();
@@ -417,7 +437,7 @@ describe("SessionEditorLifetime", () => {
 	it("cancels a deferred factory when shutdown happens before the flush", async () => {
 		const harness = createHarness();
 		const createEditor = vi.fn(() => markerEditor("owned"));
-		harness.install({ id: "owned", priority: 10, createEditor });
+		harness.install({ id: "owned", editor: { priority: 10, createEditor } });
 
 		await harness.shutdown();
 		await harness.flush();
@@ -436,13 +456,11 @@ describe("SessionEditorLifetime", () => {
 		const newer = markerEditor("newer");
 		firstLifetime.install(first.event, first.ctx, {
 			id: "history",
-			priority: 20,
-			createEditor: () => markerEditor("older"),
+			editor: { priority: 20, createEditor: () => markerEditor("older") },
 		});
 		secondLifetime.install(second.event, second.ctx, {
 			id: "history",
-			priority: 20,
-			createEditor: () => newer,
+			editor: { priority: 20, createEditor: () => newer },
 		});
 
 		firstLifetime.dispose();
@@ -459,20 +477,17 @@ describe("SessionEditorLifetime", () => {
 		const activeLifetime = harness.createLifetime();
 		staleLifetime.install(harness.event, harness.ctx, {
 			id: "selector",
-			priority: 10,
-			createEditor: () => markerEditor("stale"),
+			editor: { priority: 10, createEditor: () => markerEditor("stale") },
 		});
 		activeLifetime.install(harness.event, harness.ctx, {
 			id: "selector",
-			priority: 10,
-			createEditor: () => markerEditor("first"),
+			editor: { priority: 10, createEditor: () => markerEditor("first") },
 		});
 		staleLifetime.dispose();
 		const latest = markerEditor("latest");
 		activeLifetime.install(harness.event, harness.ctx, {
 			id: "selector",
-			priority: 10,
-			createEditor: () => latest,
+			editor: { priority: 10, createEditor: () => latest },
 		});
 
 		expect(harness.setEditorComponent).not.toHaveBeenCalled();
@@ -486,9 +501,9 @@ describe("SessionEditorLifetime", () => {
 		const second = createHarness();
 		const firstFactory = vi.fn(() => markerEditor("first"));
 		const secondFactory = vi.fn(() => markerEditor("second"));
-		first.install({ id: "first", priority: 20, createEditor: firstFactory });
+		first.install({ id: "first", editor: { priority: 20, createEditor: firstFactory } });
 		expect(vi.getTimerCount()).toBe(1);
-		second.install({ id: "second", priority: 20, createEditor: secondFactory });
+		second.install({ id: "second", editor: { priority: 20, createEditor: secondFactory } });
 		expect(vi.getTimerCount()).toBe(1);
 
 		await second.flush();
@@ -508,13 +523,11 @@ describe("SessionEditorLifetime", () => {
 		const history = markerEditor("history");
 		selectorLifetime.install(harness.event, harness.ctx, {
 			id: "selector",
-			priority: 10,
-			createEditor: () => selector,
+			editor: { priority: 10, createEditor: () => selector },
 		});
 		historyLifetime.install(harness.event, harness.ctx, {
 			id: "history",
-			priority: 20,
-			createEditor: () => history,
+			editor: { priority: 20, createEditor: () => history },
 		});
 		await harness.flush();
 		expect(mount(harness.setEditorComponent)).toBe(history);
@@ -529,13 +542,247 @@ describe("SessionEditorLifetime", () => {
 		expect(harness.setEditorComponent).toHaveBeenLastCalledWith(undefined);
 	});
 
+	it("cleans both handler slots through automatic shutdown", async () => {
+		const harness = createHarness();
+		const modelLifetime = harness.createLifetime();
+		const inputLifetime = harness.createLifetime();
+		const modelHandler: ModelCommandHandler = async () => {};
+		const inputHandler: EditorInputHandler = () => false;
+		modelLifetime.install(harness.event, harness.ctx, { id: "model", modelCommandHandler: modelHandler });
+		inputLifetime.install(harness.event, harness.ctx, { id: "input", editorInputHandler: inputHandler });
+
+		expect(getModelCommandHandler()).toBe(modelHandler);
+		expect(getEditorInputHandler()).toBe(inputHandler);
+		await harness.shutdown();
+		expect(getModelCommandHandler()).toBeUndefined();
+		expect(getEditorInputHandler()).toBeUndefined();
+		await harness.shutdown();
+		expect(harness.setEditorComponent).not.toHaveBeenCalled();
+	});
+
+	it("cleans a combined Editor and model registration", async () => {
+		const harness = createHarness();
+		const lifetime = harness.createLifetime();
+		const handler: ModelCommandHandler = async () => {};
+		lifetime.install(harness.event, harness.ctx, {
+			id: "combined",
+			editor: { priority: 10, createEditor: () => markerEditor("combined") },
+			modelCommandHandler: handler,
+		});
+		await harness.flush();
+		expect(getModelCommandHandler()).toBe(handler);
+		expect(mount(harness.setEditorComponent)).toMatchObject({ tag: "combined" });
+
+		lifetime.dispose();
+		expect(getModelCommandHandler()).toBeUndefined();
+		expect(harness.setEditorComponent).toHaveBeenLastCalledWith(undefined);
+	});
+
+	it("rejects an empty registration before changing the active registration", () => {
+		const harness = createHarness();
+		const lifetime = harness.createLifetime();
+		const handler: ModelCommandHandler = async () => {};
+		lifetime.install(harness.event, harness.ctx, {
+			id: "active",
+			editor: { priority: 10, createEditor: () => markerEditor("active") },
+			modelCommandHandler: handler,
+		});
+		const timerCount = vi.getTimerCount();
+
+		expect(() => lifetime.install(harness.event, harness.ctx, { id: "empty" })).toThrow(TypeError);
+		expect(getModelCommandHandler()).toBe(handler);
+		expect(vi.getTimerCount()).toBe(timerCount);
+		expect(harness.setEditorComponent).not.toHaveBeenCalled();
+	});
+
+	it("keeps fresh handler-only registration out of the Editor slot", () => {
+		const harness = createHarness();
+		const lifetime = harness.createLifetime();
+		lifetime.install(harness.event, harness.ctx, {
+			id: "input-only",
+			editorInputHandler: () => false,
+		});
+
+		expect(harness.setEditorComponent).not.toHaveBeenCalled();
+		expect(vi.getTimerCount()).toBe(0);
+		lifetime.dispose();
+		expect(harness.setEditorComponent).not.toHaveBeenCalled();
+	});
+
+	it("reconciles an Editor removed by a handler-only replacement", async () => {
+		const harness = createHarness();
+		const editorLifetime = harness.createLifetime();
+		const replacementLifetime = harness.createLifetime();
+		editorLifetime.install(harness.event, harness.ctx, {
+			id: "replaceable",
+			editor: { priority: 10, createEditor: () => markerEditor("replaceable") },
+		});
+		await harness.flush();
+		expect(harness.setEditorComponent).toHaveBeenCalledTimes(1);
+
+		replacementLifetime.install(harness.event, harness.ctx, {
+			id: "replaceable",
+			editorInputHandler: () => false,
+		});
+		expect(harness.setEditorComponent).toHaveBeenLastCalledWith(undefined);
+		expect(harness.setEditorComponent).toHaveBeenCalledTimes(2);
+		await harness.flush();
+		expect(harness.setEditorComponent).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps same-function handler registrations exact-entry safe", () => {
+		const harness = createHarness();
+		const handler: ModelCommandHandler = async () => {};
+		const first = harness.createLifetime();
+		const second = harness.createLifetime();
+		first.install(harness.event, harness.ctx, { id: "first", modelCommandHandler: handler });
+		second.install(harness.event, harness.ctx, { id: "second", modelCommandHandler: handler });
+
+		first.dispose();
+		expect(getModelCommandHandler()).toBe(handler);
+		second.dispose();
+		expect(getModelCommandHandler()).toBeUndefined();
+	});
+
+	it("keeps same-function input registrations exact-entry safe", () => {
+		const harness = createHarness();
+		const handler: EditorInputHandler = () => false;
+		const first = harness.createLifetime();
+		const second = harness.createLifetime();
+		first.install(harness.event, harness.ctx, { id: "first", editorInputHandler: handler });
+		second.install(harness.event, harness.ctx, { id: "second", editorInputHandler: handler });
+
+		first.dispose();
+		expect(getEditorInputHandler()).toBe(handler);
+		second.dispose();
+		expect(getEditorInputHandler()).toBeUndefined();
+	});
+
+	it("preserves a distinct legacy raw handler when its new owner is disposed", () => {
+		const harness = createHarness();
+		const lifetime = harness.createLifetime();
+		const owned: ModelCommandHandler = async () => {};
+		const legacy: ModelCommandHandler = async () => {};
+		lifetime.install(harness.event, harness.ctx, { id: "owned", modelCommandHandler: owned });
+		const registry = registryFixture();
+
+		try {
+			registry.modelCommandHandler = legacy;
+			lifetime.dispose();
+			expect(getModelCommandHandler()).toBe(legacy);
+			expect(registry.modelCommandHandlerEntry).toBeUndefined();
+		} finally {
+			registry.modelCommandHandler = undefined;
+			registry.modelCommandHandlerEntry = undefined;
+		}
+	});
+
+	it("does not let stale same-id Editor disposal remount after replacement disposal", async () => {
+		const harness = createHarness();
+		const stale = harness.createLifetime();
+		const replacement = harness.createLifetime();
+		stale.install(harness.event, harness.ctx, {
+			id: "same-id",
+			editor: { priority: 10, createEditor: () => markerEditor("stale") },
+		});
+		replacement.install(harness.event, harness.ctx, {
+			id: "same-id",
+			editor: { priority: 10, createEditor: () => markerEditor("replacement") },
+		});
+		await harness.flush();
+		replacement.dispose();
+		const callsAfterReplacementDispose = harness.setEditorComponent.mock.calls.length;
+		stale.dispose();
+		expect(harness.setEditorComponent.mock.calls.length).toBe(callsAfterReplacementDispose);
+	});
+
+	it("invalidates old handlers and Editors across Session tokens", async () => {
+		const first = createHarness();
+		const second = createHarness();
+		const firstLifetime = first.createLifetime();
+		const secondLifetime = second.createLifetime();
+		const firstModel: ModelCommandHandler = async () => {};
+		const secondModel: ModelCommandHandler = async () => {};
+		const firstInput: EditorInputHandler = () => false;
+		const secondInput: EditorInputHandler = () => false;
+		firstLifetime.install(first.event, first.ctx, {
+			id: "first",
+			editor: { priority: 10, createEditor: () => markerEditor("first") },
+			modelCommandHandler: firstModel,
+			editorInputHandler: firstInput,
+		});
+		secondLifetime.install(second.event, second.ctx, {
+			id: "second",
+			editor: { priority: 10, createEditor: () => markerEditor("second") },
+			modelCommandHandler: secondModel,
+			editorInputHandler: secondInput,
+		});
+		await second.flush();
+
+		expect(getModelCommandHandler()).toBe(secondModel);
+		expect(getEditorInputHandler()).toBe(secondInput);
+		expect(mount(second.setEditorComponent)).toMatchObject({ tag: "second" });
+		firstLifetime.dispose();
+		expect(getModelCommandHandler()).toBe(secondModel);
+		expect(getEditorInputHandler()).toBe(secondInput);
+		expect(second.setEditorComponent).toHaveBeenCalledTimes(1);
+		secondLifetime.dispose();
+	});
+
+	it("keeps same-wave Editor, model, and input registrations together", async () => {
+		const harness = createHarness();
+		const selector = harness.createLifetime();
+		const history = harness.createLifetime();
+		const steering = harness.createLifetime();
+		const model: ModelCommandHandler = async () => {};
+		const input: EditorInputHandler = () => false;
+		selector.install(harness.event, harness.ctx, {
+			id: "ui-model-selector",
+			editor: { priority: 10, createEditor: () => markerEditor("selector") },
+			modelCommandHandler: model,
+		});
+		history.install(harness.event, harness.ctx, {
+			id: "ui-message-history",
+			editor: { priority: 20, createEditor: () => markerEditor("history") },
+		});
+		steering.install(harness.event, harness.ctx, {
+			id: "ui-steer-input",
+			editorInputHandler: input,
+		});
+		await harness.flush();
+
+		expect(getModelCommandHandler()).toBe(model);
+		expect(getEditorInputHandler()).toBe(input);
+		expect(mount(harness.setEditorComponent)).toMatchObject({ tag: "history" });
+	});
+
+	it("remounts the remaining winner when a non-winner is disposed", async () => {
+		const harness = createHarness();
+		const selector = harness.createLifetime();
+		const history = harness.createLifetime();
+		selector.install(harness.event, harness.ctx, {
+			id: "selector",
+			editor: { priority: 10, createEditor: () => markerEditor("selector") },
+		});
+		history.install(harness.event, harness.ctx, {
+			id: "history",
+			editor: { priority: 20, createEditor: () => markerEditor("history") },
+		});
+		await harness.flush();
+		expect(harness.setEditorComponent).toHaveBeenCalledTimes(1);
+
+		selector.dispose();
+		await harness.flush();
+		expect(harness.setEditorComponent).toHaveBeenCalledTimes(2);
+		expect(mount(harness.setEditorComponent)).toMatchObject({ tag: "history" });
+	});
+
 	it("contains restoration failures after the TUI is torn down", async () => {
 		const harness = createHarness();
 		const lifetime = harness.createLifetime();
 		lifetime.install(harness.event, harness.ctx, {
 			id: "owned",
-			priority: 10,
-			createEditor: () => markerEditor("owned"),
+			editor: { priority: 10, createEditor: () => markerEditor("owned") },
 		});
 		await harness.flush();
 		harness.setEditorComponent.mockImplementation((factory) => {

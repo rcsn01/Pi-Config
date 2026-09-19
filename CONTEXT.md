@@ -55,20 +55,19 @@ extension.
 
 - **Editor slot module** — the shared module in `_shared/editor-slot.ts` that
   owns Pi's single TUI editor slot behind one interface: the silent `/model`
-  routing editor base class and grammar, the `/model` handler registry and
-  the single input-interception handler registry (both backed by a
-  `globalThis` symbol key, because the extension loader gives each extension
-  its own copy of shared modules), and Session editor lifetimes. A lifetime
-  registers `{id, priority, createEditor}` against the exact
-  `SessionStartEvent` token, cleans up automatically on shutdown, and supports
-  ownership-safe early disposal. Token- and timer-handle-guarded deferred
-  flushes reject stale work; the highest-priority current contribution wins,
-  with latest registration breaking ties, and the module reapplies the
-  thinking border. ui-model-selector and ui-message-history are adapters at
-  its seam; ui-steer-input registers a separate Tab input handler that the
-  routing base class consults while the agent streams, so no streaming editor
-  swap exists. The only external swap is the synchronous Plan Review command
-  bridge.
+  routing editor base class and grammar, Session-owned `/model` and
+  input-interception handler registrations, and Session editor lifetimes. Each
+  new registration is associated with the exact `SessionStartEvent` token and
+  may provide an Editor, a model handler, an input handler, or a valid
+  combination. The module owns automatic shutdown, identity-safe replacement
+  and stale cleanup, ownership-safe early disposal, and token- and
+  timer-handle-guarded deferred flushes. The highest-priority current Editor
+  contribution wins, with latest registration breaking ties, and the module
+  reapplies the thinking border. ui-model-selector and ui-message-history are
+  adapters at its seam; ui-steer-input contributes to the separate single Tab
+  input-handler slot that the routing base class consults while the agent
+  streams, so no streaming editor swap exists. The only external swap is the
+  synchronous Plan Review command bridge.
 
 ## Status line
 

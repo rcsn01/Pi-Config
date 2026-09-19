@@ -22,9 +22,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth } from "@earendil-works/pi-tui";
 import {
+	createSessionEditorLifetime,
 	getModelCommandHandler,
 	parseModelCommand,
-	registerEditorInputHandler,
 	type EditorInputHandler,
 } from "../_shared/editor-slot.ts";
 
@@ -38,7 +38,7 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 	let agentActive = false;
 	let queuedCount = 0;
 	let queuedSlashCommands: QueuedSlashCommand[] = [];
-	let unregisterInputHandler: (() => void) | undefined;
+	const editorLifetime = createSessionEditorLifetime(pi);
 	/** Session-start context; its ui getter resolves lazily, so it stays valid for streaming-time notifications. */
 	let sessionCtx: ExtensionContext | undefined;
 
@@ -133,11 +133,14 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 	});
 
 	// ---- Reload / session start ----
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
+		editorLifetime.dispose();
 		if (ctx.mode !== "tui") return;
 		sessionCtx = ctx;
-		unregisterInputHandler?.();
-		unregisterInputHandler = registerEditorInputHandler(handleSteerInput);
+		editorLifetime.install(event, ctx, {
+			id: "ui-steer-input",
+			editorInputHandler: handleSteerInput,
+		});
 		if (agentActive) updateWidget(ctx);
 	});
 
@@ -145,8 +148,6 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		agentActive = false;
 		queuedSlashCommands = [];
-		unregisterInputHandler?.();
-		unregisterInputHandler = undefined;
 		sessionCtx = undefined;
 		ctx.ui.setWidget("steer-hint", undefined);
 	});
