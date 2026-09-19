@@ -23,6 +23,50 @@ describe("analysis capture", () => {
 		]);
 	});
 
+	it("separates provider request and response activities", () => {
+		const capture = createAnalysisCapture({ now: () => 100 });
+		capture.observe({ type: "agent_start" });
+		capture.observe({ type: "activity", activity: { kind: "user-input" } });
+		capture.observe({ type: "turn_start", turnIndex: 0 });
+		capture.observe({ type: "request", provider: "openai", api: "openai-responses", model: "gpt", payload: { input: "hello" } });
+		capture.observe({ type: "assistant", message: {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "plan" },
+				{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "src/index.ts" } },
+				{ type: "text", text: "I will inspect that file." },
+			],
+		} });
+		capture.observe({ type: "activity", activity: { kind: "tool-result", toolCallId: "call-1", toolName: "read" } });
+		capture.observe({ type: "turn_start", turnIndex: 1 });
+		capture.observe({ type: "request", provider: "openai", api: "openai-responses", model: "gpt", payload: { input: "tool result" } });
+		capture.observe({ type: "request", provider: "openai", api: "openai-responses", model: "gpt", payload: { input: "tool result", retry: true } });
+
+		const first = capture.getRecord(1)!;
+		expect(first.requestActivities).toEqual([{ kind: "user-input", count: 1 }]);
+		expect(first.responseActivities).toEqual([
+			{ kind: "thinking", count: 1 },
+			{ kind: "tool-call-request", count: 1, labels: ["read"] },
+			{ kind: "output", count: 1 },
+		]);
+		expect(capture.getSummary().records[0]!.responseActivities).toEqual(first.responseActivities);
+		expect(capture.getRecord(2)!.requestActivities).toEqual([{ kind: "tool-result", count: 1, labels: ["read"] }]);
+		expect(capture.getRecord(2)!.responseActivities).toEqual([]);
+		expect(capture.getRecord(3)!.requestActivities).toEqual([{ kind: "tool-result", count: 1, labels: ["read"] }]);
+	});
+
+	it("carries request activities onto provider retries in the same turn", () => {
+		const capture = createAnalysisCapture();
+		capture.observe({ type: "agent_start" });
+		capture.observe({ type: "activity", activity: { kind: "user-input" } });
+		capture.observe({ type: "turn_start", turnIndex: 0 });
+		capture.observe({ type: "request", provider: "openai", api: "x", model: "gpt", payload: { attempt: 1 } });
+		capture.observe({ type: "request", provider: "openai", api: "x", model: "gpt", payload: { attempt: 2 } });
+
+		expect(capture.getRecord(1)!.requestActivities).toEqual([{ kind: "user-input", count: 1 }]);
+		expect(capture.getRecord(2)!.requestActivities).toEqual([{ kind: "user-input", count: 1 }]);
+	});
+
 	it("correlates status and output and estimates known prefix-cache placement", () => {
 		const capture = createAnalysisCapture({ now: () => 100 });
 		capture.observe({ type: "agent_start" });
@@ -70,6 +114,7 @@ describe("analysis capture", () => {
 		const explorer = { channel: "subagent", invocationId: "explorer-1", displayLabel: "explorer" } as const;
 		for (const source of [worker, explorer]) {
 			capture.observe({ type: "agent_start", source });
+			if (source === worker) capture.observe({ type: "activity", source, activity: { kind: "user-input" } });
 			capture.observe({ type: "turn_start", source, turnIndex: 0 });
 			capture.observe({ type: "request", source, provider: "openai", api: "openai-responses", model: "gpt", payload: { source: source.displayLabel } });
 		}
@@ -77,8 +122,8 @@ describe("analysis capture", () => {
 		capture.observe({ type: "assistant", source: explorer, message: assistant({ content: "explorer output" }) });
 		capture.observe({ type: "response", source: worker, status: 201 });
 		capture.observe({ type: "assistant", source: worker, message: assistant({ content: "worker output" }) });
-		expect(capture.getRecord(1)).toMatchObject({ source: worker, run: 1, turn: 0, status: 201, correlation: "exact" });
-		expect(capture.getRecord(2)).toMatchObject({ source: explorer, run: 1, turn: 0, status: 202, correlation: "exact" });
+		expect(capture.getRecord(1)).toMatchObject({ source: worker, run: 1, turn: 0, status: 201, correlation: "exact", requestActivities: [{ kind: "user-input", count: 1 }] });
+		expect(capture.getRecord(2)).toMatchObject({ source: explorer, run: 1, turn: 0, status: 202, correlation: "exact", requestActivities: [] });
 		expect(capture.getRecord(1)!.assistantJson).toContain("worker output");
 		expect(capture.getRecord(2)!.assistantJson).toContain("explorer output");
 	});

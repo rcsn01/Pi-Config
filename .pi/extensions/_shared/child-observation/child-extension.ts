@@ -37,6 +37,15 @@ export default function childObservationExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("after_provider_response", (event) => relay({ type: "response", status: event.status }));
 	pi.on("message_end", (event) => {
-		if (event.message.role === "assistant") relay({ type: "assistant", message: event.message });
+		if (event.message.role === "assistant") {
+			relay({ type: "assistant", message: event.message });
+		} else if (event.message.role === "user") {
+			relay({ type: "activity", activity: { kind: "user-input" } });
+		} else if (event.message.role === "toolResult") {
+			relay({
+				type: "activity",
+				activity: { kind: "tool-result", toolCallId: event.message.toolCallId, toolName: event.message.toolName },
+			});
+		}
 	});
 }

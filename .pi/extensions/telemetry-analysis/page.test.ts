@@ -37,7 +37,14 @@ describe("analysis page", () => {
 		const { window, document } = parseHTML(ANALYSIS_PAGE);
 		const records = [
 			{ sequence: 1, source: { channel: "main", invocationId: "main", displayLabel: "Main agent" }, provider: "openai", model: "main", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 0, requestedAt: 1, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
-			{ sequence: 2, source: { channel: "main", invocationId: "main", displayLabel: "Main agent" }, provider: "openai", model: "main", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 1, requestedAt: 2, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider", usage: { input: 10, cacheRead: 20, cacheWrite: 5, output: 15, reasoning: 5, totalTokens: 50, cost: { total: 0 } } },
+			{ sequence: 2, source: { channel: "main", invocationId: "main", displayLabel: "Main agent" }, provider: "openai", model: "main", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 1, requestedAt: 2, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider", requestActivities: [
+				{ kind: "user-input", count: 1 },
+				{ kind: "tool-result", count: 1, labels: ["read"] },
+			], responseActivities: [
+				{ kind: "thinking", count: 1 },
+				{ kind: "tool-call-request", count: 1, labels: ["bash"] },
+				{ kind: "output", count: 1 },
+			], usage: { input: 10, cacheRead: 20, cacheWrite: 5, output: 15, reasoning: 5, totalTokens: 50, cost: { total: 0 } } },
 			{ sequence: 3, source: { channel: "subagent", invocationId: "worker-1", displayLabel: "worker" }, provider: "openai", model: "worker", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 0, requestedAt: 3, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
 			{ sequence: 4, source: { channel: "subagent", invocationId: "explorer-1", displayLabel: "explorer" }, provider: "openai", model: "explorer", api: "openai-responses", apiLabel: "OpenAI Responses", run: 1, turn: 0, requestedAt: 4, state: "complete", correlation: "exact", bytes: 10, fidelity: "exact-provider" },
 			{ sequence: 5, source: { channel: "advisor", invocationId: "advisor-1", displayLabel: "Advisor" }, provider: "anthropic", model: "strong", api: "anthropic-messages", apiLabel: "Anthropic Messages", run: 1, turn: 0, requestedAt: 5, state: "complete", correlation: "exact", bytes: 10, fidelity: "pi-preparation" },
@@ -72,10 +79,32 @@ describe("analysis page", () => {
 			["token-output", "width:20%"], ["token-reasoning", "width:10%"],
 		]);
 		expect(requestBars[0]!.getAttribute("aria-label")).toContain("Cache input: 20 tokens (40.0%)");
-		const requestOverview = document.querySelector<HTMLElement>(".request-overview")!;
-		expect(requestOverview.querySelectorAll(".detail-grid > .metric")).toHaveLength(8);
-		expect(requestOverview.querySelector(".summary-label")?.textContent).toBe("Exact provider-reported usage");
-		expect(requestOverview.querySelectorAll(".usage-grid > .metric")).toHaveLength(7);
+		expect(requestBars[1]!.classList.contains("usage-unavailable")).toBe(true);
+		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #2");
+		expect(document.querySelector(".request-row.selected strong")?.textContent).toContain("#2 Request");
+		expect(Array.from(document.querySelectorAll(".request-row.selected .activity-badge"), (row) => row.textContent)).toEqual([
+			"User input", "Tool result: read",
+		]);
+		expect(document.querySelector(".request-row.selected .request-activities")?.getAttribute("aria-label")).toBe(
+			"Provider request activities: User input, Tool result: read",
+		);
+		expect(document.querySelector(".request-row.selected .response-activities")).toBeNull();
+
+		const responseRow = Array.from(document.querySelectorAll<HTMLButtonElement>(".request-row")).find((row) => row.querySelector("strong")?.textContent?.includes("#2 Response"))!;
+		responseRow.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Response #2");
+		expect(Array.from(document.querySelectorAll(".request-row.selected .activity-badge"), (row) => row.textContent)).toEqual([
+			"Thinking", "Tool request: bash", "Output",
+		]);
+		expect(document.querySelector(".request-row.selected .request-activities")).toBeNull();
+		expect(document.querySelector(".request-row.selected .response-activities")?.getAttribute("aria-label")).toBe(
+			"Provider response activities: Thinking, Tool request: bash, Output",
+		);
+		const responseOverview = document.querySelector<HTMLElement>(".request-overview")!;
+		expect(responseOverview.querySelectorAll(".detail-grid > .metric")).toHaveLength(8);
+		expect(responseOverview.querySelector(".summary-label")?.textContent).toBe("Exact provider-reported usage");
+		expect(responseOverview.querySelectorAll(".usage-grid > .metric")).toHaveLength(7);
 		const tokenMetrics = Array.from(document.querySelectorAll<HTMLElement>(".token-metric"));
 		expect(tokenMetrics.map((metric) => [metric.className, metric.firstElementChild?.textContent])).toEqual([
 			["metric token-metric token-input", "Input"],
@@ -84,8 +113,6 @@ describe("analysis page", () => {
 			["metric token-metric token-output", "Output"],
 			["metric token-metric token-reasoning", "Reasoning, subset of output"],
 		]);
-		expect(requestBars[1]!.classList.contains("usage-unavailable")).toBe(true);
-		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #2");
 
 		expect(document.getElementById("subagentList")?.classList.contains("hidden")).toBe(true);
 		tabs[1]!.click();
@@ -99,12 +126,14 @@ describe("analysis page", () => {
 		]);
 		expect(document.querySelector(".subagent-row.selected strong")?.textContent).toBe("explorer");
 		expect(Array.from(document.querySelectorAll(".request-row strong"), (row) => row.textContent)).toEqual([
-			"#4 explorer · openai/explorer",
+			"#4 Request · explorer · openai/explorer",
+			"#4 Response · explorer · openai/explorer",
 		]);
 		document.querySelectorAll<HTMLButtonElement>(".subagent-row")[1]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(Array.from(document.querySelectorAll(".request-row strong"), (row) => row.textContent)).toEqual([
-			"#3 worker · openai/worker",
+			"#3 Request · worker · openai/worker",
+			"#3 Response · worker · openai/worker",
 		]);
 		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #3");
 		tabs[0]!.click();
@@ -112,7 +141,7 @@ describe("analysis page", () => {
 		tabs[1]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(document.querySelector(".subagent-row.selected strong")?.textContent).toBe("worker");
-		expect(document.querySelector(".request-row.selected strong")?.textContent).toContain("#3 worker");
+		expect(document.querySelector(".request-row.selected strong")?.textContent).toContain("#3 Request · worker");
 
 		tabs[2]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -123,7 +152,7 @@ describe("analysis page", () => {
 		expect(document.querySelector(".detail-pane .empty-state")?.textContent).toContain("Guardian");
 		tabs[4]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Compaction #6");
+		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Compaction Request #6");
 		expect(document.querySelector(".detail-pane")?.textContent).toContain("Pi-level preparation, not exact provider payload");
 	});
 

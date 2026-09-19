@@ -21,6 +21,7 @@ let summaries = [];
 let activeChannel = 'main';
 let selectedSubagentId = null;
 let selectedSequence = null;
+let selectedPart = 'request';
 const selections = new Map();
 let renderedFingerprint = null;
 
@@ -63,6 +64,60 @@ function usageBar(usage, className = '') {
 	});
 	bar.setAttribute('aria-label', labels.length ? labels.join(', ') : 'No token usage');
 	return bar;
+}
+
+const REQUEST_ACTIVITY_BADGES = {
+	'user-input': { label: 'User input', className: 'activity-user-input' },
+	'tool-result': { label: 'Tool result', className: 'activity-tool-result' },
+};
+const RESPONSE_ACTIVITY_BADGES = {
+	thinking: { label: 'Thinking', className: 'activity-thinking' },
+	'tool-call-request': { label: 'Tool request', className: 'activity-tool-call-request' },
+	output: { label: 'Output', className: 'activity-output' },
+};
+
+function activityText(activity, badges) {
+	const metadata = badges[activity?.kind];
+	if (!metadata) return null;
+	const labels = Array.isArray(activity.labels) ? activity.labels.filter((label) => typeof label === 'string' && label) : [];
+	const count = Number.isInteger(activity.count) && activity.count > 1 ? ' ×' + activity.count : '';
+	return metadata.label + (labels.length ? ': ' + labels.join(', ') : '') + count;
+}
+
+function activityBadgeList(activities, badges, className, ariaLabel) {
+	const values = Array.isArray(activities)
+		? activities.map((activity) => ({ activity, text: activityText(activity, badges) })).filter(({ text }) => text !== null)
+		: [];
+	if (!values.length) return null;
+	const list = element('span', className);
+	list.setAttribute('role', 'list');
+	list.setAttribute('aria-label', ariaLabel + ': ' + values.map(({ text }) => text).join(', '));
+	values.forEach(({ activity, text }) => {
+		const metadata = badges[activity.kind];
+		const badge = element('span', 'activity-badge ' + metadata.className, text);
+		badge.setAttribute('role', 'listitem');
+		badge.title = text;
+		list.append(badge);
+	});
+	return list;
+}
+
+function activityGroup(activities, badges, groupClass, listClass, label) {
+	const list = activityBadgeList(activities, badges, listClass, 'Provider ' + label.toLowerCase() + ' activities');
+	if (!list) return null;
+	const group = element('span', 'activity-group ' + groupClass);
+	group.append(element('span', 'activity-group-label', label), list);
+	return group;
+}
+
+function activityGroups(requestActivities, responseActivities) {
+	const request = activityGroup(requestActivities, REQUEST_ACTIVITY_BADGES, 'request-activity-group', 'request-activities', 'Request');
+	const response = activityGroup(responseActivities, RESPONSE_ACTIVITY_BADGES, 'response-activity-group', 'response-activities', 'Response');
+	if (!request && !response) return null;
+	const groups = element('span', 'activity-groups');
+	if (request) groups.append(request);
+	if (response) groups.append(response);
+	return groups;
 }
 
 function usageView(usage) {
@@ -263,8 +318,8 @@ function expandedPointers() {
 	));
 }
 
-function itemFingerprint(item) {
-	return [item.sequence, item.state, item.bytes, item.status, item.diagnostic].join(':');
+function itemFingerprint(item, part) {
+	return [part, item.sequence, item.state, item.bytes, item.status, item.diagnostic, JSON.stringify(item.requestActivities), JSON.stringify(item.responseActivities)].join(':');
 }
 
 function channelOf(item) {
@@ -304,16 +359,28 @@ function visibleSummaries() {
 		&& (activeChannel !== 'subagent' || subagentIdOf(item) === selectedSubagentId));
 }
 
+function saveSelection() {
+	if (selectedSequence != null) selections.set(selectionKey(), { sequence: selectedSequence, part: selectedPart });
+}
+
 function selectRequestForCurrentView() {
 	const visible = visibleSummaries();
 	const saved = selections.get(selectionKey());
-	selectedSequence = visible.some((item) => item.sequence === saved) ? saved : (visible[0]?.sequence ?? null);
+	const savedSequence = typeof saved === 'number' ? saved : saved?.sequence;
+	const savedPart = typeof saved === 'object' && saved?.part === 'response' ? 'response' : 'request';
+	if (visible.some((item) => item.sequence === savedSequence)) {
+		selectedSequence = savedSequence;
+		selectedPart = savedPart;
+	} else {
+		selectedSequence = visible[0]?.sequence ?? null;
+		selectedPart = 'request';
+	}
 }
 
 function renderEmptyDetail(message) {
 	requests?.cancel('detail');
 	renderedFingerprint = null;
-	detailPane.removeAttribute('data-sequence');
+	detailPane.removeAttribute('data-selection');
 	detailPane.replaceChildren(element('div', 'empty-state', message));
 }
 
@@ -330,7 +397,7 @@ const sourceTablist = dashCreateTablist({
 			if (focused) sourceTablist.focus(tab.key);
 			return;
 		}
-		if (selectedSequence != null) selections.set(selectionKey(), selectedSequence);
+		saveSelection();
 		activeChannel = tab.key;
 		sourcePanel.setAttribute('aria-labelledby', 'tab-' + tab.key);
 		sourcePanel.classList.toggle('subagent-mode', activeChannel === 'subagent');
@@ -342,7 +409,7 @@ const sourceTablist = dashCreateTablist({
 		renderRequestList();
 		const visible = visibleSummaries();
 		const selected = visible.find((item) => item.sequence === selectedSequence);
-		if (selected) renderDetail(selected);
+		if (selected) renderDetail(selected, selectedPart);
 		else renderEmptyDetail('No captured requests for ' + tab.label + '.');
 		if (focused) sourceTablist.focus(tab.key);
 	},
@@ -368,14 +435,14 @@ function renderSubagentList() {
 		button.append(title, meta);
 		button.addEventListener('click', () => {
 			if (agent.id === selectedSubagentId) return;
-			if (selectedSequence != null) selections.set(selectionKey(), selectedSequence);
+			saveSelection();
 			selectedSubagentId = agent.id;
 			selectRequestForCurrentView();
 			renderedFingerprint = null;
 			renderSubagentList();
 			renderRequestList();
 			const selected = visibleSummaries().find((item) => item.sequence === selectedSequence);
-			if (selected) renderDetail(selected);
+			if (selected) renderDetail(selected, selectedPart);
 			else renderEmptyDetail('No captured requests for ' + agent.label + '.');
 		});
 		subagentList.append(button);
@@ -390,68 +457,87 @@ function renderRequestList() {
 		return;
 	}
 	visible.forEach((item) => {
-		const button = document.createElement('button');
-		button.type = 'button';
-		button.className = 'request-row dash-row' + (item.sequence === selectedSequence ? ' selected' : '');
-		button.setAttribute('aria-pressed', item.sequence === selectedSequence ? 'true' : 'false');
+		for (const part of ['request', 'response']) {
+			const selected = item.sequence === selectedSequence && part === selectedPart;
+			const button = document.createElement('button');
+			button.type = 'button';
+			button.className = 'request-row dash-row' + (selected ? ' selected' : '');
+			button.setAttribute('aria-pressed', selected ? 'true' : 'false');
 
-		const title = document.createElement('strong');
-		title.textContent = '#' + item.sequence + ' ' + (item.source?.displayLabel || item.provider) + ' · ' + item.provider + '/' + item.model;
-		const meta = document.createElement('span');
-		meta.textContent = item.apiLabel + ' · ' + item.state + ' · ' + new Date(item.requestedAt).toLocaleTimeString();
-		button.append(title, meta, usageBar(item.usage, 'request-usage-bar'));
-		button.addEventListener('click', () => {
-			selectedSequence = item.sequence;
-			selections.set(selectionKey(), selectedSequence);
-			renderedFingerprint = null;
-			renderRequestList();
-			renderDetail(item);
-		});
-		requestList.append(button);
+			const title = document.createElement('strong');
+			title.textContent = '#' + item.sequence + ' ' + (part === 'request' ? 'Request' : 'Response') + ' · ' + (item.source?.displayLabel || item.provider) + ' · ' + item.provider + '/' + item.model;
+			const meta = document.createElement('span');
+			const at = part === 'response' ? (item.completedAt ?? item.requestedAt) : item.requestedAt;
+			meta.textContent = item.apiLabel + ' · ' + (part === 'request' ? 'outbound' : 'inbound') + ' · ' + item.state + ' · ' + new Date(at).toLocaleTimeString();
+			const activities = part === 'request'
+				? activityGroups(item.requestActivities, [])
+				: activityGroups([], item.responseActivities);
+			button.append(title);
+			if (activities) button.append(activities);
+			button.append(meta);
+			if (part === 'response') button.append(usageBar(item.usage, 'request-usage-bar'));
+			button.addEventListener('click', () => {
+				selectedSequence = item.sequence;
+				selectedPart = part;
+				saveSelection();
+				renderedFingerprint = null;
+				renderRequestList();
+				renderDetail(item, part);
+			});
+			requestList.append(button);
+		}
 	});
 }
 
-function renderDetail(item) {
-	const fingerprint = itemFingerprint(item);
-	const openPointers = detailPane.dataset.sequence === String(item.sequence)
+function renderDetail(item, part) {
+	const fingerprint = itemFingerprint(item, part);
+	const detailSelection = item.sequence + ':' + part;
+	const openPointers = detailPane.dataset.selection === detailSelection
 		? expandedPointers()
 		: new Set();
-	detailPane.dataset.sequence = String(item.sequence);
+	detailPane.dataset.selection = detailSelection;
 	renderedFingerprint = fingerprint;
-	detailPane.replaceChildren(element('div', 'status', 'Loading request #' + item.sequence + '...'));
+	detailPane.replaceChildren(element('div', 'status', 'Loading ' + part + ' #' + item.sequence + '...'));
 
 	requests.read('detail', '/api/records/' + item.sequence, {
 		success(detail) {
-			if (selectedSequence !== item.sequence) return;
+			if (selectedSequence !== item.sequence || selectedPart !== part) return;
 
+			const isRequest = part === 'request';
 			const heading = document.createElement('h2');
-			heading.textContent = (detail.source?.channel === 'compaction' ? 'Compaction #' : 'Request #') + item.sequence + ' · ' + detail.provider + '/' + detail.model;
+			const prefix = detail.source?.channel === 'compaction' ? 'Compaction ' : '';
+			heading.textContent = prefix + (isRequest ? 'Request #' : 'Response #') + item.sequence + ' · ' + detail.provider + '/' + detail.model;
 			const overview = element('div', 'request-overview');
 			const grid = element('div', 'grid detail-grid');
 			grid.append(
 				metric('Source', (detail.source?.displayLabel || 'Main agent') + ' · ' + (detail.source?.invocationId || 'legacy')),
 				metric('Run / turn', detail.run + ' / ' + detail.turn),
 				metric('API', detail.api),
-				metric('Payload type', detail.apiLabel),
+				metric(isRequest ? 'Payload type' : 'Response type', detail.apiLabel),
 				metric('Payload fidelity', detail.fidelity === 'pi-preparation' ? 'Pi-level preparation, not exact provider payload' : 'Exact provider payload'),
 				metric(
 					'HTTP status',
-					detail.status == null ? (detail.statusEvidence?.join(', ') || 'unavailable') : detail.status,
+					isRequest
+						? 'See response item'
+						: detail.status == null ? (detail.statusEvidence?.join(', ') || 'unavailable') : detail.status,
 				),
 				metric('Correlation', detail.correlation),
 				metric('Retained bytes', fmt(detail.bytes)),
 			);
 			overview.append(grid);
-			if (detail.usage) overview.append(usageView(detail.usage));
+			if (!isRequest && detail.usage) overview.append(usageView(detail.usage));
 			detailPane.replaceChildren(heading, overview);
 
 			if (detail.diagnostic) detailPane.append(element('div', 'alert', detail.diagnostic));
-			detailPane.append(
-				sectionView(detail, openPointers),
-				rawDetails('Complete logical request JSON', detail.requestJson),
-			);
-			if (detail.assistantJson) {
-				detailPane.append(rawDetails('Complete Pi-normalized assistant JSON', detail.assistantJson));
+			if (isRequest) {
+				detailPane.append(
+					sectionView(detail, openPointers),
+					rawDetails('Complete logical request JSON', detail.requestJson),
+				);
+			} else if (detail.assistantJson) {
+				detailPane.append(rawDetails('Complete Pi-normalized provider response JSON', detail.assistantJson));
+			} else {
+				detailPane.append(element('div', 'empty-state', 'Provider response not captured yet.'));
 			}
 		},
 		failure(caught) {
@@ -478,7 +564,7 @@ function refresh() {
 				selectRequestForCurrentView();
 				visible = visibleSummaries();
 			}
-			if (selectedSequence != null) selections.set(selectionKey(), selectedSequence);
+			saveSelection();
 			sourceTablist.update();
 			renderSubagentList();
 			renderRequestList();
@@ -490,8 +576,8 @@ function refresh() {
 					? (subagent?.label || 'Subagents')
 					: (tabs.find((tab) => tab.key === activeChannel)?.label || activeChannel);
 				renderEmptyDetail('No captured requests for ' + label + '.');
-			} else if (renderedFingerprint !== itemFingerprint(selected)) {
-				renderDetail(selected);
+			} else if (renderedFingerprint !== itemFingerprint(selected, selectedPart)) {
+				renderDetail(selected, selectedPart);
 			}
 		},
 		failure(caught) {

@@ -22,6 +22,17 @@ h2 { margin: 0 0 14px; font-size: 1.1rem; font-weight: 570; }
 .subagent-row.selected, .request-row.selected { background: var(--page-surface-hover); box-shadow: inset 3px 0 var(--page-accent); }
 .subagent-row strong, .request-row strong { color: var(--page-text-soft); }
 .subagent-row span, .request-row span { margin-top: 4px; color: var(--page-text-muted); font-size: .78rem; }
+.activity-groups { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px !important; }
+.activity-group, .activity-group-label, .request-activities, .response-activities { margin-top: 0 !important; }
+.activity-group { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.activity-group-label { color: var(--page-text-muted) !important; font-size: .68rem !important; font-weight: 600; }
+.request-activities, .response-activities { display: flex; flex-wrap: wrap; gap: 4px; }
+.request-activities .activity-badge, .response-activities .activity-badge { display: inline-block; margin: 0; padding: 2px 5px; border: 1px solid var(--page-line-strong); border-radius: 4px; color: var(--page-text-soft); font-size: .68rem; line-height: 1.2; }
+.request-activities .activity-user-input { border-color: #63B3FF; }
+.request-activities .activity-tool-result { border-color: #FF9F68; }
+.response-activities .activity-tool-call-request { border-color: #F5BE55; }
+.response-activities .activity-thinking { border-color: #FF7EB6; }
+.response-activities .activity-output { border-color: #C99AFF; }
 .detail-pane { min-width: 0; padding: 10px 0; background: transparent; }
 .detail-pane:empty { display: none; }
 .request-overview { margin-bottom: 18px; padding: 8px 0 7px; border-top: 1px solid var(--page-line); border-bottom: 1px solid var(--page-line); }

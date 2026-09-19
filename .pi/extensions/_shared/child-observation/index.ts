@@ -67,6 +67,17 @@ function parseFrame(line: string): RelayedEvent | undefined {
 		if (event.type === "turn_start" && typeof event.turnIndex === "number" && Number.isInteger(event.turnIndex)) {
 			return { type: "turn_start", turnIndex: event.turnIndex, ...(at === undefined ? {} : { at }) };
 		}
+		if (event.type === "activity" && event.activity && typeof event.activity === "object" && !Array.isArray(event.activity)) {
+			const activity = event.activity as Record<string, unknown>;
+			if (activity.kind === "user-input") return { type: "activity", activity: { kind: "user-input" }, ...(at === undefined ? {} : { at }) };
+			if (activity.kind === "tool-result" && validString(activity.toolCallId) && validString(activity.toolName)) {
+				return {
+					type: "activity",
+					activity: { kind: "tool-result", toolCallId: activity.toolCallId, toolName: activity.toolName },
+					...(at === undefined ? {} : { at }),
+				};
+			}
+		}
 		if (event.type === "request" && validString(event.provider) && validString(event.api) && validString(event.model) && "payload" in event) {
 			return {
 				type: "request",
