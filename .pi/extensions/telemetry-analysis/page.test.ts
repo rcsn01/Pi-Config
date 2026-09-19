@@ -73,27 +73,19 @@ describe("analysis page", () => {
 		]);
 		expect(document.getElementById("sourcePanel")?.getAttribute("aria-labelledby")).toBe("tab-main");
 		const requestBars = Array.from(document.querySelectorAll<HTMLElement>(".request-usage-bar"));
-		expect(requestBars).toHaveLength(2);
+		expect(requestBars).toHaveLength(4);
 		expect(Array.from(requestBars[0]!.children, (segment) => [segment.className, segment.getAttribute("style")])).toEqual([
-			["token-input", "width:20%"], ["token-cache-input", "width:40%"], ["token-cache-write", "width:10%"],
-			["token-output", "width:20%"], ["token-reasoning", "width:10%"],
+			["token-output", "width:66.66666666666667%"], ["token-reasoning", "width:33.333333333333336%"],
 		]);
-		expect(requestBars[0]!.getAttribute("aria-label")).toContain("Cache input: 20 tokens (40.0%)");
-		expect(requestBars[1]!.classList.contains("usage-unavailable")).toBe(true);
-		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #2");
-		expect(document.querySelector(".request-row.selected strong")?.textContent).toContain("#2 Request");
-		expect(Array.from(document.querySelectorAll(".request-row.selected .activity-badge"), (row) => row.textContent)).toEqual([
-			"User input", "Tool result: read",
+		expect(requestBars[0]!.getAttribute("aria-label")).toContain("Output: 10 tokens (66.7%)");
+		expect(Array.from(requestBars[1]!.children, (segment) => [segment.className, segment.getAttribute("style")])).toEqual([
+			["token-input", "width:28.571428571428573%"], ["token-cache-input", "width:57.142857142857146%"], ["token-cache-write", "width:14.285714285714286%"],
 		]);
-		expect(document.querySelector(".request-row.selected .request-activities")?.getAttribute("aria-label")).toBe(
-			"Provider request activities: User input, Tool result: read",
-		);
-		expect(document.querySelector(".request-row.selected .response-activities")).toBeNull();
-
-		const responseRow = Array.from(document.querySelectorAll<HTMLButtonElement>(".request-row")).find((row) => row.querySelector("strong")?.textContent?.includes("#2 Response"))!;
-		responseRow.click();
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(requestBars[1]!.getAttribute("aria-label")).toContain("Cache input: 20 tokens (57.1%)");
+		expect(requestBars[2]!.classList.contains("usage-unavailable")).toBe(true);
+		expect(requestBars[3]!.classList.contains("usage-unavailable")).toBe(true);
 		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Response #2");
+		expect(document.querySelector(".request-row.selected strong")?.textContent).toContain("#2 Response");
 		expect(Array.from(document.querySelectorAll(".request-row.selected .activity-badge"), (row) => row.textContent)).toEqual([
 			"Thinking", "Tool request: bash", "Output",
 		]);
@@ -113,6 +105,18 @@ describe("analysis page", () => {
 			["metric token-metric token-output", "Output"],
 			["metric token-metric token-reasoning", "Reasoning, subset of output"],
 		]);
+		const requestRow = Array.from(document.querySelectorAll<HTMLButtonElement>(".request-row")).find((row) => row.querySelector("strong")?.textContent?.includes("#2 Request"))!;
+		requestRow.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #2");
+		expect(Array.from(document.querySelectorAll(".request-row.selected .activity-badge"), (row) => row.textContent)).toEqual([
+			"User input", "Tool result: read",
+		]);
+		expect(document.querySelector(".request-row.selected .request-activities")?.getAttribute("aria-label")).toBe(
+			"Provider request activities: User input, Tool result: read",
+		);
+		expect(document.querySelector(".request-row.selected .response-activities")).toBeNull();
+		expect(document.querySelector(".request-overview .summary-label")).toBeNull();
 
 		expect(document.getElementById("subagentList")?.classList.contains("hidden")).toBe(true);
 		tabs[1]!.click();
@@ -126,33 +130,33 @@ describe("analysis page", () => {
 		]);
 		expect(document.querySelector(".subagent-row.selected strong")?.textContent).toBe("explorer");
 		expect(Array.from(document.querySelectorAll(".request-row strong"), (row) => row.textContent)).toEqual([
-			"#4 Request · explorer · openai/explorer",
 			"#4 Response · explorer · openai/explorer",
+			"#4 Request · explorer · openai/explorer",
 		]);
 		document.querySelectorAll<HTMLButtonElement>(".subagent-row")[1]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(Array.from(document.querySelectorAll(".request-row strong"), (row) => row.textContent)).toEqual([
-			"#3 Request · worker · openai/worker",
 			"#3 Response · worker · openai/worker",
+			"#3 Request · worker · openai/worker",
 		]);
-		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #3");
+		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Response #3");
 		tabs[0]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		tabs[1]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(document.querySelector(".subagent-row.selected strong")?.textContent).toBe("worker");
-		expect(document.querySelector(".request-row.selected strong")?.textContent).toContain("#3 Request · worker");
+		expect(document.querySelector(".request-row.selected strong")?.textContent).toContain("#3 Response · worker");
 
 		tabs[2]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Request #5");
+		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Response #5");
 		expect(document.querySelector(".detail-pane")?.textContent).toContain("Advisor");
 		tabs[3]!.click();
 		expect(document.querySelector(".request-list .empty-state")?.textContent).toContain("No requests");
 		expect(document.querySelector(".detail-pane .empty-state")?.textContent).toContain("Guardian");
 		tabs[4]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Compaction Request #6");
+		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Compaction Response #6");
 		expect(document.querySelector(".detail-pane")?.textContent).toContain("Pi-level preparation, not exact provider payload");
 	});
 

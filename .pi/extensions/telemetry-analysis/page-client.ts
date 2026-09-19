@@ -34,7 +34,7 @@ function metric(label, value, tokenClass = '') {
 	return box;
 }
 
-function usageBar(usage, className = '') {
+function usageBar(usage, className = '', composition = 'all') {
 	const bar = element('div', 'bar' + (className ? ' ' + className : ''));
 	bar.setAttribute('role', 'img');
 	if (!usage) {
@@ -43,14 +43,26 @@ function usageBar(usage, className = '') {
 		bar.setAttribute('aria-label', bar.title);
 		return bar;
 	}
-	const total = usage.input + usage.cacheRead + usage.cacheWrite + usage.output;
-	const segments = [
-		['token-input', 'Input', usage.input],
-		['token-cache-input', 'Cache input', usage.cacheRead],
-		['token-cache-write', 'Cache write', usage.cacheWrite],
-		['token-output', 'Output', Math.max(0, usage.output - (usage.reasoning || 0))],
-		['token-reasoning', 'Reasoning output', usage.reasoning || 0],
-	];
+	const reasoning = usage.reasoning || 0;
+	const segments = composition === 'request'
+		? [
+			['token-input', 'Input', usage.input],
+			['token-cache-input', 'Cache input', usage.cacheRead],
+			['token-cache-write', 'Cache write', usage.cacheWrite],
+		]
+		: composition === 'response'
+			? [
+				['token-output', 'Output', Math.max(0, usage.output - reasoning)],
+				['token-reasoning', 'Reasoning output', reasoning],
+			]
+			: [
+				['token-input', 'Input', usage.input],
+				['token-cache-input', 'Cache input', usage.cacheRead],
+				['token-cache-write', 'Cache write', usage.cacheWrite],
+				['token-output', 'Output', Math.max(0, usage.output - reasoning)],
+				['token-reasoning', 'Reasoning output', reasoning],
+			];
+	const total = segments.reduce((sum, [, , count]) => sum + count, 0);
 	const labels = [];
 	segments.forEach(([segmentClass, label, count]) => {
 		if (!count || !total) return;
@@ -363,6 +375,10 @@ function saveSelection() {
 	if (selectedSequence != null) selections.set(selectionKey(), { sequence: selectedSequence, part: selectedPart });
 }
 
+function defaultPart(item) {
+	return item.state === 'complete' ? 'response' : 'request';
+}
+
 function selectRequestForCurrentView() {
 	const visible = visibleSummaries();
 	const saved = selections.get(selectionKey());
@@ -373,7 +389,7 @@ function selectRequestForCurrentView() {
 		selectedPart = savedPart;
 	} else {
 		selectedSequence = visible[0]?.sequence ?? null;
-		selectedPart = 'request';
+		selectedPart = selectedSequence == null ? 'request' : defaultPart(visible[0]);
 	}
 }
 
@@ -457,7 +473,7 @@ function renderRequestList() {
 		return;
 	}
 	visible.forEach((item) => {
-		for (const part of ['request', 'response']) {
+		for (const part of ['response', 'request']) {
 			const selected = item.sequence === selectedSequence && part === selectedPart;
 			const button = document.createElement('button');
 			button.type = 'button';
@@ -475,7 +491,7 @@ function renderRequestList() {
 			button.append(title);
 			if (activities) button.append(activities);
 			button.append(meta);
-			if (part === 'response') button.append(usageBar(item.usage, 'request-usage-bar'));
+			button.append(usageBar(item.usage, 'request-usage-bar', part));
 			button.addEventListener('click', () => {
 				selectedSequence = item.sequence;
 				selectedPart = part;
