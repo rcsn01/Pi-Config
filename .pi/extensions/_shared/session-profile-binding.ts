@@ -5,10 +5,12 @@ import type {
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { resolve } from "node:path";
+import { piConfigPath, isProjectTrustedContext } from "../_shared/pi-config.ts";
 import {
 	profilePath,
 	profilesDirectoryFor,
 	readActiveProfileName,
+	readProjectProfileName,
 	sessionProfileName,
 } from "./profile-document.ts";
 import { readSessionProfileHandoff } from "./session-profile-transfer.ts";
@@ -129,6 +131,8 @@ function resolveSessionProfileSlot(input: {
 	previousSessionFile?: string;
 	settingsPath: string;
 	profilesDirectory: string;
+	/** `.pi/pi-config.json` path when the project is trusted; undefined skips the project layer. */
+	projectPiConfigPath?: string;
 }): SessionProfileSlot {
 	const fromEntry = sessionProfileName(input.entries);
 	if (fromEntry !== undefined) {
@@ -155,6 +159,21 @@ function resolveSessionProfileSlot(input: {
 						: profilePath(input.profilesDirectory, handoff.profileName),
 				}),
 				origin: "handoff",
+				remembered: false,
+			};
+		}
+
+		// Trusted project declaration wins over the global settings marker.
+		const fromProject = input.projectPiConfigPath === undefined
+			? undefined
+			: readProjectProfileName(input.projectPiConfigPath);
+		if (fromProject !== undefined) {
+			return {
+				binding: Object.freeze({
+					profileName: fromProject,
+					settingsPath: profilePath(input.profilesDirectory, fromProject),
+				}),
+				origin: "marker",
 				remembered: false,
 			};
 		}
@@ -199,6 +218,10 @@ function enterSessionProfile(
 		previousSessionFile: event.previousSessionFile,
 		settingsPath: state.settingsPath,
 		profilesDirectory: state.profilesDirectory,
+		// Capability probe shared with pi-config.ts: an absent API on older pi
+		// hosts means the project layer cannot be evaluated — treat as untrusted
+		// rather than crash session start for every Profile-aware adapter.
+		projectPiConfigPath: isProjectTrustedContext(ctx) ? piConfigPath(ctx.cwd) : undefined,
 	});
 	slots.set(state.pathKey, slot);
 	return slot;

@@ -70,7 +70,21 @@ describe("PermissionEnforcementLifecycle", () => {
 		expect(harness.lifecycle.mode).toEqual({ mode: "read-only", setAt: 1 });
 		const changed = { mode: "auto-review", setAt: 2 } as const;
 		expect(harness.lifecycle.changeMode(changed)).toEqual({ mode: changed });
-		expect(harness.adapter.saveMode).toHaveBeenCalledWith("/workspace", changed);
+		expect(harness.adapter.saveMode).toHaveBeenCalledWith("/workspace", changed, {});
+	});
+
+	it("threads project-trust persistence options through sync and mode changes", () => {
+		const harness = createHarness();
+		harness.lifecycle.synchronizeSession({
+			cwd: "/workspace",
+			resetTransientApprovals: false,
+			projectTrusted: true,
+		});
+		expect(harness.adapter.loadMode).toHaveBeenLastCalledWith("/workspace", { projectTrusted: true });
+		harness.lifecycle.changeMode({ mode: "read-only", setAt: 3 }, { projectTrusted: true });
+		expect(harness.adapter.saveMode).toHaveBeenLastCalledWith("/workspace", { mode: "read-only", setAt: 3 }, {
+			projectTrusted: true,
+		});
 	});
 
 	it("keeps mode live when best-effort persistence fails", () => {

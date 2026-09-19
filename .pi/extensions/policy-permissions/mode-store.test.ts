@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadModeFromFile, saveModeToFile } from "./mode-store.ts";
+import { piConfigPath } from "../_shared/pi-config.ts";
 
 let prevStateDir: string | undefined;
 
@@ -49,5 +50,69 @@ describe("mode-store", () => {
 
 		const loaded = loadModeFromFile(cwd);
 		expect(loaded).toEqual({ mode: "read-only", setAt: 99 });
+	});
+
+	it("trusted projects read permissions.mode from .pi/pi-config.json", () => {
+		withStateDir();
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-mode-project-"));
+		fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+		fs.writeFileSync(piConfigPath(cwd), JSON.stringify({ permissions: { mode: "read-only" } }));
+
+		const loaded = loadModeFromFile(cwd, { projectTrusted: true });
+		expect(loaded).toEqual({ mode: "read-only", setAt: expect.any(Number) });
+	});
+
+	it("an explicit default declaration is honored, not treated as absent", () => {
+		withStateDir();
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-mode-project-"));
+		fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+		fs.writeFileSync(piConfigPath(cwd), JSON.stringify({ permissions: { mode: "default" } }));
+		saveModeToFile(cwd, { mode: "auto-review", setAt: 1 });
+
+		const loaded = loadModeFromFile(cwd, { projectTrusted: true });
+		expect(loaded).toEqual({ mode: "default", setAt: expect.any(Number) });
+	});
+
+	it("trusted projects fall back to the state store when no project mode is declared", () => {
+		withStateDir();
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-mode-project-"));
+		fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+		fs.writeFileSync(piConfigPath(cwd), JSON.stringify({ profile: "research" }));
+		saveModeToFile(cwd, { mode: "auto-review", setAt: 7 });
+
+		expect(loadModeFromFile(cwd, { projectTrusted: true })).toEqual({ mode: "auto-review", setAt: 7 });
+	});
+
+	it("an invalid project mode falls back to the state store", () => {
+		withStateDir();
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-mode-project-"));
+		fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+		fs.writeFileSync(piConfigPath(cwd), JSON.stringify({ permissions: { mode: "bogus" } }));
+		saveModeToFile(cwd, { mode: "read-only", setAt: 3 });
+
+		expect(loadModeFromFile(cwd, { projectTrusted: true })).toEqual({ mode: "read-only", setAt: 3 });
+	});
+
+	it("trusted saves write the project document and preserve siblings", () => {
+		withStateDir();
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-mode-project-"));
+		fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+		fs.writeFileSync(piConfigPath(cwd), JSON.stringify({ profile: "research" }));
+
+		saveModeToFile(cwd, { mode: "auto-review", setAt: 5 }, { projectTrusted: true });
+
+		expect(JSON.parse(fs.readFileSync(piConfigPath(cwd), "utf-8"))).toEqual({
+			profile: "research",
+			permissions: { mode: "auto-review" },
+		});
+	});
+
+	it("untrusted projects ignore the project document", () => {
+		withStateDir();
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-mode-untrusted-"));
+		fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+		fs.writeFileSync(piConfigPath(cwd), JSON.stringify({ permissions: { mode: "full-access" } }));
+
+		expect(loadModeFromFile(cwd)).toBeNull();
 	});
 });

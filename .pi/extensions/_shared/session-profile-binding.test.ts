@@ -43,10 +43,13 @@ function lifecycle(
 	entries: readonly unknown[] = [],
 	reason: SessionStartEvent["reason"] = "startup",
 	previousSessionFile?: string,
+	options: { cwd?: string; projectTrusted?: boolean } = {},
 ) {
 	const event = { type: "session_start", reason, previousSessionFile } as SessionStartEvent;
 	const ctx = {
 		sessionManager: { getBranch: vi.fn(() => entries) },
+		cwd: options.cwd,
+		isProjectTrusted: vi.fn(() => options.projectTrusted ?? false),
 	} as unknown as ExtensionContext;
 	return { event, ctx };
 }
@@ -138,6 +141,79 @@ describe("Session profile binding", () => {
 			settingsPath: join(paths.profilesDirectory, "remembered.json"),
 		});
 		expect(Object.isFrozen(observed)).toBe(true);
+	});
+
+	it("prefers the trusted project pi-config profile over the settings marker", async () => {
+		const paths = fixture("focused");
+		mkdirSync(join(paths.root, ".pi"), { recursive: true });
+		writeFileSync(join(paths.root, ".pi", "pi-config.json"), JSON.stringify({ profile: "project-profile" }));
+		let observed: SessionProfileBinding | undefined;
+		const registration = register(paths, testAdapter("tools-advisor", [], {
+			initialize: (binding) => { observed = binding; },
+		}));
+
+		const { event, ctx } = lifecycle([], "startup", undefined, {
+			cwd: paths.root,
+			projectTrusted: true,
+		});
+		await registration.start(event, ctx);
+
+		expect(observed?.profileName).toBe("project-profile");
+		expect(observed?.settingsPath).toBe(join(paths.profilesDirectory, "project-profile.json"));
+	});
+
+	it("ignores the project declaration for untrusted projects", async () => {
+		const paths = fixture("focused");
+		mkdirSync(join(paths.root, ".pi"), { recursive: true });
+		writeFileSync(join(paths.root, ".pi", "pi-config.json"), JSON.stringify({ profile: "project-profile" }));
+		let observed: SessionProfileBinding | undefined;
+		const registration = register(paths, testAdapter("tools-advisor", [], {
+			initialize: (binding) => { observed = binding; },
+		}));
+
+		const { event, ctx } = lifecycle([], "startup", undefined, {
+			cwd: paths.root,
+			projectTrusted: false,
+		});
+		await registration.start(event, ctx);
+
+		expect(observed?.profileName).toBe("focused");
+	});
+
+	it("falls back to the settings marker for an invalid project profile name", async () => {
+		const paths = fixture("focused");
+		mkdirSync(join(paths.root, ".pi"), { recursive: true });
+		writeFileSync(join(paths.root, ".pi", "pi-config.json"), JSON.stringify({ profile: "../escape" }));
+		let observed: SessionProfileBinding | undefined;
+		const registration = register(paths, testAdapter("tools-advisor", [], {
+			initialize: (binding) => { observed = binding; },
+		}));
+
+		const { event, ctx } = lifecycle([], "startup", undefined, {
+			cwd: paths.root,
+			projectTrusted: true,
+		});
+		await registration.start(event, ctx);
+
+		expect(observed?.profileName).toBe("focused");
+	});
+
+	it("prefers session entries over the trusted project declaration", async () => {
+		const paths = fixture("focused");
+		mkdirSync(join(paths.root, ".pi"), { recursive: true });
+		writeFileSync(join(paths.root, ".pi", "pi-config.json"), JSON.stringify({ profile: "project-profile" }));
+		let observed: SessionProfileBinding | undefined;
+		const registration = register(paths, testAdapter("tools-advisor", [], {
+			initialize: (binding) => { observed = binding; },
+		}));
+
+		const { event, ctx } = lifecycle([entry("remembered")], "startup", undefined, {
+			cwd: paths.root,
+			projectTrusted: true,
+		});
+		await registration.start(event, ctx);
+
+		expect(observed?.profileName).toBe("remembered");
 	});
 
 	it("uses matching handoff, then marker, then the Settings document", async () => {

@@ -35,11 +35,18 @@ export function readSettingsDocument(
 }
 
 let temporarySequence = 0;
-export function writeSettingsDocument(path: string, document: Record<string, unknown>): void {
+export function writeSettingsDocument(
+	path: string,
+	document: Record<string, unknown>,
+	options: { mode?: number } = {},
+): void {
 	mkdirSync(dirname(path), { recursive: true });
 	const temporaryPath = `${path}.${process.pid}.${Date.now()}.${temporarySequence++}.tmp`;
 	try {
-		writeFileSync(temporaryPath, `${JSON.stringify(document, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
+		writeFileSync(temporaryPath, `${JSON.stringify(document, null, 2)}\n`, {
+			encoding: "utf-8",
+			mode: options.mode ?? 0o600,
+		});
 		renameSync(temporaryPath, path);
 	} finally {
 		if (existsSync(temporaryPath)) unlinkSync(temporaryPath);
