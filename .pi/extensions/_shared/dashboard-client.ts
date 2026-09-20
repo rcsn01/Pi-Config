@@ -42,6 +42,26 @@ function dashFormatCompact(value) {
 	return dashFormatInteger(number);
 }
 
+function dashFormatCost(value, digits = 3) {
+	return '$' + Number(value || 0).toFixed(digits);
+}
+
+function dashCreateSelectionMemory() {
+	const memory = new Map();
+	return {
+		store(view, key) {
+			if (key != null) memory.set(view, key);
+		},
+		keep(view, keys) {
+			const stored = memory.get(view);
+			if (stored != null && keys.includes(stored)) return stored;
+			const fallback = keys[0] ?? null;
+			if (fallback != null) memory.set(view, fallback);
+			return fallback;
+		},
+	};
+}
+
 function dashCreateTablist({ host, tabs, initialKey, buttonClass = '', ariaLabel, controls, countOf, onActivate } = {}) {
 	let activeKey = tabs.some((tab) => tab.key === initialKey) ? initialKey : tabs[0]?.key;
 	const buttons = [];

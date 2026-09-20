@@ -120,13 +120,23 @@ extension.
   token, owns authenticated JSON requests and structured failures, supersedes
   reads per named stream, supports explicit cancellation, and coalesces named
   mutations. Analysis and Usage remain separate dashboard adapters.
+- **Dashboard selection memory** — the shared inline-browser behavior in the
+  Dashboard client shell (`dashCreateSelectionMemory`): per-view memory of the
+  visitor's selection. `store(view, key)` records the current choice and never
+  erases it with a null; `keep(view, keys)` returns the stored key while it is
+  still offered, otherwise falls back to the first offered key (adapters order
+  keys so the first offer is their default) and persists that fallback. Empty
+  offerings return null without touching memory. View keys and composite row
+  keys stay page-adapter vocabulary.
 - **Dashboard client shell** — the shared inline-browser module in
   `_shared/dashboard-client.ts` that both telemetry dashboard pages load
   before their page clients: one capability-token guard, one roving-tablist
-  behavior built from tab data, shared list/detail row styles, and shared DOM
-  and number-formatting helpers. Usage and Analysis keep only their data
-  rendering; tab data, statuses, fetch paths, and polling policy stay in the
-  adapters.
+  behavior built from tab data, the Dashboard selection memory, shared
+  workspace/selected-row/empty-state styles in `_shared/dashboard-styles.ts`,
+  and shared DOM and number-formatting helpers, including cost formatting
+  with per-adapter precision (`dashFormatCost`). Usage and Analysis keep only
+  their data rendering; tab data, statuses, fetch paths, and polling policy
+  stay in the adapters.
 
 ## Subscriptions & quotas
 

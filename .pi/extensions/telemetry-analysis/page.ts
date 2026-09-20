@@ -21,7 +21,7 @@ export const ANALYSIS_PAGE = String.raw`<!doctype html>
 				<div id="pausedText"></div>
 				<button id="clear">Clear and resume</button>
 			</div>
-			<div id="sourcePanel" class="workspace" role="tabpanel" aria-labelledby="tab-main">
+			<div id="sourcePanel" class="workspace dash-workspace" role="tabpanel" aria-labelledby="tab-main">
 				<nav id="subagentList" class="subagent-list hidden" aria-label="Subagents in this session"></nav>
 				<nav id="requestList" class="request-list" aria-label="Captured requests"></nav>
 				<section id="detailPane" class="detail-pane" aria-live="polite"></section>

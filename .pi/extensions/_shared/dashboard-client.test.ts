@@ -14,6 +14,8 @@ globalThis.dashboardTestHelpers = {
 	element: dashElement,
 	formatInteger: dashFormatInteger,
 	formatCompact: dashFormatCompact,
+	selectionMemory: dashCreateSelectionMemory(),
+	formatCost: dashFormatCost,
 };`, context);
 	return { window, document, helpers: (window as any).dashboardTestHelpers };
 }
@@ -109,6 +111,33 @@ describe("dashboard client shell", () => {
 		expect(buttons.map((button) => [button.getAttribute("aria-selected"), button.getAttribute("tabindex")])).toEqual([
 			["true", "0"], ["false", "-1"],
 		]);
+	});
+
+	it("remembers selections per view and falls back without erasing memory", () => {
+		const { helpers } = browserContext();
+		const memory = helpers.selectionMemory;
+		// empty offering returns null and does not touch memory
+		expect(memory.keep("guardian", [])).toBeNull();
+		memory.store("main", "2:response");
+		expect(memory.keep("main", ["2:response", "2:request"])).toBe("2:response");
+		// stored choice vanished -> first offered key wins and is persisted
+		expect(memory.keep("main", ["5:request", "5:response"])).toBe("5:request");
+		// keys[0] wins on a fresh view too: the first offer is the adapter's default
+		expect(memory.keep("other", ["5:response", "5:request"])).toBe("5:response");
+		// null never erases
+		memory.store("main", null);
+		expect(memory.keep("main", ["5:request"])).toBe("5:request");
+		// views are isolated
+		memory.store("sessions", "session-1");
+		expect(memory.keep("main", ["5:request"])).toBe("5:request");
+		expect(memory.keep("sessions", ["session-9"])).toBe("session-9");
+	});
+
+	it("formats cost with per-adapter precision", () => {
+		const { helpers } = browserContext();
+		expect(helpers.formatCost(1.2345)).toBe("$1.234");
+		expect(helpers.formatCost(1.2345, 6)).toBe("$1.234500");
+		expect(helpers.formatCost(undefined)).toBe("$0.000");
 	});
 
 	it("shows the fatal state and disables requested controls when lifecycle is absent", () => {

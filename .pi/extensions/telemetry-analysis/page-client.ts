@@ -22,7 +22,8 @@ let activeChannel = 'main';
 let selectedSubagentId = null;
 let selectedSequence = null;
 let selectedPart = 'request';
-const selections = new Map();
+const selectionMemory = dashCreateSelectionMemory();
+const selectionKeyOf = (sequence, part) => sequence + ':' + part;
 let renderedFingerprint = null;
 
 const element = dashElement;
@@ -143,7 +144,7 @@ function usageView(usage) {
 		metric('Output', fmt(usage.output), 'token-output'),
 		metric('Reasoning, subset of output', usage.reasoning == null ? 'not reported' : fmt(usage.reasoning), 'token-reasoning'),
 		metric('Total tokens', fmt(usage.totalTokens)),
-		metric('Total cost', '$' + Number(usage.cost.total || 0).toFixed(6)),
+		metric('Total cost', dashFormatCost(usage.cost.total, 6)),
 	);
 	box.append(grid);
 
@@ -363,8 +364,8 @@ function visibleSummaries() {
 		&& (activeChannel !== 'subagent' || subagentIdOf(item) === selectedSubagentId));
 }
 
-function saveSelection() {
-	if (selectedSequence != null) selections.set(selectionKey(), { sequence: selectedSequence, part: selectedPart });
+function rememberSelection() {
+	if (selectedSequence != null) selectionMemory.store(selectionKey(), selectionKeyOf(selectedSequence, selectedPart));
 }
 
 function defaultPart(item) {
@@ -372,24 +373,26 @@ function defaultPart(item) {
 }
 
 function selectRequestForCurrentView() {
-	const visible = visibleSummaries();
-	const saved = selections.get(selectionKey());
-	const savedSequence = typeof saved === 'number' ? saved : saved?.sequence;
-	const savedPart = typeof saved === 'object' && saved?.part === 'response' ? 'response' : 'request';
-	if (visible.some((item) => item.sequence === savedSequence)) {
-		selectedSequence = savedSequence;
-		selectedPart = savedPart;
-	} else {
-		selectedSequence = visible[0]?.sequence ?? null;
-		selectedPart = selectedSequence == null ? 'request' : defaultPart(visible[0]);
+	const picked = selectionMemory.keep(selectionKey(), visibleSummaries().flatMap((item) => {
+		const defaultKey = selectionKeyOf(item.sequence, defaultPart(item));
+		const otherKey = selectionKeyOf(item.sequence, defaultPart(item) === 'response' ? 'request' : 'response');
+		return [defaultKey, otherKey];
+	}));
+	if (picked == null) {
+		selectedSequence = null;
+		selectedPart = 'request';
+		return;
 	}
+	const separator = picked.indexOf(':');
+	selectedSequence = Number(picked.slice(0, separator));
+	selectedPart = picked.slice(separator + 1);
 }
 
 function renderEmptyDetail(message) {
 	requests?.cancel('detail');
 	renderedFingerprint = null;
 	detailPane.removeAttribute('data-selection');
-	detailPane.replaceChildren(element('div', 'empty-state', message));
+	detailPane.replaceChildren(element('div', 'dash-empty', message));
 }
 
 const sourceTablist = dashCreateTablist({
@@ -405,7 +408,7 @@ const sourceTablist = dashCreateTablist({
 			if (focused) sourceTablist.focus(tab.key);
 			return;
 		}
-		saveSelection();
+		rememberSelection();
 		activeChannel = tab.key;
 		sourcePanel.setAttribute('aria-labelledby', 'tab-' + tab.key);
 		sourcePanel.classList.toggle('subagent-mode', activeChannel === 'subagent');
@@ -428,7 +431,7 @@ function renderSubagentList() {
 	if (activeChannel !== 'subagent') return;
 	const agents = availableSubagents();
 	if (!agents.length) {
-		subagentList.append(element('div', 'empty-state', 'No subagents captured in this session.'));
+		subagentList.append(element('div', 'dash-empty', 'No subagents captured in this session.'));
 		return;
 	}
 	agents.forEach((agent) => {
@@ -443,7 +446,7 @@ function renderSubagentList() {
 		button.append(title, meta);
 		button.addEventListener('click', () => {
 			if (agent.id === selectedSubagentId) return;
-			saveSelection();
+			rememberSelection();
 			selectedSubagentId = agent.id;
 			selectRequestForCurrentView();
 			renderedFingerprint = null;
@@ -461,7 +464,7 @@ function renderRequestList() {
 	requestList.replaceChildren();
 	const visible = visibleSummaries();
 	if (!visible.length) {
-		requestList.append(element('div', 'empty-state', 'No requests captured in this tab.'));
+		requestList.append(element('div', 'dash-empty', 'No requests captured in this tab.'));
 		return;
 	}
 	visible.forEach((item) => {
@@ -491,7 +494,7 @@ function renderRequestList() {
 			button.addEventListener('click', () => {
 				selectedSequence = item.sequence;
 				selectedPart = part;
-				saveSelection();
+				rememberSelection();
 				renderedFingerprint = null;
 				renderRequestList();
 				renderDetail(item, part);
@@ -550,7 +553,7 @@ function renderDetail(item, part) {
 			} else if (detail.assistantJson) {
 				detailPane.append(rawDetails('Complete Pi-normalized provider response JSON', detail.assistantJson));
 			} else {
-				detailPane.append(element('div', 'empty-state', 'Provider response not captured yet.'));
+				detailPane.append(element('div', 'dash-empty', 'Provider response not captured yet.'));
 			}
 		},
 		failure(caught) {
@@ -577,7 +580,7 @@ function refresh() {
 				selectRequestForCurrentView();
 				visible = visibleSummaries();
 			}
-			saveSelection();
+			rememberSelection();
 			sourceTablist.update();
 			renderSubagentList();
 			renderRequestList();

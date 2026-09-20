@@ -28,6 +28,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 	let activeTab = "overview";
 	let activeActivityView = "daily";
 	let selectedSessionId;
+	const sessionMemory = dashCreateSelectionMemory();
 	let sessionQuery = "";
 	let currentData;
 	let pollTimer;
@@ -36,6 +37,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 	const element = dashElement;
 	const formatInteger = dashFormatInteger;
 	const formatCompactInteger = dashFormatCompact;
+	const formatCost = dashFormatCost;
 	const tablist = dashCreateTablist({
 		host: document.querySelector(".tabs"),
 		tabs,
@@ -54,10 +56,6 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 	function formatPercent(value) {
 		const number = Number(value || 0);
 		return (Number.isFinite(number) ? number : 0).toFixed(0) + "%";
-	}
-
-	function formatCost(value) {
-		return "$" + Number(value || 0).toFixed(3);
 	}
 
 	function formatDate(value) {
@@ -116,7 +114,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 	}
 
 	function usageTable(firstHeader, rows) {
-		if (!rows.length) return element("div", "empty", "No usage recorded");
+		if (!rows.length) return element("div", "dash-empty", "No usage recorded");
 		const wrap = element("div", "table-wrap");
 		const table = document.createElement("table");
 		const head = document.createElement("thead");
@@ -419,7 +417,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		const section = element("section", "tools-section");
 		section.append(element("h2", "", "Most used tools"));
 		if (!currentData.tools.length) {
-			section.append(element("div", "empty", "No tool runs recorded"));
+			section.append(element("div", "dash-empty", "No tool runs recorded"));
 			return section;
 		}
 		const list = element("ol", "tool-list");
@@ -525,10 +523,10 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		workspace.replaceChildren();
 		const sessions = currentData.sessions.filter((session) => matchesSession(session, sessionQuery));
 		if (!sessions.length) {
-			workspace.append(element("div", "empty", currentData.sessions.length ? "No sessions match this search" : "No sessions recorded"));
+			workspace.append(element("div", "dash-empty", currentData.sessions.length ? "No sessions match this search" : "No sessions recorded"));
 			return;
 		}
-		if (!sessions.some((session) => session.id === selectedSessionId)) selectedSessionId = sessions[0].id;
+		selectedSessionId = sessionMemory.keep("sessions", sessions.map((session) => session.id));
 		const list = element("div", "session-list");
 		list.setAttribute("role", "listbox");
 		list.setAttribute("aria-label", "Sessions");
@@ -544,11 +542,12 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 			);
 			button.addEventListener("click", () => {
 				selectedSessionId = session.id;
+				sessionMemory.store("sessions", session.id);
 				updateSessionWorkspace(workspace);
 			});
 			list.append(button);
 		}
-		const selected = sessions.find((session) => session.id === selectedSessionId) || sessions[0];
+		const selected = sessions.find((session) => session.id === selectedSessionId);
 		workspace.append(list, renderSessionDetail(selected));
 	}
 
@@ -563,7 +562,7 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		input.type = "search";
 		input.placeholder = "Name, message, project, or ID";
 		input.value = sessionQuery;
-		const workspace = element("div", "sessions-layout");
+		const workspace = element("div", "sessions-layout dash-workspace");
 		input.addEventListener("input", () => {
 			sessionQuery = input.value;
 			updateSessionWorkspace(workspace);

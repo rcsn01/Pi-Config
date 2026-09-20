@@ -68,13 +68,11 @@ th { color: var(--page-text-muted); background: transparent; font-size: .75rem; 
 th:first-child, td:first-child { text-align: left; }
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: var(--page-surface-raised); }
-.empty { padding: 28px 12px; color: var(--page-text-muted); text-align: center; }
 .sessions-toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
 .sessions-toolbar label { color: var(--page-text-muted); font-size: .84rem; }
 .sessions-toolbar input { width: min(430px, 100%); padding: 9px 11px; border: 1px solid var(--page-line-strong); border-radius: 8px; background: var(--page-surface-deep); color: var(--page-text); }
-.sessions-layout { display: grid; grid-template-columns: minmax(280px, .78fr) minmax(420px, 1.22fr); gap: 12px; min-height: 440px; }
+.sessions-layout { min-height: 440px; }
 .session-list { overflow: auto; max-height: 68vh; background: transparent; }
-.session-row[aria-selected="true"] { background: var(--page-surface-hover); box-shadow: inset 3px 0 var(--page-accent); }
 .session-title { color: var(--page-text-soft); font-weight: 630; }
 .session-project, .session-metrics { margin-top: 4px; color: var(--page-text-muted); font-size: .78rem; }
 .session-detail { min-width: 0; padding: 14px 0; background: transparent; }

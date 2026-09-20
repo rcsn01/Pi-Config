@@ -49,4 +49,7 @@ export const DASHBOARD_CLIENT_STYLES = String.raw`
 .dash-row:last-child { border-bottom: 0; }
 .dash-row:hover:not(:disabled) { background: var(--page-surface-hover); }
 .dash-row > strong, .dash-row > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-row.selected, .dash-row[aria-selected="true"] { background: var(--page-surface-hover); box-shadow: inset 3px 0 var(--page-accent); }
+.dash-empty { padding: 28px 12px; color: var(--page-text-muted); text-align: center; }
+.dash-workspace { display: grid; grid-template-columns: minmax(280px, .78fr) minmax(420px, 1.22fr); gap: 12px; }
 `;

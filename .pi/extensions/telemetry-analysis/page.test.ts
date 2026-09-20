@@ -157,8 +157,8 @@ describe("analysis page", () => {
 		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Response #5");
 		expect(document.querySelector(".detail-pane")?.textContent).toContain("Advisor");
 		tabs[3]!.click();
-		expect(document.querySelector(".request-list .empty-state")?.textContent).toContain("No requests");
-		expect(document.querySelector(".detail-pane .empty-state")?.textContent).toContain("Guardian");
+		expect(document.querySelector(".request-list .dash-empty")?.textContent).toContain("No requests");
+		expect(document.querySelector(".detail-pane .dash-empty")?.textContent).toContain("Guardian");
 		tabs[4]!.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(document.querySelector(".detail-pane h2")?.textContent).toContain("Compaction Response #6");

@@ -15,11 +15,9 @@ h2 { margin: 0 0 14px; font-size: 1.1rem; font-weight: 570; }
 .alert button { margin-top: 10px; padding: 9px 14px; }
 .hidden { display: none !important; }
 .source-tabs { margin-bottom: 30px; }
-.empty-state { padding: 28px 12px; border: 0; border-radius: 0; color: var(--page-text-muted); text-align: center; }
-.workspace { display: grid; grid-template-columns: minmax(280px, .78fr) minmax(420px, 1.22fr); gap: 12px; align-items: start; }
+.workspace { align-items: start; }
 .workspace.subagent-mode { grid-template-columns: minmax(180px, .45fr) minmax(260px, .72fr) minmax(420px, 1.2fr); }
 .subagent-list, .request-list { overflow: auto; position: sticky; top: 12px; max-height: 68vh; background: transparent; }
-.subagent-row.selected, .request-row.selected { background: var(--page-surface-hover); box-shadow: inset 3px 0 var(--page-accent); }
 .subagent-row strong, .request-row strong, .request-group-title { color: var(--page-text-soft); }
 .subagent-row span, .request-row span { margin-top: 3px; color: var(--page-text-muted); font-size: .72rem; }
 .request-group { margin-bottom: 7px; }
