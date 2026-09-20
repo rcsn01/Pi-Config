@@ -180,7 +180,7 @@ describe("input handler registration", () => {
 		const { editor, onSubmit } = createEditor();
 		editor.onSubmit = onSubmit;
 
-		editor.setText("/queued");
+		editor.setText("/queued "); // completed form; an uncompleted token would fall through to completion
 		editor.handleInput("\t");
 		expect(editor.getText()).toBe("");
 
@@ -274,6 +274,44 @@ describe("Tab interception while streaming", () => {
 		expect(addToHistory.mock.invocationCallOrder[0]).toBeLessThan(setText.mock.invocationCallOrder.at(-1)!);
 	});
 
+	it("active Tab on an uncompleted slash token falls through to editor completion", async () => {
+		const harness = createHarness();
+		await harness.fire("session_start");
+		await harness.fire("agent_start");
+		const { editor, onSubmit } = createEditor();
+		editor.onSubmit = onSubmit;
+		const tabCompletion = tabCompletionSpy(editor);
+
+		editor.setText("/do-thi");
+		editor.handleInput("\t");
+
+		expect(tabCompletion).toHaveBeenCalled(); // built-in completion path ran
+		expect(editor.getText()).toBe("/do-thi"); // nothing queued or cleared
+		expect(harness.sendUserMessage).not.toHaveBeenCalled();
+		expect(onSubmit).not.toHaveBeenCalled();
+		expect(harness.ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("active Tab falls through to editor completion while an autocomplete popup is open", async () => {
+		const harness = createHarness();
+		await harness.fire("session_start");
+		await harness.fire("agent_start");
+		const { editor, onSubmit } = createEditor();
+		editor.onSubmit = onSubmit;
+		const tabCompletion = tabCompletionSpy(editor);
+		vi
+			.spyOn(editor as unknown as { isShowingAutocomplete: () => boolean }, "isShowingAutocomplete")
+			.mockReturnValue(true);
+
+		editor.setText("plain draft");
+		editor.handleInput("\t");
+
+		expect(tabCompletion).toHaveBeenCalled();
+		expect(editor.getText()).toBe("plain draft");
+		expect(harness.sendUserMessage).not.toHaveBeenCalled();
+		expect(onSubmit).not.toHaveBeenCalled();
+	});
+
 	it("active slash Tab does not execute immediately, records once, then drains through the captured submit on agent_end", async () => {
 		const harness = createHarness();
 		await harness.fire("session_start");
@@ -282,7 +320,7 @@ describe("Tab interception while streaming", () => {
 		editor.onSubmit = onSubmit;
 		const addToHistory = vi.spyOn(editor, "addToHistory");
 
-		editor.setText("/do-thing");
+		editor.setText("/do-thing "); // completed form: trailing space means Tab queues, not completes
 		editor.handleInput("\t");
 
 		expect(onSubmit).not.toHaveBeenCalled();
@@ -306,9 +344,9 @@ describe("Tab interception while streaming", () => {
 			if (text === "/first") void harness.fire("agent_end"); // callback re-enters the drain
 		};
 
-		editor.setText("/first");
+		editor.setText("/first ");
 		editor.handleInput("\t");
-		editor.setText("/second");
+		editor.setText("/second ");
 		editor.handleInput("\t");
 
 		await harness.fire("agent_end");
@@ -345,7 +383,7 @@ describe("Tab interception while streaming", () => {
 		const { editor } = createEditor();
 		editor.onSubmit = undefined;
 
-		editor.setText("/mystery");
+		editor.setText("/mystery ");
 		editor.handleInput("\t");
 		expect(editor.getText()).toBe("");
 

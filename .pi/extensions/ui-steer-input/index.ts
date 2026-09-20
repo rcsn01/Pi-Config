@@ -10,6 +10,12 @@
  *   Enter → steer (inject message after next tool call) — built-in pi behavior
  *   Tab   → queue the draft (delivered after the agent finishes)
  *
+ * Tab defers to the editor whenever Tab means "complete": while an
+ * autocomplete popup is open, or while the cursor sits on an uncompleted
+ * slash token ("/mo" with no space yet), the key falls through and the
+ * built-in editor completes the command. A second Tab, once the command is
+ * completed (trailing space) or for plain text, queues the draft.
+ *
  * Tab queueing requires the mounted editor to extend the editor-slot
  * module's ModelCommandRoutingEditor, because the interception hook lives on
  * that base class; both session editors this repository contributes do. A
@@ -20,7 +26,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { matchesKey, Key, truncateToWidth } from "@earendil-works/pi-tui";
+import { matchesKey, Key, truncateToWidth, type EditorComponent } from "@earendil-works/pi-tui";
 import {
 	createSessionEditorLifetime,
 	getModelCommandHandler,
@@ -32,6 +38,33 @@ interface QueuedSlashCommand {
 	text: string;
 	submit?: (text: string) => void | Promise<void>;
 	run?: () => Promise<void>;
+}
+
+/**
+ * True when the built-in editor would turn this Tab into a completion: an
+ * autocomplete popup is open, or the cursor sits on a first-line slash token
+ * with no space yet (pi-tui's handleTabCompletion slash branch). Those keys
+ * must fall through so Tab completes instead of queueing. isShowingAutocomplete,
+ * getCursor, and getLines are public on pi-tui's Editor but absent from the
+ * EditorComponent interface, so detect them structurally and keep queueing
+ * behavior for editors that lack them.
+ */
+function tabWouldComplete(editor: EditorComponent): boolean {
+	const completionAware = editor as EditorComponent & {
+		isShowingAutocomplete?: () => boolean;
+		getCursor?: () => { line: number; col: number };
+		getLines?: () => string[];
+	};
+	if (typeof completionAware.isShowingAutocomplete === "function" && completionAware.isShowingAutocomplete()) {
+		return true;
+	}
+	if (typeof completionAware.getCursor !== "function" || typeof completionAware.getLines !== "function") {
+		return false;
+	}
+	const { line, col } = completionAware.getCursor();
+	if (line !== 0) return false;
+	const beforeCursor = (completionAware.getLines()[line] ?? "").slice(0, col);
+	return beforeCursor.trimStart().startsWith("/") && !beforeCursor.trimStart().includes(" ");
 }
 
 export default function steerInputExtension(pi: ExtensionAPI) {
@@ -46,7 +79,7 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 		if (agentActive) {
 			ctx.ui.setWidget("steer-hint", (_tui, theme) => ({
 				render: (width: number) => [
-					truncateToWidth(theme.fg("dim", "↩ Enter → steer · ⇥ Tab → queue for next turn"), Math.max(0, width), "…"),
+					truncateToWidth(theme.fg("dim", "↩ Enter → steer · ⇥ Tab → complete or queue next turn"), Math.max(0, width), "…"),
 				],
 				invalidate: () => {},
 			}));
@@ -56,14 +89,19 @@ export default function steerInputExtension(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * Intercepts Tab while the agent streams. Queued drafts go through
-	 * editor.addToHistory before the editor is cleared — Pi's own history
-	 * insertion only covers Enter-submitted text, so this is what makes
-	 * Tab-queued follow-ups and slash commands recallable with Up.
+	 * Intercepts Tab while the agent streams, except when Tab would trigger
+	 * editor completion (open autocomplete popup or an uncompleted slash
+	 * token); those keys fall through so slash menus keep working mid-turn.
+	 * Queued drafts go through editor.addToHistory before the editor is
+	 * cleared — Pi's own history insertion only covers Enter-submitted text,
+	 * so this is what makes Tab-queued follow-ups and slash commands
+	 * recallable with Up.
 	 */
 	const handleSteerInput: EditorInputHandler = (data, editor) => {
 		if (!agentActive) return false;
 		if (!matchesKey(data, Key.tab)) return false;
+		// Completion wins over queueing; a second Tab queues the completed command.
+		if (tabWouldComplete(editor)) return false;
 		const text = editor.getText().trim();
 		if (!text) return true; // swallow empty/whitespace-only Tab without clearing
 		if (text.startsWith("/")) {

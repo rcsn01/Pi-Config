@@ -26,8 +26,10 @@
  *   shared registry. `ModelCommandRoutingEditor`
  *   consults it on every keypress, before /model routing and the built-in
  *   editor handling; returning `true` consumes the key. ui-steer-input uses
- *   this to intercept Tab while the agent streams — the mounted editor is
- *   never swapped. Note the dispatch boundary: a subclass (e.g.
+ *   this to intercept Tab while the agent streams, except when Tab would
+ *   trigger editor completion (open autocomplete popup or an uncompleted
+ *   slash token); the mounted editor is never swapped. Note the dispatch
+ *   boundary: a subclass (e.g.
  *   PreviousMessageEditor) consumes some keys itself (Up, Down, dedicated
  *   history bindings, Ctrl+C) before delegating to this base class, so the
  *   hook only sees inputs the subclass delegates; it is not a universal
