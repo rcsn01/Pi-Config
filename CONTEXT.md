@@ -128,15 +128,27 @@ extension.
   keys so the first offer is their default) and persists that fallback. Empty
   offerings return null without touching memory. View keys and composite row
   keys stay page-adapter vocabulary.
+- **Dashboard list/detail workspace** — the shared inline-browser behavior in the
+  Dashboard client shell (`dashCreateListDetailWorkspace`): one workspace per page owns
+  the list/detail choreography behind a single `sync` entry point. It auto-remembers
+  the last rendered selection into the Dashboard selection memory through its own scope
+  snapshot (adapters mutate freely and never hand-write the store), reconciles the
+  offered keys through the memory's keep fallback, drives one adapter hook that
+  re-renders all list DOM, and owns the detail phase: render-if-changed fingerprint,
+  the staleness `isCurrent` guard handed to the detail render, failure invalidation,
+  and the empty state. Adapters keep every line of row and detail DOM, the fetch
+  itself, and the meaning of keys and scope keys (composite page-adapter vocabulary).
+  Analysis dashboard (two lists, two-level selection, async detail) and Usage dashboard
+  (one listbox, synchronous detail) are its two adapters.
 - **Dashboard client shell** — the shared inline-browser module in
   `_shared/dashboard-client.ts` that both telemetry dashboard pages load
   before their page clients: one capability-token guard, one roving-tablist
-  behavior built from tab data, the Dashboard selection memory, shared
-  workspace/selected-row/empty-state styles in `_shared/dashboard-styles.ts`,
-  and shared DOM and number-formatting helpers, including cost formatting
-  with per-adapter precision (`dashFormatCost`). Usage and Analysis keep only
-  their data rendering; tab data, statuses, fetch paths, and polling policy
-  stay in the adapters.
+  behavior built from tab data, the Dashboard selection memory, the Dashboard
+  list/detail workspace, shared workspace/selected-row/empty-state styles in
+  `_shared/dashboard-styles.ts`, and shared DOM and number-formatting helpers,
+  including cost formatting with per-adapter precision (`dashFormatCost`). Usage
+  and Analysis keep only their data rendering; tab data, statuses, fetch paths,
+  and polling policy stay in the adapters.
 
 ## Subscriptions & quotas
 

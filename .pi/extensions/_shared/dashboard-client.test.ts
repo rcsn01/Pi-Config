@@ -15,6 +15,7 @@ globalThis.dashboardTestHelpers = {
 	formatInteger: dashFormatInteger,
 	formatCompact: dashFormatCompact,
 	selectionMemory: dashCreateSelectionMemory(),
+	createListDetailWorkspace: dashCreateListDetailWorkspace,
 	formatCost: dashFormatCost,
 };`, context);
 	return { window, document, helpers: (window as any).dashboardTestHelpers };
@@ -131,6 +132,114 @@ describe("dashboard client shell", () => {
 		memory.store("sessions", "session-1");
 		expect(memory.keep("main", ["5:request"])).toBe("5:request");
 		expect(memory.keep("sessions", ["session-9"])).toBe("session-9");
+	});
+
+	describe("list/detail workspace", () => {
+		function makeWorkspace(overrides: Record<string, unknown> = {}) {
+			const { helpers } = browserContext();
+			const calls: string[] = [];
+			const memory = helpers.selectionMemory;
+			const state = { scope: "main", offers: ["5:response", "5:request"] as string[] };
+			let selected: string | null = null;
+			const workspace = helpers.createListDetailWorkspace({
+				memory,
+				scopeKey: () => state.scope,
+				offers: () => state.offers,
+				select: (key: string | null) => { selected = key; calls.push("select:" + key); },
+				renderLists: () => calls.push("lists"),
+				renderDetail: (ctx: { isCurrent(): boolean; invalidate(): void }) => calls.push("detail:" + ctx.isCurrent()),
+				renderEmpty: () => calls.push("empty"),
+				...overrides,
+			});
+			return { helpers, calls, memory, state, workspace, selected: () => selected };
+		}
+
+		it("renders the empty phase on an empty offering without touching memory", () => {
+			const { calls, memory, workspace } = makeWorkspace({ offers: () => [] });
+			memory.store("main", "9:request");
+			calls.length = 0;
+			workspace.sync();
+			expect(calls).toEqual(["select:null", "lists", "empty"]);
+			expect(memory.keep("main", ["9:request"])).toBe("9:request");
+		});
+
+		it("reconciles an unoffered memory to the first offered key and renders lists before detail", () => {
+			const { calls, memory, workspace, selected } = makeWorkspace({ fingerprint: () => selected() });
+			memory.store("main", "9:request");
+			calls.length = 0;
+			workspace.sync();
+			expect(calls).toEqual(["select:5:response", "lists", "detail:true"]);
+			expect(memory.keep("main", ["5:response", "5:request"])).toBe("5:response");
+		});
+
+		it("renders on a forced sync even when the fingerprint would match", () => {
+			const { calls, memory, workspace } = makeWorkspace({ fingerprint: () => "f" });
+			workspace.sync();
+			calls.length = 0;
+			workspace.sync("5:request");
+			expect(calls).toEqual(["select:5:request", "lists", "detail:true"]);
+			expect(memory.keep("main", ["5:request"])).toBe("5:request");
+		});
+
+		it("skips an unforced sync when the fingerprint is unchanged and re-renders on change", () => {
+			let mark = "f";
+			const { calls, workspace } = makeWorkspace({ fingerprint: () => mark });
+			workspace.sync();
+			workspace.sync();
+			expect(calls).toEqual(["select:5:response", "lists", "detail:true", "select:5:response", "lists"]);
+			mark = "g";
+			workspace.sync();
+			expect(calls[calls.length - 1]).toBe("detail:true");
+		});
+
+		it("auto-remembers the rendered pair across a scope change", () => {
+			const { memory, state, workspace } = makeWorkspace();
+			workspace.sync();
+			state.scope = "other";
+			state.offers = ["7:response"];
+			workspace.sync();
+			expect(memory.keep("main", ["5:response", "5:request"])).toBe("5:response");
+		});
+
+		it("expires the staleness token after a later sync with a different key", () => {
+			const { helpers } = browserContext();
+			const state = { scope: "main", offers: ["5:response", "5:request"] as string[] };
+			let captured: { isCurrent(): boolean } | undefined;
+			const workspace = helpers.createListDetailWorkspace({
+				memory: helpers.selectionMemory,
+				scopeKey: () => state.scope,
+				offers: () => state.offers,
+				select: () => {},
+				renderLists: () => {},
+				renderDetail: (ctx: { isCurrent(): boolean }) => { if (!captured) captured = ctx; },
+				renderEmpty: () => {},
+			});
+			workspace.sync();
+			expect(captured!.isCurrent()).toBe(true);
+			state.offers = ["7:response"];
+			workspace.sync();
+			expect(captured!.isCurrent()).toBe(false);
+		});
+
+		it("re-renders after invalidate() on the next unforced sync", () => {
+			let detailCtx: { isCurrent(): boolean; invalidate(): void } | undefined;
+			const { calls, workspace } = makeWorkspace({
+				fingerprint: () => "f",
+				renderDetail: (ctx: { isCurrent(): boolean; invalidate(): void }) => { detailCtx = ctx; calls.push("detail"); },
+			});
+			workspace.sync();
+			detailCtx!.invalidate();
+			calls.length = 0;
+			workspace.sync();
+			expect(calls).toEqual(["select:5:response", "lists", "detail"]);
+		});
+
+		it("renders the detail on every unforced sync when the fingerprint is omitted", () => {
+			const { calls, workspace } = makeWorkspace();
+			workspace.sync();
+			workspace.sync();
+			expect(calls).toEqual(["select:5:response", "lists", "detail:true", "select:5:response", "lists", "detail:true"]);
+		});
 	});
 
 	it("formats cost with per-adapter precision", () => {

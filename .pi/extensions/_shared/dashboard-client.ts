@@ -62,6 +62,45 @@ function dashCreateSelectionMemory() {
 	};
 }
 
+function dashCreateListDetailWorkspace({
+	memory,
+	scopeKey,
+	offers,
+	select,
+	renderLists,
+	renderDetail,
+	renderEmpty,
+	fingerprint,
+}) {
+	let lastScope = null;
+	let lastKey = null;
+	let lastFingerprint = null;
+	function sync(forcedKey) {
+		if (lastKey != null) memory.store(lastScope, lastKey);
+		if (forcedKey != null) memory.store(scopeKey(), forcedKey);
+		const key = memory.keep(scopeKey(), offers());
+		const scope = scopeKey();
+		const forced = forcedKey != null;
+		lastScope = scope;
+		lastKey = key;
+		select(key);
+		renderLists();
+		if (key == null) {
+			lastFingerprint = null;
+			renderEmpty();
+			return;
+		}
+		const next = fingerprint ? fingerprint(key) : null;
+		if (!forced && fingerprint && next === lastFingerprint) return;
+		lastFingerprint = next;
+		renderDetail({
+			isCurrent: () => lastScope === scopeKey() && lastKey === key,
+			invalidate() { lastFingerprint = null; },
+		});
+	}
+	return { sync };
+}
+
 function dashCreateTablist({ host, tabs, initialKey, buttonClass = '', ariaLabel, controls, countOf, onActivate } = {}) {
 	let activeKey = tabs.some((tab) => tab.key === initialKey) ? initialKey : tabs[0]?.key;
 	const buttons = [];

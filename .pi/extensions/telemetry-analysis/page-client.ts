@@ -24,7 +24,6 @@ let selectedSequence = null;
 let selectedPart = 'request';
 const selectionMemory = dashCreateSelectionMemory();
 const selectionKeyOf = (sequence, part) => sequence + ':' + part;
-let renderedFingerprint = null;
 
 const element = dashElement;
 const fmt = dashFormatInteger;
@@ -364,35 +363,110 @@ function visibleSummaries() {
 		&& (activeChannel !== 'subagent' || subagentIdOf(item) === selectedSubagentId));
 }
 
-function rememberSelection() {
-	if (selectedSequence != null) selectionMemory.store(selectionKey(), selectionKeyOf(selectedSequence, selectedPart));
-}
-
 function defaultPart(item) {
 	return item.state === 'complete' ? 'response' : 'request';
 }
 
-function selectRequestForCurrentView() {
-	const picked = selectionMemory.keep(selectionKey(), visibleSummaries().flatMap((item) => {
+function renderEmptyDetail(message) {
+	requests?.cancel('detail');
+	detailPane.removeAttribute('data-selection');
+	detailPane.replaceChildren(element('div', 'dash-empty', message));
+}
+
+const workspace = dashCreateListDetailWorkspace({
+	memory: selectionMemory,
+	scopeKey: selectionKey,
+	offers: () => visibleSummaries().flatMap((item) => {
 		const defaultKey = selectionKeyOf(item.sequence, defaultPart(item));
 		const otherKey = selectionKeyOf(item.sequence, defaultPart(item) === 'response' ? 'request' : 'response');
 		return [defaultKey, otherKey];
-	}));
-	if (picked == null) {
-		selectedSequence = null;
-		selectedPart = 'request';
-		return;
-	}
-	const separator = picked.indexOf(':');
-	selectedSequence = Number(picked.slice(0, separator));
-	selectedPart = picked.slice(separator + 1);
+	}),
+	select(key) {
+		if (key == null) {
+			selectedSequence = null;
+			selectedPart = 'request';
+			return;
+		}
+		const separator = key.indexOf(':');
+		selectedSequence = Number(key.slice(0, separator));
+		selectedPart = key.slice(separator + 1);
+	},
+	renderLists() {
+		renderSubagentList();
+		renderRequestList();
+	},
+	fingerprint: () => {
+		const item = selectedItem();
+		return item ? itemFingerprint(item, selectedPart) : null;
+	},
+	renderEmpty: () => renderEmptyDetail(emptyMessage()),
+	renderDetail({ isCurrent, invalidate }) {
+		const item = selectedItem();
+		const part = selectedPart;
+		const detailSelection = selectionKeyOf(item.sequence, part);
+		const openPointers = detailPane.dataset.selection === detailSelection
+			? expandedPointers()
+			: new Set();
+		detailPane.dataset.selection = detailSelection;
+		detailPane.replaceChildren(element('div', 'status', 'Loading ' + part + ' #' + item.sequence + '...'));
+		requests.read('detail', '/api/records/' + item.sequence, {
+			success(detail) {
+				if (!isCurrent()) return;
+				const isRequest = part === 'request';
+				const heading = document.createElement('h2');
+				const prefix = detail.source?.channel === 'compaction' ? 'Compaction ' : '';
+				heading.textContent = prefix + (isRequest ? 'Request #' : 'Response #') + item.sequence + ' · ' + detail.provider + '/' + detail.model;
+				const overview = element('div', 'request-overview');
+				const grid = element('div', 'grid detail-grid');
+				grid.append(
+					metric('Source', (detail.source?.displayLabel || 'Main agent') + ' · ' + (detail.source?.invocationId || 'legacy')),
+					metric('Run / turn', detail.run + ' / ' + detail.turn),
+					metric('API', detail.api),
+					metric(isRequest ? 'Payload type' : 'Response type', detail.apiLabel),
+					metric('Payload fidelity', detail.fidelity === 'pi-preparation' ? 'Pi-level preparation, not exact provider payload' : 'Exact provider payload'),
+					metric(
+						'HTTP status',
+						isRequest
+							? 'See response item'
+							: detail.status == null ? (detail.statusEvidence?.join(', ') || 'unavailable') : detail.status,
+					),
+					metric('Correlation', detail.correlation),
+					metric('Retained bytes', fmt(detail.bytes)),
+				);
+				overview.append(grid);
+				if (detail.usage) overview.append(usageView(detail.usage));
+				detailPane.replaceChildren(heading, overview);
+
+				if (detail.diagnostic) detailPane.append(element('div', 'alert', detail.diagnostic));
+				if (isRequest) {
+					detailPane.append(
+						sectionView(detail, openPointers),
+						rawDetails('Complete logical request JSON', detail.requestJson),
+					);
+				} else if (detail.assistantJson) {
+					detailPane.append(rawDetails('Complete Pi-normalized provider response JSON', detail.assistantJson));
+				} else {
+					detailPane.append(element('div', 'dash-empty', 'Provider response not captured yet.'));
+				}
+			},
+			failure(caught) {
+				invalidate();
+				detailPane.replaceChildren(element('div', 'alert', caught.message));
+			},
+		});
+	},
+});
+
+function selectedItem() {
+	return visibleSummaries().find((item) => item.sequence === selectedSequence) ?? null;
 }
 
-function renderEmptyDetail(message) {
-	requests?.cancel('detail');
-	renderedFingerprint = null;
-	detailPane.removeAttribute('data-selection');
-	detailPane.replaceChildren(element('div', 'dash-empty', message));
+function emptyMessage() {
+	if (activeChannel === 'subagent') {
+		const subagent = availableSubagents().find((agent) => agent.id === selectedSubagentId);
+		return 'No captured requests for ' + (subagent?.label || 'Subagents') + '.';
+	}
+	return 'No captured requests for ' + (tabs.find((tab) => tab.key === activeChannel)?.label || activeChannel) + '.';
 }
 
 const sourceTablist = dashCreateTablist({
@@ -408,20 +482,12 @@ const sourceTablist = dashCreateTablist({
 			if (focused) sourceTablist.focus(tab.key);
 			return;
 		}
-		rememberSelection();
 		activeChannel = tab.key;
 		sourcePanel.setAttribute('aria-labelledby', 'tab-' + tab.key);
 		sourcePanel.classList.toggle('subagent-mode', activeChannel === 'subagent');
 		subagentList.classList.toggle('hidden', activeChannel !== 'subagent');
 		syncSelectedSubagent();
-		selectRequestForCurrentView();
-		renderedFingerprint = null;
-		renderSubagentList();
-		renderRequestList();
-		const visible = visibleSummaries();
-		const selected = visible.find((item) => item.sequence === selectedSequence);
-		if (selected) renderDetail(selected, selectedPart);
-		else renderEmptyDetail('No captured requests for ' + tab.label + '.');
+		workspace.sync();
 		if (focused) sourceTablist.focus(tab.key);
 	},
 });
@@ -446,15 +512,8 @@ function renderSubagentList() {
 		button.append(title, meta);
 		button.addEventListener('click', () => {
 			if (agent.id === selectedSubagentId) return;
-			rememberSelection();
 			selectedSubagentId = agent.id;
-			selectRequestForCurrentView();
-			renderedFingerprint = null;
-			renderSubagentList();
-			renderRequestList();
-			const selected = visibleSummaries().find((item) => item.sequence === selectedSequence);
-			if (selected) renderDetail(selected, selectedPart);
-			else renderEmptyDetail('No captured requests for ' + agent.label + '.');
+			workspace.sync();
 		});
 		subagentList.append(button);
 	});
@@ -492,74 +551,11 @@ function renderRequestList() {
 			if (activities) button.append(activities);
 			button.append(meta, usageBar(item.usage, 'request-usage-bar', part));
 			button.addEventListener('click', () => {
-				selectedSequence = item.sequence;
-				selectedPart = part;
-				rememberSelection();
-				renderedFingerprint = null;
-				renderRequestList();
-				renderDetail(item, part);
+				workspace.sync(selectionKeyOf(item.sequence, part));
 			});
 			group.append(button);
 		}
 		requestList.append(group);
-	});
-}
-
-function renderDetail(item, part) {
-	const fingerprint = itemFingerprint(item, part);
-	const detailSelection = item.sequence + ':' + part;
-	const openPointers = detailPane.dataset.selection === detailSelection
-		? expandedPointers()
-		: new Set();
-	detailPane.dataset.selection = detailSelection;
-	renderedFingerprint = fingerprint;
-	detailPane.replaceChildren(element('div', 'status', 'Loading ' + part + ' #' + item.sequence + '...'));
-
-	requests.read('detail', '/api/records/' + item.sequence, {
-		success(detail) {
-			if (selectedSequence !== item.sequence || selectedPart !== part) return;
-
-			const isRequest = part === 'request';
-			const heading = document.createElement('h2');
-			const prefix = detail.source?.channel === 'compaction' ? 'Compaction ' : '';
-			heading.textContent = prefix + (isRequest ? 'Request #' : 'Response #') + item.sequence + ' · ' + detail.provider + '/' + detail.model;
-			const overview = element('div', 'request-overview');
-			const grid = element('div', 'grid detail-grid');
-			grid.append(
-				metric('Source', (detail.source?.displayLabel || 'Main agent') + ' · ' + (detail.source?.invocationId || 'legacy')),
-				metric('Run / turn', detail.run + ' / ' + detail.turn),
-				metric('API', detail.api),
-				metric(isRequest ? 'Payload type' : 'Response type', detail.apiLabel),
-				metric('Payload fidelity', detail.fidelity === 'pi-preparation' ? 'Pi-level preparation, not exact provider payload' : 'Exact provider payload'),
-				metric(
-					'HTTP status',
-					isRequest
-						? 'See response item'
-						: detail.status == null ? (detail.statusEvidence?.join(', ') || 'unavailable') : detail.status,
-				),
-				metric('Correlation', detail.correlation),
-				metric('Retained bytes', fmt(detail.bytes)),
-			);
-			overview.append(grid);
-			if (detail.usage) overview.append(usageView(detail.usage));
-			detailPane.replaceChildren(heading, overview);
-
-			if (detail.diagnostic) detailPane.append(element('div', 'alert', detail.diagnostic));
-			if (isRequest) {
-				detailPane.append(
-					sectionView(detail, openPointers),
-					rawDetails('Complete logical request JSON', detail.requestJson),
-				);
-			} else if (detail.assistantJson) {
-				detailPane.append(rawDetails('Complete Pi-normalized provider response JSON', detail.assistantJson));
-			} else {
-				detailPane.append(element('div', 'dash-empty', 'Provider response not captured yet.'));
-			}
-		},
-		failure(caught) {
-			renderedFingerprint = null;
-			detailPane.replaceChildren(element('div', 'alert', caught.message));
-		},
 	});
 }
 
@@ -575,26 +571,8 @@ function refresh() {
 
 			summaries = data.records.slice().reverse();
 			syncSelectedSubagent();
-			let visible = visibleSummaries();
-			if (!visible.some((item) => item.sequence === selectedSequence)) {
-				selectRequestForCurrentView();
-				visible = visibleSummaries();
-			}
-			rememberSelection();
 			sourceTablist.update();
-			renderSubagentList();
-			renderRequestList();
-
-			const selected = visible.find((item) => item.sequence === selectedSequence);
-			if (!selected) {
-				const subagent = availableSubagents().find((agent) => agent.id === selectedSubagentId);
-				const label = activeChannel === 'subagent'
-					? (subagent?.label || 'Subagents')
-					: (tabs.find((tab) => tab.key === activeChannel)?.label || activeChannel);
-				renderEmptyDetail('No captured requests for ' + label + '.');
-			} else if (renderedFingerprint !== itemFingerprint(selected, selectedPart)) {
-				renderDetail(selected, selectedPart);
-			}
+			workspace.sync();
 		},
 		failure(caught) {
 			activation.classList.add('hidden');

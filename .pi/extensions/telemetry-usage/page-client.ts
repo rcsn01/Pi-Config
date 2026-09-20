@@ -519,38 +519,6 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		return haystack.includes(query.toLowerCase());
 	}
 
-	function updateSessionWorkspace(workspace) {
-		workspace.replaceChildren();
-		const sessions = currentData.sessions.filter((session) => matchesSession(session, sessionQuery));
-		if (!sessions.length) {
-			workspace.append(element("div", "dash-empty", currentData.sessions.length ? "No sessions match this search" : "No sessions recorded"));
-			return;
-		}
-		selectedSessionId = sessionMemory.keep("sessions", sessions.map((session) => session.id));
-		const list = element("div", "session-list");
-		list.setAttribute("role", "listbox");
-		list.setAttribute("aria-label", "Sessions");
-		for (const session of sessions) {
-			const button = element("button", "session-row dash-row");
-			button.type = "button";
-			button.setAttribute("role", "option");
-			button.setAttribute("aria-selected", String(session.id === selectedSessionId));
-			button.append(
-				element("span", "session-title", sessionTitle(session)),
-				element("span", "session-project", session.cwd),
-				element("span", "session-metrics", formatDate(session.created) + " · " + formatInteger(session.total.tokens) + " tokens · " + formatCost(session.total.cost)),
-			);
-			button.addEventListener("click", () => {
-				selectedSessionId = session.id;
-				sessionMemory.store("sessions", session.id);
-				updateSessionWorkspace(workspace);
-			});
-			list.append(button);
-		}
-		const selected = sessions.find((session) => session.id === selectedSessionId);
-		workspace.append(list, renderSessionDetail(selected));
-	}
-
 	function renderSessions() {
 		renderCards(currentData.total, true);
 		panel.replaceChildren(element("h2", "", "Sessions"));
@@ -563,13 +531,48 @@ export const TELEMETRY_USAGE_PAGE_CLIENT = String.raw`
 		input.placeholder = "Name, message, project, or ID";
 		input.value = sessionQuery;
 		const workspace = element("div", "sessions-layout dash-workspace");
+		const visibleSessions = () => currentData.sessions.filter((session) => matchesSession(session, sessionQuery));
+		const sessionWorkspace = dashCreateListDetailWorkspace({
+			memory: sessionMemory,
+			scopeKey: () => "sessions",
+			offers: () => visibleSessions().map((session) => session.id),
+			select(id) { selectedSessionId = id; },
+			renderLists() {
+				workspace.replaceChildren();
+				if (!visibleSessions().length) return;
+				const list = element("div", "session-list");
+				list.setAttribute("role", "listbox");
+				list.setAttribute("aria-label", "Sessions");
+				for (const session of visibleSessions()) {
+					const button = element("button", "session-row dash-row");
+					button.type = "button";
+					button.setAttribute("role", "option");
+					button.setAttribute("aria-selected", String(session.id === selectedSessionId));
+					button.append(
+						element("span", "session-title", sessionTitle(session)),
+						element("span", "session-project", session.cwd),
+						element("span", "session-metrics", formatDate(session.created) + " · " + formatInteger(session.total.tokens) + " tokens · " + formatCost(session.total.cost)),
+					);
+					button.addEventListener("click", () => sessionWorkspace.sync(session.id));
+					list.append(button);
+				}
+				workspace.append(list);
+			},
+			renderDetail() {
+				const selected = visibleSessions().find((session) => session.id === selectedSessionId);
+				workspace.append(renderSessionDetail(selected));
+			},
+			renderEmpty() {
+				workspace.append(element("div", "dash-empty", currentData.sessions.length ? "No sessions match this search" : "No sessions recorded"));
+			},
+		});
 		input.addEventListener("input", () => {
 			sessionQuery = input.value;
-			updateSessionWorkspace(workspace);
+			sessionWorkspace.sync();
 		});
 		toolbar.append(label, input);
 		panel.append(toolbar, workspace);
-		updateSessionWorkspace(workspace);
+		sessionWorkspace.sync();
 	}
 
 	function renderPanel() {
