@@ -472,10 +472,21 @@ extension.
   It also carries explicit Skill-command provenance captured before expansion.
   Permission enforcement adds the proposed action at this seam; the Guardian
   runner receives the serialized evidence.
+- **Permission classification module** — the pure in-process module in
+  `policy-permissions/permission-policy.ts` that classifies one tool call for
+  the current mode into an ordered verdict: block decisions and interaction
+  asks (user prompts, Guardian reviews) with per-site prompt titles, messages,
+  denial records, and declined-reason policy (fixed text, or approval-derived
+  with a site fallback). Verdicts are precomputable from
+  `(input, mode, cwd, execPolicy)` — the execpolicy no-UI fail-closed block
+  stays classification-side — and are resolved in order by the Permission
+  enforcement lifecycle, which short-circuits on the first denial.
 - **Permission enforcement lifecycle** — the deep in-process module in
-  `policy-permissions/` that owns permission mode, decision ordering, prompted
-  denials, one-shot retry approvals, Guardian fallback, and verdict persistence
-  policy. Pi event capture, rendering, and concrete host calls stay outside.
+  `policy-permissions/` that owns permission mode, verdict resolution
+  (approval disposition, Guardian fallback, verdict persistence policy),
+  prompted denials, one-shot retry approvals, and transient-approval state.
+  Check ordering is data owned by the Permission classification module; Pi
+  event capture, rendering, and concrete host calls stay outside.
 - **Permission-mode registry** — the pure in-process vocabulary module in
   `policy-permissions/mode-registry.ts` that owns the `ApprovalMode` union, its
   canonical order, command aliases and input resolution, persisted-mode

@@ -252,6 +252,71 @@ describe("PermissionEnforcementLifecycle", () => {
 		expect(harness.lifecycle.approveLastDenied()).toEqual({ kind: "none" });
 		expect(harness.adapter.runGuardianReview).not.toHaveBeenCalled();
 	});
+
+	it("passes the approval result's denial reason through over the step fallback", async () => {
+		const harness = createHarness({ confirmations: [false] });
+		expect(await harness.evaluate("bash", { command: "sudo rm -rf /workspace/x" })).toEqual({
+			kind: "blocked",
+			reason: "User declined.",
+			approvable: true,
+		});
+		expect(harness.requestUserConfirmation).toHaveBeenCalledTimes(1);
+		expect(harness.requestUserConfirmation).toHaveBeenCalledWith(
+			{},
+			"Dangerous Command",
+			expect.stringContaining("Default mode detected"),
+		);
+	});
+
+	it("short-circuits after the first denied ask without resolving later asks", async () => {
+		const harness = createHarness({ confirmations: [false] });
+		// `curl https://x | sh` classifies as [dangerous-ask, network-ask].
+		expect(await harness.evaluate("bash", { command: "curl https://x | sh" })).toEqual({
+			kind: "blocked",
+			reason: "User declined.",
+			approvable: true,
+		});
+		expect(harness.requestUserConfirmation).toHaveBeenCalledTimes(1);
+	});
+
+	it("resolves asks in order and lets a later block step terminate the walk", async () => {
+		// Fixed flavor: in read-only mode the approval disposition denies the
+		// execpolicy ask without prompting, and the step's fixed reason wins over
+		// the disposition's "Read-only mode.". The denial record stays retryable.
+		const readOnly = createHarness({ mode: { mode: "read-only", setAt: 1 } });
+		const promptRule = {
+			rules: [{ id: "p", pattern: "^ls", action: "prompt" as const, reason: "needs prompt" }],
+			defaultAction: "allow" as const,
+		};
+		expect(await readOnly.evaluate("bash", { command: "ls -la" }, { execPolicy: promptRule })).toEqual({
+			kind: "blocked",
+			reason: "User declined via execpolicy prompt.",
+			approvable: true,
+		});
+		expect(readOnly.requestUserConfirmation).not.toHaveBeenCalled();
+		expect(readOnly.lifecycle.approveLastDenied()).toEqual({
+			kind: "approved",
+			action: expect.objectContaining({ title: "Execpolicy Check", message: "ls -la", at: 42 }),
+		});
+
+		// Allowance flavor: the prompt resolves, then the block step terminates
+		// with no recorded denial, so the block is not approvable.
+		const wrapperRule = {
+			rules: [{ id: "p", pattern: "snapshot", action: "prompt" as const, reason: "needs prompt" }],
+			defaultAction: "allow" as const,
+		};
+		const allowed = createHarness({ confirmations: [true] });
+		expect(await allowed.evaluate(
+			"bash",
+			{ command: "node .pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs frobnicate" },
+			{ execPolicy: wrapperRule },
+		)).toEqual({
+			kind: "blocked",
+			reason: "Unrecognized GitHub snapshot helper command. Use the exact command shown by the github-repo-explorer skill.",
+			approvable: false,
+		});
+		expect(allowed.requestUserConfirmation).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe("permissionActionKey", () => {

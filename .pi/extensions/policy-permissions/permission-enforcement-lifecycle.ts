@@ -2,7 +2,7 @@ import type { ExecPolicyConfig } from "../_shared/command-policy.ts";
 import type { GuardianReviewResult } from "./guardian-runner.ts";
 import { approvalDisposition, type ApprovalMode } from "./mode-registry.ts";
 import { DEFAULT_MODE_STATE, type ModePersistenceOptions, type ModeState } from "./mode-store.ts";
-import { evaluateToolCall } from "./permission-policy.ts";
+import { classifyToolCall } from "./permission-policy.ts";
 import type { ApprovalResult, ToolCallInput } from "./policy-types.ts";
 import {
 	buildGuardianEvaluationMessage,
@@ -228,34 +228,41 @@ export function createPermissionEnforcementLifecycle<HostContext>(
 			const recordAllowedSource = (source: "user" | "guardian") => {
 				allowedSource = source;
 			};
-			const decision = await evaluateToolCall(
-				call,
-				{
-					mode: evaluationMode,
-					cwd: environment.cwd,
-					hasUI: environment.hasUI,
-					execPolicy: environment.execPolicy,
-				},
-				{
-					requestApproval: (title, message) =>
-						requestApproval(environment, evaluationMode, title, message, recordAllowedSource),
-					guardianReview: (title, description, triggers) =>
-						guardianReview(environment, title, description, triggers, recordAllowedSource),
-					onDenied: (deniedCall, title, message) => {
-						if (!environment.hasUI || evaluationGeneration !== authorizationGeneration) return;
-						promptedDenial = true;
-						lastDeniedAction = {
-							key: permissionActionKey(deniedCall.toolName, deniedCall.input),
-							title,
-							message,
-							at: now(),
-						};
-					},
-				},
-			);
-			if (decision.action === "allow") return { kind: "allowed", source: allowedSource };
-			if (!promptedDenial) lastDeniedAction = undefined;
-			return { kind: "blocked", reason: decision.reason, approvable: promptedDenial };
+			const recordDenied = (denial: { title: string; message: string }) => {
+				if (!environment.hasUI || evaluationGeneration !== authorizationGeneration) return;
+				promptedDenial = true;
+				lastDeniedAction = {
+					key,
+					title: denial.title,
+					message: denial.message,
+					at: now(),
+				};
+			};
+
+			const steps = classifyToolCall(call, {
+				mode: evaluationMode,
+				cwd: environment.cwd,
+				hasUI: environment.hasUI,
+				execPolicy: environment.execPolicy,
+			});
+			if (steps.length === 0) return { kind: "allowed", source: "policy" };
+
+			for (const step of steps) {
+				if (step.kind === "block") {
+					if (!promptedDenial) lastDeniedAction = undefined;
+					return { kind: "blocked", reason: step.reason, approvable: promptedDenial };
+				}
+				const result = step.channel === "guardian"
+					? await guardianReview(environment, step.title, step.message, [...(step.triggers ?? [])], recordAllowedSource)
+					: await requestApproval(environment, evaluationMode, step.title, step.message, recordAllowedSource);
+				if (result.allowed) continue;
+				const reason = step.declinedReason.kind === "fixed"
+					? step.declinedReason.reason
+					: result.reason ?? step.declinedReason.reason;
+				recordDenied(step.denial);
+				return { kind: "blocked", reason, approvable: promptedDenial };
+			}
+			return { kind: "allowed", source: allowedSource };
 		},
 		approveLastDenied() {
 			if (!lastDeniedAction) return { kind: "none" };

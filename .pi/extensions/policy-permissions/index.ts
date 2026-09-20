@@ -46,20 +46,16 @@ import { loadModeFromFile, saveModeToFile } from "./mode-store.ts";
 import { modeRequestMarker, modeStatusLabel } from "./mode-registry.ts";
 import {
 	createPermissionEnforcementLifecycle,
-	permissionActionKey,
 } from "./permission-enforcement-lifecycle.ts";
 import {
 	buildGuardianConversationEvidence,
 	type GuardianSkillInvocation,
 } from "./guardian-evidence.ts";
-import { evaluateToolCall } from "./permission-policy.ts";
 
 // Re-exported for backward compatibility (guardian-config.test.ts and external
 // importers depend on these public functions).
 export { parseGuardianDefinition, resolveGuardianPath };
 export type { GuardianDefinition } from "./guardian-runner.ts";
-
-export { permissionActionKey as actionKey, evaluateToolCall };
 
 const APPROVAL_MODE_STATUS_ID = "approval-mode";
 declareStatus({ id: APPROVAL_MODE_STATUS_ID, style: "muted", order: 20 });
