@@ -464,7 +464,10 @@ extension.
 ## Safety
 
 - **Guardian** — the in-process model review of risky tool calls
-  (`policy-permissions/`); verdicts land as `auto-review-verdict` entries.
+  (`policy-permissions/`); verdicts land as `auto-review-verdict` entries. The
+  verdict protocol (task composition, response interpretation, authorization
+  decision, denial vocabulary) is data owned by the Guardian verdict protocol
+  module; Guardian execution stays in `guardian-runner.ts`.
 - **Guardian evidence module** — the branch-aware module in
   `policy-permissions/guardian-evidence.ts` that builds one bounded authorization
   window from the active Session context: the last three user turns plus the
@@ -472,6 +475,19 @@ extension.
   It also carries explicit Skill-command provenance captured before expansion.
   Permission enforcement adds the proposed action at this seam; the Guardian
   runner receives the serialized evidence.
+- **Guardian verdict protocol module** — the pure in-process module in
+  `policy-permissions/guardian-verdict.ts` that owns one Guardian review's
+  protocol: the composed task prompt (untrusted-evidence framing over the
+  proposed action), the classification tool contract (schema and
+  constrained-sampling preference), strict response interpretation (tool-call
+  arguments primary; malformed arguments never bypassed by a later prose
+  response; exact whole-response JSON fallback; non-guardian calls, multiple
+  calls, truncated/errored turns, and errored tool results fail closed), the
+  deterministic authorization decision, and the fail-closed denial vocabulary.
+  Guardian execution — isolated in-process AgentSession construction, review
+  serialization, the unabortable-timeout unavailability latch, timeout and
+  abort, usage and model attribution, observability — stays in
+  `guardian-runner.ts` and resolves the protocol at its seam.
 - **Permission classification module** — the pure in-process module in
   `policy-permissions/permission-policy.ts` that classifies one tool call for
   the current mode into an ordered verdict: block decisions and interaction

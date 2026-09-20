@@ -61,10 +61,10 @@ vi.mock("../_shared/observability.ts", () => ({
 
 import {
 	disposeAutoReviewer,
-	GUARDIAN_CLASSIFICATION_TOOL_NAME,
 	resolveGuardianModel,
 	runAutoReviewer,
 } from "./guardian-runner.ts";
+import { GUARDIAN_CLASSIFICATION_TOOL_NAME } from "./guardian-verdict.ts";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 const roots: string[] = [];

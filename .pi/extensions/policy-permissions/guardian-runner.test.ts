@@ -4,9 +4,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
 	collectGuardianUsage,
-	decideGuardianClassification,
 	parseGuardianDefinition,
-	parseGuardianVerdict,
 	runAutoReviewer,
 	type GuardianPromptSession,
 } from "./guardian-runner.ts";
@@ -139,64 +137,6 @@ describe("collectGuardianUsage", () => {
 		});
 		expect(collectGuardianUsage(messages, 0)?.input).toBe(1014);
 		expect(collectGuardianUsage([{ role: "user" }] as any, 0)).toBeUndefined();
-	});
-});
-
-describe("parseGuardianVerdict", () => {
-	it("strictly parses the classification schema", () => {
-		expect(parseGuardianVerdict(classification("medium", "high", false, "bounded install"))).toEqual({
-			risk_level: "medium",
-			user_authorization: "high",
-			exact_confirmation: false,
-			rationale: "bounded install",
-		});
-	});
-
-	it.each([
-		["markdown fences", `\`\`\`json\n${classification()}\n\`\`\``],
-		["bare outcome", "ALLOW"],
-		["missing field", '{"risk_level":"low","user_authorization":"high","rationale":"safe"}'],
-		["extra outcome field", '{"risk_level":"low","user_authorization":"high","exact_confirmation":false,"rationale":"safe","outcome":"allow"}'],
-		["invalid enum", classification("extreme", "high")],
-		["unknown authorization", classification("low", "unknown")],
-		["empty rationale", classification("low", "high", false, "")],
-	])("rejects %s", (_name, output) => {
-		expect(parseGuardianVerdict(output)).toBe("unclear");
-	});
-});
-
-describe("decideGuardianClassification", () => {
-	it("compares risk and authorization in code", () => {
-		expect(decideGuardianClassification({
-			risk_level: "high",
-			user_authorization: "medium",
-			exact_confirmation: true,
-			rationale: "insufficient authorization",
-		}).allowed).toBe(false);
-		expect(decideGuardianClassification({
-			risk_level: "medium",
-			user_authorization: "medium",
-			exact_confirmation: false,
-			rationale: "authorized install",
-		}).allowed).toBe(true);
-		expect(decideGuardianClassification({
-			risk_level: "low",
-			user_authorization: "low",
-			exact_confirmation: false,
-			rationale: "routine read",
-		}).allowed).toBe(true);
-		expect(decideGuardianClassification({
-			risk_level: "medium",
-			user_authorization: "low",
-			exact_confirmation: false,
-			rationale: "unauthorized install",
-		}).allowed).toBe(false);
-	});
-
-	it("requires high authorization and exact confirmation for critical risk", () => {
-		const base = { risk_level: "critical", user_authorization: "high", rationale: "destructive" } as const;
-		expect(decideGuardianClassification({ ...base, exact_confirmation: false }).allowed).toBe(false);
-		expect(decideGuardianClassification({ ...base, exact_confirmation: true }).allowed).toBe(true);
 	});
 });
 
