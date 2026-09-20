@@ -27,6 +27,8 @@ describe("todo tool rendering", () => {
 		const description = toolDefinition().description as string;
 		expect(description).toContain("In Plan Mode, track only exploration, clarification, and plan preparation");
 		expect(description).toContain("clear the list before the final plan");
+		expect(description).toContain("in the same turn the evidence lands");
+		expect(description).toContain("reconcile the list so every item is resolved");
 		expect(description).not.toContain("complete items only after implementation");
 	});
 

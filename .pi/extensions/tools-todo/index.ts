@@ -325,7 +325,7 @@ export default function (pi: ExtensionAPI) {
 		name: "todo",
 		label: "Todo",
 		description:
-			"Track non-trivial multi-step work with a structured todo list. Create the list before work begins. In Plan Mode, track only exploration, clarification, and plan preparation, then clear the list before the final plan. On updates, send the full list and reuse item IDs; keep exactly one item in_progress and complete items only after the corresponding work is done and checked. Keep items specific, preserve user commands verbatim, and clear the list when work ends.",
+			"Track non-trivial multi-step work with a structured todo list as a live progress ledger. Create the list before work begins. In Plan Mode, track only exploration, clarification, and plan preparation, then clear the list before the final plan. On updates, send the full list and reuse item IDs; keep exactly one item in_progress and complete items only after the corresponding work is done and checked. Keep items specific, preserve user commands verbatim. Update the list as the work progresses: in the same turn the evidence lands, send a full-list update — any tool result, test run, or commit that completes or invalidates an item must flip its status in that turn, never deferred to a later step. Mark completed and cancelled items with a one-line evidence note (the run, file, or commit that proves it). Before sending any final summary or report, reconcile the list so every item is resolved with its evidence note; a summary with a stale list is a process defect.",
 		promptSnippet: "Track tasks",
 		parameters: TodoParams,
 
