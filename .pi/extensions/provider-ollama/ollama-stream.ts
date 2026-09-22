@@ -1,5 +1,5 @@
 import { streamSimple as streamOpenAICompletions } from "@earendil-works/pi-ai/api/openai-completions";
-import type { Api, AssistantMessageEventStream, Context, FetchFunction, JsonValue, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessageEventStream, FetchFunction, JsonValue, Model, SimpleStreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
 
 function object(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -111,7 +111,7 @@ export function createOllamaFetch(fetch: FetchFunction = globalThis.fetch): Fetc
 /** Delegate all OpenAI-compatible behavior while normalizing Ollama's usage metrics. */
 export function streamOllama(
 	model: Model<Api>,
-	context: Context,
+	context: TranscriptContext,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
 	if (model.api !== "openai-completions") {

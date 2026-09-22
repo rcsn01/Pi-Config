@@ -1,3 +1,4 @@
+import { normalizeContext } from "@earendil-works/pi-ai";
 import type { Context, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { createOllamaFetch, normalizeOllamaUsage, streamOllama } from "../ollama-stream.ts";
@@ -113,7 +114,7 @@ describe("streamOllama", () => {
 			messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
 		};
 
-		const stream = streamOllama(model, context, {
+		const stream = streamOllama(model, normalizeContext(context), {
 			apiKey: "test-key",
 			fetch: async () => new Response(source, { headers: { "content-type": "text/event-stream" } }),
 		});

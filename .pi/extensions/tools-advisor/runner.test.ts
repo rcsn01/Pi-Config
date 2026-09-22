@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import type { Usage } from "@earendil-works/pi-ai";
 import { getObservabilityService, resetObservabilityServiceForTests } from "../_shared/observability.ts";
 import { createAdvisorRunner, type AdvisorRunInput } from "./runner.ts";
@@ -187,8 +188,8 @@ describe("advisor runner", () => {
 		expect(streamSimple).toHaveBeenCalledOnce();
 		const [requestModel, requestContext, options] = streamSimple.mock.calls[0];
 		expect(requestModel.baseUrl).toBe("https://live.example");
-		expect(requestContext.tools).toEqual([]);
-		expect(requestContext.systemPrompt).toEqual(expect.any(String));
+		expect(getCurrentTools(requestContext.messages)).toEqual([]);
+		expect(getCurrentSystemPrompt(requestContext.messages)).toEqual(expect.any(String));
 		expect(options).toMatchObject({
 			apiKey: "live-token",
 			headers: { authorization: "Bearer live", "X-Trace": "resolved", "X-Model": "kept" },

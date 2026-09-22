@@ -1,3 +1,4 @@
+import { normalizeContext } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Context, Model, SimpleStreamOptions, Tool } from "@earendil-works/pi-ai";
 import {
 	buildSessionContext,
@@ -196,7 +197,7 @@ export function createCacheAwareCompaction(pi: ExtensionAPI): CacheAwareCompacti
 				const thinkingLevel = ctx.thinkingLevel ?? pi.getThinkingLevel();
 				if (model.reasoning && thinkingLevel !== "off") options.reasoning = thinkingLevel;
 
-				const response = await provider.streamSimple(effectiveModel, context, options).result();
+				const response = await provider.streamSimple(effectiveModel, normalizeContext(context), options).result();
 				if (event.signal.aborted) return { cancel: true };
 				const summary = summaryText(response);
 				if (!summary) {

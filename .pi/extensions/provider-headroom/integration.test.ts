@@ -171,7 +171,7 @@ describe("Provider Headroom and cache-aware compaction", () => {
 		expect(test.appended[0].type).toBe(CCR_ENTRY_TYPE);
 
 		await createCacheAwareCompaction(test.pi).compact(compactionEvent(branch) as any, test.ctx);
-		expect(test.calls[0].context.messages.slice(0, -1)).toEqual(convertToLlm(normal.messages));
+		expect(test.calls[0].context.messages.slice(1, -1)).toEqual(convertToLlm(normal.messages));
 		expect(test.calls[0].context.messages.at(-1)?.role).toBe("user");
 		expect(test.appended).toHaveLength(1);
 
@@ -193,6 +193,6 @@ describe("Provider Headroom and cache-aware compaction", () => {
 		expect(getToolOutputRetention()).toBeUndefined();
 		const unprojectedBranch = [entry("u2", null, user("unchanged", 8))];
 		await createCacheAwareCompaction(test.pi).compact(compactionEvent(unprojectedBranch) as any, test.ctx);
-		expect(test.calls[1].context.messages.slice(0, -1)).toEqual(convertToLlm(buildSessionContext(unprojectedBranch).messages));
+		expect(test.calls[1].context.messages.slice(1, -1)).toEqual(convertToLlm(buildSessionContext(unprojectedBranch).messages));
 	});
 });

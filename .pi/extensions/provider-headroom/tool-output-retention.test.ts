@@ -211,7 +211,7 @@ describe("tool-output retention", () => {
 
 	it("projects historical results once without mutating the source", () => {
 		const original = largeJson();
-		const message = toolMessage(original, { usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, addedToolNames: ["later"] });
+		const message = toolMessage(original, { usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
 		const messages = [{ role: "user" as const, content: "inspect target", timestamp: 1 }, message];
 		const harness = createHarness([], { minChars: 100, maxItems: 5 });
 		const first = harness.retention.projectHistory(messages);
@@ -219,7 +219,7 @@ describe("tool-output retention", () => {
 		expect(first.changed).toBe(true);
 		expect((first.messages[1] as ToolResultMessage).content[0]).not.toEqual(message.content[0]);
 		expect(message.content[0]).toEqual({ type: "text", text: original });
-		expect(first.messages[1]).toMatchObject({ toolCallId: "call-1", toolName: "bash", addedToolNames: ["later"], isError: false });
+		expect(first.messages[1]).toMatchObject({ toolCallId: "call-1", toolName: "bash", isError: false });
 		expect(harness.appended).toHaveLength(1);
 		expect(harness.appended[0].type).toBe(CCR_ENTRY_TYPE);
 		expect(second.changed).toBe(true);

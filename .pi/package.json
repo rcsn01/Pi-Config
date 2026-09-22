@@ -12,9 +12,9 @@
 	},
 	"devDependencies": {
 		"@babel/parser": "7.29.8",
-		"@earendil-works/pi-ai": "0.84.4",
-		"@earendil-works/pi-coding-agent": "0.84.4",
-		"@earendil-works/pi-tui": "0.84.4",
+		"@earendil-works/pi-ai": "0.87.0",
+		"@earendil-works/pi-coding-agent": "0.87.0",
+		"@earendil-works/pi-tui": "0.87.0",
 		"@types/node": "26.1.2",
 		"@types/turndown": "5.0.6",
 		"ignore": "7.0.5",

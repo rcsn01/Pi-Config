@@ -1,4 +1,5 @@
-import type { AssistantMessage, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, getCurrentTools, normalizeContext } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context, Model, SimpleStreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
 import { streamSimple as codexStreamSimple } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { streamSimple as completionsStreamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
@@ -124,8 +125,8 @@ function makeHarness(options: {
 		{ name: "first", description: "First tool", parameters: { type: "object", properties: {} }, sourceInfo: {} },
 		{ name: "second", description: "Second tool", parameters: { type: "object", properties: { value: { type: "string" } } }, sourceInfo: {} },
 	];
-	const calls: Array<{ model: Model<any>; context: Context; options: SimpleStreamOptions }> = [];
-	const streamSimple = vi.fn((callModel: Model<any>, context: Context, streamOptions: SimpleStreamOptions) => {
+	const calls: Array<{ model: Model<any>; context: TranscriptContext; options: SimpleStreamOptions }> = [];
+	const streamSimple = vi.fn((callModel: Model<any>, context: TranscriptContext, streamOptions: SimpleStreamOptions) => {
 		calls.push({ model: callModel, context, options: streamOptions });
 		return {
 			result: async () => {
@@ -199,7 +200,7 @@ describe("provider-rendered cache prefix", () => {
 			const apiKey = api === "openai-codex-responses"
 				? `${btoa("{}")}.${btoa(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-1" } }))}.sig`
 				: "fake-key";
-			await streamSimple(renderedModel as never, context, {
+			await streamSimple(renderedModel as never, normalizeContext(context), {
 				apiKey,
 				sessionId: "stable-session",
 				cacheRetention: "long",
@@ -256,7 +257,7 @@ describe("cache-aware compaction", () => {
 
 		expect(projectHistory).toHaveBeenCalledOnce();
 		expect(projectHistory).toHaveBeenCalledWith(canonical);
-		expect(harness.calls[0].context.messages.slice(0, -1)).toEqual(convertToLlm(projected));
+		expect(harness.calls[0].context.messages.slice(1, -1)).toEqual(convertToLlm(projected));
 		expect(harness.calls[0].context.messages.at(-1)?.role).toBe("user");
 		expect(JSON.stringify(harness.calls[0].context.messages.at(-1))).toContain("1 trailing provider message");
 	});
@@ -272,14 +273,14 @@ describe("cache-aware compaction", () => {
 	it("uses canonical history unchanged when no retention module is registered", async () => {
 		const harness = makeHarness();
 		await harness.controller.compact(harness.event, harness.ctx);
-		expect(harness.calls[0].context.messages.slice(0, -1)).toEqual(convertToLlm(buildSessionContext(harness.entries).messages));
+		expect(harness.calls[0].context.messages.slice(1, -1)).toEqual(convertToLlm(buildSessionContext(harness.entries).messages));
 	});
 
 	it("fails open to canonical history when retention projection throws", async () => {
 		const harness = makeHarness();
 		registerToolOutputRetention(retention(() => { throw new Error("projection failed"); }));
 		await harness.controller.compact(harness.event, harness.ctx);
-		expect(harness.calls[0].context.messages.slice(0, -1)).toEqual(convertToLlm(buildSessionContext(harness.entries).messages));
+		expect(harness.calls[0].context.messages.slice(1, -1)).toEqual(convertToLlm(buildSessionContext(harness.entries).messages));
 		expect(harness.ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
@@ -291,11 +292,11 @@ describe("cache-aware compaction", () => {
 		expect(result?.compaction?.summary).toContain("## Goal");
 		expect(harness.calls).toHaveLength(1);
 		const call = harness.calls[0];
-		expect(call.context.systemPrompt).toBe("unchanged system prompt");
-		expect(call.context.messages.slice(0, -1)).toEqual(convertToLlm(buildSessionContext(harness.entries).messages));
+		expect(getCurrentSystemPrompt(call.context.messages)).toBe("unchanged system prompt");
+		expect(call.context.messages.slice(1, -1)).toEqual(convertToLlm(buildSessionContext(harness.entries).messages));
 		expect(call.context.messages.at(-1)?.role).toBe("user");
-		expect(call.context.messages).toHaveLength(convertToLlm(buildSessionContext(harness.entries).messages).length + 1);
-		expect(call.context.tools?.map((tool) => tool.name)).toEqual(["second", "first"]);
+		expect(call.context.messages).toHaveLength(convertToLlm(buildSessionContext(harness.entries).messages).length + 2);
+		expect(getCurrentTools(call.context.messages).map((tool) => tool.name)).toEqual(["second", "first"]);
 		expect(JSON.stringify(call.context.messages.at(-1))).toContain("Preserve the exact failing command.");
 		expect(JSON.stringify(call.context.messages.at(-1))).toContain("1 trailing provider message");
 	});

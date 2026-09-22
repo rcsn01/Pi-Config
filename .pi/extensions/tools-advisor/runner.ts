@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
 	clampThinkingLevel,
 	isContextOverflow,
+	normalizeContext,
 	type Api,
 	type AssistantMessage,
 	type Context,
@@ -176,7 +177,7 @@ async function completeWithRegistry(input: CompletionInput): Promise<AssistantMe
 		...(auth.env === undefined ? {} : { env: auth.env }),
 		...(input.thinkingLevel === "off" ? {} : { reasoning: input.thinkingLevel }),
 	};
-	return provider.streamSimple(requestModel, context, options).result();
+	return provider.streamSimple(requestModel, normalizeContext(context), options).result();
 }
 
 function mergeProviderHeaders(

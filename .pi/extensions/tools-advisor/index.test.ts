@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, getCurrentTools, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getStatusRegistry } from "../_shared/status-registry.ts";
 import advisorExtension, {
@@ -250,7 +250,7 @@ describe("advisor runtime integration", () => {
 			expect(serialized).toContain("Executor system prompt");
 			expect(serialized).toContain("Prose before consultation.");
 			expect(serialized).not.toContain("advisor-call");
-			expect(captured?.tools).toEqual([]);
+			expect(getCurrentTools(captured?.messages ?? [])).toEqual([]);
 		} finally {
 			session.dispose();
 		}

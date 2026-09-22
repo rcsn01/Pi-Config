@@ -20,6 +20,7 @@ function fakeHandle(initialFocused = false): {
 			hide: () => {},
 			setHidden: () => {},
 			isHidden: () => false,
+			getBounds: () => undefined,
 			focus: () => {
 				focused = true;
 				count += 1;
