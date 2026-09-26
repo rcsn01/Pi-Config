@@ -19,7 +19,11 @@ function createHarness(options: {
 	saveError?: unknown;
 } = {}) {
 	const confirmations = [...(options.confirmations ?? [])];
-	const requestUserConfirmation = vi.fn(async () => confirmations.shift() ?? false);
+	const requestUserConfirmation = vi.fn(async (
+		_host: Record<string, never>,
+		_title: string,
+		_message: string,
+	) => confirmations.shift() ?? false);
 	const adapter: PermissionEnforcementLifecycleAdapter<Record<string, never>> = {
 		loadMode: vi.fn(() => {
 			if (options.loadError) throw options.loadError;
@@ -227,22 +231,119 @@ describe("PermissionEnforcementLifecycle", () => {
 		expect(harness.lifecycle.approveLastDenied().kind).toBe("approved");
 	});
 
-	it.each(["review", "persistence"] as const)("falls back to user confirmation after Guardian %s failure", async (failure) => {
+	it("uses the Guardian-unavailable fallback when the review callback rejects", async () => {
+		const reviewError = new Error("provider credentials leaked");
 		const harness = createHarness({
 			mode: { mode: "auto-review", setAt: 1 },
 			confirmations: [true],
-			guardianError: failure === "review" ? new Error("offline") : undefined,
-			persistError: failure === "persistence" ? new Error("entry failed") : undefined,
+			guardianError: reviewError,
 		});
+
 		expect(await harness.evaluate("bash", { command: "sudo rm -rf /workspace/x" })).toEqual({
 			kind: "allowed",
 			source: "user",
 		});
+		expect(harness.adapter.runGuardianReview).toHaveBeenCalledOnce();
+		expect(harness.adapter.persistGuardianVerdict).not.toHaveBeenCalled();
 		expect(harness.adapter.requestUserConfirmation).toHaveBeenCalledWith(
 			{},
-			expect.stringContaining("guardian unavailable"),
-			expect.stringContaining("Guardian could not evaluate"),
+			"Auto-review: Command Review (guardian unavailable)",
+			"Command: sudo rm -rf /workspace/x\n\nConcerns:\n- Dangerous: recursive forced deletion\n\nGuardian could not return a usable verdict. Proceed?",
 		);
+		expect(harness.requestUserConfirmation.mock.calls[0]?.[2]).not.toContain(reviewError.message);
+	});
+
+	it("blocks and records a declined Guardian-unavailable fallback", async () => {
+		const harness = createHarness({
+			mode: { mode: "auto-review", setAt: 1 },
+			confirmations: [false],
+			guardianError: new Error("offline"),
+		});
+
+		expect(await harness.evaluate("bash", { command: "sudo rm -rf /workspace/x" })).toEqual({
+			kind: "blocked",
+			reason: "Auto-review: user declined (guardian fallback).",
+			approvable: true,
+		});
+		expect(harness.lifecycle.approveLastDenied()).toMatchObject({ kind: "approved" });
+	});
+
+	it("uses the verdict-write fallback after a returned Guardian result", async () => {
+		const persistError = new Error("append implementation details");
+		const harness = createHarness({
+			mode: { mode: "auto-review", setAt: 1 },
+			confirmations: [true],
+			persistError,
+		});
+
+		expect(await harness.evaluate("bash", { command: "sudo rm -rf /workspace/x" })).toEqual({
+			kind: "allowed",
+			source: "user",
+		});
+		expect(harness.adapter.runGuardianReview).toHaveBeenCalledOnce();
+		expect(harness.adapter.persistGuardianVerdict).toHaveBeenCalledOnce();
+		expect(harness.adapter.requestUserConfirmation).toHaveBeenCalledWith(
+			{},
+			"Auto-review: Command Review (verdict write failed)",
+			"Command: sudo rm -rf /workspace/x\n\nConcerns:\n- Dangerous: recursive forced deletion\n\nGuardian returned a verdict, but the attempt to record it in the current Session failed. Proceed?",
+		);
+		expect(harness.requestUserConfirmation.mock.calls[0]?.[2]).not.toContain(persistError.message);
+	});
+
+	it("requires explicit user approval when a denied Guardian verdict cannot be recorded", async () => {
+		const harness = createHarness({
+			mode: { mode: "auto-review", setAt: 1 },
+			confirmations: [true, false],
+			guardianResult: { allowed: false, reason: "unsafe" },
+			persistError: new Error("append failed"),
+		});
+		const call = { command: "sudo rm -rf /workspace/x" };
+
+		expect(await harness.evaluate("bash", call)).toEqual({ kind: "allowed", source: "user" });
+		expect(await harness.evaluate("bash", call)).toEqual({
+			kind: "blocked",
+			reason: "Auto-review: user declined (guardian fallback).",
+			approvable: true,
+		});
+		expect(harness.adapter.requestUserConfirmation).toHaveBeenNthCalledWith(
+			2,
+			{},
+			"Auto-review: Command Review (verdict write failed)",
+			expect.stringContaining("the attempt to record it in the current Session failed"),
+		);
+		expect(harness.lifecycle.approveLastDenied()).toMatchObject({ kind: "approved" });
+		expect(harness.adapter.persistGuardianVerdict).toHaveBeenCalledTimes(2);
+	});
+
+	it("persists and blocks a returned fail-closed Guardian denial without fallback confirmation", async () => {
+		const harness = createHarness({
+			mode: { mode: "auto-review", setAt: 1 },
+			guardianResult: { allowed: false, reason: "Guardian error: provider exploded" },
+		});
+
+		expect(await harness.evaluate("bash", { command: "sudo rm -rf /workspace/x" })).toEqual({
+			kind: "blocked",
+			reason: "Guardian error: provider exploded",
+			approvable: true,
+		});
+		expect(harness.adapter.persistGuardianVerdict).toHaveBeenCalledWith({}, expect.objectContaining({
+			allowed: false,
+			reason: "Guardian error: provider exploded",
+		}));
+		expect(harness.adapter.requestUserConfirmation).not.toHaveBeenCalled();
+	});
+
+	it("propagates a rejected fallback confirmation without requesting it again", async () => {
+		const confirmationError = new Error("UI closed");
+		const harness = createHarness({
+			mode: { mode: "auto-review", setAt: 1 },
+			guardianError: new Error("offline"),
+		});
+		harness.requestUserConfirmation.mockRejectedValue(confirmationError);
+
+		await expect(harness.evaluate("bash", { command: "sudo rm -rf /workspace/x" }))
+			.rejects.toBe(confirmationError);
+		expect(harness.adapter.requestUserConfirmation).toHaveBeenCalledOnce();
 	});
 
 	it("fails closed without UI instead of invoking Guardian", async () => {
@@ -251,6 +352,8 @@ describe("PermissionEnforcementLifecycle", () => {
 			.toEqual(expect.objectContaining({ kind: "blocked", approvable: false }));
 		expect(harness.lifecycle.approveLastDenied()).toEqual({ kind: "none" });
 		expect(harness.adapter.runGuardianReview).not.toHaveBeenCalled();
+		expect(harness.adapter.persistGuardianVerdict).not.toHaveBeenCalled();
+		expect(harness.adapter.requestUserConfirmation).not.toHaveBeenCalled();
 	});
 
 	it("passes the approval result's denial reason through over the step fallback", async () => {

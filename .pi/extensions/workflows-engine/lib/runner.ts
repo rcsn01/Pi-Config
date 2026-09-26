@@ -60,6 +60,7 @@ function handleOptions(
 		cacheAffinitySeed: cacheAffinitySeed(ctx),
 		persistence,
 		runSubagent: productionSubagent(),
+		requestSelection: ctx.hasUI ? (title, options, signal) => ctx.ui.select(title, [...options], { signal }) : undefined,
 		setStatus: statusCallback(ctx),
 	};
 }

@@ -79,6 +79,7 @@ export interface WorkflowContext<TArgs = string> {
 	readonly signal: AbortSignal;
 	phase<T>(name: string, fn: () => Promise<T> | T): Promise<T>;
 	step<T>(key: string, fn: () => Promise<T> | T, options?: WorkflowStepOptions): Promise<T>;
+	select<T extends string>(key: string, title: string, options: readonly T[], stepOptions?: WorkflowStepOptions): Promise<T>;
 	agent<T = string>(options: WorkflowAgentOptions): Promise<T>;
 	parallel<T, R>(items: T[], worker: (item: T, index: number) => Promise<R> | R, options: WorkflowParallelOptions): Promise<R[]>;
 	artifact(path: string, data: unknown): Promise<string>;

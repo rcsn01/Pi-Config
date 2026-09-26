@@ -51,11 +51,16 @@ export default defineWorkflow({
   phases: ["plan", "run", "report"],
   async run(ctx) {
     const data = await ctx.agent({ key: "collect-data", agent: "researcher", output: "json", prompt: "..." });
-    await ctx.artifact("data.json", data);
-    return ctx.agent({ key: "final-report", agent: "default", prompt: JSON.stringify(data) });
+    const choice = await ctx.select("choose-result", "Which result should I use?", data.options, {
+      dependsOn: ["collect-data"],
+    });
+    await ctx.artifact("data.json", { data, choice });
+    return ctx.agent({ key: "final-report", agent: "default", prompt: JSON.stringify({ data, choice }) });
   }
 });
 ```
+
+`ctx.select(key, title, options, stepOptions?)` opens a choice in the parent TUI. The answer is persisted as a durable step, so replay reuses the selected option; `/workflow restart <run-id> <key>` asks again. Escape cancels the workflow, and stopping the run dismisses the selector. Selection requires an interactive TUI; run workflows with checkpoints in the foreground. Non-interactive runs fail explicitly rather than choosing for the user.
 
 Rules:
 
@@ -64,6 +69,7 @@ Rules:
 - Budgets should be explicit for agent-heavy workflows.
 - Every expensive or side-effectful operation needs a stable durable key.
 - Workflow code coordinates only; subagents perform file, command, and web work.
+- Use `ctx.select()` when a workflow needs an explicit human choice mid-run; selection results are durable and replay-safe.
 
 ## Durable Keys and Replay
 
@@ -122,6 +128,16 @@ No workflow silently merges worktree changes. Use:
 to apply a stored patch to the main checkout after `git apply --check`. Review, test, and commit manually.
 
 Cleanup is explicit with `/workflow cleanup-worktrees <run-id>`. The `preserve` field is carried preservation metadata; no automatic cleanup currently consumes it. The explicit command ignores `preserve`, removes clean registered worktrees, skips dirty or invalid targets, and never force-removes. Its active-run exclusion is process-local, like the Workflow run lease.
+
+## Architecture-to-implementation workflow
+
+This project includes `.pi/workflows/improve-architecture-plan-implement.mjs`. Run it interactively with:
+
+```text
+/workflow improve-architecture-plan-implement [optional scope or direction]
+```
+
+It performs the architecture scan, creates and opens the HTML report, then pauses at a TUI picker for your candidate choice. After selection it adapts the saved `explore.md` and `evaluate-plan.md` prompts, writes the plan to the ignored run-specific path `.pi/workflow-runs/<run-id>/plan.md` (never replacing root `plan.md`), evaluates it in a fresh agent, implements and tests it, and asks a worker to commit only the reported implementation files. It skips the commit if implementation overlaps pre-existing dirty paths or there were pre-existing staged changes. The project workflow itself requires the usual source approval before its first run.
 
 ## Bundled Workflows
 

@@ -79,7 +79,7 @@ function createHarness(options: {
 		mode: "tui",
 		scopedModels: [],
 		isProjectTrusted: () => options.projectTrusted ?? false,
-		ui: { setStatus, notify: vi.fn(), confirm: vi.fn(async () => false) },
+		ui: { setStatus, notify: vi.fn(), confirm: vi.fn(async (_title: string, _message: string) => false) },
 		modelRegistry: { find: vi.fn() },
 		sessionManager: {
 			getBranch: () => options.branch ?? [{ type: "custom", customType: "configProfiles", data: { active: "focused" } }],
@@ -447,6 +447,29 @@ describe("auto-review verdict wiring", () => {
 			title: "Command Review",
 			triggers: ["dangerous", "external-path"],
 		}));
+	});
+
+	it("uses the verdict-write fallback when appending a Guardian verdict throws", async () => {
+		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe" });
+		const harness = createHarness();
+		const appendError = new Error("append implementation details");
+		harness.appendEntry.mockImplementation(() => { throw appendError; });
+		harness.ctx.ui.confirm.mockResolvedValue(false);
+		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+
+		const outcome = await harness.handlers.get("tool_call")?.(
+			{ toolName: "bash", input: { command: "sudo rm -rf /workspace/x" } },
+			harness.ctx,
+		);
+
+		expect(outcome).toEqual(expect.objectContaining({ block: true }));
+		expect(harness.appendEntry).toHaveBeenCalledOnce();
+		expect(harness.ctx.ui.confirm).toHaveBeenCalledWith(
+			"Auto-review: Command Review (verdict write failed)",
+			expect.stringContaining("Guardian returned a verdict, but the attempt to record it in the current Session failed. Proceed?"),
+		);
+		expect(harness.ctx.ui.confirm.mock.calls[0]?.[1]).not.toContain(appendError.message);
 	});
 
 	it("renders triggers on the verdict entry", () => {

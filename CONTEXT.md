@@ -296,6 +296,12 @@ extension.
   to apply or synchronize and owns outcome semantics; Model-selection persistence stays the
   Settings document seam.
 
+## Extension toggles
+
+- **Extension toggle** — a requested change to the enabled Extension set; the
+  resulting set must satisfy each enabled Extension's declared requirements
+  and conflicts.
+
 ## Skill management
 
 - **Skill update lifecycle**: the deep in-process module in `config-skill/` that
@@ -490,6 +496,10 @@ extension.
   verdict protocol (task composition, response interpretation, authorization
   decision, denial vocabulary) is data owned by the Guardian verdict protocol
   module; Guardian execution stays in `guardian-runner.ts`.
+- **Guardian fallback** — direct user confirmation when a Guardian review cannot
+  provide a usable outcome or its verdict cannot be retained. A failed review
+  and failed verdict retention are distinct causes; the user's confirmation,
+  not Guardian, authorizes the action.
 - **Guardian evidence module** — the branch-aware module in
   `policy-permissions/guardian-evidence.ts` that builds one bounded authorization
   window from the active Session context: the last three user turns plus the

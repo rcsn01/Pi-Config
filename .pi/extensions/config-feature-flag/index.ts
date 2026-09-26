@@ -3,135 +3,36 @@
  *
  * /features — interactive toggle UI (or: list|enable|disable|reset|status <name>)
  *
- * Scans .pi/extensions/ and .pi/extensions-disabled/ to discover extensions.
- * Enabling moves the extension folder into .pi/extensions/.
- * Disabling moves it to .pi/extensions-disabled/.
  * Run /reload after toggling for changes to take effect.
- *
  * Protected extensions (_shared, config-feature-flag) cannot be disabled.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { pickGuiOptions } from "../_shared/gui-option-list.ts";
+import { loadExtensionCatalog, type ExtensionCatalog } from "./catalog.ts";
 import {
-	loadExtensionCatalog,
-	type ExtensionCatalog,
-	type ExtensionCatalogEntry,
-	validateExtensionDisablements,
-	validateExtensionSelection,
-} from "./catalog.ts";
+	createExtensionToggleSession,
+	type ExtensionInfo,
+	type ExtensionToggleResult,
+	type ExtensionToggleSession,
+} from "./extension-toggle.ts";
 
 const EXTENSIONS_DIR = ".pi/extensions";
 const DISABLED_DIR = ".pi/extensions-disabled";
-
-/** Extensions that cannot be disabled (infrastructure). */
-const PROTECTED = new Set(["_shared", "config-feature-flag"]);
-
-interface ExtensionInfo {
-	name: string;
-	enabled: boolean;
-	protected: boolean;
-	metadata?: ExtensionCatalogEntry;
-}
-
-// ── Directory scanning ──────────────────────────────────────────────────────
-
-function scanExtensions(cwd: string, catalog: ExtensionCatalog): ExtensionInfo[] {
-	const result: ExtensionInfo[] = [];
-	const enabledDirs = listExtensionDirs(cwd, EXTENSIONS_DIR);
-	const disabledDirs = listExtensionDirs(cwd, DISABLED_DIR);
-
-	for (const name of enabledDirs) {
-		result.push({
-			name,
-			enabled: true,
-			protected: PROTECTED.has(name),
-			metadata: catalog.extensions[name],
-		});
-	}
-	for (const name of disabledDirs) {
-		if (!enabledDirs.has(name)) {
-			result.push({
-				name,
-				enabled: false,
-				protected: PROTECTED.has(name),
-				metadata: catalog.extensions[name],
-			});
-		}
-	}
-
-	result.sort((a, b) => a.name.localeCompare(b.name));
-	return result;
-}
-
-/** List extension directory names (subdirectories containing index.ts). */
-function listExtensionDirs(cwd: string, dir: string): Set<string> {
-	const names = new Set<string>();
-	const full = path.join(cwd, dir);
-	try {
-		for (const entry of fs.readdirSync(full, { withFileTypes: true })) {
-			if (!entry.isDirectory()) continue;
-			const indexPath = path.join(full, entry.name, "index.ts");
-			if (fs.existsSync(indexPath)) names.add(entry.name);
-		}
-	} catch {
-		// Directory doesn't exist yet — fine.
-	}
-	return names;
-}
-
-// ── Enable / disable ────────────────────────────────────────────────────────
-
-function enableExtension(cwd: string, name: string): boolean {
-	const disabledPath = path.join(cwd, DISABLED_DIR, name);
-	const enabledPath = path.join(cwd, EXTENSIONS_DIR, name);
-	try {
-		fs.mkdirSync(path.join(cwd, EXTENSIONS_DIR), { recursive: true });
-		fs.renameSync(disabledPath, enabledPath);
-		return true;
-	} catch (err) {
-		console.error(`Failed to enable ${name}:`, err);
-		return false;
-	}
-}
-
-function disableExtension(cwd: string, name: string): boolean {
-	const enabledPath = path.join(cwd, EXTENSIONS_DIR, name);
-	const disabledPath = path.join(cwd, DISABLED_DIR, name);
-	try {
-		fs.mkdirSync(path.join(cwd, DISABLED_DIR), { recursive: true });
-		fs.renameSync(enabledPath, disabledPath);
-		return true;
-	} catch (err) {
-		console.error(`Failed to disable ${name}:`, err);
-		return false;
-	}
-}
-
-function setExtensionEnabled(cwd: string, name: string, enabled: boolean): boolean {
-	return enabled ? enableExtension(cwd, name) : disableExtension(cwd, name);
-}
 
 // ── Interactive toggle UI ───────────────────────────────────────────────────
 
 async function featuresToggleUI(
 	ctx: ExtensionContext,
-	catalog: ExtensionCatalog,
+	session: ExtensionToggleSession,
 ): Promise<void> {
 	const cwd = ctx.cwd;
-	const extensions = scanExtensions(cwd, catalog);
+	const extensions = session.extensions;
 
 	if (extensions.length === 0) {
 		ctx.ui.notify("No toggleable extensions found.", "info");
 		return;
-	}
-
-	// Build pending state from current filesystem state.
-	const pending = new Map<string, boolean>();
-	for (const ext of extensions) {
-		pending.set(ext.name, ext.enabled);
 	}
 
 	const selected = await pickGuiOptions(ctx, {
@@ -148,39 +49,50 @@ async function featuresToggleUI(
 		})),
 	});
 
-	if (selected) {
-		const selectedSet = new Set(selected);
-		for (const ext of extensions) {
-			if (ext.protected) selectedSet.add(ext.name);
-		}
-		const current = enabledExtensionNames(extensions);
-		if (!notifySelectionIssues(ctx, catalog, current, selectedSet, "Extension changes blocked")) return;
-
-		let moved = 0;
-		for (const ext of extensions) {
-			if (ext.protected) continue; // Never move protected extensions.
-			const wantsEnabled = selectedSet.has(ext.name);
-			if (wantsEnabled && !ext.enabled) {
-				if (enableExtension(cwd, ext.name)) moved++;
-			} else if (!wantsEnabled && ext.enabled) {
-				if (disableExtension(cwd, ext.name)) moved++;
-			}
-		}
-
-		if (moved > 0) {
-			ctx.ui.notify(`${moved} extension(s) moved. Run /reload to apply.`, "info");
-		} else {
-			ctx.ui.notify("No changes needed.", "info");
-		}
-	} else {
+	if (selected === undefined) {
 		ctx.ui.notify("Changes discarded.", "info");
+		return;
 	}
+
+	const desiredEnabled = new Set(selected);
+	for (const ext of extensions) {
+		if (ext.protected) desiredEnabled.add(ext.name);
+	}
+	notifyPickerResult(ctx, session.apply(desiredEnabled));
+}
+
+function notifyPickerResult(ctx: ExtensionContext, result: ExtensionToggleResult): void {
+	if (result.status === "rejected") {
+		ctx.ui.notify(`Extension changes blocked:\n${result.issues.join("\n")}`, "warning");
+		return;
+	}
+
+	const moved = result.outcomes.filter(({ status }) => status === "moved");
+	const unsuccessful = result.outcomes.filter(({ status }) => status !== "moved");
+	if (unsuccessful.length > 0) {
+		const failedNames = unsuccessful.map(({ name, direction }) => `${name} (${direction})`).join(", ");
+		if (moved.length > 0) {
+			const movedNames = moved.map(({ name, direction }) => `${name} (${direction})`).join(", ");
+			ctx.ui.notify(
+				`Moved: ${movedNames}\nFailed or skipped: ${failedNames}\nRun /reload to apply successful moves.`,
+				"warning",
+			);
+		} else {
+			ctx.ui.notify(`Could not apply extension changes. Failed or skipped: ${failedNames}.`, "error");
+		}
+		return;
+	}
+
+	if (moved.length === 0) {
+		ctx.ui.notify("No changes needed.", "info");
+		return;
+	}
+	ctx.ui.notify(`${moved.length} extension(s) moved. Run /reload to apply.`, "info");
 }
 
 // ── Plain-text list (non-interactive fallback) ─────────────────────────────
 
-function featuresListText(cwd: string, catalog: ExtensionCatalog): string {
-	const extensions = scanExtensions(cwd, catalog);
+function featuresListText(cwd: string, extensions: readonly ExtensionInfo[]): string {
 	if (extensions.length === 0) {
 		return "No toggleable extensions found.";
 	}
@@ -227,24 +139,21 @@ export default function (pi: ExtensionAPI) {
 			const subcmd = parts[0];
 			const extName = parts.slice(1).join(" ");
 
-			// ── No args: launch interactive toggle UI ──────────────────────────
 			if (!trimmed) {
-				if (ctx.hasUI) {
-					return featuresToggleUI(ctx, catalog);
-				}
-				ctx.ui.notify(featuresListText(cwd, catalog), "info");
+				const session = createExtensionToggleSession(cwd, catalog);
+				if (ctx.hasUI) return featuresToggleUI(ctx, session);
+				ctx.ui.notify(featuresListText(cwd, session.extensions), "info");
 				return;
 			}
 
-			// ── Subcommands ────────────────────────────────────────────────────
 			if (["enable", "disable", "reset", "status"].includes(subcmd) && !extName) {
 				ctx.ui.notify(`Usage: /features ${subcmd} <extension-name>`, "warning");
 				return;
 			}
 
-			const extensions = scanExtensions(cwd, catalog);
-			const found = extensions.find((e) => e.name === extName);
-
+			const session = createExtensionToggleSession(cwd, catalog);
+			const extensions = session.extensions;
+			const found = extensions.find((extension) => extension.name === extName);
 			if (extName && !found) {
 				ctx.ui.notify(`Unknown extension: "${extName}". Use /features list to see available extensions.`, "warning");
 				return;
@@ -260,15 +169,15 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(`"${extName}" is already enabled.`, "info");
 						return;
 					}
-					const current = enabledExtensionNames(extensions);
-					const desired = new Set(current);
+					const desired = enabledExtensionNames(extensions);
 					desired.add(extName);
-					if (!notifySelectionIssues(ctx, catalog, current, desired)) return;
-					if (enableExtension(cwd, extName)) {
-						ctx.ui.notify(`"${extName}" enabled. Run /reload to apply.`, "info");
-					} else {
-						ctx.ui.notify(`Failed to enable "${extName}".`, "error");
-					}
+					notifyCommandResult(
+						ctx,
+						session.apply(desired),
+						`"${extName}" enabled. Run /reload to apply.`,
+						`"${extName}" is already enabled.`,
+						`Failed to enable "${extName}".`,
+					);
 					return;
 				}
 				case "disable": {
@@ -280,15 +189,15 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(`"${extName}" is already disabled.`, "info");
 						return;
 					}
-					const current = enabledExtensionNames(extensions);
-					const desired = new Set(current);
+					const desired = enabledExtensionNames(extensions);
 					desired.delete(extName);
-					if (!notifySelectionIssues(ctx, catalog, current, desired)) return;
-					if (disableExtension(cwd, extName)) {
-						ctx.ui.notify(`"${extName}" disabled. Run /reload to apply.`, "info");
-					} else {
-						ctx.ui.notify(`Failed to disable "${extName}".`, "error");
-					}
+					notifyCommandResult(
+						ctx,
+						session.apply(desired),
+						`"${extName}" disabled. Run /reload to apply.`,
+						`"${extName}" is already disabled.`,
+						`Failed to disable "${extName}".`,
+					);
 					return;
 				}
 				case "reset": {
@@ -301,16 +210,16 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(`"${extName}" already matches its default (${defaultEnabled ? "enabled" : "disabled"}).`, "info");
 						return;
 					}
-					const current = enabledExtensionNames(extensions);
-					const desired = new Set(current);
+					const desired = enabledExtensionNames(extensions);
 					if (defaultEnabled) desired.add(extName);
 					else desired.delete(extName);
-					if (!notifySelectionIssues(ctx, catalog, current, desired)) return;
-					if (setExtensionEnabled(cwd, extName, defaultEnabled)) {
-						ctx.ui.notify(`"${extName}" reset to default (${defaultEnabled ? "enabled" : "disabled"}). Run /reload to apply.`, "info");
-					} else {
-						ctx.ui.notify(`Failed to reset "${extName}".`, "error");
-					}
+					notifyCommandResult(
+						ctx,
+						session.apply(desired),
+						`"${extName}" reset to default (${defaultEnabled ? "enabled" : "disabled"}). Run /reload to apply.`,
+						`"${extName}" already matches its default (${defaultEnabled ? "enabled" : "disabled"}).`,
+						`Failed to reset "${extName}" (${defaultEnabled ? "enable" : "disable"}).`,
+					);
 					return;
 				}
 				case "status": {
@@ -328,28 +237,30 @@ export default function (pi: ExtensionAPI) {
 				}
 				case "list":
 				default:
-					ctx.ui.notify(featuresListText(cwd, catalog), "info");
+					ctx.ui.notify(featuresListText(cwd, extensions), "info");
 			}
 		},
 	});
 }
 
-function enabledExtensionNames(extensions: ExtensionInfo[]): Set<string> {
+function enabledExtensionNames(extensions: readonly ExtensionInfo[]): Set<string> {
 	return new Set(extensions.filter((extension) => extension.enabled).map((extension) => extension.name));
 }
 
-function notifySelectionIssues(
+function notifyCommandResult(
 	ctx: ExtensionContext,
-	catalog: ExtensionCatalog,
-	currentlyEnabled: ReadonlySet<string>,
-	desiredEnabled: ReadonlySet<string>,
-	heading = "Extension change blocked",
-): boolean {
-	const disablementIssues = validateExtensionDisablements(catalog, currentlyEnabled, desiredEnabled);
-	const issues = disablementIssues.length > 0
-		? disablementIssues
-		: validateExtensionSelection(catalog, desiredEnabled);
-	if (issues.length === 0) return true;
-	ctx.ui.notify(`${heading}:\n${issues.join("\n")}`, "warning");
-	return false;
+	result: ExtensionToggleResult,
+	successMessage: string,
+	unchangedMessage: string,
+	failureMessage: string,
+): void {
+	if (result.status === "rejected") {
+		ctx.ui.notify(`Extension change blocked:\n${result.issues.join("\n")}`, "warning");
+	} else if (result.status === "unchanged") {
+		ctx.ui.notify(unchangedMessage, "info");
+	} else if (result.status === "applied") {
+		ctx.ui.notify(successMessage, "info");
+	} else {
+		ctx.ui.notify(failureMessage, "error");
+	}
 }

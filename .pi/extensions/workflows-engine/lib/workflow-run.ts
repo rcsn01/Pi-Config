@@ -49,6 +49,7 @@ export interface PreparedWorkflowRunOptions {
 	cacheAffinitySeed: string;
 	persistence: RunPersistence;
 	runSubagent: WorkflowSubagentRunner;
+	requestSelection?: (title: string, options: string[], signal: AbortSignal) => Promise<string | undefined>;
 	setStatus?: (status: string | undefined) => void;
 }
 
@@ -430,6 +431,7 @@ class WorkflowRun implements WorkflowRunHandle {
 				}
 			},
 			step: async <T>(key: string, fn: () => Promise<T> | T, options?: { dependsOn?: string[]; metadata?: Record<string, unknown> }): Promise<T> => this.step(attempt, key, fn, options),
+			select: async <T extends string>(key: string, title: string, options: readonly T[], stepOptions?: { dependsOn?: string[]; metadata?: Record<string, unknown> }): Promise<T> => this.select(attempt, key, title, options, stepOptions),
 			agent: async <T = string>(options: WorkflowAgentOptions): Promise<T> => this.agent(attempt, options) as Promise<T>,
 			parallel: async <T, R>(items: T[], worker: (item: T, index: number) => Promise<R> | R, options: WorkflowParallelOptions): Promise<R[]> => this.parallel(attempt, items, worker, options),
 			artifact: async (artifactPath: string, data: unknown): Promise<string> => this.artifact(attempt, artifactPath, data),
@@ -472,6 +474,42 @@ class WorkflowRun implements WorkflowRunHandle {
 			await this.record({ type: "step_failed", key, error: errorMessage(error, "Step failed") }, attempt);
 			throw error;
 		}
+	}
+
+	private async select<T extends string>(
+		attempt: number,
+		key: string,
+		title: string,
+		options: readonly T[],
+		stepOptions: { dependsOn?: string[]; metadata?: Record<string, unknown> } = {},
+	): Promise<T> {
+		if (typeof title !== "string" || !title.trim()) throw new Error("Workflow selection requires a non-empty title");
+		if (!Array.isArray(options) || !options.length || options.some((option) => typeof option !== "string" || !option.trim())) {
+			throw new Error("Workflow selection requires non-empty string options");
+		}
+		if (new Set(options).size !== options.length) throw new Error("Workflow selection options must be unique");
+
+		const selected = await this.step<T>(attempt, key, async () => {
+			if (!this.options.requestSelection) {
+				throw new Error("Workflow selection requires an interactive TUI; run this workflow interactively.");
+			}
+			const choice = await this.options.requestSelection(title, [...options], this.controller.signal);
+			if (choice === undefined) throw new AbortError("Workflow cancelled during user selection");
+			if (!options.includes(choice as T)) throw new Error(`Workflow selection returned an unknown option: ${choice}`);
+			return choice as T;
+		}, {
+			...stepOptions,
+			metadata: {
+				...stepOptions.metadata,
+				interaction: "select",
+				title,
+				options: [...options],
+			},
+		});
+		if (!options.includes(selected)) {
+			throw new Error(`Workflow selection step "${key}" reuses an unavailable option: ${selected}. Restart the workflow at "${key}" to choose again.`);
+		}
+		return selected;
 	}
 
 	private async agent(optionsAttempt: number, options: WorkflowAgentOptions): Promise<unknown> {

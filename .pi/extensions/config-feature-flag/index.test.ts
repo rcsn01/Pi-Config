@@ -87,7 +87,7 @@ interface Harness {
 	run: (args: string, options?: { hasUI?: boolean }) => Promise<void>;
 }
 
-function createHarness(root: string): Harness {
+function createHarness(root: string, pickerSteps?: string[]): Harness {
 	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
 	createFeatureFlagsExtension({
 		registerCommand: vi.fn((name: string, command: any) => commands.set(name, command)),
@@ -97,9 +97,16 @@ function createHarness(root: string): Harness {
 	const selectLabels: string[][] = [];
 	let selectCalls = 0;
 	// Fallback picker: first call toggles the only offered option off, then save.
+	const steps = pickerSteps ? [...pickerSteps] : undefined;
 	const select = vi.fn(async (_title: string, labels: string[]) => {
 		selectLabels.push(labels);
 		selectCalls += 1;
+		if (steps) {
+			const step = steps.shift();
+			if (step === "save") return "✓ Save selected";
+			if (step === "cancel") return "✗ Cancel";
+			return labels.find((label) => label.toLowerCase().includes(step?.toLowerCase() ?? "\u0000"));
+		}
 		if (selectCalls === 1) {
 			return labels.find((label) => label !== "✓ Save selected" && label !== "✗ Cancel");
 		}
@@ -174,6 +181,113 @@ describe("/features protection", () => {
 		await harness.run("disable core");
 		expect(existsSync(join(root, ".pi", "extensions-disabled", "worker", "index.ts"))).toBe(true);
 		expect(existsSync(join(root, ".pi", "extensions-disabled", "core", "index.ts"))).toBe(true);
+	});
+
+	it("discards a cancelled picker without changing directories", async () => {
+		const root = createRepository();
+		const harness = createHarness(root, ["cancel"]);
+
+		await harness.run("");
+
+		expect(harness.notify).toHaveBeenCalledWith("Changes discarded.", "info");
+		expect(existsSync(join(root, ".pi", "extensions", "worker", "index.ts"))).toBe(true);
+		expect(existsSync(join(root, ".pi", "extensions-disabled", "worker"))).toBe(false);
+	});
+
+	it("reports a saved unchanged picker selection as a no-op", async () => {
+		const root = createRepository();
+		const harness = createHarness(root, ["save"]);
+
+		await harness.run("");
+
+		expect(harness.notify).toHaveBeenCalledWith("No changes needed.", "info");
+		expect(existsSync(join(root, ".pi", "extensions", "worker", "index.ts"))).toBe(true);
+		expect(existsSync(join(root, ".pi", "extensions-disabled", "worker"))).toBe(false);
+	});
+
+	it("disables a dependent and its requirement in one picker batch", async () => {
+		const root = createDependencyRepository();
+		const harness = createHarness(root, ["Core", "Worker", "save"]);
+
+		await harness.run("");
+
+		expect(existsSync(join(root, ".pi", "extensions-disabled", "worker", "index.ts"))).toBe(true);
+		expect(existsSync(join(root, ".pi", "extensions-disabled", "core", "index.ts"))).toBe(true);
+		expect(harness.notify).toHaveBeenCalledWith("2 extension(s) moved. Run /reload to apply.", "info");
+	});
+
+	it("reports partial picker success with moved and failed Extensions", async () => {
+		const root = createDependencyRepository();
+		mkdirSync(join(root, ".pi", "extensions", "independent"));
+		writeFileSync(join(root, ".pi", "extensions", "independent", "index.ts"), "export {};\n");
+		mkdirSync(join(root, ".pi", "extensions-disabled", "worker"));
+		writeFileSync(join(root, ".pi", "extensions-disabled", "worker", "index.ts"), "export {};\n");
+		const harness = createHarness(root, ["Core", "Worker", "independent", "save"]);
+
+		await harness.run("");
+
+		const message = harness.notify.mock.calls.map((call) => call[0]).join("\n");
+		expect(harness.notify).toHaveBeenCalledWith(expect.stringContaining("Moved: independent (disable)"), "warning");
+		expect(message).toContain("worker (disable)");
+		expect(message).toContain("Run /reload to apply successful moves.");
+		expect(message).not.toContain("No changes needed.");
+		expect(existsSync(join(root, ".pi", "extensions-disabled", "independent", "index.ts"))).toBe(true);
+	});
+
+	it("reports an all-failed picker batch as an error rather than a no-op", async () => {
+		const root = createRepository();
+		mkdirSync(join(root, ".pi", "extensions-disabled", "worker"));
+		writeFileSync(join(root, ".pi", "extensions-disabled", "worker", "index.ts"), "export {};\n");
+		const harness = createHarness(root, ["Worker", "save"]);
+
+		await harness.run("");
+
+		expect(harness.notify).toHaveBeenCalledWith(
+			expect.stringContaining("worker (disable)"),
+			"error",
+		);
+		const notifications = harness.notify.mock.calls.map((call) => call[0]).join("\n");
+		expect(notifications).not.toContain("No changes needed.");
+		expect(existsSync(join(root, ".pi", "extensions", "worker", "index.ts"))).toBe(true);
+	});
+
+	it("preserves enable, disable, and reset success and already-at-target messages", async () => {
+		const root = createRepository();
+		const harness = createHarness(root);
+
+		await harness.run("disable worker");
+		expect(harness.notify).toHaveBeenLastCalledWith('"worker" disabled. Run /reload to apply.', "info");
+		await harness.run("disable worker");
+		expect(harness.notify).toHaveBeenLastCalledWith('"worker" is already disabled.', "info");
+
+		await harness.run("enable worker");
+		expect(harness.notify).toHaveBeenLastCalledWith('"worker" enabled. Run /reload to apply.', "info");
+		await harness.run("enable worker");
+		expect(harness.notify).toHaveBeenLastCalledWith('"worker" is already enabled.', "info");
+
+		await harness.run("reset worker");
+		expect(harness.notify).toHaveBeenLastCalledWith(
+			'"worker" reset to default (disabled). Run /reload to apply.',
+			"info",
+		);
+		await harness.run("reset worker");
+		expect(harness.notify).toHaveBeenLastCalledWith(
+			'"worker" already matches its default (disabled).',
+			"info",
+		);
+	});
+
+	it("reports command move failures with the target Extension and direction", async () => {
+		const root = createRepository();
+		const disabledPath = join(root, ".pi", "extensions-disabled", "worker");
+		mkdirSync(disabledPath);
+		const harness = createHarness(root);
+
+		await harness.run("disable worker");
+
+		expect(harness.notify).toHaveBeenLastCalledWith('Failed to disable "worker".', "error");
+		expect(existsSync(join(root, ".pi", "extensions", "worker", "index.ts"))).toBe(true);
+		expect(existsSync(disabledPath)).toBe(true);
 	});
 
 	it("keeps protected extensions enabled when the interactive picker saves without them", async () => {

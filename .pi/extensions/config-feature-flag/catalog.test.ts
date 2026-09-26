@@ -70,13 +70,23 @@ describe("extension catalog", () => {
 		expect(validateExtensionSelection(catalog, new Set(["core", "worker"]))).toEqual([]);
 	});
 
-	it("requires enabled dependents to be disabled in an earlier change", () => {
+	it("allows dependency-closed batch removal but keeps the single-disable message", () => {
 		expect(validateExtensionDisablements(
 			catalog,
 			new Set(["core", "worker"]),
 			new Set(),
+		)).toEqual([]);
+		expect(validateExtensionSelection(catalog, new Set())).toEqual([]);
+
+		expect(validateExtensionDisablements(
+			catalog,
+			new Set(["core", "worker"]),
+			new Set(["worker"]),
 		)).toEqual([
 			'Cannot disable "core": enabled extension "worker" depends on it. Disable "worker" first.',
+		]);
+		expect(validateExtensionSelection(catalog, new Set(["worker"]))).toEqual([
+			'"worker" requires "core" to be enabled.',
 		]);
 		expect(validateExtensionDisablements(
 			catalog,
@@ -113,7 +123,7 @@ describe("extension catalog", () => {
 			.not.toThrow();
 	});
 
-	it("rejects invalid references and invalid default closure", () => {
+	it("rejects invalid references and default dependency closure", () => {
 		expect(() =>
 			parseExtensionCatalog({
 				version: 1,
@@ -128,6 +138,16 @@ describe("extension catalog", () => {
 				},
 			}),
 		).toThrow(/unknown extension/);
+		expect(() => parseExtensionCatalog(catalogValue({ worker: ["constructor"] })))
+			.toThrow(/references unknown extension "constructor"/);
+
+		expect(() => parseExtensionCatalog({
+			version: 1,
+			extensions: {
+				core: { displayName: "Core", pack: "core", defaultEnabled: false, requires: [], conflicts: [] },
+				worker: { displayName: "Worker", pack: "test", defaultEnabled: true, requires: ["core"], conflicts: [] },
+			},
+		})).toThrow(/Invalid default extension set: "worker" requires "core" to be enabled/);
 	});
 });
 

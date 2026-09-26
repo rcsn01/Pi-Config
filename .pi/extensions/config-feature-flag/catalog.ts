@@ -56,7 +56,7 @@ export function parseExtensionCatalog(value: unknown): ExtensionCatalog {
 			}
 		}
 		for (const related of [...entry.requires, ...entry.conflicts]) {
-			if (!(related in extensions)) {
+			if (!Object.hasOwn(extensions, related)) {
 				throw new Error(`Extension "${name}" references unknown extension "${related}".`);
 			}
 			if (related === name) {
@@ -93,7 +93,9 @@ export function validateExtensionDisablements(
 
 	for (const requirement of removed) {
 		for (const dependent of current) {
-			if (!catalog.extensions[dependent]?.requires.includes(requirement)) continue;
+			if (!desiredEnabled.has(dependent)) continue;
+			const dependentEntry = catalogEntry(catalog.extensions, dependent);
+			if (!dependentEntry?.requires.includes(requirement)) continue;
 			issues.push(
 				`Cannot disable "${requirement}": enabled extension "${dependent}" depends on it. Disable "${dependent}" first.`,
 			);
@@ -111,7 +113,7 @@ export function validateExtensionSelection(
 	const seenConflicts = new Set<string>();
 
 	for (const name of [...enabled].sort()) {
-		const entry = catalog.extensions[name];
+		const entry = catalogEntry(catalog.extensions, name);
 		if (!entry) continue;
 
 		for (const requirement of entry.requires) {
@@ -131,6 +133,13 @@ export function validateExtensionSelection(
 	}
 
 	return issues;
+}
+
+function catalogEntry(
+	extensions: Readonly<Record<string, ExtensionCatalogEntry>>,
+	name: string,
+): ExtensionCatalogEntry | undefined {
+	return Object.hasOwn(extensions, name) ? extensions[name] : undefined;
 }
 
 function validateRequirementCycles(extensions: Readonly<Record<string, ExtensionCatalogEntry>>): void {

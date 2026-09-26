@@ -144,6 +144,23 @@ export function createPermissionEnforcementLifecycle<HostContext>(
 		});
 	}
 
+	async function requestGuardianFallback(
+		environment: PermissionEnforcementEnvironment<HostContext>,
+		title: string,
+		message: string,
+		onAllowed: (source: "user" | "guardian") => void,
+	): Promise<ApprovalResult> {
+		const allowed = await adapter.requestUserConfirmation(
+			environment.hostContext,
+			title,
+			message,
+		);
+		if (allowed) onAllowed("user");
+		return allowed
+			? { allowed: true, reason: "User approved (guardian fallback)." }
+			: { allowed: false, reason: "Auto-review: user declined (guardian fallback)." };
+	}
+
 	async function guardianReview(
 		environment: PermissionEnforcementEnvironment<HostContext>,
 		title: string,
@@ -160,30 +177,40 @@ export function createPermissionEnforcementLifecycle<HostContext>(
 			actionDescription,
 			triggers,
 		);
+
+		let result: GuardianReviewResult;
 		try {
-			const result = await adapter.runGuardianReview(
+			result = await adapter.runGuardianReview(
 				environment.hostContext,
 				title,
 				evaluationMessage,
 				triggers,
 			);
-			adapter.persistGuardianVerdict(environment.hostContext, { ...result, title, triggers });
-			if (result.allowed) onAllowed("guardian");
-			return {
-				allowed: result.allowed,
-				reason: result.reason || (result.allowed ? undefined : "Guardian denied."),
-			};
 		} catch {
-			const allowed = await adapter.requestUserConfirmation(
-				environment.hostContext,
+			return requestGuardianFallback(
+				environment,
 				`Auto-review: ${title} (guardian unavailable)`,
-				`${actionDescription}\n\nGuardian could not evaluate. Proceed?`,
+				`${actionDescription}\n\nGuardian could not return a usable verdict. Proceed?`,
+				onAllowed,
 			);
-			if (allowed) onAllowed("user");
-			return allowed
-				? { allowed: true, reason: "User approved (guardian fallback)." }
-				: { allowed: false, reason: "Auto-review: user declined (guardian fallback)." };
 		}
+
+		try {
+			adapter.persistGuardianVerdict(environment.hostContext, { ...result, title, triggers });
+		} catch {
+			return requestGuardianFallback(
+				environment,
+				`Auto-review: ${title} (verdict write failed)`,
+				`${actionDescription}\n\nGuardian returned a verdict, but the attempt to record it in the current Session failed. Proceed?`,
+				onAllowed,
+			);
+		}
+
+		if (result.allowed) onAllowed("guardian");
+		return {
+			allowed: result.allowed,
+			reason: result.reason || (result.allowed ? undefined : "Guardian denied."),
+		};
 	}
 
 	return {

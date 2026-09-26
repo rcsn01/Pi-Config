@@ -97,7 +97,14 @@ async function seedWorktreeEvents(project: string, runId: string, agents: Array<
 	return persistence;
 }
 
-async function handleFor(cwdValue: string, runId: string, workflow: ReturnType<typeof defineWorkflow>, persistence = new InMemoryRunPersistence(cwdValue, runId), resume = false) {
+async function handleFor(
+	cwdValue: string,
+	runId: string,
+	workflow: ReturnType<typeof defineWorkflow>,
+	persistence = new InMemoryRunPersistence(cwdValue, runId),
+	resume = false,
+	requestSelection?: (title: string, options: string[], signal: AbortSignal) => Promise<string | undefined>,
+) {
 	return createWorkflowRun({
 		entry,
 		workflow,
@@ -107,6 +114,7 @@ async function handleFor(cwdValue: string, runId: string, workflow: ReturnType<t
 		cwd: cwdValue,
 		cacheAffinitySeed: "session-seed",
 		persistence,
+		requestSelection,
 		runSubagent: async () => ({
 			agent: "worker",
 			task: "task",
@@ -395,6 +403,140 @@ describe("WorkflowRun deep interface", () => {
 		expect(await resumed.execute()).toEqual({ value: 1 });
 		expect(executions).toBe(1);
 		expect(persistence.events.some((event) => event.type === "step_reused")).toBe(true);
+	});
+
+	it("persists a user selection and reuses it on resume without prompting again", async () => {
+		const project = await cwd();
+		const persistence = new InMemoryRunPersistence(project, "run-user-selection");
+		const prompts: Array<{ title: string; options: string[] }> = [];
+		const workflow = defineWorkflow({
+			name: entry.name,
+			description: entry.description,
+			canEditFiles: false,
+			run: (ctx) => ctx.select("choose-candidate", "Which architecture option?", ["Option A", "Option B"], {
+				dependsOn: ["architecture-report"],
+				metadata: { kind: "architecture-candidate" },
+			}),
+		});
+		const first = await handleFor(project, "run-user-selection", workflow, persistence, false, async (title, options) => {
+			prompts.push({ title, options });
+			return "Option B";
+		});
+
+		expect(await first.execute()).toBe("Option B");
+		expect(prompts).toEqual([{ title: "Which architecture option?", options: ["Option A", "Option B"] }]);
+		expect(persistence.events).toContainEqual(expect.objectContaining({
+			type: "step_started",
+			key: "choose-candidate",
+			dependsOn: ["architecture-report"],
+			metadata: expect.objectContaining({ interaction: "select", options: ["Option A", "Option B"] }),
+		}));
+		expect(persistence.events).toContainEqual(expect.objectContaining({ type: "step_completed", key: "choose-candidate", result: "Option B" }));
+
+		const resumed = await handleFor(project, "run-user-selection", workflow, persistence, true, async () => {
+			throw new Error("completed selection must not prompt again");
+		});
+		expect(await resumed.execute()).toBe("Option B");
+		expect(persistence.events.some((event) => event.type === "step_reused" && event.key === "choose-candidate")).toBe(true);
+	});
+
+	it("rejects a persisted choice that no longer exists in the available options", async () => {
+		const project = await cwd();
+		const persistence = new InMemoryRunPersistence(project, "run-user-selection-stale");
+		const initialWorkflow = defineWorkflow({
+			name: entry.name,
+			description: entry.description,
+			canEditFiles: false,
+			run: (ctx) => ctx.select("choose-candidate", "Choose", ["Option A", "Option B"]),
+		});
+		const first = await handleFor(project, "run-user-selection-stale", initialWorkflow, persistence, false, async () => "Option B");
+		expect(await first.execute()).toBe("Option B");
+
+		const changedWorkflow = defineWorkflow({
+			name: entry.name,
+			description: entry.description,
+			canEditFiles: false,
+			run: (ctx) => ctx.select("choose-candidate", "Choose", ["Option C", "Option D"]),
+		});
+		const resumed = await handleFor(project, "run-user-selection-stale", changedWorkflow, persistence, true, async () => {
+			throw new Error("a stale completed choice must not prompt implicitly");
+		});
+		await expect(resumed.execute()).rejects.toThrow(/reuses an unavailable option: Option B.*restart the workflow/i);
+	});
+
+	it("re-prompts after the selection key is explicitly restarted", async () => {
+		const project = await cwd();
+		const persistence = new InMemoryRunPersistence(project, "run-user-selection-restart");
+		const choices = ["Option A", "Option B"];
+		const workflow = defineWorkflow({
+			name: entry.name,
+			description: entry.description,
+			canEditFiles: false,
+			run: (ctx) => ctx.select("choose-candidate", "Which architecture option?", choices),
+		});
+		const first = await handleFor(project, "run-user-selection-restart", workflow, persistence, false, async () => "Option A");
+		expect(await first.execute()).toBe("Option A");
+		const resumed = await handleFor(project, "run-user-selection-restart", workflow, persistence, true, async () => "Option B");
+		expect(await resumed.restart("choose-candidate")).toBe("Option B");
+	});
+
+	it("stops cleanly when the user cancels a selection and retries it on resume", async () => {
+		const project = await cwd();
+		const persistence = new InMemoryRunPersistence(project, "run-user-selection-cancel");
+		const workflow = defineWorkflow({
+			name: entry.name,
+			description: entry.description,
+			canEditFiles: false,
+			run: (ctx) => ctx.select("choose-candidate", "Which architecture option?", ["Option A", "Option B"]),
+		});
+		const first = await handleFor(project, "run-user-selection-cancel", workflow, persistence, false, async () => undefined);
+		await expect(first.execute()).rejects.toThrow("Workflow cancelled during user selection");
+		expect((await first.inspect()).status).toBe("stopped");
+
+		const resumed = await handleFor(project, "run-user-selection-cancel", workflow, persistence, true, async () => "Option A");
+		expect(await resumed.execute()).toBe("Option A");
+	});
+
+	it("dismisses a pending user selection when the workflow is stopped", async () => {
+		const project = await cwd();
+		let announceSelection!: () => void;
+		const selectionStarted = new Promise<void>((resolve) => { announceSelection = resolve; });
+		const workflow = defineWorkflow({
+			name: entry.name,
+			description: entry.description,
+			canEditFiles: false,
+			run: (ctx) => ctx.select("choose-candidate", "Choose", ["Option A", "Option B"]),
+		});
+		const handle = await handleFor(project, "run-user-selection-stop", workflow, undefined, false, async (_title, _options, signal) => {
+			announceSelection();
+			return new Promise((resolve) => signal.addEventListener("abort", () => resolve(undefined), { once: true }));
+		});
+		const running = handle.execute();
+		await selectionStarted;
+		handle.requestStop("stop during selection");
+		await expect(running).rejects.toThrow("Workflow cancelled during user selection");
+		expect((await handle.inspect()).status).toBe("stopped");
+	});
+
+	it("rejects invalid or unavailable user-selection requests", async () => {
+		const project = await cwd();
+		const unavailable = defineWorkflow({
+			name: entry.name,
+			description: entry.description,
+			canEditFiles: false,
+			run: (ctx) => ctx.select("choose-candidate", "Choose", ["A", "B"]),
+		});
+		const noUi = await handleFor(project, "run-user-selection-no-ui", unavailable);
+		await expect(noUi.execute()).rejects.toThrow("requires an interactive TUI");
+
+		const invalid = defineWorkflow({
+			name: entry.name,
+			description: entry.description,
+			canEditFiles: false,
+			run: (ctx) => ctx.select("choose-candidate", "Choose", ["A", "B"]),
+		});
+		const badOption = await handleFor(project, "run-user-selection-invalid", invalid, undefined, false, async () => "C");
+		await expect(badOption.execute()).rejects.toThrow("unknown option: C");
 	});
 
 	it("keeps durable append order and recovers after an ordinary projection failure", async () => {
