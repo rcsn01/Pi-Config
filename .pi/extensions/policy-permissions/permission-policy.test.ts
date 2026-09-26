@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { ExecPolicyConfig } from "../_shared/command-policy.ts";
 import { classifyToolCall } from "./permission-policy.ts";
@@ -6,7 +7,7 @@ import type { EvaluateContext, PermissionStep } from "./policy-types.ts";
 
 const DEFAULT_POLICY: ExecPolicyConfig = { rules: [], defaultAction: "allow" };
 const CWD = "/workspace";
-const SCRIPT = ".pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs";
+const SCRIPT = fileURLToPath(new URL("../../skills/github-repo-explorer/scripts/github-repo-snapshot.mjs", import.meta.url));
 
 function classify(
 	toolName: string,
@@ -224,8 +225,8 @@ describe("classifyToolCall", () => {
 						kind: "ask",
 						channel: "user",
 						title: "Network Access",
-						message: `Command appears to require network access.\n\nCommand: ${command}`,
-						denial: { title: "Network Access", message: command },
+						message: `Command appears to require network access.\n\nCommand: ${command.slice(0, 200)}`,
+						denial: { title: "Network Access", message: command.slice(0, 200) },
 						declinedReason: { kind: "fallback", reason: "Network access blocked." },
 					},
 				]);

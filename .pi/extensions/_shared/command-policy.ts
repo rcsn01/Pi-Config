@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { fileURLToPath } from "node:url";
 import { dangerousCommandReason } from "./security.ts";
 import { mutateProjectNamespace, readProjectDocument } from "./pi-config.ts";
 import { isRecord } from "./settings-document.ts";
@@ -87,6 +88,7 @@ const NETWORK_COMMAND_PATTERNS = [
 ];
 
 const GITHUB_SNAPSHOT_HELPER_PATH = ".pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs";
+const GITHUB_SNAPSHOT_HELPER_ABSOLUTE_PATH = fileURLToPath(new URL("../../skills/github-repo-explorer/scripts/github-repo-snapshot.mjs", import.meta.url));
 const GITHUB_SNAPSHOT_HELPER_BASENAME = "github-repo-snapshot.mjs";
 const SNAPSHOT_COMMAND_UNSAFE_CHARS = new Set([
 	";", "&", "|", "`", "$", "(", ")", "<", ">", "!", "'", "\"", "#",
@@ -182,11 +184,18 @@ export function extractExternalPathsFromCommand(command: string, cwd: string): s
 	// Match absolute Unix paths (/foo/bar), home paths (~/foo/bar), Windows paths (C:\foo)
 	// Exclude single-char paths like /c from "cmd.exe /c"
 	const pathPattern = /(?:^|[\s;|&`$()!])((?:\/[^\s;|&`$()!*?"'<>{}[\]\\#]{2,})|~\/[^\s;|&`$()!*?"'<>{}[\]\\#]+|[A-Z]:\\[^\s;|&`$()!*?"'<>{}[\]\\#]+)/g;
+	const normalized = normalizeShellCommand(command);
+	// The helper's absolute script path may be outside the workspace; scan its arguments, not the trusted executable path.
+	const trustedHelperPrefix = `node ${GITHUB_SNAPSHOT_HELPER_ABSOLUTE_PATH}`;
+	const pathScanCommand = normalized.startsWith(trustedHelperPrefix)
+		&& (normalized.length === trustedHelperPrefix.length || /[ \t]/.test(normalized[trustedHelperPrefix.length]))
+		? normalized.slice(trustedHelperPrefix.length)
+		: command;
 	const external: string[] = [];
 	const seen = new Set<string>();
 
 	let match: RegExpExecArray | null;
-	while ((match = pathPattern.exec(command)) !== null) {
+	while ((match = pathPattern.exec(pathScanCommand)) !== null) {
 		let rawPath = match[1];
 		// Expand ~ to home
 		if (rawPath.startsWith("~")) {
@@ -231,11 +240,15 @@ export function mentionsGithubRepositorySnapshotHelper(command: string): boolean
 	return normalizeShellCommand(command).includes(GITHUB_SNAPSHOT_HELPER_BASENAME);
 }
 
-export function githubRepositorySnapshotOperation(command: string): "acquire" | "list" | "remove" | undefined {
+export function githubRepositorySnapshotOperation(command: string, cwd = process.cwd()): "acquire" | "list" | "remove" | undefined {
 	const normalized = normalizeShellCommand(command);
 	if (containsSnapshotCommandSyntax(normalized)) return undefined;
 	const args = normalized.split(/[ \t]+/);
-	if (args[0] !== "node" || args[1] !== GITHUB_SNAPSHOT_HELPER_PATH) return undefined;
+	const helperPath = args[1];
+	const isBundledAbsolutePath = helperPath === GITHUB_SNAPSHOT_HELPER_ABSOLUTE_PATH;
+	const isBundledWorkspacePath = helperPath === GITHUB_SNAPSHOT_HELPER_PATH
+		&& path.resolve(cwd, helperPath) === GITHUB_SNAPSHOT_HELPER_ABSOLUTE_PATH;
+	if (args[0] !== "node" || (!isBundledAbsolutePath && !isBundledWorkspacePath)) return undefined;
 
 	switch (args[2]) {
 		case "list":
@@ -249,18 +262,18 @@ export function githubRepositorySnapshotOperation(command: string): "acquire" | 
 	}
 }
 
-export function isNetworkCommand(command: string): boolean {
+export function isNetworkCommand(command: string, cwd = process.cwd()): boolean {
 	const normalized = normalizeShellCommand(command);
-	const snapshotOperation = githubRepositorySnapshotOperation(normalized);
+	const snapshotOperation = githubRepositorySnapshotOperation(normalized, cwd);
 	const malformedSnapshotCommand = mentionsGithubRepositorySnapshotHelper(normalized) && snapshotOperation === undefined;
 	return snapshotOperation === "acquire" || malformedSnapshotCommand || NETWORK_COMMAND_PATTERNS.some((re) => re.test(normalized));
 }
 
 // ── Shell classification exports ───────────────────────────────────────
 
-export function isReadOnlyShellCommand(command: string): boolean {
+export function isReadOnlyShellCommand(command: string, cwd = process.cwd()): boolean {
 	const trimmed = command.trim();
-	const snapshotOperation = githubRepositorySnapshotOperation(trimmed);
+	const snapshotOperation = githubRepositorySnapshotOperation(trimmed, cwd);
 	if (snapshotOperation) return snapshotOperation === "list";
 	if (mentionsGithubRepositorySnapshotHelper(trimmed)) return false;
 	return READ_ONLY_COMMAND_RE.test(trimmed);

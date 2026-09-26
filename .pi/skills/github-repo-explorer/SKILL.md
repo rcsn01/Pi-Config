@@ -5,14 +5,14 @@ description: Safely inspect public GitHub repositories through immutable, commit
 
 # GitHub repository explorer
 
-This skill uses the bundled snapshot helper instead of custom Pi tools. Run commands from the project root; the helper stores snapshots under `.pi/repos/`.
+This skill uses the bundled snapshot helper instead of custom Pi tools. Keep the built-in `bash` tool in the current Pi workspace; do not change to the skill's directory. The helper stores snapshots under the current workspace's `.pi/repos/`.
 
 ## Acquire before inspecting
 
-1. Call the helper through the built-in `bash` tool before reading a remote repository:
+1. Call the helper through the built-in `bash` tool before reading a remote repository. Resolve `HELPER` to the absolute path of this loaded skill's `scripts/github-repo-snapshot.mjs`, using the skill location Pi provided. Keep the command's working directory at the current Pi workspace:
 
    ```text
-   node .pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs acquire <owner/repo-or-https-url> [--ref <branch-or-tag-or-full-ref-or-commit>]
+   node HELPER acquire <owner/repo-or-https-url> [--ref <branch-or-tag-or-full-ref-or-commit>]
    ```
 
 2. Record the returned `id`, pinned `commit`, and `path`. Use that exact path with the normal `read`, `grep`, and `find` tools.
@@ -34,13 +34,13 @@ The helper checks tree and disk limits before publication, rejects unsafe paths,
 - List completed snapshots:
 
   ```text
-  node .pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs list
+  node HELPER list
   ```
 
 - Remove a snapshot only after the user explicitly asks and confirms the deletion:
 
   ```text
-  node .pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs remove <id> --confirm
+  node HELPER remove <id> --confirm
   ```
 
 The helper validates the opaque ID and stored manifest before removal. Snapshots persist across Pi sessions and are never removed automatically.

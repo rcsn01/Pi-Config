@@ -124,7 +124,7 @@ export function classifyToolCall(
 
 	// ── Read-only mode: block mutations ────────────────────────────
 	if (mode === "read-only") {
-		const readOnlySnapshotOperation = toolName === "bash" ? githubRepositorySnapshotOperation(commandOf(input)) : undefined;
+		const readOnlySnapshotOperation = toolName === "bash" ? githubRepositorySnapshotOperation(commandOf(input), cwd) : undefined;
 
 		// Block write/mutating tools entirely. Snapshot listing is a read-only
 		// helper command even though it runs through the built-in bash tool.
@@ -172,7 +172,7 @@ export function classifyToolCall(
 	if (toolName === "bash") {
 		const command = commandOf(input);
 		const trimmedCmd = command.trim();
-		const snapshotOperation = githubRepositorySnapshotOperation(trimmedCmd);
+		const snapshotOperation = githubRepositorySnapshotOperation(trimmedCmd, cwd);
 		const mentionsSnapshotHelper = mentionsGithubRepositorySnapshotHelper(trimmedCmd);
 
 		// Do not let wrappers, aliases, path variants, or compound commands
@@ -185,7 +185,7 @@ export function classifyToolCall(
 		}
 
 		// Read-only bash: only read-only commands allowed
-		if (mode === "read-only" && !isReadOnlyShellCommand(trimmedCmd)) {
+		if (mode === "read-only" && !isReadOnlyShellCommand(trimmedCmd, cwd)) {
 			steps.push({
 				kind: "block",
 				reason: `Approval mode is read-only. Command blocked: ${trimmedCmd.slice(0, 80)}. Use /permissions default to allow writes.`,
@@ -195,7 +195,7 @@ export function classifyToolCall(
 		// Default & auto-review: dangerous commands need approval
 		if (mode === "default" || mode === "auto-review") {
 			const dangerReason = dangerousShellReason(trimmedCmd);
-			const network = isNetworkCommand(trimmedCmd);
+			const network = isNetworkCommand(trimmedCmd, cwd);
 			const externalPaths = mode === "auto-review"
 				? extractExternalPathsFromCommand(trimmedCmd, cwd)
 				: [];
