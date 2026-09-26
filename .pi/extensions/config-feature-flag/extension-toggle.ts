@@ -1,10 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+	orderExtensionsByRequirements,
 	validateExtensionDisablements,
 	validateExtensionSelection,
 	type ExtensionCatalog,
 	type ExtensionCatalogEntry,
+	type ExtensionToggleDirection,
 } from "./catalog.ts";
 
 const EXTENSIONS_DIR = ".pi/extensions";
@@ -18,7 +20,6 @@ export interface ExtensionInfo {
 	metadata?: ExtensionCatalogEntry;
 }
 
-export type ExtensionToggleDirection = "enable" | "disable";
 export type ExtensionToggleOutcomeStatus = "moved" | "failed" | "skipped";
 
 export interface ExtensionToggleOutcome {
@@ -118,8 +119,8 @@ export function createExtensionToggleSession(cwd: string, catalog: ExtensionCata
 			}
 
 			const orderedNames = [
-				...orderByRequirements(disableNames, catalog, "disable"),
-				...orderByRequirements(enableNames, catalog, "enable"),
+				...orderExtensionsByRequirements(disableNames, catalog, "disable"),
+				...orderExtensionsByRequirements(enableNames, catalog, "enable"),
 			];
 			const outcomes: ExtensionToggleOutcome[] = [];
 			const workingEnabled = new Set(enabled);
@@ -206,28 +207,6 @@ function inspectExtensionPath(extensionPath: string): ExtensionPathKind {
 
 function isMissingPath(error: unknown): boolean {
 	return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-}
-
-function orderByRequirements(
-	names: readonly string[],
-	catalog: ExtensionCatalog,
-	direction: ExtensionToggleDirection,
-): string[] {
-	const remaining = new Set(names);
-	const ordered: string[] = [];
-	while (remaining.size > 0) {
-		const eligible = [...remaining].filter((name) => {
-			if (direction === "enable") {
-				return (catalogEntry(catalog, name)?.requires ?? []).every((requirement) => !remaining.has(requirement));
-			}
-			return ![...remaining].some((dependent) => catalogEntry(catalog, dependent)?.requires.includes(name));
-		}).sort((left, right) => left.localeCompare(right));
-		const next = eligible[0];
-		if (next === undefined) throw new Error("Extension requirements contain a cycle.");
-		remaining.delete(next);
-		ordered.push(next);
-	}
-	return ordered;
 }
 
 function introducesValidationIssues(

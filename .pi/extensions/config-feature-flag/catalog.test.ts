@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	loadExtensionCatalog,
+	orderExtensionsByRequirements,
 	parseExtensionCatalog,
 	validateExtensionDisablements,
 	validateExtensionSelection,
@@ -148,6 +149,63 @@ describe("extension catalog", () => {
 				worker: { displayName: "Worker", pack: "test", defaultEnabled: true, requires: ["core"], conflicts: [] },
 			},
 		})).toThrow(/Invalid default extension set: "worker" requires "core" to be enabled/);
+	});
+});
+
+describe("extension requirement ordering", () => {
+	it("orders requirements before dependents on enable and after them on disable", () => {
+		expect(orderExtensionsByRequirements(["worker", "core"], catalog, "enable")).toEqual(["core", "worker"]);
+		expect(orderExtensionsByRequirements(["worker", "core"], catalog, "disable")).toEqual(["worker", "core"]);
+	});
+
+	it("re-sorts newly eligible names when ordering a dependency diamond", () => {
+		const diamond = parseExtensionCatalog({
+			version: 1,
+			extensions: {
+				a: { displayName: "A", pack: "test", defaultEnabled: false, requires: ["b", "c"], conflicts: [] },
+				b: { displayName: "B", pack: "test", defaultEnabled: false, requires: ["root"], conflicts: [] },
+				c: { displayName: "C", pack: "test", defaultEnabled: false, requires: ["root"], conflicts: [] },
+				root: { displayName: "Root", pack: "test", defaultEnabled: false, requires: [], conflicts: [] },
+				z: { displayName: "Z", pack: "test", defaultEnabled: false, requires: [], conflicts: [] },
+			},
+		});
+		const names = ["z", "c", "root", "a", "b"];
+
+		expect(orderExtensionsByRequirements(names, diamond, "enable")).toEqual(["root", "b", "c", "a", "z"]);
+		expect(orderExtensionsByRequirements(names, diamond, "disable")).toEqual(["a", "b", "c", "root", "z"]);
+	});
+
+	it("orders unrelated names with localeCompare and deduplicates the input", () => {
+		const emptyCatalog = parseExtensionCatalog({ version: 1, extensions: {} });
+
+		expect(orderExtensionsByRequirements(["zeta", "alpha", "beta"], emptyCatalog, "enable"))
+			.toEqual(["alpha", "beta", "zeta"]);
+		expect(orderExtensionsByRequirements(["zeta", "alpha", "zeta"], emptyCatalog, "disable"))
+			.toEqual(["alpha", "zeta"]);
+		expect(orderExtensionsByRequirements([], emptyCatalog, "disable")).toEqual([]);
+	});
+
+	it("orders only requested names and treats uncataloged prototype names as edge-free", () => {
+		expect(orderExtensionsByRequirements(["worker"], catalog, "enable")).toEqual(["worker"]);
+		expect(orderExtensionsByRequirements(["core"], catalog, "disable")).toEqual(["core"]);
+
+		const emptyCatalog = parseExtensionCatalog({ version: 1, extensions: {} });
+		for (const direction of ["enable", "disable"] as const) {
+			expect(orderExtensionsByRequirements(["constructor"], emptyCatalog, direction)).toEqual(["constructor"]);
+		}
+	});
+
+	it.each(["enable", "disable"] as const)("keeps the defensive cycle error for malformed catalogs when direction is %s", (direction) => {
+		const malformedCatalog = {
+			version: 1 as const,
+			extensions: {
+				a: { displayName: "A", pack: "test", defaultEnabled: false, requires: ["b"], conflicts: [] },
+				b: { displayName: "B", pack: "test", defaultEnabled: false, requires: ["a"], conflicts: [] },
+			},
+		};
+
+		expect(() => orderExtensionsByRequirements(["a", "b"], malformedCatalog, direction))
+			.toThrow("Extension requirements contain a cycle.");
 	});
 });
 

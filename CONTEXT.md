@@ -301,6 +301,12 @@ extension.
 - **Extension toggle** — a requested change to the enabled Extension set; the
   resulting set must satisfy each enabled Extension's declared requirements
   and conflicts.
+- **Extension dependency rules** — the pure graph operations in
+  `config-feature-flag/catalog.ts` that own requirement and conflict meaning:
+  graph validity, selection and disablement validation, and deterministic
+  requirement-safe ordering for requested toggle batches. The Extension toggle
+  module owns filesystem inspection, directory moves, and partial outcomes. A
+  toggle does not automatically add requirements or remove dependents.
 
 ## Skill management
 
