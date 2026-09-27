@@ -1,402 +1,73 @@
-# Implementation plan: own permission-ask prose in the Permission classification module
-
-> **Status:** Implemented. The friction section describes the pre-refactor
-> source; the sequence and acceptance criteria below are the executed plan. The
-> pre-refactor tree passed 189 tests across 15 files with `pnpm typecheck`
-> clean; the implemented tree passes 190 tests across 15 files (the
-> classification matrix guard is the new test) with `pnpm typecheck` clean.
-> All line citations below reference the pre-refactor tree.
-
-## Purpose
-
-Give the Permission classification module sole ownership of user-ask prompt
-prose — the title, the message body, and the closing question — and make the
-Permission enforcement lifecycle resolve asks without composing or editing
-ask prose. Every user prompt renders from classification as final text; the
-lifecycle passes it verbatim across its adapter seam to `ctx.ui.confirm`.
-
-This fixes a shipped, user-visible bug: execpolicy prompts in default mode
-ask "Proceed?" twice. This is a focused in-process refactor: no type-shape
-changes, no new modules, no new exports, no policy changes.
-
-## Expected architectural gain
-
-- **Locality.** Prompt-text changes concentrate in one module. Today a prompt
-  is assembled on both sides of the classification→enforcement seam; the next
-  prompt wording change has to know about both.
-- **Leverage.** One ask-construction convention serves every check site. A
-  new site cannot forget its closing question and cannot double it, because
-  the helper owns the suffix and the lifecycle no longer has one.
-- **Testability.** The interface is the test surface. Classification tests
-  pin final prompt text directly (instead of suffix-less bodies that only
-  become prompts after a second module mutates them); the lifecycle seam gets
-  one exact-message assertion proving the verbatim pass-through that nothing
-  pins today — which is why the doubling shipped unnoticed.
-- **Depth.** `PermissionAsk.message` becomes genuinely render-ready — the
-  interface already promises "verbatim" for the body; after this refactor
-  that promise is true instead of a latent lie.
-
-## Pre-refactor friction
-
-The Permission classification module (`permission-policy.ts`) classifies one
-tool call into ordered verdict steps, and its `PermissionAsk` type
-(`policy-types.ts`) says "Prompt or review title and body, verbatim." — a
-comment attached to `title` (`policy-types.ts:17`) that covers the body;
-`message` itself carries no doc comment. The Permission enforcement lifecycle
-(`permission-enforcement-lifecycle.ts`) then violates that contract:
-`requestApproval` (defined at line 127; the append at line 140) appends
-`"\n\nProceed?"` to **every** user-channel ask before calling the adapter.
-
-One classification site also embeds its own closing question: the execpolicy
-ask (`permission-policy.ts:116`) ends its message with `"…\n\nProceed?"`.
-The two compositions stack, so an execpolicy prompt in default mode renders:
-
-```
-Rule matched: needs prompt
-
-Command: curl https://example.com
-
-Proceed?
-
-Proceed?
-```
-
-The external-path write sites embed a second question of their own
-(`"…\nAllow write?"`), so those prompts render `"…\nAllow write?\n\nProceed?"` —
-two questions in one prompt.
-
-Coverage was split by the same seam: classifier tests pin message bodies
-**without** the closing question (`permission-policy.test.ts:93, 106, 120,
-143, 156, 181, 194, 228`, plus the dangerous/network asks trailing inside
-the execpolicy suites at `:392, :444, :476`) because the suffix arrived later,
-from another module; execpolicy-ask pins (`:436, :458, :513`) pin text that
-already ends in "Proceed?"; the lifecycle's only assertion on the
-requestApproval seam uses `stringContaining`. No test observes the composed
-prompt end to end, so the doubling shipped.
-
-Adjacent but out of scope: classification and the Permission-mode registry
-each fail closed on `hasUI` through different steps (the classifier's no-UI
-execpolicy block at `permission-policy.ts:106–110` and the no-UI disposition
-deny at `mode-registry.ts:50–58`, applied at
-`permission-enforcement-lifecycle.ts:134`).
-That is defense in depth across two layers, not prose ownership; it stays.
-
-Relevant code:
-
-- `.pi/extensions/policy-permissions/permission-policy.ts`: classification,
-  `userAsk`/`guardianAsk` helpers, the execpolicy ask site, the external-path
-  write sites.
-- `.pi/extensions/policy-permissions/permission-enforcement-lifecycle.ts`:
-  `requestApproval` (the append), `requestGuardianFallback` and the two
-  Guardian fallback prompts (lines 193, 204) — resolution-outcome prose.
-- `.pi/extensions/policy-permissions/policy-types.ts`: `PermissionAsk`
-  and the `title` doc comment that covers "title and body, verbatim."
-  (`message` itself is undocumented today; step 3 adds its comment).
-- `.pi/extensions/policy-permissions/mode-registry.ts`: `approvalDisposition`
-  and the full-access switch confirmation — untouched prose homes.
-- Tests: `permission-policy.test.ts`, `permission-enforcement-lifecycle.test.ts`
-  (harness at lines 1–70; fallback pins at 248–251, 285–288; ask assertion at
-  366–370; denial-record pin at 402), `index.test.ts` (fallback prose pin at 470).
-
-## Decisions settled with the recommended defaults
-
-1. **Ownership.** The Permission classification module owns all precomputable
-   ask prose — prompt titles, message bodies, and the closing question. The
-   lifecycle owns only resolution-outcome prose: the two Guardian fallback
-   prompts, which depend on why a review failed and cannot be precomputed.
-   They stay unchanged. (Explored alternatives: a semantic-ask taxonomy with a
-   dedicated prose module called resolution-side — rejected because the new
-   module would have exactly one caller, a hypothetical seam, and it moves
-   final prose assembly back onto the resolution side, the very spot where
-   the bug lives; lifecycle-owned prose — rejected because every per-site
-   fact (rule reason, matched pattern, command text, paths) is in the
-   classifier's hands, so the prose would reappear there with more
-   parameters.)
-2. **Question mechanism.** The private `userAsk` helper composes
-   `${body}\n\n${question}` with a default question of `"Proceed?"`. Sites
-   with their own question wording pass it explicitly; the external-path
-   sites keep `"Allow write?"` so their phrasing survives. This keeps one
-   composition convention for helper-based sites.
-3. **The execpolicy site stays inline.** Its message already ends with
-   exactly one "Proceed?" and is therefore already final text under the new
-   ownership rule. Routing it through `userAsk` would require a
-   `DeclinedReason` parameter and a denial-title override for a single site
-   (its denial title is fixed `"Execpolicy Check"` while the prompt title
-   varies; its declined reason is `fixed`, not `fallback`) — churn without
-   gain. The invariant guard (decision 6) keeps the inline literal honest.
-4. **Rendered-text policy.** Every user ask ends with exactly one closing
-   question. Concretely: the execpolicy prompt loses its duplicated
-   "Proceed?"; the external-path prompts render
-   `"…is outside workspace.\n\nAllow write?"` (one question, phrasing
-   preserved); every other user prompt renders byte-identical to today.
-   Denial records, `declinedReason` texts, block reasons, check ordering, and
-   all resolution policy are unchanged — they are not prompt prose.
-5. **Scope.** Guardian-channel asks are untouched (their message is embedded
-   as untrusted evidence; that seam belongs to the "one Guardian review
-   request" candidate). The mode registry's full-access switch confirmation
-   is untouched. `PermissionAsk` keeps its exact shape — only its
-   documentation sharpens.
-6. **Tests.** Guard the invariant from both sides: (a) a classification
-   matrix test asserting that every user-channel ask message across the
-   ask-producing scenarios ends with `"?"` and contains `"Proceed?"` at most
-   once; (b) a lifecycle seam test asserting `requestUserConfirmation`
-   receives a classifier message verbatim — an exact-message pin, not
-   `stringContaining`.
-7. **Domain language.** Sharpen `CONTEXT.md`'s Permission classification
-   module and Permission enforcement lifecycle entries as part of
-   implementation (sequence step 6), matching the house pattern.
-
-## Target module responsibilities
-
-### Permission classification module (`permission-policy.ts`)
-
-Owns, unchanged: check ordering, block decisions, denial records,
-`declinedReason` policy, Guardian ask composition (out of scope here).
-
-Newly explicit: **final user-prompt prose.** Every user-channel ask carries a
-message that is ready to render — body plus exactly one closing question. The
-`userAsk` helper owns the default question; the execpolicy site owns its own
-literal. The lifecycle never sees a message it may edit.
-
-### Permission enforcement lifecycle (`permission-enforcement-lifecycle.ts`)
-
-Owns, unchanged: approval disposition (with the mode registry), no-UI
-fail-closed resolution, prompted denials, one-shot retry approvals,
-transient-approval state, Guardian fallback, verdict persistence.
-
-Removed: prompt-prose composition. `requestApproval` resolves the
-disposition and, on the prompt path, passes `message` through unchanged.
-
-### `policy-types.ts`
-
-`PermissionAsk` shape unchanged. `message` gains the doc comment it lacks
-today (the "verbatim" wording sits on `title` and covers both fields): an
-explicit invariant that user-channel messages are final prompt text ending
-in exactly one closing question, which resolvers pass unedited. The `title`
-comment narrows to document only the title.
-
-## Proposed interface change
-
-No exported type changes and no new exports. One private helper gains an
-optional parameter; one template literal is deleted.
-
-```ts
-// permission-policy.ts — userAsk composes the final prompt text.
-function userAsk(
-	title: string,
-	body: string,
-	denialMessage: string,
-	fallback: string,
-	question = "Proceed?",
-): PermissionAsk {
-	return {
-		kind: "ask",
-		channel: "user",
-		title,
-		message: `${body}\n\n${question}`,
-		denial: { title, message: denialMessage },
-		declinedReason: { kind: "fallback", reason: fallback },
-	};
-}
-```
-
-The external-path sites pass their own question and stop embedding it in the
-body:
-
-```ts
-userAsk(
-	"External Path",
-	`Default mode: path "${inputPath}" is outside workspace.`,
-	inputPath,
-	"Write to external path blocked.",
-	"Allow write?",
-);
-// Resolved-path variant: body becomes
-// `Default mode: path "${inputPath}" (resolved: ${resolved}) is outside workspace.`
-```
-
-The execpolicy ask site's message is untouched — it already ends with exactly
-one `"Proceed?"` and is final text.
-
-The lifecycle stops composing:
-
-```ts
-// permission-enforcement-lifecycle.ts — requestApproval, prompt path.
-return adapter.requestUserConfirmation(
-	environment.hostContext,
-	title,
-	message, // was: `${message}\n\nProceed?`
-).then((allowed) => { /* unchanged */ });
-```
-
-Rendered prompts, before → after:
-
-| Ask site | Before | After |
-|---|---|---|
-| Execpolicy (default, UI) | `…Proceed?\n\nProceed?` | `…Proceed?` (bug fixed) |
-| External path (both variants) | `…\nAllow write?\n\nProceed?` | `…\n\nAllow write?` |
-| Sensitive path, dangerous, network command, snapshot removal, network tool | body + `Proceed?` (composed by the lifecycle) | identical bytes (composed by the helper) |
-| Guardian asks, Guardian fallback prompts | untouched | untouched |
-
-## Implementation sequence
-
-### 1. Give the helper the closing question
-
-Edit `.pi/extensions/policy-permissions/permission-policy.ts`:
-
-- Rename `userAsk`'s `message` parameter to `body`; add the optional
-  `question = "Proceed?"` parameter; compose
-  `message: \`${body}\n\n${question}\``. Keep the helper's doc comment and
-  extend it to say the helper composes the final prompt text.
-- Update the two external-path sites: drop `\nAllow write?` from the body
-  and pass `"Allow write?"` as the question.
-- Leave the execpolicy site, `guardianAsk`, all denial records, and all
-  block reasons byte-identical.
-
-### 2. Make the lifecycle a verbatim resolver
-
-Edit `.pi/extensions/policy-permissions/permission-enforcement-lifecycle.ts`:
-
-- In `requestApproval`, replace `` `${message}\n\nProceed?` `` with `message`.
-- Leave `requestGuardianFallback` and the two Guardian fallback prompts
-  untouched — they are resolution-outcome prose with their own inline
-  questions.
-- Add a file-header comment (the file has none today) stating the ownership
-  rule: classification composes final ask prose; this module resolves asks
-  without editing them. Keep the literal `"Proceed?"` out of it — the
-  acceptance criterion greps this file for that string.
-
-### 3. Sharpen the interface documentation
-
-Edit `.pi/extensions/policy-permissions/policy-types.ts`:
-
-- `PermissionAsk.message` (no doc comment today; add one): user-channel
-  messages are final prompt text, ending in exactly one closing question, and
-  resolvers pass them verbatim without appending.
-- Re-word the `title` comment ("Prompt or review title and body, verbatim.",
-  `policy-types.ts:17`) so it documents only the title.
-
-### 4. Move the classifier pins with the composition
-
-Edit `.pi/extensions/policy-permissions/permission-policy.test.ts`:
-
-- User-ask message pins gain the composed closing question: the bodies at
-  lines 93, 106, 120, 143, 156, 181, 194, 228 (external-path pins become
-  `…is outside workspace.\n\nAllow write?`) and the three trailing asks
-  inside the execpolicy suites — the dangerous-command pin at 392 (the
-  multi-mode test) and the network-access pins at 444 (matched-rule test)
-  and 476 (no-UI test). Those three are dangerous/network pins that happen
-  to live in execpolicy tests, not execpolicy-ask pins; they move with the
-  helper.
-- Denial-record and `declinedReason` pins stay unchanged — including 144 and
-  159, where the pre-change body text doubles as the denial message at the
-  network-tool and sensitive-path sites: only the `message` field gains the
-  suffix.
-- Execpolicy-ask pins (436, 458, 513) and Guardian pins (249, 253, 331, 343,
-  354, 403, 407) stay unchanged — assert this in review, since those pins
-  are now load-bearing proof that nothing else moved.
-
-### 5. Add the two invariant guards
-
-- In `permission-policy.test.ts`, add a matrix test: run `classifyToolCall`
-  across the ask-producing scenarios (execpolicy matched and default-prompt,
-  sensitive path, dangerous command, network command, snapshot removal,
-  network tool, external path plain and resolved) and assert every
-  user-channel ask message ends with `"?"` and contains `"Proceed?"` at most
-  once. This kills the bug class for future sites, including hand-rolled
-  `PermissionAsk` literals.
-- In `permission-enforcement-lifecycle.test.ts`, tighten the existing
-  dangerous-command ask assertion (lines 366–370) to the exact final message
-  (for `sudo rm -rf /workspace/x`:
-  `Default mode detected: recursive forced deletion\n\nCommand: sudo rm -rf /workspace/x\n\nProceed?`)
-  so the seam test proves verbatim pass-through. Fallback-prompt pins
-  (248–251, 285–288) and the denial-record pin (402) stay unchanged.
-
-### 6. Keep the domain glossary current
-
-Edit `CONTEXT.md`:
-
-- **Permission classification module**: state that user-ask messages are
-  final prompt text including the closing question (default "Proceed?",
-  site questions like "Allow write?" where the site wording is preserved),
-  composed once by the module, and that resolvers pass them verbatim.
-- **Permission enforcement lifecycle**: state that it resolves asks without
-  composing or editing ask prose and owns only resolution-outcome prose
-  (the Guardian fallback prompts).
-
-## Verification plan
-
-Run from `.pi/`:
-
-1. The focused suite for the changed extension (pre-refactor baseline:
-   189 tests across 15 files, green):
-
-   ```sh
-   pnpm exec vitest run extensions/policy-permissions
-   ```
-
-2. Typecheck the extension workspace (pre-refactor baseline: clean):
-
-   ```sh
-   pnpm typecheck
-   ```
-
-3. Manual prompt check (prompts are user-visible; no unit test renders the
-   TUI): start `pi` in this repo, add a prompt rule
-   (`/execpolicy add ^curl|prompt|test`), remain in default mode, and issue
-   a `curl` call through the bash tool; confirm the execpolicy prompt shows
-   exactly one "Proceed?". Then trigger an external-path write (e.g. `write`
-   to a path outside the workspace) and confirm the prompt ends with a
-   single "Allow write?".
-
-4. Review the diff and confirm the implementation changes only
-   `permission-policy.ts`, `permission-enforcement-lifecycle.ts`,
-   `policy-types.ts`, the two test files, and `CONTEXT.md`. This root
-   `plan.md` is the plan record. No behavior beyond the two prompt fixes
-   changes.
+# Plan: keep the current Permission authorization seams
+
+> **Status:** Review complete. Make no production-code change. The typed Guardian request flow is already in the current tree, introduced by `7c0a5fa`. Git history does not support the previous draft's claim that the root plan was an uncommitted Guardian-request plan: the committed `plan.md` at `HEAD` documents the completed Permission ask-prose change from `5ad7d1b`.
+
+## Decision
+
+Keep Permission classification separate from Permission enforcement. Do not add another Guardian request type, serializer, or policy module.
+
+`permission-policy.ts` is a pure classifier. It returns ordered block and ask steps without calling the host or keeping mutable state. `permission-enforcement-lifecycle.ts` resolves those steps asynchronously and owns mode state, Guardian fallback, verdict persistence, prompted denials, and one-shot retry approvals. Combining them would put stateful host effects into classification and make the classifier's direct tests depend on lifecycle setup.
+
+The Guardian modules also have distinct work. `guardian-evidence.ts` selects and bounds conversation evidence, copies it into a typed semantic request, and bounds the action description. `guardian-verdict.ts` maps that request to the schema-version-2 prompt and validates the response. `guardian-runner.ts` owns the isolated model session, timeout, review locking, usage, and observability. None is a pass-through awaiting consolidation.
+
+The existing request flow is already typed end to end: the lifecycle builds a `GuardianReviewRequest`, the adapter in `index.ts` passes it to `approvals.ts`, and that adapter passes the same object to `guardian-runner.ts`. `approvals.ts` also adapts provider registrations from Pi's model registry. Do not add another serialization layer. The schema-v2 wire prompt currently repeats the action title at the top level and under `evidence.action`; the exact-prompt test pins both fields. Leave that prompt shape unchanged in this plan. Keep the full classified message in the lifecycle for user fallback; the request's action description is bounded to 8,000 characters.
+
+## Scope and behavior to preserve
+
+1. Keep classification pure and preserve its check order: execpolicy; read-only restrictions; default sensitive-path reads; Bash checks; default network tools; default and auto-review external-path writes. The classifier can return steps after a block. The lifecycle walks them in order and stops at the first block or denied ask. In particular, preserve ask-then-block and ask-block-ask sequences rather than filtering or reordering steps.
+2. Keep user-channel prompt text final in classification and pass it unchanged through the lifecycle. The helper composes `Proceed?` by default and external-write asks use `Allow write?`; the execpolicy ask is an inline final message. Guardian fallback prompts are separate resolution-outcome text and stay lifecycle-owned.
+3. Preserve Guardian trigger values and order. The vocabulary is `dangerous`, `network`, `repository-snapshot-removal`, `external-path`, and `external-write`. Bash auto-review assembles its triggers in the first four's listed order; external `write`/`edit` reviews use `external-write`.
+4. Preserve the evidence rules. `index.ts` builds evidence from the active Session branch, keeps up to three recent user turns and their preceding assistant replies, excludes the current tool-calling assistant, and applies a 16,000-character default shared budget newest-first. Skill provenance is included only for an explicitly invoked Skill captured before expansion. `buildGuardianReviewRequest` copies that snapshot and bounds only the action description to 8,000 characters, preserving its ends when it truncates. The production adapter supplies the bounded conversation snapshot; the request builder does not independently bound an arbitrary `GuardianContextSnapshot` supplied by another caller.
+5. Preserve the full fallback description. The lifecycle passes the original classified message separately from the bounded Guardian request, so a fallback prompt can include text omitted from the Guardian description.
+6. Preserve no-UI and Guardian failure behavior. Execpolicy prompt rules become classifier blocks without UI. Other user asks can still be classified without UI, but the default-mode lifecycle denies them without showing a prompt. Auto-review with no UI denies before calling Guardian or persisting a verdict. With UI, a thrown/rejected review adapter or a thrown verdict-persistence adapter triggers direct user confirmation. If the runner returns a fail-closed Guardian denial and verdict persistence succeeds, the lifecycle records the denial and blocks without a second confirmation; if persistence throws, the verdict-write fallback applies. If fallback confirmation itself rejects, that rejection propagates and the lifecycle does not request confirmation again.
+7. Preserve denial and retry state. One-shot approvals are keyed by tool name plus canonicalized input, consumed once, cleared on mode change or a fresh session reset, and retained for a session-tree update that does not request a reset. A denial is retryable only when UI is available and the evaluation's authorization generation has not changed.
+8. Preserve Session verdict entries. `index.ts` appends `auto-review-verdict` with `title`, `allowed`, and `reason`, plus `model` and `usage` when present and `triggers` when non-empty. A failed append follows the verdict-write fallback above. Do not change this entry shape, renderer, or trigger order.
+
+Do not expand this work into the mode registry, mode persistence, Guardian policy, or UI. No interface or type changes are needed. `CONTEXT.md` already describes the Permission modules, bounded Guardian evidence, typed request, schema-v2 verdict protocol, and fallback ownership; leave it unchanged.
+
+## Current flow and test evidence
+
+1. `index.ts` captures Pi events and the active branch's Session context, then supplies the environment to the lifecycle. The Pi adapter owns concrete confirmation, Guardian execution, and Session-entry effects.
+2. `permission-policy.ts:classifyToolCall` returns ordered steps, including final user-ask messages and Guardian triggers. The mode/check-order scenarios are pinned in `permission-policy.test.ts`.
+3. `permission-enforcement-lifecycle.ts:evaluate` resolves each step using the current mode snapshot, stops at a block or denied ask, and records prompted denials for `/approve`'s one-shot retry path. Its no-UI, ordering, state-reset, and fallback cases are pinned in `permission-enforcement-lifecycle.test.ts`.
+4. For a Guardian step, the lifecycle builds a copied request from the supplied evidence and classified action. If a fallback is needed, it uses the original classified message, not the bounded request description.
+5. The same request object flows through the `index.ts` adapter and `approvals.ts` to `runAutoReviewer`. `guardian-verdict.ts:composeGuardianTask` owns the schema-v2 wire prompt. The adapter's request identity and provider-registration behavior are pinned in `approvals.test.ts`; branch evidence, Skill provenance, and persisted verdicts are pinned in `index.test.ts`.
+6. `guardian-evidence.test.ts` covers the recent-turn selection, truncation boundaries, omitted context, and snapshot copying. `guardian-verdict.test.ts` pins the exact prompt envelope and response-validation decisions: invalid, multiple, wrong-name, stopped, or errored classification calls fail closed; malformed tool arguments cannot be bypassed by later prose; exact whole-response JSON is accepted only when no tool call exists. `guardian-runner.test.ts` covers decisions, failures, timeouts, review locking, and usage; `guardian-runner-config.test.ts` covers isolated-session configuration.
+7. The prompt-prose invariant test in `permission-policy.test.ts` is a fixed sample, not a universal proof: nine scenarios produce ten user asks, and the test checks that each ends in `?` and contains `Proceed?` at most once. It does not enumerate every possible mode/input or count all question marks. The per-site snapshots and other mode/order tests pin current cases. Do not describe that matrix as covering every future hand-written ask.
+
+The safety command is defined by `.pi/package.json` as `vitest run extensions/policy-permissions`. I reran `pnpm test:safety` from `.pi/`: all 15 test files and 196 tests passed. The other seven files in that run cover commands, Guardian configuration/observation/settings, mode registry/store, and path policy: `commands.test.ts`, `guardian-config.test.ts`, `guardian-observer.test.ts`, `guardian-settings.test.ts`, `mode-registry.test.ts`, `mode-store.test.ts`, and `path-policy.test.ts`.
+
+## Alternatives rejected
+
+### Combine classification and enforcement
+
+Rejected. Classification is pure policy data; enforcement handles asynchronous resolution and state transitions. Keeping their current interface lets tests exercise each responsibility directly and keeps Pi effects out of policy decisions.
+
+### Add another Guardian request or serializer module
+
+Rejected. `guardian-evidence.ts` owns the semantic request and its bounds. `guardian-verdict.ts` owns the wire conversion. The existing adapter forwards the same request and supplies provider configuration; another layer would duplicate those responsibilities without another consumer.
+
+### Move fallback text into the request
+
+Rejected. Guardian action descriptions are capped at 8,000 characters, while fallback confirmation needs the full classified message. Keep those values separate.
+
+### Broaden the change into modes or persistence
+
+Rejected. No current bug or policy requirement calls for changes to mode semantics, storage, Guardian policy, or the `auto-review-verdict` entry. Those are separate decisions, not reasons to reshape this seam.
+
+## Execution checklist
+
+1. Edit only root `plan.md`. Do not change Permission source, tests, `CONTEXT.md`, `guardian.md`, `.pi/profiles/ollama.json`, or `.pi/settings.json`.
+2. Record the focused baseline above. Since this plan changes no source, do not run typechecking or the repository-wide suite for this plan-only task.
+3. If a future behavior change is approved, add or identify a focused regression test, then run `pnpm test:safety` and `pnpm typecheck` from `.pi/`. Run the full `pnpm test` only if that change crosses broader integration paths.
 
 ## Acceptance criteria
 
-- Execpolicy prompts in default mode render exactly one "Proceed?".
-- External-path prompts render exactly one closing question: "Allow write?".
-- Every other user prompt renders byte-identical to the pre-refactor tree.
-- `requestApproval` composes no prose; `"Proceed?"` appears in
-  `permission-enforcement-lifecycle.ts` only inside the two Guardian fallback
-  prompts.
-- Denial records, `declinedReason` texts, block reasons, check ordering,
-  disposition policy, one-shot approvals, and Guardian behavior are
-  unchanged.
-- The classification matrix guard and the lifecycle verbatim guard exist and
-  pass, alongside the moved classifier pins.
-- The focused suite and typecheck pass.
+- No production source, tests, `CONTEXT.md`, or `guardian.md` changes.
+- No permission prompt, Guardian prompt, Session entry, fallback, approval state, or persisted verdict behavior changes.
+- The focused safety baseline remains 15 test files and 196 passing tests.
+- Only root `plan.md` is intentionally changed; configuration files remain out of scope.
 
-## Risks and safeguards
+## Reopen conditions
 
-- **Prompt-text drift while moving composition.** The rendered-text table
-  above is the source of truth; the moved pins and the two guards make any
-  drift fail loudly rather than silently, which is what the `stringContaining`
-  gap allowed.
-- **A future site hand-rolls a `PermissionAsk` literal** (the original
-  execpolicy mistake) and doubles or omits the question. The matrix guard
-  asserts every user-ask message ends with a question and contains
-  "Proceed?" at most once.
-- **The lifecycle re-learns prose.** The exact-message seam pin fails if any
-  append or rewrite returns. If prompt prose legitimately changes later, move
-  the pin with it — that coupling is the pin's job.
-- **Scope creep.** The Guardian request seam (serialized envelope, triggers
-  drift), the unused `_shared/policy-service.ts` module and the lifecycle's
-  dead re-exports, and the dual no-UI fail-closed rules are all separate
-  candidates with their own evidence; none ride along here.
-
-## Explicitly out of scope
-
-- The "one Guardian review request" candidate: the serialized evidence
-  envelope, the double-embedded title, and the `triggers` signature drift.
-- Deleting `_shared/policy-service.ts` (zero production importers) and the
-  dead re-exports at `permission-enforcement-lifecycle.ts:12`.
-- Unifying the two no-UI fail-closed rules (classification block vs
-  disposition deny) — deliberate defense in depth.
-- The mode registry's full-access switch confirmation ("Are you sure?").
-- `ModeState.setAt` persistence inconsistency.
-- Any change to `PermissionStep` ordering, block reasons, approval
-  disposition, one-shot retry approvals, or Guardian verdict persistence.
+Revisit this decision if a reproducible prompt, authorization, ordering, fallback, or persistence bug is not covered by the existing tests; if a classification rule must be maintained in multiple callers; if a real second adapter is needed; or if a changed policy requirement cannot be represented through the current classification result or lifecycle interface.
