@@ -90,7 +90,7 @@ describe("classifyToolCall", () => {
 					kind: "ask",
 					channel: "user",
 					title: "Dangerous Command",
-					message: "Default mode detected: recursive forced deletion\n\nCommand: sudo rm -rf /tmp/x",
+					message: "Default mode detected: recursive forced deletion\n\nCommand: sudo rm -rf /tmp/x\n\nProceed?",
 					denial: { title: "Dangerous Command", message: "sudo rm -rf /tmp/x" },
 					declinedReason: { kind: "fallback", reason: "Blocked." },
 				},
@@ -103,7 +103,7 @@ describe("classifyToolCall", () => {
 					kind: "ask",
 					channel: "user",
 					title: "Network Access",
-					message: "Command appears to require network access.\n\nCommand: curl https://example.com",
+					message: "Command appears to require network access.\n\nCommand: curl https://example.com\n\nProceed?",
 					denial: { title: "Network Access", message: "curl https://example.com" },
 					declinedReason: { kind: "fallback", reason: "Network access blocked." },
 				},
@@ -117,7 +117,7 @@ describe("classifyToolCall", () => {
 					kind: "ask",
 					channel: "user",
 					title: "Repository Snapshot Removal",
-					message: `This command deletes a stored repository source snapshot.\n\nCommand: ${command}`,
+					message: `This command deletes a stored repository source snapshot.\n\nCommand: ${command}\n\nProceed?`,
 					denial: { title: "Repository Snapshot Removal", message: command },
 					declinedReason: { kind: "fallback", reason: "Repository snapshot removal blocked." },
 				},
@@ -140,7 +140,7 @@ describe("classifyToolCall", () => {
 					kind: "ask",
 					channel: "user",
 					title: "Network Tool",
-					message: "Tool `ddg_search` requires network access.",
+					message: "Tool `ddg_search` requires network access.\n\nProceed?",
 					denial: { title: "Network Tool", message: "Tool `ddg_search` requires network access." },
 					declinedReason: { kind: "fallback", reason: "Network access blocked." },
 				},
@@ -153,7 +153,7 @@ describe("classifyToolCall", () => {
 					kind: "ask",
 					channel: "user",
 					title: "Sensitive Path",
-					message: `Tool \`read\` appears to read a sensitive path.\n\nPath: ${CWD}/.env`,
+					message: `Tool \`read\` appears to read a sensitive path.\n\nPath: ${CWD}/.env\n\nProceed?`,
 					denial: {
 						title: "Sensitive Path",
 						message: `Tool \`read\` appears to read a sensitive path.\n\nPath: ${CWD}/.env`,
@@ -178,7 +178,7 @@ describe("classifyToolCall", () => {
 					kind: "ask",
 					channel: "user",
 					title: "External Path",
-					message: `Default mode: path "/etc/hosts" is outside workspace.\nAllow write?`,
+					message: `Default mode: path "/etc/hosts" is outside workspace.\n\nAllow write?`,
 					denial: { title: "External Path", message: "/etc/hosts" },
 					declinedReason: { kind: "fallback", reason: "Write to external path blocked." },
 				},
@@ -191,7 +191,7 @@ describe("classifyToolCall", () => {
 					kind: "ask",
 					channel: "user",
 					title: "External Path",
-					message: `Default mode: path "/home/mac/notes.txt" (resolved: /home/mac/notes.txt) is outside workspace.\nAllow write?`,
+					message: `Default mode: path "/home/mac/notes.txt" (resolved: /home/mac/notes.txt) is outside workspace.\n\nAllow write?`,
 					denial: { title: "External Path", message: "/home/mac/notes.txt" },
 					declinedReason: { kind: "fallback", reason: "Write to external path blocked." },
 				},
@@ -225,7 +225,7 @@ describe("classifyToolCall", () => {
 						kind: "ask",
 						channel: "user",
 						title: "Network Access",
-						message: `Command appears to require network access.\n\nCommand: ${command.slice(0, 200)}`,
+						message: `Command appears to require network access.\n\nCommand: ${command.slice(0, 200)}\n\nProceed?`,
 						denial: { title: "Network Access", message: command.slice(0, 200) },
 						declinedReason: { kind: "fallback", reason: "Network access blocked." },
 					},
@@ -389,7 +389,7 @@ describe("classifyToolCall", () => {
 						kind: "ask",
 						channel: "user",
 						title: "Dangerous Command",
-						message: "Default mode detected: recursive forced deletion\n\nCommand: rm -rf /x",
+						message: "Default mode detected: recursive forced deletion\n\nCommand: rm -rf /x\n\nProceed?",
 						denial: { title: "Dangerous Command", message: "rm -rf /x" },
 						declinedReason: { kind: "fallback", reason: "Blocked." },
 					},
@@ -441,7 +441,7 @@ describe("classifyToolCall", () => {
 					kind: "ask",
 					channel: "user",
 					title: "Network Access",
-					message: "Command appears to require network access.\n\nCommand: curl https://example.com",
+					message: "Command appears to require network access.\n\nCommand: curl https://example.com\n\nProceed?",
 					denial: { title: "Network Access", message: "curl https://example.com" },
 					declinedReason: { kind: "fallback", reason: "Network access blocked." },
 				},
@@ -473,7 +473,7 @@ describe("classifyToolCall", () => {
 					kind: "ask",
 					channel: "user",
 					title: "Network Access",
-					message: "Command appears to require network access.\n\nCommand: curl x",
+					message: "Command appears to require network access.\n\nCommand: curl x\n\nProceed?",
 					denial: { title: "Network Access", message: "curl x" },
 					declinedReason: { kind: "fallback", reason: "Network access blocked." },
 				},
@@ -561,6 +561,40 @@ describe("classifyToolCall", () => {
 			const steps = classify("bash", { command: "sudo rm -rf /x" }, "default", { hasUI: false });
 			expect(steps).toHaveLength(1);
 			expect(steps[0]).toMatchObject({ kind: "ask", title: "Dangerous Command" });
+		});
+	});
+
+	// ── User-ask prose invariant ──────────────────────────────────
+	describe("user-ask prose invariant", () => {
+		it("renders every user ask with exactly one closing question", () => {
+			const matchedPromptPolicy: ExecPolicyConfig = {
+				rules: [{ id: "1", pattern: "curl", action: "prompt", reason: "needs prompt" }],
+				defaultAction: "allow",
+			};
+			const defaultPromptPolicy: ExecPolicyConfig = { rules: [], defaultAction: "prompt" };
+			const snapshotRemove = `node ${SCRIPT} remove ghr_${"a".repeat(24)} --confirm`;
+			const scenarios: readonly (readonly PermissionStep[])[] = [
+				classify("bash", { command: "curl https://example.com" }, "default", { execPolicy: matchedPromptPolicy }),
+				classify("bash", { command: "ls -la" }, "default", { execPolicy: defaultPromptPolicy }),
+				classify("read", { path: `${CWD}/.env` }),
+				classify("bash", { command: "sudo rm -rf /tmp/x" }),
+				classify("bash", { command: "curl https://example.com" }),
+				classify("bash", { command: snapshotRemove }),
+				classify("ddg_search", {}),
+				classify("write", { path: "/etc/hosts" }),
+				classify("write", { path: "/home/mac/notes.txt" }),
+			];
+			const userMessages = scenarios.flatMap((steps) =>
+				steps.flatMap((step) => step.kind === "ask" && step.channel === "user" ? [step.message] : []),
+			);
+			// Ten user asks across the nine ask-producing scenarios: the
+			// matched-rule execpolicy scenario also trails a Network Access ask.
+			expect(userMessages).toHaveLength(10);
+			const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
+			for (const message of userMessages) {
+				expect(message.endsWith("?")).toBe(true);
+				expect(occurrences(message, "Proceed?")).toBeLessThanOrEqual(1);
+			}
 		});
 	});
 });

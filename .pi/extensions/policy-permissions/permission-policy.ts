@@ -37,18 +37,19 @@ function commandOf(input: ToolCallInput): string {
 		: undefined) as string | undefined ?? "";
 }
 
-/** User prompt: the denial record titles with the prompt; the reason comes from the approval result. */
+/** User prompt: composes the final prompt text (body plus closing question); the denial record titles with the prompt; the reason comes from the approval result. */
 function userAsk(
 	title: string,
-	message: string,
+	body: string,
 	denialMessage: string,
 	fallback: string,
+	question = "Proceed?",
 ): PermissionAsk {
 	return {
 		kind: "ask",
 		channel: "user",
 		title,
-		message,
+		message: `${body}\n\n${question}`,
 		denial: { title, message: denialMessage },
 		declinedReason: { kind: "fallback", reason: fallback },
 	};
@@ -296,9 +297,10 @@ export function classifyToolCall(
 				if (inputPath && isExternalWritePath(inputPath)) {
 					steps.push(userAsk(
 						"External Path",
-						`Default mode: path "${inputPath}" is outside workspace.\nAllow write?`,
+						`Default mode: path "${inputPath}" is outside workspace.`,
 						inputPath,
 						"Write to external path blocked.",
+						"Allow write?",
 					));
 				}
 				// Also catch non-external paths that are still outside cwd
@@ -306,9 +308,10 @@ export function classifyToolCall(
 					const resolved = resolveToolPath(inputPath, cwd);
 					steps.push(userAsk(
 						"External Path",
-						`Default mode: path "${inputPath}" (resolved: ${resolved}) is outside workspace.\nAllow write?`,
+						`Default mode: path "${inputPath}" (resolved: ${resolved}) is outside workspace.`,
 						inputPath,
 						"Write to external path blocked.",
+						"Allow write?",
 					));
 				}
 			}

@@ -367,7 +367,7 @@ describe("PermissionEnforcementLifecycle", () => {
 		expect(harness.requestUserConfirmation).toHaveBeenCalledWith(
 			{},
 			"Dangerous Command",
-			expect.stringContaining("Default mode detected"),
+			"Default mode detected: recursive forced deletion\n\nCommand: sudo rm -rf /workspace/x\n\nProceed?",
 		);
 	});
 

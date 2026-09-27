@@ -14,8 +14,13 @@ export interface PermissionAsk {
 	kind: "ask";
 	/** Which lifecycle resolver handles the ask. */
 	channel: "user" | "guardian";
-	/** Prompt or review title and body, verbatim. */
+	/** Prompt or review title. */
 	title: string;
+	/**
+	 * Prompt or review body, verbatim at the resolver seam. User-channel
+	 * messages are final prompt text ending in exactly one closing question;
+	 * resolvers pass every message unedited, without appending.
+	 */
 	message: string;
 	/** Guardian triggers; guardian asks carry non-empty triggers. */
 	triggers?: readonly string[];

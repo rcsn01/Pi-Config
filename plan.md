@@ -1,205 +1,402 @@
-# Implementation plan: consolidate Extension dependency rules
+# Implementation plan: own permission-ask prose in the Permission classification module
+
+> **Status:** Implemented. The friction section describes the pre-refactor
+> source; the sequence and acceptance criteria below are the executed plan. The
+> pre-refactor tree passed 189 tests across 15 files with `pnpm typecheck`
+> clean; the implemented tree passes 190 tests across 15 files (the
+> classification matrix guard is the new test) with `pnpm typecheck` clean.
+> All line citations below reference the pre-refactor tree.
 
 ## Purpose
 
-Deepen the existing Extension Catalog module so it owns the pure rules for Extension requirements. Catalog validation, selection checks, disablement checks, and requirement-safe ordering will live together in `config-feature-flag/catalog.ts`. Ordering keeps the existing `localeCompare()` tie-break. The Extension toggle module will continue to own filesystem inspection, directory moves, and partial outcomes.
+Give the Permission classification module sole ownership of user-ask prompt
+prose — the title, the message body, and the closing question — and make the
+Permission enforcement lifecycle resolve asks without composing or editing
+ask prose. Every user prompt renders from classification as final text; the
+lifecycle passes it verbatim across its adapter seam to `ctx.ui.confirm`.
 
-This is a focused in-process refactor. It adds no new file, dependency, catalog field, migration, or user-facing command behavior.
+This fixes a shipped, user-visible bug: execpolicy prompts in default mode
+ask "Proceed?" twice. This is a focused in-process refactor: no type-shape
+changes, no new modules, no new exports, no policy changes.
 
 ## Expected architectural gain
 
-- **Locality.** Changes to graph interpretation and pure selection rules stay in the Catalog module instead of spreading between catalog validation and toggle sequencing.
-- **Leverage.** One Catalog interface gives the Extension toggle module and graph tests the same dependency rules.
-- **Testability.** The interface is the test surface: graph order can be verified without setting up filesystem paths, while toggle tests continue to verify observable move outcomes.
-- **Depth.** Catalog already owns most graph behavior. Adding requirement-safe ordering puts the remaining ordering logic behind its existing small interface without moving filesystem complexity into it.
+- **Locality.** Prompt-text changes concentrate in one module. Today a prompt
+  is assembled on both sides of the classification→enforcement seam; the next
+  prompt wording change has to know about both.
+- **Leverage.** One ask-construction convention serves every check site. A
+  new site cannot forget its closing question and cannot double it, because
+  the helper owns the suffix and the lifecycle no longer has one.
+- **Testability.** The interface is the test surface. Classification tests
+  pin final prompt text directly (instead of suffix-less bodies that only
+  become prompts after a second module mutates them); the lifecycle seam gets
+  one exact-message assertion proving the verbatim pass-through that nothing
+  pins today — which is why the doubling shipped unnoticed.
+- **Depth.** `PermissionAsk.message` becomes genuinely render-ready — the
+  interface already promises "verbatim" for the body; after this refactor
+  that promise is true instead of a latent lie.
 
-## Current friction
+## Pre-refactor friction
 
-`catalog.ts` already validates requirement cycles, default selections, and requested selections, and rejects disabling a requirement while an enabled dependent remains. `extension-toggle.ts` separately implements `orderByRequirements()` to order the same graph before applying directory moves. The toggle module then checks each prospective move with `validateExtensionSelection()` so a failed earlier move cannot make a later move introduce a new selection violation. It compares the prospective selection's validation issues with those already present, allowing moves that preserve or remove pre-existing issues.
+The Permission classification module (`permission-policy.ts`) classifies one
+tool call into ordered verdict steps, and its `PermissionAsk` type
+(`policy-types.ts`) says "Prompt or review title and body, verbatim." — a
+comment attached to `title` (`policy-types.ts:17`) that covers the body;
+`message` itself carries no doc comment. The Permission enforcement lifecycle
+(`permission-enforcement-lifecycle.ts`) then violates that contract:
+`requestApproval` (defined at line 127; the append at line 140) appends
+`"\n\nProceed?"` to **every** user-channel ask before calling the adapter.
 
-Current coverage is indirect. `catalog.test.ts` covers parsing and selection rules; `extension-toggle.test.ts` observes ordering through filesystem moves; and `index.test.ts` checks picker and command behavior, including a batch that disables a dependent and its requirement. `catalog-graph.test.ts` and `dependency-audit.test.ts` protect checked-in relationships and source-audit rules, not ordering. None tests graph ordering through a pure Catalog interface. The integration coverage remains valuable, but a change to the ordering algorithm currently has to be inferred through filesystem outcomes.
+One classification site also embeds its own closing question: the execpolicy
+ask (`permission-policy.ts:116`) ends its message with `"…\n\nProceed?"`.
+The two compositions stack, so an execpolicy prompt in default mode renders:
+
+```
+Rule matched: needs prompt
+
+Command: curl https://example.com
+
+Proceed?
+
+Proceed?
+```
+
+The external-path write sites embed a second question of their own
+(`"…\nAllow write?"`), so those prompts render `"…\nAllow write?\n\nProceed?"` —
+two questions in one prompt.
+
+Coverage was split by the same seam: classifier tests pin message bodies
+**without** the closing question (`permission-policy.test.ts:93, 106, 120,
+143, 156, 181, 194, 228`, plus the dangerous/network asks trailing inside
+the execpolicy suites at `:392, :444, :476`) because the suffix arrived later,
+from another module; execpolicy-ask pins (`:436, :458, :513`) pin text that
+already ends in "Proceed?"; the lifecycle's only assertion on the
+requestApproval seam uses `stringContaining`. No test observes the composed
+prompt end to end, so the doubling shipped.
+
+Adjacent but out of scope: classification and the Permission-mode registry
+each fail closed on `hasUI` through different steps (the classifier's no-UI
+execpolicy block at `permission-policy.ts:106–110` and the no-UI disposition
+deny at `mode-registry.ts:50–58`, applied at
+`permission-enforcement-lifecycle.ts:134`).
+That is defense in depth across two layers, not prose ownership; it stays.
 
 Relevant code:
 
-- `.pi/extensions/config-feature-flag/catalog.ts`: catalog parsing and validation, including `validateExtensionDisablements()` and `validateExtensionSelection()`.
-- `.pi/extensions/config-feature-flag/extension-toggle.ts`: preflight validation, move sequencing, per-move validation, and filesystem effects. The private `orderByRequirements()` is near the end of the file.
-- `.pi/extensions/config-feature-flag/catalog.test.ts`: parser and selection-rule checks.
-- `.pi/extensions/config-feature-flag/catalog-graph.test.ts` and `dependency-audit.test.ts`: checked-in relationship and source-audit checks, not ordering tests.
-- `.pi/extensions/config-feature-flag/extension-toggle.test.ts`: current filesystem outcomes and ordering coverage.
-- `.pi/extensions/config-feature-flag/index.test.ts`: command and picker integration, including dependency-ordered batch behavior.
+- `.pi/extensions/policy-permissions/permission-policy.ts`: classification,
+  `userAsk`/`guardianAsk` helpers, the execpolicy ask site, the external-path
+  write sites.
+- `.pi/extensions/policy-permissions/permission-enforcement-lifecycle.ts`:
+  `requestApproval` (the append), `requestGuardianFallback` and the two
+  Guardian fallback prompts (lines 193, 204) — resolution-outcome prose.
+- `.pi/extensions/policy-permissions/policy-types.ts`: `PermissionAsk`
+  and the `title` doc comment that covers "title and body, verbatim."
+  (`message` itself is undocumented today; step 3 adds its comment).
+- `.pi/extensions/policy-permissions/mode-registry.ts`: `approvalDisposition`
+  and the full-access switch confirmation — untouched prose homes.
+- Tests: `permission-policy.test.ts`, `permission-enforcement-lifecycle.test.ts`
+  (harness at lines 1–70; fallback pins at 248–251, 285–288; ask assertion at
+  366–370; denial-record pin at 402), `index.test.ts` (fallback prose pin at 470).
 
 ## Decisions settled with the recommended defaults
 
-1. **Scope.** Consolidate dependency graph meaning and ordering only. Keep catalog loading and filesystem effects where they are. Do not add automatic requirement installation or dependent removal.
-2. **Placement.** Deepen `catalog.ts` rather than add an `extension-dependencies.ts` module. The catalog already owns graph validation and is the natural place for the pure ordering operation. A new seam would add indirection without a second distinct implementation.
-3. **Behavior.** Preserve the current order, tie-breaking, diagnostics, preflight rejection, per-move safety check, and partial-result behavior. This plan does not change extension toggle policy.
-4. **Tests.** Test graph ordering through the Catalog module's interface, then retain filesystem tests through the Extension toggle interface to verify that the ordering is applied correctly.
-5. **Domain language.** Add the Extension dependency rules term to `CONTEXT.md` and keep it aligned with the selected module responsibilities.
+1. **Ownership.** The Permission classification module owns all precomputable
+   ask prose — prompt titles, message bodies, and the closing question. The
+   lifecycle owns only resolution-outcome prose: the two Guardian fallback
+   prompts, which depend on why a review failed and cannot be precomputed.
+   They stay unchanged. (Explored alternatives: a semantic-ask taxonomy with a
+   dedicated prose module called resolution-side — rejected because the new
+   module would have exactly one caller, a hypothetical seam, and it moves
+   final prose assembly back onto the resolution side, the very spot where
+   the bug lives; lifecycle-owned prose — rejected because every per-site
+   fact (rule reason, matched pattern, command text, paths) is in the
+   classifier's hands, so the prose would reappear there with more
+   parameters.)
+2. **Question mechanism.** The private `userAsk` helper composes
+   `${body}\n\n${question}` with a default question of `"Proceed?"`. Sites
+   with their own question wording pass it explicitly; the external-path
+   sites keep `"Allow write?"` so their phrasing survives. This keeps one
+   composition convention for helper-based sites.
+3. **The execpolicy site stays inline.** Its message already ends with
+   exactly one "Proceed?" and is therefore already final text under the new
+   ownership rule. Routing it through `userAsk` would require a
+   `DeclinedReason` parameter and a denial-title override for a single site
+   (its denial title is fixed `"Execpolicy Check"` while the prompt title
+   varies; its declined reason is `fixed`, not `fallback`) — churn without
+   gain. The invariant guard (decision 6) keeps the inline literal honest.
+4. **Rendered-text policy.** Every user ask ends with exactly one closing
+   question. Concretely: the execpolicy prompt loses its duplicated
+   "Proceed?"; the external-path prompts render
+   `"…is outside workspace.\n\nAllow write?"` (one question, phrasing
+   preserved); every other user prompt renders byte-identical to today.
+   Denial records, `declinedReason` texts, block reasons, check ordering, and
+   all resolution policy are unchanged — they are not prompt prose.
+5. **Scope.** Guardian-channel asks are untouched (their message is embedded
+   as untrusted evidence; that seam belongs to the "one Guardian review
+   request" candidate). The mode registry's full-access switch confirmation
+   is untouched. `PermissionAsk` keeps its exact shape — only its
+   documentation sharpens.
+6. **Tests.** Guard the invariant from both sides: (a) a classification
+   matrix test asserting that every user-channel ask message across the
+   ask-producing scenarios ends with `"?"` and contains `"Proceed?"` at most
+   once; (b) a lifecycle seam test asserting `requestUserConfirmation`
+   receives a classifier message verbatim — an exact-message pin, not
+   `stringContaining`.
+7. **Domain language.** Sharpen `CONTEXT.md`'s Permission classification
+   module and Permission enforcement lifecycle entries as part of
+   implementation (sequence step 6), matching the house pattern.
 
 ## Target module responsibilities
 
-### Catalog module
+### Permission classification module (`permission-policy.ts`)
 
-`catalog.ts` will own:
+Owns, unchanged: check ordering, block decisions, denial records,
+`declinedReason` policy, Guardian ask composition (out of scope here).
 
-- Catalog file loading and schema validation, unchanged.
-- Relationship validation, including unknown relationship references, self-references, duplicate relationships, and requirement cycles, unchanged.
-- Default-selection validation, unchanged.
-- `validateExtensionSelection()` and `validateExtensionDisablements()`, unchanged.
-- Requirement-safe ordering of requested Extensions by their declared requirements, moved here from `extension-toggle.ts`, with the existing `localeCompare()` tie-break.
+Newly explicit: **final user-prompt prose.** Every user-channel ask carries a
+message that is ready to render — body plus exactly one closing question. The
+`userAsk` helper owns the default question; the execpolicy site owns its own
+literal. The lifecycle never sees a message it may edit.
 
-The new ordering operation remains pure. It accepts the requested Extension names, the parsed `ExtensionCatalog`, and an enable/disable direction, then returns the same ordered name list as the current implementation. It does not read directories, move files, invent prerequisites, or resolve conflicts by itself.
+### Permission enforcement lifecycle (`permission-enforcement-lifecycle.ts`)
 
-### Extension toggle module
+Owns, unchanged: approval disposition (with the mode registry), no-UI
+fail-closed resolution, prompted denials, one-shot retry approvals,
+transient-approval state, Guardian fallback, verdict persistence.
 
-`extension-toggle.ts` will continue to own:
+Removed: prompt-prose composition. `requestApproval` resolves the
+disposition and, on the prompt path, passes `message` through unchanged.
 
-- Snapshotting enabled and disabled Extension directories.
-- Rejecting unknown requested names and protected Extension disablement.
-- Preflight selection and disablement checks.
-- Re-reading enabled names at apply time and inspecting each requested path before its move, applying the existing no-op, move, and failure behavior for stale paths.
-- Ordering disable moves before enable moves, using the Catalog module's ordering operation for each direction.
-- Rechecking the working selection before each move, performing the rename, and reporting `moved`, `failed`, and `skipped` outcomes.
+### `policy-types.ts`
 
-The per-move check is not duplicate graph interpretation. It protects the working selection after a prior move fails, allowing independent safe moves while preventing later moves from adding validation issues. It should keep calling `validateExtensionSelection()`. Path rechecks remain best-effort; they do not serialize or fully detect concurrent filesystem changes.
+`PermissionAsk` shape unchanged. `message` gains the doc comment it lacks
+today (the "verbatim" wording sits on `title` and covers both fields): an
+explicit invariant that user-channel messages are final prompt text ending
+in exactly one closing question, which resolvers pass unedited. The `title`
+comment narrows to document only the title.
 
 ## Proposed interface change
 
-Add one exported operation to `catalog.ts`:
+No exported type changes and no new exports. One private helper gains an
+optional parameter; one template literal is deleted.
 
 ```ts
-export function orderExtensionsByRequirements(
-  names: readonly string[],
-  catalog: ExtensionCatalog,
-  direction: ExtensionToggleDirection,
-): string[]
+// permission-policy.ts — userAsk composes the final prompt text.
+function userAsk(
+	title: string,
+	body: string,
+	denialMessage: string,
+	fallback: string,
+	question = "Proceed?",
+): PermissionAsk {
+	return {
+		kind: "ask",
+		channel: "user",
+		title,
+		message: `${body}\n\n${question}`,
+		denial: { title, message: denialMessage },
+		declinedReason: { kind: "fallback", reason: fallback },
+	};
+}
 ```
 
-Move `ExtensionToggleDirection` to `catalog.ts` beside the ordering operation, and import that type in `extension-toggle.ts` for its outcome and operation declarations. A repository-wide search found no imports of the existing type from `extension-toggle.ts`, so do not retain a type-only compatibility re-export.
+The external-path sites pass their own question and stop embedding it in the
+body:
 
-The function should retain the existing implementation's behavior:
+```ts
+userAsk(
+	"External Path",
+	`Default mode: path "${inputPath}" is outside workspace.`,
+	inputPath,
+	"Write to external path blocked.",
+	"Allow write?",
+);
+// Resolved-path variant: body becomes
+// `Default mode: path "${inputPath}" (resolved: ${resolved}) is outside workspace.`
+```
 
-- For `enable`, an Extension waits until its requested requirements have been ordered first.
-- For `disable`, an Extension waits until its requested dependents have been ordered first.
-- Among currently eligible names, choose the first according to the existing `localeCompare()` sort, which uses the runtime's default locale. Repeat after each choice, so a newly eligible name can precede names that were already eligible. Do not replace this comparator as part of the move.
-- Only order the names passed by the caller. Do not add a prerequisite or dependent that is absent from the requested names; the ordering function does not inspect current enabled state.
-- Treat an Extension absent from the catalog as having no graph edges, matching the current optional `catalogEntry()` lookup behavior.
-- Preserve the current Set-based deduplication of repeated input names.
-- Preserve the exact defensive cycle error, `Extension requirements contain a cycle.`, when the requested names include a cycle in a malformed catalog. Construct that test catalog directly rather than passing it through `parseExtensionCatalog()`, which rejects cycles in normal use.
+The execpolicy ask site's message is untouched — it already ends with exactly
+one `"Proceed?"` and is final text.
 
-Do not move `introducesValidationIssues()` to `catalog.ts`. It compares successive in-memory selections during filesystem application, so it belongs with the toggle transaction. Do not move the second `catalogEntry()` helper solely to remove a few lines of code. In `extension-toggle.ts` it also supplies display metadata while building the Extension snapshot.
+The lifecycle stops composing:
+
+```ts
+// permission-enforcement-lifecycle.ts — requestApproval, prompt path.
+return adapter.requestUserConfirmation(
+	environment.hostContext,
+	title,
+	message, // was: `${message}\n\nProceed?`
+).then((allowed) => { /* unchanged */ });
+```
+
+Rendered prompts, before → after:
+
+| Ask site | Before | After |
+|---|---|---|
+| Execpolicy (default, UI) | `…Proceed?\n\nProceed?` | `…Proceed?` (bug fixed) |
+| External path (both variants) | `…\nAllow write?\n\nProceed?` | `…\n\nAllow write?` |
+| Sensitive path, dangerous, network command, snapshot removal, network tool | body + `Proceed?` (composed by the lifecycle) | identical bytes (composed by the helper) |
+| Guardian asks, Guardian fallback prompts | untouched | untouched |
 
 ## Implementation sequence
 
-### 1. Move and expose requirement ordering
+### 1. Give the helper the closing question
 
-Edit `.pi/extensions/config-feature-flag/catalog.ts`:
+Edit `.pi/extensions/policy-permissions/permission-policy.ts`:
 
-- Define and export `ExtensionToggleDirection` as the existing `"enable" | "disable"` union.
-- Add `orderExtensionsByRequirements()` beside the selection and disablement validation functions.
-- Move the current ordering loop without changing its eligible-name scan, `localeCompare()` tie-break, repeated selection behavior, or cycle failure.
-- Keep graph lookup private to this module. Reuse `catalogEntry()` already present in `catalog.ts`.
+- Rename `userAsk`'s `message` parameter to `body`; add the optional
+  `question = "Proceed?"` parameter; compose
+  `message: \`${body}\n\n${question}\``. Keep the helper's doc comment and
+  extend it to say the helper composes the final prompt text.
+- Update the two external-path sites: drop `\nAllow write?` from the body
+  and pass `"Allow write?"` as the question.
+- Leave the execpolicy site, `guardianAsk`, all denial records, and all
+  block reasons byte-identical.
 
-This step gives callers a small interface for a coherent graph operation. The implementation can change later without callers reproducing requirement semantics.
+### 2. Make the lifecycle a verbatim resolver
 
-### 2. Make Extension toggle a caller of the Catalog module
+Edit `.pi/extensions/policy-permissions/permission-enforcement-lifecycle.ts`:
 
-Edit `.pi/extensions/config-feature-flag/extension-toggle.ts`:
+- In `requestApproval`, replace `` `${message}\n\nProceed?` `` with `message`.
+- Leave `requestGuardianFallback` and the two Guardian fallback prompts
+  untouched — they are resolution-outcome prose with their own inline
+  questions.
+- Add a file-header comment (the file has none today) stating the ownership
+  rule: classification composes final ask prose; this module resolves asks
+  without editing them. Keep the literal `"Proceed?"` out of it — the
+  acceptance criterion greps this file for that string.
 
-- Import `orderExtensionsByRequirements` and `type ExtensionToggleDirection` from `catalog.ts`.
-- Remove the local `ExtensionToggleDirection` declaration. Do not add a compatibility re-export because no in-repository caller imports the type from `extension-toggle.ts`.
-- Remove the private `orderByRequirements()` implementation.
-- Replace both calls in `orderedNames` with the Catalog operation, retaining the existing order of phases: disable names first, then enable names.
-- Leave preflight validation, the working enabled set, per-move validation, path checks, rename handling, and result classification unchanged.
+### 3. Sharpen the interface documentation
 
-No changes are needed in the command adapter in `index.ts`. It continues to consume `ExtensionToggleSession` and render the existing result messages.
+Edit `.pi/extensions/policy-permissions/policy-types.ts`:
 
-### 3. Add direct ordering tests
+- `PermissionAsk.message` (no doc comment today; add one): user-channel
+  messages are final prompt text, ending in exactly one closing question, and
+  resolvers pass them verbatim without appending.
+- Re-word the `title` comment ("Prompt or review title and body, verbatim.",
+  `policy-types.ts:17`) so it documents only the title.
 
-Edit `.pi/extensions/config-feature-flag/catalog.test.ts` to exercise the new operation through the Catalog module's interface. Cover the rules that matter to callers:
+### 4. Move the classifier pins with the composition
 
-- Enabling a requirement chain orders each requirement before its dependent.
-- Disabling the same chain orders dependents before their requirements.
-- A dependency diamond orders the shared prerequisite first and uses the existing `localeCompare()` tie-break among branches. Use entries where `a` requires `b` and `c`, both `b` and `c` require `root`, and `z` is unrelated. For input `["z", "c", "root", "a", "b"]`, assert enable order `["root", "b", "c", "a", "z"]` and disable order `["a", "b", "c", "root", "z"]`. These exact results prove that a newly eligible name can move ahead of an already-eligible `z`.
-- Unrelated requested names are ordered by the same `localeCompare()` comparator.
-- With `worker` requiring `core` and input `["worker"]`, assert the enable result is `["worker"]`; with input `["core"]`, assert the disable result is `["core"]` and does not add the unrequested dependent.
-- With no `constructor` catalog entry, input `["constructor"]` remains orderable as `["constructor"]` without graph edges, preserving the own-property catalog lookup.
-- Repeated input names appear once in the result.
-- Empty input returns an empty list.
-- A malformed cyclic catalog still produces the existing defensive error when the requested names include the cycle.
+Edit `.pi/extensions/policy-permissions/permission-policy.test.ts`:
 
-Prefer a small number of readable graph fixtures over one test per implementation detail. Assert exact ordered results and the cycle error, not internal iteration state.
+- User-ask message pins gain the composed closing question: the bodies at
+  lines 93, 106, 120, 143, 156, 181, 194, 228 (external-path pins become
+  `…is outside workspace.\n\nAllow write?`) and the three trailing asks
+  inside the execpolicy suites — the dangerous-command pin at 392 (the
+  multi-mode test) and the network-access pins at 444 (matched-rule test)
+  and 476 (no-UI test). Those three are dangerous/network pins that happen
+  to live in execpolicy tests, not execpolicy-ask pins; they move with the
+  helper.
+- Denial-record and `declinedReason` pins stay unchanged — including 144 and
+  159, where the pre-change body text doubles as the denial message at the
+  network-tool and sensitive-path sites: only the `message` field gains the
+  suffix.
+- Execpolicy-ask pins (436, 458, 513) and Guardian pins (249, 253, 331, 343,
+  354, 403, 407) stay unchanged — assert this in review, since those pins
+  are now load-bearing proof that nothing else moved.
 
-### 4. Preserve toggle outcome coverage
+### 5. Add the two invariant guards
 
-Keep the existing tests in `.pi/extensions/config-feature-flag/extension-toggle.test.ts` that prove the filesystem operation applies the ordering and preserves failure behavior. In particular, retain coverage for:
+- In `permission-policy.test.ts`, add a matrix test: run `classifyToolCall`
+  across the ask-producing scenarios (execpolicy matched and default-prompt,
+  sensitive path, dangerous command, network command, snapshot removal,
+  network tool, external path plain and resolved) and assert every
+  user-channel ask message ends with `"?"` and contains `"Proceed?"` at most
+  once. This kills the bug class for future sites, including hand-rolled
+  `PermissionAsk` literals.
+- In `permission-enforcement-lifecycle.test.ts`, tighten the existing
+  dangerous-command ask assertion (lines 366–370) to the exact final message
+  (for `sudo rm -rf /workspace/x`:
+  `Default mode detected: recursive forced deletion\n\nCommand: sudo rm -rf /workspace/x\n\nProceed?`)
+  so the seam test proves verbatim pass-through. Fallback-prompt pins
+  (248–251, 285–288) and the denial-record pin (402) stay unchanged.
 
-- Disabling dependents before requirements.
-- Enabling requirements before dependents.
-- Existing `localeCompare()` ordering for unrelated moves.
-- Replacing conflicting Extensions by disabling before enabling.
-- Skipping a dependent enable when its prerequisite move fails.
-- Skipping a requirement disable when its dependent cannot be moved.
-- Partial success when unrelated requested moves remain possible.
-- A directory already moved while the picker was open.
+### 6. Keep the domain glossary current
 
-These tests cross the Extension toggle interface and protect behavior that the pure Catalog tests cannot establish. Keep `index.test.ts` unchanged as command and picker integration coverage, including its dependency-closed batch test. Do not replace either layer with ordering-only assertions.
+Edit `CONTEXT.md`:
 
-### 5. Keep the domain glossary current
-
-`CONTEXT.md` has been updated with the Extension dependency rules term. Keep its ownership statement in sync with the implementation: Catalog graph meaning and ordering in `catalog.ts`; directory inspection, moves, and partial outcomes in `extension-toggle.ts`; no implicit requirement addition or dependent removal.
+- **Permission classification module**: state that user-ask messages are
+  final prompt text including the closing question (default "Proceed?",
+  site questions like "Allow write?" where the site wording is preserved),
+  composed once by the module, and that resolvers pass them verbatim.
+- **Permission enforcement lifecycle**: state that it resolves asks without
+  composing or editing ask prose and owns only resolution-outcome prose
+  (the Guardian fallback prompts).
 
 ## Verification plan
 
-Run checks from `.pi/`:
+Run from `.pi/`:
 
-1. Focused tests for the changed module and its filesystem caller:
-
-   ```sh
-   pnpm exec vitest run extensions/config-feature-flag/catalog.test.ts extensions/config-feature-flag/extension-toggle.test.ts
-   ```
-
-2. The full feature-flag directory suite, including command and catalog graph tests:
+1. The focused suite for the changed extension (pre-refactor baseline:
+   189 tests across 15 files, green):
 
    ```sh
-   pnpm exec vitest run extensions/config-feature-flag
+   pnpm exec vitest run extensions/policy-permissions
    ```
 
-3. Typecheck the extension workspace:
+2. Typecheck the extension workspace (pre-refactor baseline: clean):
 
    ```sh
    pnpm typecheck
    ```
 
-4. Review the diff and confirm the implementation changes only `catalog.ts`, `extension-toggle.ts`, their relevant tests, and `CONTEXT.md`. This root `plan.md` is the plan record. No catalog data or command text should change.
+3. Manual prompt check (prompts are user-visible; no unit test renders the
+   TUI): start `pi` in this repo, add a prompt rule
+   (`/execpolicy add ^curl|prompt|test`), remain in default mode, and issue
+   a `curl` call through the bash tool; confirm the execpolicy prompt shows
+   exactly one "Proceed?". Then trigger an external-path write (e.g. `write`
+   to a path outside the workspace) and confirm the prompt ends with a
+   single "Allow write?".
 
-The first test command checks the narrow seam and filesystem integration. The directory suite catches nearby feature-flag regressions. Typechecking confirms that the moved direction type and new Catalog export have no stale imports.
+4. Review the diff and confirm the implementation changes only
+   `permission-policy.ts`, `permission-enforcement-lifecycle.ts`,
+   `policy-types.ts`, the two test files, and `CONTEXT.md`. This root
+   `plan.md` is the plan record. No behavior beyond the two prompt fixes
+   changes.
 
 ## Acceptance criteria
 
-- `catalog.ts` is the only implementation of Extension requirement-based ordering.
-- The new ordering operation is directly testable without creating directories or moving files.
-- `extension-toggle.ts` no longer contains graph-ordering code but still owns the full filesystem transition and partial-outcome policy.
-- Exact enable and disable ordering matches the current behavior, including its `localeCompare()` tie-break under the runtime's default locale.
-- Existing validation messages and order remain unchanged.
-- Catalog cycle rejection remains intact, and the ordering function keeps its defensive malformed-catalog failure.
-- Existing toggle tests continue to verify that filesystem failures do not leave a newly invalid selection.
-- The focused tests, feature-flag suite, and typecheck pass.
+- Execpolicy prompts in default mode render exactly one "Proceed?".
+- External-path prompts render exactly one closing question: "Allow write?".
+- Every other user prompt renders byte-identical to the pre-refactor tree.
+- `requestApproval` composes no prose; `"Proceed?"` appears in
+  `permission-enforcement-lifecycle.ts` only inside the two Guardian fallback
+  prompts.
+- Denial records, `declinedReason` texts, block reasons, check ordering,
+  disposition policy, one-shot approvals, and Guardian behavior are
+  unchanged.
+- The classification matrix guard and the lifecycle verbatim guard exist and
+  pass, alongside the moved classifier pins.
+- The focused suite and typecheck pass.
 
 ## Risks and safeguards
 
-- **Ordering drift.** Moving the loop can change which eligible name is selected after each iteration or replace the existing locale-sensitive `localeCompare()` tie-break. Use exact-result tests for a chain, the diamond case that promotes a newly eligible name ahead of `z`, and unrelated names; keep the toggle integration assertions.
-- **Changed failure behavior.** A malformed catalog could reach the function without `parseExtensionCatalog()`. Preserve the exact current cycle error rather than assuming every caller validated its input.
-- **Partial filesystem state.** Moving ordering must not make the whole toggle batch atomic or alter skip behavior. Keep the working selection and per-move validation in `extension-toggle.ts`.
-- **Scope creep into dependency policy.** Do not auto-enable requirements, auto-disable dependents, alter conflict policy, or rewrite user diagnostics as part of this refactor.
-- **A shallow new seam.** Do not add a separate dependency module or adapter. After consolidation, the Catalog module owns the graph implementation, and the direct function test makes its rules testable.
+- **Prompt-text drift while moving composition.** The rendered-text table
+  above is the source of truth; the moved pins and the two guards make any
+  drift fail loudly rather than silently, which is what the `stringContaining`
+  gap allowed.
+- **A future site hand-rolls a `PermissionAsk` literal** (the original
+  execpolicy mistake) and doubles or omits the question. The matrix guard
+  asserts every user-ask message ends with a question and contains
+  "Proceed?" at most once.
+- **The lifecycle re-learns prose.** The exact-message seam pin fails if any
+  append or rewrite returns. If prompt prose legitimately changes later, move
+  the pin with it — that coupling is the pin's job.
+- **Scope creep.** The Guardian request seam (serialized envelope, triggers
+  drift), the unused `_shared/policy-service.ts` module and the lifecycle's
+  dead re-exports, and the dual no-UI fail-closed rules are all separate
+  candidates with their own evidence; none ride along here.
 
 ## Explicitly out of scope
 
-- Changing `.pi/extensions/catalog.json` or its version.
-- Changing `/features` parsing, UI, notifications, or status text.
-- Automatically expanding a requested selection to include requirements.
-- Automatically removing dependents when a requirement is disabled.
-- Altering filesystem path safety, symlink handling, directory race handling, or rename semantics.
-- Reworking dependency source audits in `dependency-audit.ts`.
-- Refactoring the broader Extension toggle session or introducing a second Catalog adapter.
+- The "one Guardian review request" candidate: the serialized evidence
+  envelope, the double-embedded title, and the `triggers` signature drift.
+- Deleting `_shared/policy-service.ts` (zero production importers) and the
+  dead re-exports at `permission-enforcement-lifecycle.ts:12`.
+- Unifying the two no-UI fail-closed rules (classification block vs
+  disposition deny) — deliberate defense in depth.
+- The mode registry's full-access switch confirmation ("Are you sure?").
+- `ModeState.setAt` persistence inconsistency.
+- Any change to `PermissionStep` ordering, block reasons, approval
+  disposition, one-shot retry approvals, or Guardian verdict persistence.

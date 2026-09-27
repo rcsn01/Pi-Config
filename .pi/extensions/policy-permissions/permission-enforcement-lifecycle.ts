@@ -1,3 +1,10 @@
+/**
+ * Permission enforcement lifecycle: resolves the ordered verdict steps the
+ * Permission classification module produces. Classification composes final
+ * ask prose — prompt title, body, closing question; this module resolves
+ * asks without composing or editing them, and owns only resolution-outcome
+ * prose (the Guardian fallback prompts).
+ */
 import type { ExecPolicyConfig } from "../_shared/command-policy.ts";
 import type { GuardianReviewResult } from "./guardian-runner.ts";
 import { approvalDisposition, type ApprovalMode } from "./mode-registry.ts";
@@ -137,7 +144,7 @@ export function createPermissionEnforcementLifecycle<HostContext>(
 		return adapter.requestUserConfirmation(
 			environment.hostContext,
 			title,
-			`${message}\n\nProceed?`,
+			message,
 		).then((allowed) => {
 			if (allowed) onAllowed("user");
 			return { allowed, reason: allowed ? undefined : "User declined." };
