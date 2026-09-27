@@ -113,8 +113,8 @@ function installSafetyPermissions(
 		loadMode: (cwd, options) => loadModeFromFile(cwd, options) ?? undefined,
 		saveMode: (cwd, mode, options) => saveModeToFile(cwd, mode, options),
 		requestUserConfirmation: (ctx, title, message) => ctx.ui.confirm(title, message),
-		runGuardianReview: (ctx, title, evaluationMessage) =>
-			runGuardianReview(ctx, guardianSettings, title, evaluationMessage),
+		runGuardianReview: (ctx, request) =>
+			runGuardianReview(ctx, guardianSettings, request),
 		persistGuardianVerdict: (_ctx, verdict) => {
 			pi.appendEntry("auto-review-verdict", {
 				title: verdict.title,

@@ -4,6 +4,7 @@ const mocked = vi.hoisted(() => ({ runAutoReviewer: vi.fn() }));
 vi.mock("./guardian-runner.ts", () => mocked);
 
 import { runGuardianReview } from "./approvals.ts";
+import type { GuardianReviewRequest } from "./guardian-evidence.ts";
 
 const usage = {
 	input: 10,
@@ -36,7 +37,16 @@ describe("Guardian review adapter", () => {
 			},
 		} as any;
 
-		const result = await runGuardianReview(ctx, settings, "Read file", "evaluation context");
+		const request: GuardianReviewRequest = {
+			conversation: { messages: [], omittedEarlierUserTurns: 0, truncated: false },
+			action: {
+				title: "Read file",
+				description: "evaluation context",
+				descriptionTruncated: false,
+				triggers: ["external-path"],
+			},
+		};
+		const result = await runGuardianReview(ctx, settings, request);
 
 		expect(result).toEqual({
 			allowed: true,
@@ -44,10 +54,11 @@ describe("Guardian review adapter", () => {
 			model: "openai/guardian",
 			usage,
 		});
-		expect(mocked.runAutoReviewer).toHaveBeenCalledWith("Read file", "evaluation context", {
+		expect(mocked.runAutoReviewer).toHaveBeenCalledWith(request, {
 			settings,
 			providerRegistration: { native, config: undefined },
 		});
+		expect(mocked.runAutoReviewer.mock.calls[0]?.[0]).toBe(request);
 	});
 
 	it("runs without provider registration when none is available", async () => {
@@ -58,8 +69,17 @@ describe("Guardian review adapter", () => {
 				getRegisteredProviderConfig: vi.fn(),
 			},
 		} as any;
-		expect(await runGuardianReview(ctx, undefined, "Command", "context"))
+		const request: GuardianReviewRequest = {
+			conversation: { messages: [], omittedEarlierUserTurns: 0, truncated: false },
+			action: {
+				title: "Command",
+				description: "context",
+				descriptionTruncated: false,
+				triggers: ["dangerous"],
+			},
+		};
+		expect(await runGuardianReview(ctx, undefined, request))
 			.toEqual({ allowed: false, reason: "unsafe" });
-		expect(mocked.runAutoReviewer).toHaveBeenCalledWith("Command", "context", { settings: undefined });
+		expect(mocked.runAutoReviewer).toHaveBeenCalledWith(request, { settings: undefined });
 	});
 });

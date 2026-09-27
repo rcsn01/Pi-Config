@@ -10,13 +10,14 @@ import type { GuardianReviewResult } from "./guardian-runner.ts";
 import { approvalDisposition, type ApprovalMode } from "./mode-registry.ts";
 import { DEFAULT_MODE_STATE, type ModePersistenceOptions, type ModeState } from "./mode-store.ts";
 import { classifyToolCall } from "./permission-policy.ts";
-import type { ApprovalResult, ToolCallInput } from "./policy-types.ts";
+import type { ApprovalResult, GuardianTrigger, ToolCallInput } from "./policy-types.ts";
 import {
-	buildGuardianEvaluationMessage,
+	buildGuardianReviewRequest,
 	type GuardianContextSnapshot,
+	type GuardianReviewRequest,
 } from "./guardian-evidence.ts";
 
-export { boundGuardianEvidence, buildGuardianEvaluationMessage } from "./guardian-evidence.ts";
+export { boundGuardianEvidence } from "./guardian-evidence.ts";
 export type { GuardianContextSnapshot } from "./guardian-evidence.ts";
 
 export interface PermissionEnforcementEnvironment<HostContext> {
@@ -50,15 +51,10 @@ export interface PermissionEnforcementLifecycleAdapter<HostContext> {
 	loadMode(cwd: string, options: ModePersistenceOptions): ModeState | undefined;
 	saveMode(cwd: string, mode: ModeState, options: ModePersistenceOptions): void;
 	requestUserConfirmation(host: HostContext, title: string, message: string): Promise<boolean>;
-	runGuardianReview(
-		host: HostContext,
-		title: string,
-		evaluationMessage: string,
-		triggers: readonly string[],
-	): Promise<GuardianReviewResult>;
+	runGuardianReview(host: HostContext, request: GuardianReviewRequest): Promise<GuardianReviewResult>;
 	persistGuardianVerdict(
 		host: HostContext,
-		verdict: GuardianReviewResult & { title: string; triggers: string[] },
+		verdict: GuardianReviewResult & { title: string; triggers: GuardianTrigger[] },
 	): void;
 }
 
@@ -170,45 +166,37 @@ export function createPermissionEnforcementLifecycle<HostContext>(
 
 	async function guardianReview(
 		environment: PermissionEnforcementEnvironment<HostContext>,
-		title: string,
-		actionDescription: string,
-		triggers: string[],
+		request: GuardianReviewRequest,
+		fallbackDescription: string,
 		onAllowed: (source: "user" | "guardian") => void,
 	): Promise<ApprovalResult> {
 		if (!environment.hasUI) {
 			return { allowed: false, reason: "Auto-review: no UI available for guardian fallback." };
 		}
-		const evaluationMessage = buildGuardianEvaluationMessage(
-			environment.guardianContext,
-			title,
-			actionDescription,
-			triggers,
-		);
 
 		let result: GuardianReviewResult;
 		try {
-			result = await adapter.runGuardianReview(
-				environment.hostContext,
-				title,
-				evaluationMessage,
-				triggers,
-			);
+			result = await adapter.runGuardianReview(environment.hostContext, request);
 		} catch {
 			return requestGuardianFallback(
 				environment,
-				`Auto-review: ${title} (guardian unavailable)`,
-				`${actionDescription}\n\nGuardian could not return a usable verdict. Proceed?`,
+				`Auto-review: ${request.action.title} (guardian unavailable)`,
+				`${fallbackDescription}\n\nGuardian could not return a usable verdict. Proceed?`,
 				onAllowed,
 			);
 		}
 
 		try {
-			adapter.persistGuardianVerdict(environment.hostContext, { ...result, title, triggers });
+			adapter.persistGuardianVerdict(environment.hostContext, {
+				...result,
+				title: request.action.title,
+				triggers: [...request.action.triggers],
+			});
 		} catch {
 			return requestGuardianFallback(
 				environment,
-				`Auto-review: ${title} (verdict write failed)`,
-				`${actionDescription}\n\nGuardian returned a verdict, but the attempt to record it in the current Session failed. Proceed?`,
+				`Auto-review: ${request.action.title} (verdict write failed)`,
+				`${fallbackDescription}\n\nGuardian returned a verdict, but the attempt to record it in the current Session failed. Proceed?`,
 				onAllowed,
 			);
 		}
@@ -287,7 +275,16 @@ export function createPermissionEnforcementLifecycle<HostContext>(
 					return { kind: "blocked", reason: step.reason, approvable: promptedDenial };
 				}
 				const result = step.channel === "guardian"
-					? await guardianReview(environment, step.title, step.message, [...(step.triggers ?? [])], recordAllowedSource)
+					? await guardianReview(
+						environment,
+						buildGuardianReviewRequest(environment.guardianContext, {
+							title: step.title,
+							description: step.message,
+							triggers: step.triggers ?? [],
+						}),
+						step.message,
+						recordAllowedSource,
+					)
 					: await requestApproval(environment, evaluationMode, step.title, step.message, recordAllowedSource);
 				if (result.allowed) continue;
 				const reason = step.declinedReason.kind === "fixed"

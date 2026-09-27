@@ -1,13 +1,13 @@
 /** Pi adapter for one Guardian review execution. */
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runAutoReviewer, type GuardianReviewResult } from "./guardian-runner.ts";
+import type { GuardianReviewRequest } from "./guardian-evidence.ts";
 import type { GuardianSettings } from "./guardian-settings.ts";
 
 export async function runGuardianReview(
 	ctx: ExtensionContext,
 	settings: GuardianSettings | undefined,
-	title: string,
-	evaluationMessage: string,
+	request: GuardianReviewRequest,
 ): Promise<GuardianReviewResult> {
 	const nativeProvider = settings && typeof ctx.modelRegistry?.getRegisteredNativeProvider === "function"
 		? ctx.modelRegistry.getRegisteredNativeProvider(settings.provider)
@@ -18,7 +18,7 @@ export async function runGuardianReview(
 	const providerRegistration = nativeProvider || providerConfig
 		? { native: nativeProvider, config: providerConfig }
 		: undefined;
-	return runAutoReviewer(title, evaluationMessage, {
+	return runAutoReviewer(request, {
 		settings,
 		...(providerRegistration ? { providerRegistration } : {}),
 	});

@@ -510,21 +510,29 @@ extension.
   `policy-permissions/guardian-evidence.ts` that builds one bounded authorization
   window from the active Session context: the last three user turns plus the
   assistant turns they answer, excluding the current tool-calling assistant.
-  It also carries explicit Skill-command provenance captured before expansion.
-  Permission enforcement adds the proposed action at this seam; the Guardian
-  runner receives the serialized evidence.
+  It carries explicit Skill-command provenance captured before expansion and
+  builds a copied `GuardianReviewRequest` with the proposed action. The
+  lifecycle sends that typed request through the adapters; the runner no longer
+  receives a serialized evidence string.
+- **Guardian review request** — the semantic snapshot built by
+  `buildGuardianReviewRequest` in `guardian-evidence.ts`. It contains the
+  bounded conversation window, optional explicit Skill provenance, and an
+  action with one title, an 8,000-character-bounded description and truncation
+  flag, and ordered `GuardianTrigger` values. It has no wire-format version or
+  snake-case fields; `guardian-verdict.ts` converts it to the Guardian protocol.
 - **Guardian verdict protocol module** — the pure in-process module in
   `policy-permissions/guardian-verdict.ts` that owns one Guardian review's
-  protocol: the composed task prompt (untrusted-evidence framing over the
-  proposed action), the classification tool contract (schema and
-  constrained-sampling preference), strict response interpretation (tool-call
-  arguments primary; malformed arguments never bypassed by a later prose
-  response; exact whole-response JSON fallback; non-guardian calls, multiple
-  calls, truncated/errored turns, and errored tool results fail closed), the
+  protocol: mapping `GuardianReviewRequest` to the schema-version-2 wire JSON
+  and composed task prompt (untrusted-evidence framing over the proposed
+  action), the classification tool contract (schema and constrained-sampling
+  preference), strict response interpretation (tool-call arguments primary;
+  malformed arguments never bypassed by a later prose response; exact
+  whole-response JSON fallback; non-guardian calls, multiple calls,
+  truncated/errored turns, and errored tool results fail closed), the
   deterministic authorization decision, and the fail-closed denial vocabulary.
-  Guardian execution — isolated in-process AgentSession construction, review
-  serialization, the unabortable-timeout unavailability latch, timeout and
-  abort, usage and model attribution, observability — stays in
+  Guardian execution — isolated in-process AgentSession construction, prompt
+  invocation and review locking, the unabortable-timeout unavailability latch,
+  timeout and abort, usage and model attribution, and observability — stays in
   `guardian-runner.ts` and resolves the protocol at its seam.
 - **Permission classification module** — the pure in-process module in
   `policy-permissions/permission-policy.ts` that classifies one tool call for

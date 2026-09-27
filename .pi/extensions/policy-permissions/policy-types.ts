@@ -4,6 +4,14 @@
 import type { ExecPolicyConfig } from "../_shared/command-policy.ts";
 import type { ApprovalMode } from "./mode-registry.ts";
 
+/** Closed vocabulary for Guardian review trigger labels. */
+export type GuardianTrigger =
+	| "dangerous"
+	| "network"
+	| "repository-snapshot-removal"
+	| "external-path"
+	| "external-write";
+
 /** Why a denied ask blocks: fixed classifier text, or the approval result's reason with a site fallback. */
 export type DeclinedReason =
 	| { kind: "fixed"; reason: string }
@@ -23,7 +31,7 @@ export interface PermissionAsk {
 	 */
 	message: string;
 	/** Guardian triggers; guardian asks carry non-empty triggers. */
-	triggers?: readonly string[];
+	triggers?: readonly GuardianTrigger[];
 	/** What the lifecycle records on denial (differs from the prompt at several sites). */
 	denial: { title: string; message: string };
 	/** The block reason when the ask is denied. */

@@ -1,3 +1,5 @@
+import type { GuardianTrigger } from "./policy-types.ts";
+
 const DEFAULT_MAX_USER_TURNS = 3;
 const DEFAULT_MAX_CHARACTERS = 16_000;
 
@@ -29,6 +31,27 @@ export interface GuardianSourceMessage {
 export interface GuardianContextSnapshot {
 	conversation: GuardianConversationEvidence;
 	invokedSkill?: GuardianSkillInvocation;
+}
+
+export interface GuardianReviewRequest {
+	readonly conversation: {
+		readonly messages: readonly Readonly<GuardianConversationMessage>[];
+		readonly omittedEarlierUserTurns: number;
+		readonly truncated: boolean;
+	};
+	readonly invokedSkill?: Readonly<GuardianSkillInvocation>;
+	readonly action: {
+		readonly title: string;
+		readonly description: string;
+		readonly descriptionTruncated: boolean;
+		readonly triggers: readonly GuardianTrigger[];
+	};
+}
+
+export interface GuardianReviewActionInput {
+	readonly title: string;
+	readonly description: string;
+	readonly triggers: readonly GuardianTrigger[];
 }
 
 /** Preserve both ends of long evidence so destructive suffixes are not hidden. */
@@ -127,31 +150,32 @@ export function buildGuardianConversationEvidence(
 	};
 }
 
-export function buildGuardianEvaluationMessage(
+export function buildGuardianReviewRequest(
 	context: GuardianContextSnapshot,
-	title: string,
-	actionDescription: string,
-	triggers: readonly string[],
-): string {
-	const action = boundGuardianEvidence(actionDescription, 8_000);
-	return JSON.stringify({
-		schema_version: 2,
+	actionInput: GuardianReviewActionInput,
+): GuardianReviewRequest {
+	const action = boundGuardianEvidence(actionInput.description, 8_000);
+	return {
 		conversation: {
-			messages: context.conversation.messages,
-			omitted_earlier_user_turns: context.conversation.omittedEarlierUserTurns,
+			messages: context.conversation.messages.map((message) => ({
+				role: message.role,
+				text: message.text,
+				truncated: message.truncated,
+			})),
+			omittedEarlierUserTurns: context.conversation.omittedEarlierUserTurns,
 			truncated: context.conversation.truncated,
 		},
 		...(context.invokedSkill ? {
-			invoked_skill: {
+			invokedSkill: {
 				name: context.invokedSkill.name,
 				source: context.invokedSkill.source,
 			},
 		} : {}),
 		action: {
-			title,
+			title: actionInput.title,
 			description: action.text,
-			description_truncated: action.truncated,
-			triggers: [...triggers],
+			descriptionTruncated: action.truncated,
+			triggers: [...actionInput.triggers],
 		},
-	});
+	};
 }

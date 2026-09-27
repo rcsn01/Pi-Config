@@ -8,6 +8,7 @@ import {
 	runAutoReviewer,
 	type GuardianPromptSession,
 } from "./guardian-runner.ts";
+import type { GuardianReviewRequest } from "./guardian-evidence.ts";
 
 const GUARDIAN_CONTENT = "---\nname: guardian\nmodel: test/guardian-1\n---\n\nYou are the guardian.\n";
 const tempDir = mkdtempSync(join(tmpdir(), "pi-guardian-runner-"));
@@ -107,11 +108,17 @@ function fakeSession(plan: FakeSessionPlan = {}) {
 	return { session, abort, dispose };
 }
 
+function makeReviewRequest(title: string, description: string): GuardianReviewRequest {
+	return {
+		conversation: { messages: [], omittedEarlierUserTurns: 0, truncated: false },
+		action: { title, description, descriptionTruncated: false, triggers: ["dangerous"] },
+	};
+}
+
 function review(plan: FakeSessionPlan = {}, options: { timeoutMs?: number } = {}) {
 	const built = fakeSession(plan);
 	const promise = runAutoReviewer(
-		"Test action",
-		"rm -rf /tmp/scratch",
+		makeReviewRequest("Test action", "rm -rf /tmp/scratch"),
 		{ ...options, sessionFactory: async () => built.session },
 		guardianPath,
 	);
@@ -264,8 +271,7 @@ describe("runAutoReviewer decision matrix", () => {
 		expect(thrown).toMatchObject({ allowed: false, reason: "Guardian error: provider exploded" });
 
 		const missing = await runAutoReviewer(
-			"Test action",
-			"message",
+			makeReviewRequest("Test action", "message"),
 			{ sessionFactory: async () => fakeSession().session },
 			join(tempDir, "missing-guardian.md"),
 		);
@@ -277,8 +283,7 @@ describe("runAutoReviewer decision matrix", () => {
 		const emptyPromptPath = join(tempDir, "empty-guardian.md");
 		writeFileSync(emptyPromptPath, "---\nname: guardian\n---\n\n");
 		const emptyPrompt = await runAutoReviewer(
-			"Test action",
-			"message",
+			makeReviewRequest("Test action", "message"),
 			{ sessionFactory: async () => fakeSession().session },
 			emptyPromptPath,
 		);
@@ -343,8 +348,8 @@ describe("runAutoReviewer decision matrix", () => {
 		);
 
 		const [first, second] = await Promise.all([
-			runAutoReviewer("a", "action a", { sessionFactory: factory }, guardianPath),
-			runAutoReviewer("b", "action b", { sessionFactory: factory }, guardianPath),
+			runAutoReviewer(makeReviewRequest("a", "action a"), { sessionFactory: factory }, guardianPath),
+			runAutoReviewer(makeReviewRequest("b", "action b"), { sessionFactory: factory }, guardianPath),
 		]);
 
 		expect(maxActive).toBe(1);
@@ -359,8 +364,7 @@ describe("runAutoReviewer decision matrix", () => {
 			const stranded = fakeSession({ never: true });
 			stranded.abort.mockRejectedValue(new Error("provider did not stop"));
 			const first = runAutoReviewer(
-				"stranded",
-				"message",
+				makeReviewRequest("stranded", "message"),
 				{ sessionFactory: async () => stranded.session, timeoutMs: 4000 },
 				guardianPath,
 			);
@@ -368,7 +372,7 @@ describe("runAutoReviewer decision matrix", () => {
 			await expect(first).resolves.toMatchObject({ allowed: false });
 
 			const nextFactory = vi.fn(async () => fakeSession({ text: classification() }).session);
-			await expect(runAutoReviewer("next", "message", { sessionFactory: nextFactory }, guardianPath))
+			await expect(runAutoReviewer(makeReviewRequest("next", "message"), { sessionFactory: nextFactory }, guardianPath))
 				.resolves.toMatchObject({
 					allowed: false,
 					reason: expect.stringContaining("abort failed after timeout"),

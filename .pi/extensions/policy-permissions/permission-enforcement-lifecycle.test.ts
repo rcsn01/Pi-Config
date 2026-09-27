@@ -6,6 +6,7 @@ import {
 	type PermissionEnforcementLifecycleAdapter,
 } from "./permission-enforcement-lifecycle.ts";
 import type { ModeState } from "./mode-store.ts";
+import type { GuardianReviewRequest } from "./guardian-evidence.ts";
 
 const ALLOW_POLICY: ExecPolicyConfig = { rules: [], defaultAction: "allow" };
 
@@ -203,18 +204,29 @@ describe("PermissionEnforcementLifecycle", () => {
 			kind: "allowed",
 			source: "guardian",
 		});
-		expect(harness.adapter.runGuardianReview).toHaveBeenCalledWith(
-			{},
-			"Command Review",
-			expect.stringContaining('"text":"install the package"'),
-			["dangerous"],
-		);
+		const request = vi.mocked(harness.adapter.runGuardianReview).mock.calls[0]?.[1] as GuardianReviewRequest;
+		expect(request).toEqual({
+			conversation: {
+				messages: [
+					{ role: "assistant", text: "I will use curl", truncated: false },
+					{ role: "user", text: "install the package", truncated: false },
+				],
+				omittedEarlierUserTurns: 0,
+				truncated: false,
+			},
+			action: {
+				title: "Command Review",
+				description: "Command: sudo rm -rf /workspace/x\n\nConcerns:\n- Dangerous: recursive forced deletion",
+				descriptionTruncated: false,
+				triggers: ["dangerous"],
+			},
+		});
 		expect(harness.adapter.persistGuardianVerdict).toHaveBeenCalledWith({}, {
 			allowed: true,
 			reason: "safe",
 			model: "openai/guardian",
-			title: "Command Review",
-			triggers: ["dangerous"],
+			title: request.action.title,
+			triggers: [...request.action.triggers],
 		});
 	});
 
@@ -251,6 +263,29 @@ describe("PermissionEnforcementLifecycle", () => {
 			"Command: sudo rm -rf /workspace/x\n\nConcerns:\n- Dangerous: recursive forced deletion\n\nGuardian could not return a usable verdict. Proceed?",
 		);
 		expect(harness.requestUserConfirmation.mock.calls[0]?.[2]).not.toContain(reviewError.message);
+	});
+
+	it("keeps the full fallback description when the Guardian request is truncated", async () => {
+		const omittedToken = "MIDDLE_FALLBACK_SENTINEL";
+		const command = `sudo rm -rf /workspace/x ${"x".repeat(4_000)}${omittedToken}${"y".repeat(4_000)}`;
+		const harness = createHarness({
+			mode: { mode: "auto-review", setAt: 1 },
+			confirmations: [true],
+			guardianError: new Error("offline"),
+		});
+
+		expect(await harness.evaluate("bash", { command })).toEqual({
+			kind: "allowed",
+			source: "user",
+		});
+		const request = vi.mocked(harness.adapter.runGuardianReview).mock.calls[0]?.[1] as GuardianReviewRequest;
+		expect(request.action.description).toHaveLength(8_000);
+		expect(request.action.descriptionTruncated).toBe(true);
+		expect(request.action.description).not.toContain(omittedToken);
+		const fallbackMessage = harness.requestUserConfirmation.mock.calls[0]?.[2];
+		expect(fallbackMessage).toContain(command);
+		expect(fallbackMessage).toContain(omittedToken);
+		expect(fallbackMessage?.endsWith("Guardian could not return a usable verdict. Proceed?")).toBe(true);
 	});
 
 	it("blocks and records a declined Guardian-unavailable fallback", async () => {

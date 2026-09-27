@@ -29,7 +29,7 @@ import {
 	isSensitivePath,
 	resolveToolPath,
 } from "./path-policy.ts";
-import type { EvaluateContext, PermissionAsk, PermissionStep, ToolCallInput } from "./policy-types.ts";
+import type { EvaluateContext, GuardianTrigger, PermissionAsk, PermissionStep, ToolCallInput } from "./policy-types.ts";
 
 function commandOf(input: ToolCallInput): string {
 	return (input.input && typeof input.input === "object"
@@ -59,7 +59,7 @@ function userAsk(
 function guardianAsk(
 	title: string,
 	message: string,
-	triggers: readonly string[],
+	triggers: readonly GuardianTrigger[],
 	denialTitle: string,
 	denialMessage: string,
 	fallback: string,
@@ -203,7 +203,7 @@ export function classifyToolCall(
 
 			if (mode === "auto-review") {
 				// Batch every concern into ONE guardian review per command.
-				const triggers: string[] = [];
+				const triggers: GuardianTrigger[] = [];
 				const concerns: string[] = [];
 				if (dangerReason) {
 					triggers.push("dangerous");

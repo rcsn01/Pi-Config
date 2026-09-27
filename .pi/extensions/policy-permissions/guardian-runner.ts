@@ -54,6 +54,7 @@ import {
 } from "./guardian-verdict.ts";
 import { guardianObserverExtension, runWithGuardianObservation } from "./guardian-observer.ts";
 import type { GuardianSettings } from "./guardian-settings.ts";
+import type { GuardianReviewRequest } from "./guardian-evidence.ts";
 import type { ApprovalResult } from "./policy-types.ts";
 
 type AnyModel = NonNullable<CreateAgentSessionOptions["model"]>;
@@ -316,12 +317,11 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  * is denied (fail closed), while any usage emitted by that request is retained.
  */
 export async function runAutoReviewer(
-	title: string,
-	message: string,
+	request: GuardianReviewRequest,
 	options: RunAutoReviewerOptions = {},
 	guardianPath = resolveGuardianPath(import.meta.url),
 ): Promise<GuardianReviewResult> {
-	const task = composeGuardianTask(title, message);
+	const task = composeGuardianTask(request);
 
 	// Read guardian agent config
 	let definition: GuardianDefinition;

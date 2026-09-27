@@ -65,6 +65,7 @@ import {
 	runAutoReviewer,
 } from "./guardian-runner.ts";
 import { GUARDIAN_CLASSIFICATION_TOOL_NAME } from "./guardian-verdict.ts";
+import type { GuardianReviewRequest } from "./guardian-evidence.ts";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 const roots: string[] = [];
@@ -90,9 +91,17 @@ describe("Guardian runner profile configuration", () => {
 		const guardianPath = join(root, "guardian.md");
 		writeFileSync(guardianPath, "---\n---\nReview safely.\n");
 
+		const request: GuardianReviewRequest = {
+			conversation: { messages: [], omittedEarlierUserTurns: 0, truncated: false },
+			action: {
+				title: "Command Review",
+				description: "Command: example",
+				descriptionTruncated: false,
+				triggers: ["dangerous"],
+			},
+		};
 		const result = await runAutoReviewer(
-			"Command Review",
-			"Command: example",
+			request,
 			{
 				settings: {
 					provider: "test",

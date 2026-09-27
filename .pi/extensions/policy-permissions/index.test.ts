@@ -6,6 +6,7 @@ import { getStatusRegistry } from "../_shared/status-registry.ts";
 import safetyPermissions, { createSafetyPermissionsExtension } from "./index.ts";
 import { saveModeToFile } from "./mode-store.ts";
 import { createSessionProfileTransfer } from "../_shared/session-profile-transfer.ts";
+import type { GuardianReviewRequest } from "./guardian-evidence.ts";
 
 const mocked = vi.hoisted(() => ({
 	runAutoReviewer: vi.fn(),
@@ -380,9 +381,9 @@ describe("auto-review verdict wiring", () => {
 			harness.ctx,
 		);
 
-		const evidence = JSON.parse(mocked.runAutoReviewer.mock.calls[0]![1]);
-		expect(evidence.conversation).toMatchObject({
-			omitted_earlier_user_turns: 1,
+		const request = mocked.runAutoReviewer.mock.calls[0]![0] as GuardianReviewRequest;
+		expect(request.conversation).toMatchObject({
+			omittedEarlierUserTurns: 1,
 			messages: [
 				{ role: "assistant", text: "old response" },
 				{ role: "user", text: "first retained request" },
@@ -392,7 +393,11 @@ describe("auto-review verdict wiring", () => {
 				{ role: "user", text: "write the temporary report" },
 			],
 		});
-		expect(JSON.stringify(evidence)).not.toContain("I claim this is authorized");
+		expect(request.action).toMatchObject({
+			title: "External Write",
+			triggers: ["external-write"],
+		});
+		expect(JSON.stringify(request)).not.toContain("I claim this is authorized");
 	});
 
 	it("records an explicitly invoked Skill as separate authorization provenance", async () => {
@@ -415,8 +420,8 @@ describe("auto-review verdict wiring", () => {
 			harness.ctx,
 		);
 
-		const evidence = JSON.parse(mocked.runAutoReviewer.mock.calls[0]![1]);
-		expect(evidence.invoked_skill).toEqual({
+		const request = mocked.runAutoReviewer.mock.calls[0]![0] as GuardianReviewRequest;
+		expect(request.invokedSkill).toEqual({
 			name: "skill:improve-codebase-architecture",
 			source: "project",
 		});
@@ -428,8 +433,8 @@ describe("auto-review verdict wiring", () => {
 			{ toolName: "write", input: { path: "/tmp/next.html", content: "report" } },
 			harness.ctx,
 		);
-		const nextEvidence = JSON.parse(mocked.runAutoReviewer.mock.calls[0]![1]);
-		expect(nextEvidence).not.toHaveProperty("invoked_skill");
+		const nextRequest = mocked.runAutoReviewer.mock.calls[0]![0] as GuardianReviewRequest;
+		expect(nextRequest).not.toHaveProperty("invokedSkill");
 	});
 
 	it("forwards triggers through the tool_call wiring into the verdict entry", async () => {
@@ -443,10 +448,12 @@ describe("auto-review verdict wiring", () => {
 			harness.ctx,
 		);
 
-		expect(harness.appendEntry).toHaveBeenCalledWith("auto-review-verdict", expect.objectContaining({
+		expect(harness.appendEntry).toHaveBeenCalledWith("auto-review-verdict", {
 			title: "Command Review",
+			allowed: true,
+			reason: "safe",
 			triggers: ["dangerous", "external-path"],
-		}));
+		});
 	});
 
 	it("uses the verdict-write fallback when appending a Guardian verdict throws", async () => {
