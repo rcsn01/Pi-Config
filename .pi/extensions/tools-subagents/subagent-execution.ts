@@ -48,7 +48,7 @@ type SubagentChildLauncher = Pick<SubagentChildExecution, "execute">;
 
 interface SubagentExecutionDependencies {
 	registry?: AgentRegistry;
-	config?: Pick<SubagentConfigStore, "load" | "resolveLaunch">;
+	config?: Pick<SubagentConfigStore, "load" | "resolveLaunchBatch">;
 	childExecution?: SubagentChildLauncher;
 }
 

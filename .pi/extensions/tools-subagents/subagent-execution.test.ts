@@ -159,9 +159,8 @@ describe("Subagent execution", () => {
 
 	it("resolves the whole batch before starting a child", async () => {
 		const configStore = memoryConfigStore();
-		vi.spyOn(configStore, "resolveLaunch")
-			.mockReturnValueOnce({ model: "openai/first" })
-			.mockImplementationOnce(() => { throw new Error("bad launch"); });
+		vi.spyOn(configStore, "resolveLaunchBatch")
+			.mockImplementation(() => { throw new Error("bad launch"); });
 		const execute = vi.fn();
 		const execution = createSubagentExecution({
 			registry: memoryRegistry(),

@@ -2,7 +2,17 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../_shared/settings-document.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../_shared/settings-document.ts")>();
+	return {
+		...actual,
+		readSettingsDocument: vi.fn(actual.readSettingsDocument),
+	};
+});
+
+import * as settingsDocument from "../_shared/settings-document.ts";
 import {
 	appendChildModelArgument,
 	appendChildThinkingArgument,
@@ -845,6 +855,41 @@ describe("subagent picker meaning", () => {
 });
 
 describe("subagent config store", () => {
+	it("uses one Settings and Main-model view per batch, then observes changes on the next call", () => {
+		const initial = '{"subagents":{"defaultModel":"main","defaultThinkingLevel":"low"}}';
+		const changed = '{"subagents":{"defaultModel":"main","defaultThinkingLevel":"high"}}';
+		const { settingsPath } = configHarness(initial);
+		const store = createSubagentConfigStore({ settingsPath });
+		store.rememberMainModel({ provider: "openai", id: "first" });
+		const reader = vi.mocked(settingsDocument.readSettingsDocument);
+		const originalRead = reader.getMockImplementation()!;
+		reader.mockClear();
+		reader.mockImplementationOnce((readPath, options) => {
+			const document = originalRead(readPath, options);
+			writeFileSync(settingsPath, changed);
+			store.rememberMainModel({ provider: "anthropic", id: "second" });
+			return document;
+		});
+
+		try {
+			expect(store.resolveLaunchBatch([
+				{ agent: agent({ name: "first", model: "" }) },
+				{ agent: agent({ name: "second", model: "" }) },
+			])).toEqual([
+				{ model: "openai/first", thinkingLevel: "low", contextWindow: undefined },
+				{ model: "openai/first", thinkingLevel: "low", contextWindow: undefined },
+			]);
+			expect(reader).toHaveBeenCalledTimes(1);
+			expect(store.resolveLaunchBatch([{ agent: agent({ model: "" }) }])).toEqual([
+				{ model: "anthropic/second", thinkingLevel: "high", contextWindow: undefined },
+			]);
+			expect(reader).toHaveBeenCalledTimes(2);
+		} finally {
+			reader.mockReset();
+			reader.mockImplementation(originalRead);
+		}
+	});
+
 	it("loads missing and existing namespaces and validates Settings", () => {
 		const { settingsPath } = configHarness();
 		expect(createSubagentConfigStore({ settingsPath }).load()).toEqual({
@@ -898,6 +943,55 @@ describe("subagent config store", () => {
 		});
 	});
 
+	it("selects active Settings over legacy and falls back only when the namespace is absent", () => {
+		const active = configHarness(
+			'{"subagents":{"defaultModel":"openai/settings"}}',
+			'{"defaultModel":"anthropic/legacy"}',
+		);
+		expect(createSubagentConfigStore({
+			settingsPath: active.settingsPath, legacyConfigPath: active.legacyPath,
+		}).resolveLaunchBatch([{ agent: agent() }])[0].model).toBe("openai/settings");
+
+		const emptyNamespace = configHarness(
+			'{"subagents":{}}',
+			'{"defaultModel":"anthropic/legacy"}',
+		);
+		expect(createSubagentConfigStore({
+			settingsPath: emptyNamespace.settingsPath, legacyConfigPath: emptyNamespace.legacyPath,
+		}).resolveLaunchBatch([{ agent: agent({ model: "google/frontmatter" }) }])[0].model)
+			.toBe("google/frontmatter");
+
+		for (const settingsContent of ['{}', undefined]) {
+			const fallback = configHarness(settingsContent, '{"defaultModel":"anthropic/legacy"}');
+			expect(createSubagentConfigStore({
+				settingsPath: fallback.settingsPath, legacyConfigPath: fallback.legacyPath,
+			}).resolveLaunchBatch([{ agent: agent() }])[0].model).toBe("anthropic/legacy");
+		}
+	});
+
+	it("preserves Settings and legacy source errors during batch resolution", () => {
+		for (const settingsContent of ["{", "[]", '{"subagents":[]}']) {
+			const invalidSettings = configHarness(settingsContent, '{"defaultModel":"openai/legacy"}');
+			const store = createSubagentConfigStore({
+				settingsPath: invalidSettings.settingsPath, legacyConfigPath: invalidSettings.legacyPath,
+			});
+			expect(() => store.resolveLaunchBatch([{ agent: agent() }])).toThrow();
+		}
+
+		for (const legacyContent of ["{", "[]"]) {
+			const ignoredLegacy = configHarness(undefined, legacyContent);
+			expect(createSubagentConfigStore({
+				settingsPath: ignoredLegacy.settingsPath, legacyConfigPath: ignoredLegacy.legacyPath,
+			}).resolveLaunchBatch([{ agent: agent({ model: "google/frontmatter" }) }])[0].model)
+				.toBe("google/frontmatter");
+		}
+
+		const invalidLegacy = configHarness(undefined, '{"defaultModel":"invalid"}');
+		expect(() => createSubagentConfigStore({
+			settingsPath: invalidLegacy.settingsPath, legacyConfigPath: invalidLegacy.legacyPath,
+		}).resolveLaunchBatch([{ agent: agent() }])).toThrow(/canonical "provider\/model"/);
+	});
+
 	it("uses the legacy namespace as the first-write base", async () => {
 		const { settingsPath, legacyPath } = configHarness(undefined,
 			'{"maxConcurrency":4,"defaultModel":"main","custom":true}');
@@ -927,15 +1021,75 @@ describe("subagent config store", () => {
 		expect(store.resolveMainModel()).toBe("anthropic/second");
 	});
 
-	it("projects launch fields and tracks the Main model", () => {
-		const { settingsPath } = configHarness('{"subagents":{"defaultModel":"main","defaultThinkingLevel":"low"}}');
+	it("resolves an ordered launch batch with per-request overrides and context metadata", () => {
+		const { settingsPath } = configHarness(
+			'{"subagents":{"defaultModel":"main","agentModels":{"worker":"openai/worker:xhigh"},"defaultThinkingLevel":"low","defaultContextWindow":200000,"agentContextWindows":{"worker":131072}}}',
+		);
 		const store = createSubagentConfigStore({ settingsPath });
 		store.rememberMainModel({ provider: "openai", id: "first" });
-		const firstLaunch = store.resolveLaunch(agent({ model: "" }));
-		expect(firstLaunch).toEqual({ model: "openai/first", thinkingLevel: "low" });
-		expect(firstLaunch).not.toHaveProperty("modelSetting");
+
+		const launches = store.resolveLaunchBatch([
+			{ agent: agent() },
+			{
+				agent: agent({ name: "direct", model: "anthropic/frontmatter" }),
+				explicitModel: "openai/explicit:high",
+				explicitThinkingLevel: "off",
+			},
+			{ agent: agent({ name: "main", model: "" }) },
+		]);
+
+		expect(launches).toEqual([
+			{ model: "openai/worker", thinkingLevel: "xhigh", contextWindow: 131072 },
+			{ model: "openai/explicit", thinkingLevel: "off", contextWindow: 200000 },
+			{ model: "openai/first", thinkingLevel: "low", contextWindow: 200000 },
+		]);
 		store.rememberMainModel({ provider: "anthropic", id: "second" });
-		expect(store.resolveLaunch(agent({ model: "" }))).toEqual({ model: "anthropic/second", thinkingLevel: "low" });
+		expect(store.resolveLaunchBatch([{ agent: agent({ name: "main", model: "" }) }])).toEqual([
+			{ model: "anthropic/second", thinkingLevel: "low", contextWindow: 200000 },
+		]);
+
+		const frontmatterSettings = configHarness();
+		const frontmatterStore = createSubagentConfigStore({ settingsPath: frontmatterSettings.settingsPath });
+		expect(frontmatterStore.resolveLaunchBatch([
+			{ agent: agent({ model: "google/frontmatter" }) },
+		])).toEqual([
+			{ model: "google/frontmatter", thinkingLevel: undefined, contextWindow: undefined },
+		]);
+	});
+
+	it("does not return a partial batch when a later request is invalid", () => {
+		const { settingsPath } = configHarness();
+		const store = createSubagentConfigStore({ settingsPath });
+		expect(() => store.resolveLaunchBatch([
+			{ agent: agent({ name: "first" }), explicitModel: "openai/valid" },
+			{ agent: agent({ name: "second" }), explicitModel: "invalid" },
+		])).toThrow(/canonical "provider\/model"/);
+	});
+
+	it("keeps Main optional and keeps concurrency validation outside batch assignment", () => {
+		const { settingsPath } = configHarness(
+			'{"subagents":{"defaultModel":"main","maxConcurrency":0}}',
+		);
+		const store = createSubagentConfigStore({ settingsPath });
+		expect(store.resolveLaunchBatch([{
+			agent: agent({ model: "" }),
+			explicitModel: "openai/explicit",
+		}])).toEqual([
+			{ model: "openai/explicit", thinkingLevel: undefined, contextWindow: undefined },
+		]);
+		expect(() => store.load()).toThrow(/maxConcurrency must be a positive integer/);
+
+		const invalidSettings = configHarness('{"subagents":{"defaultModel":""}}');
+		const invalidStore = createSubagentConfigStore({ settingsPath: invalidSettings.settingsPath });
+		expect(() => invalidStore.resolveLaunchBatch([{
+			agent: agent(),
+			explicitModel: "openai/override",
+		}])).toThrow(/cannot be empty/);
+
+		const mainSettings = configHarness('{"subagents":{"defaultModel":"main"}}');
+		const mainStore = createSubagentConfigStore({ settingsPath: mainSettings.settingsPath });
+		expect(() => mainStore.resolveLaunchBatch([{ agent: agent({ model: "" }) }]))
+			.toThrow('Cannot resolve subagent model "main": the main session has no active model.');
 	});
 
 	it("delegates selections to the pure resolver without writing", async () => {
@@ -969,7 +1123,7 @@ describe("subagent config store", () => {
 		expect(store.resolveAssignmentSelection({ target: { kind: "agent", name: "worker" }, agent: agent() })).toEqual(pending);
 		store.rememberMainModel({ provider: "anthropic", id: "second" });
 		expect(store.resolveAssignmentSelection({ target: { kind: "all" } }).assignment.launch.model).toBe("anthropic/second");
-		expect(Object.keys(store.resolveLaunch(agent())).sort()).toEqual(["contextWindow", "model", "thinkingLevel"]);
+		expect(Object.keys(store.resolveLaunchBatch([{ agent: agent() }])[0]).sort()).toEqual(["contextWindow", "model", "thinkingLevel"]);
 	});
 
 	it("repoints persistence and migration to the active Profile", async () => {
@@ -979,18 +1133,22 @@ describe("subagent config store", () => {
 		const profilePath = join(root, "profiles", "focused.json");
 		const legacyPath = join(root, "config.json");
 		mkdirSync(join(root, "profiles"));
-		writeFileSync(settingsPath, '{"subagents":{"defaultModel":"main"}}');
+		writeFileSync(settingsPath, '{"subagents":{"defaultModel":"openai/project"}}');
 		writeFileSync(profilePath, '{"uiModelSelector":{"profiles":{}}}');
 		writeFileSync(legacyPath, '{"maxConcurrency":4,"defaultModel":"main"}');
 		const store = createSubagentConfigStore({ settingsPath, legacyConfigPath: legacyPath });
 		store.setSettingsPath(profilePath);
+		store.rememberMainModel(mainModel);
 		expect(store.configPath).toBe(profilePath);
 		expect(await store.migrateLegacy()).toBe(true);
 		expect(JSON.parse(readFileSync(profilePath, "utf8"))).toEqual({
 			uiModelSelector: { profiles: {} },
 			subagents: { maxConcurrency: 4, defaultModel: "main" },
 		});
-		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({ subagents: { defaultModel: "main" } });
+		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({ subagents: { defaultModel: "openai/project" } });
+		expect(store.resolveLaunchBatch([{ agent: agent({ model: "" }) }])).toEqual([
+			{ model: "anthropic/claude-sonnet-4-6", thinkingLevel: undefined, contextWindow: undefined },
+		]);
 		expect(existsSync(legacyPath)).toBe(false);
 	});
 

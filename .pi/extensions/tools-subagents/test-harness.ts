@@ -98,8 +98,19 @@ export function memoryConfigStore(initial: Record<string, unknown> = {}): Memory
 			if (options.edit) document = applySubagentAssignmentEdit(document, options.edit);
 			return resolveSubagentAssignmentSelection({ ...options, config: document, mainModel: activeMainModel });
 		},
-		resolveLaunch(config, explicitModel, explicitThinkingLevel) {
-			return store.resolveAssignment(config, { explicitModel, explicitThinkingLevel }).launch;
+		resolveLaunchBatch(requests) {
+			const document = structuredClone(store.document);
+			const mainModel = activeMainModel;
+			return requests.map(({ agent, explicitModel, explicitThinkingLevel }) =>
+				resolveSubagentAssignment({
+					agentName: agent.name,
+					config: document,
+					explicitModel,
+					explicitThinkingLevel,
+					frontmatterModel: agent.model,
+					mainModel,
+				}).launch,
+			);
 		},
 		setSettingsPath: (path: string) => {
 			settingsPath = path;

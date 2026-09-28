@@ -48,6 +48,12 @@ export interface ResolvedLaunchConfiguration {
 	contextWindow?: number;
 }
 
+export interface ResolveLaunchBatchRequest {
+	readonly agent: AgentConfig;
+	readonly explicitModel?: string;
+	readonly explicitThinkingLevel?: SubagentThinkingLevel;
+}
+
 export interface ResolvedSubagentAssignment {
 	/** Canonical selected setting before `main` becomes a concrete model. */
 	modelSetting: string;
@@ -131,7 +137,7 @@ export interface SubagentConfigStore {
 	resolveMainModel(): string;
 	resolveAssignment(agent: AgentConfig, options?: ResolveStoredAssignmentOptions): ResolvedSubagentAssignment;
 	resolveAssignmentSelection(options: ResolveStoredAssignmentSelectionOptions): ResolvedSubagentAssignmentSelection;
-	resolveLaunch(agent: AgentConfig, explicitModel?: string, explicitThinkingLevel?: SubagentThinkingLevel): ResolvedLaunchConfiguration;
+	resolveLaunchBatch(requests: readonly ResolveLaunchBatchRequest[]): readonly ResolvedLaunchConfiguration[];
 	setSettingsPath(path: string): void;
 	migrateLegacy(): Promise<boolean>;
 }
@@ -615,6 +621,20 @@ export function createSubagentConfigStore(options: SubagentConfigStoreOptions = 
 		if (options.edit) config = applySubagentAssignmentEdit(config, options.edit);
 		return resolveSubagentAssignmentSelection({ ...options, config, mainModel: activeMainModel });
 	};
+	const resolveLaunchBatch = (
+		requests: readonly ResolveLaunchBatchRequest[],
+	): readonly ResolvedLaunchConfiguration[] => {
+		const mainModel = activeMainModel;
+		const config = parseModelConfiguration(readSettingsNamespace());
+		return requests.map(({ agent, explicitModel, explicitThinkingLevel }) =>
+			resolveParsedSubagentAssignment({
+				agentName: agent.name,
+				frontmatterModel: agent.model,
+				explicitModel,
+				explicitThinkingLevel,
+				mainModel,
+			}, config).launch);
+	};
 	return {
 		get configPath() { return settingsPath; },
 		load,
@@ -629,9 +649,7 @@ export function createSubagentConfigStore(options: SubagentConfigStoreOptions = 
 		resolveMainModel() { return canonicalMainModel(activeMainModel); },
 		resolveAssignment,
 		resolveAssignmentSelection,
-		resolveLaunch(agent, explicitModel, explicitThinkingLevel) {
-			return resolveAssignment(agent, { explicitModel, explicitThinkingLevel }).launch;
-		},
+		resolveLaunchBatch,
 		setSettingsPath(path) { settingsPath = path; },
 		async migrateLegacy() {
 			if (Object.hasOwn(readSettingsDocument(settingsPath), SUBAGENTS_SETTINGS_KEY)) return false;

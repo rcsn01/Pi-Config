@@ -8,7 +8,7 @@ export function prepareSubagentLaunches(
 	requests: readonly RunSubagentOptions[],
 	dependencies: {
 		registry: Pick<AgentRegistry, "load">;
-		config: Pick<SubagentConfigStore, "resolveLaunch">;
+		config: Pick<SubagentConfigStore, "resolveLaunchBatch">;
 	},
 ): readonly SubagentChildExecutionRequest[] {
 	if (requests.length === 0) return [];
@@ -19,9 +19,15 @@ export function prepareSubagentLaunches(
 		return resolveSubagentAgent(request.agent, availableAgents);
 	});
 
+	const launches = dependencies.config.resolveLaunchBatch(requests.map((request, index) => ({
+		agent: agents[index],
+		explicitModel: request.model,
+		explicitThinkingLevel: request.thinkingLevel,
+	})));
+
 	return requests.map((request, index) => {
 		const agent = agents[index];
-		const launch = dependencies.config.resolveLaunch(agent, request.model, request.thinkingLevel);
+		const launch = launches[index];
 		return {
 			agent,
 			task: request.task ?? request.prompt ?? "",
