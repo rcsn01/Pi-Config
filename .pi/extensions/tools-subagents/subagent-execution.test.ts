@@ -175,6 +175,31 @@ describe("Subagent execution", () => {
 		expect(execute).not.toHaveBeenCalled();
 	});
 
+	it("uses assignments without loading invalid configured concurrency when overridden", async () => {
+		const configStore = memoryConfigStore({ maxConcurrency: 0, defaultModel: "openai/assignment" });
+		const load = vi.spyOn(configStore, "load");
+		const resolveLaunchBatch = vi.spyOn(configStore, "resolveLaunchBatch");
+		const execute = vi.fn(async (request: any) => agentResult({ agent: request.agent.name, task: request.task }));
+		const execution = createSubagentExecution({
+			registry: memoryRegistry(),
+			config: configStore,
+			childExecution: { execute },
+		});
+
+		const [result] = await execution.runBatch(
+			[{ agent: "worker", task: "inspect" }],
+			{ cwd: "/root", maxConcurrency: 2 },
+		);
+
+		expect(result.agent).toBe("worker");
+		expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+			launch: { model: "openai/assignment", thinkingLevel: undefined, contextWindow: undefined },
+		}));
+		expect(load).not.toHaveBeenCalled();
+		expect(resolveLaunchBatch).toHaveBeenCalledTimes(1);
+		expect(resolveLaunchBatch.mock.calls[0]?.[1]).toBeUndefined();
+	});
+
 	it("uses configured concurrency when the caller does not override it", async () => {
 		const release = deferred<void>();
 		let active = 0;
@@ -202,6 +227,137 @@ describe("Subagent execution", () => {
 		release.resolve();
 		await promise;
 		expect(peak).toBe(2);
+	});
+
+	it("uses one loaded config snapshot for concurrency and every assignment in a batch", async () => {
+		const configStore = memoryConfigStore({ maxConcurrency: 1, defaultModel: "openai/old" });
+		const loadConfig = configStore.load.bind(configStore);
+		let changeAfterLoad = true;
+		vi.spyOn(configStore, "load").mockImplementation(() => {
+			const snapshot = loadConfig();
+			if (changeAfterLoad) {
+				configStore.document = { maxConcurrency: 3, defaultModel: "openai/new" };
+				changeAfterLoad = false;
+			}
+			return snapshot;
+		});
+
+		const gates = { first: deferred<void>(), second: deferred<void>() };
+		const active = { first: 0, second: 0 };
+		const peak = { first: 0, second: 0 };
+		const models: Record<"first" | "second", string[]> = { first: [], second: [] };
+		let phase: "first" | "second" = "first";
+		const execute = vi.fn(async (request: any) => {
+			active[phase]++;
+			peak[phase] = Math.max(peak[phase], active[phase]);
+			models[phase].push(request.launch.model);
+			await gates[phase].promise;
+			active[phase]--;
+			return agentResult({ agent: request.agent.name, task: request.task });
+		});
+		const execution = createSubagentExecution({
+			registry: memoryRegistry(),
+			config: configStore,
+			childExecution: { execute },
+		});
+		const tasks = Array.from({ length: 4 }, (_, index) => ({ agent: "worker", task: `task ${index}` }));
+
+		try {
+			const first = execution.runBatch(tasks, { cwd: "/root" });
+			expect(peak.first).toBe(1);
+			gates.first.resolve();
+			await first;
+			expect(models.first).toEqual(Array(4).fill("openai/old"));
+
+			phase = "second";
+			const second = execution.runBatch(tasks, { cwd: "/root" });
+			expect(peak.second).toBe(3);
+			gates.second.resolve();
+			await second;
+			expect(models.second).toEqual(Array(4).fill("openai/new"));
+		} finally {
+			gates.first.resolve();
+			gates.second.resolve();
+		}
+	});
+
+	it("preserves empty-batch reads for omitted, null, and explicit concurrency", async () => {
+		const registry = memoryRegistry();
+		const loadAgents = vi.spyOn(registry, "load");
+		const configStore = memoryConfigStore();
+		const load = vi.spyOn(configStore, "load");
+		const resolveLaunchBatch = vi.spyOn(configStore, "resolveLaunchBatch");
+		const execute = vi.fn();
+		const execution = createSubagentExecution({
+			registry,
+			config: configStore,
+			childExecution: { execute },
+		});
+
+		expect(await execution.runBatch([], { cwd: "/root" })).toEqual([]);
+		expect(await execution.runBatch([], { cwd: "/root", maxConcurrency: null as unknown as number })).toEqual([]);
+		expect(load).toHaveBeenCalledTimes(2);
+
+		configStore.document = { maxConcurrency: 0, defaultModel: "" };
+		expect(await execution.runBatch([], { cwd: "/root", maxConcurrency: 2 })).toEqual([]);
+		expect(load).toHaveBeenCalledTimes(2);
+		expect(loadAgents).not.toHaveBeenCalled();
+		expect(resolveLaunchBatch).not.toHaveBeenCalled();
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("keeps config-load and Agent-validation error order", async () => {
+		const calls: string[] = [];
+		const registry = memoryRegistry();
+		vi.spyOn(registry, "load").mockImplementation(() => {
+			calls.push("registry");
+			return [];
+		});
+		const configStore = memoryConfigStore();
+		vi.spyOn(configStore, "load").mockImplementation(() => {
+			calls.push("config");
+			throw new Error("invalid full config");
+		});
+		const resolveLaunchBatch = vi.spyOn(configStore, "resolveLaunchBatch");
+		const execute = vi.fn();
+		const execution = createSubagentExecution({
+			registry,
+			config: configStore,
+			childExecution: { execute },
+		});
+
+		await expect(execution.runBatch([{ agent: "missing" }], { cwd: "/root" }))
+			.rejects.toThrow("invalid full config");
+		expect(calls).toEqual(["config"]);
+
+		calls.length = 0;
+		await expect(execution.runBatch([{ agent: "missing" }], { cwd: "/root", maxConcurrency: 1 }))
+			.rejects.toThrow("Unknown subagent: missing. Available: none");
+		expect(calls).toEqual(["registry"]);
+		expect(resolveLaunchBatch).not.toHaveBeenCalled();
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("reuses loaded assignments when stored concurrency falls back to the default", async () => {
+		const configStore = memoryConfigStore({ defaultModel: "openai/old" });
+		const loadConfig = configStore.load.bind(configStore);
+		vi.spyOn(configStore, "load").mockImplementation(() => {
+			const snapshot = loadConfig();
+			configStore.document = { maxConcurrency: 3, defaultModel: "openai/new" };
+			return snapshot;
+		});
+		const execute = vi.fn(async (request: any) => agentResult({ agent: request.agent.name, task: request.task }));
+		const execution = createSubagentExecution({
+			registry: memoryRegistry(),
+			config: configStore,
+			childExecution: { execute },
+		});
+
+		await execution.runBatch([{ agent: "worker", task: "inspect" }], { cwd: "/root" });
+
+		expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+			launch: { model: "openai/old", thinkingLevel: undefined, contextWindow: undefined },
+		}));
 	});
 
 	it("preserves indexed progress and completion callbacks through the compatibility adapter", async () => {
@@ -237,9 +393,12 @@ describe("Subagent execution", () => {
 		const worker = agent();
 		const expectedResult = agentResult();
 		const execute = vi.fn(async () => expectedResult);
+		const configStore = memoryConfigStore({ defaultThinkingLevel: "minimal" });
+		const load = vi.spyOn(configStore, "load");
+		const resolveLaunchBatch = vi.spyOn(configStore, "resolveLaunchBatch");
 		const execution = createSubagentExecution({
 			registry: memoryRegistry([worker]),
-			config: memoryConfigStore({ defaultThinkingLevel: "minimal" }),
+			config: configStore,
 			childExecution: { execute },
 		});
 
@@ -251,6 +410,8 @@ describe("Subagent execution", () => {
 		});
 
 		expect(execute).toHaveBeenCalledTimes(1);
+		expect(load).not.toHaveBeenCalled();
+		expect(resolveLaunchBatch).toHaveBeenCalledTimes(1);
 		expect(execute).toHaveBeenCalledWith(expect.objectContaining({
 			agent: worker,
 			task: "legacy task",

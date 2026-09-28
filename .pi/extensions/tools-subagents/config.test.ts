@@ -890,6 +890,64 @@ describe("subagent config store", () => {
 		}
 	});
 
+	it("uses the loaded config snapshot for assignments after Settings changes", () => {
+		const initial = JSON.stringify({
+			subagents: {
+				maxConcurrency: 1,
+				defaultModel: "openai/old-default",
+				defaultThinkingLevel: "low",
+				defaultContextWindow: 100000,
+				agentModels: { specialist: "anthropic/old-specialist" },
+				agentThinkingLevels: { specialist: "high" },
+				agentContextWindows: { specialist: 65536 },
+			},
+		});
+		const changed = JSON.stringify({
+			subagents: {
+				maxConcurrency: 3,
+				defaultModel: "openai/new-default",
+				defaultThinkingLevel: "medium",
+				defaultContextWindow: 200000,
+				agentModels: { specialist: "anthropic/new-specialist" },
+				agentThinkingLevels: { specialist: "xhigh" },
+				agentContextWindows: { specialist: 131072 },
+			},
+		});
+		const { settingsPath } = configHarness(initial);
+		const store = createSubagentConfigStore({ settingsPath });
+		const reader = vi.mocked(settingsDocument.readSettingsDocument);
+		const originalRead = reader.getMockImplementation()!;
+		reader.mockClear();
+
+		try {
+			const snapshot = store.load();
+			const before = structuredClone(snapshot);
+			writeFileSync(settingsPath, changed);
+
+			expect(store.resolveLaunchBatch([
+				{ agent: agent({ name: "worker" }) },
+				{ agent: agent({ name: "specialist" }) },
+			], snapshot)).toEqual([
+				{ model: "openai/old-default", thinkingLevel: "low", contextWindow: 100000 },
+				{ model: "anthropic/old-specialist", thinkingLevel: "high", contextWindow: 65536 },
+			]);
+			expect(reader).toHaveBeenCalledTimes(1);
+			expect(snapshot).toEqual(before);
+
+			expect(store.resolveLaunchBatch([
+				{ agent: agent({ name: "worker" }) },
+				{ agent: agent({ name: "specialist" }) },
+			])).toEqual([
+				{ model: "openai/new-default", thinkingLevel: "medium", contextWindow: 200000 },
+				{ model: "anthropic/new-specialist", thinkingLevel: "xhigh", contextWindow: 131072 },
+			]);
+			expect(reader).toHaveBeenCalledTimes(2);
+		} finally {
+			reader.mockReset();
+			reader.mockImplementation(originalRead);
+		}
+	});
+
 	it("loads missing and existing namespaces and validates Settings", () => {
 		const { settingsPath } = configHarness();
 		expect(createSubagentConfigStore({ settingsPath }).load()).toEqual({

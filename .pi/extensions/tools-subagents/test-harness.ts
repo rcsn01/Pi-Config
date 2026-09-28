@@ -98,8 +98,8 @@ export function memoryConfigStore(initial: Record<string, unknown> = {}): Memory
 			if (options.edit) document = applySubagentAssignmentEdit(document, options.edit);
 			return resolveSubagentAssignmentSelection({ ...options, config: document, mainModel: activeMainModel });
 		},
-		resolveLaunchBatch(requests) {
-			const document = structuredClone(store.document);
+		resolveLaunchBatch(requests, snapshot) {
+			const document = structuredClone(snapshot ?? store.document);
 			const mainModel = activeMainModel;
 			return requests.map(({ agent, explicitModel, explicitThinkingLevel }) =>
 				resolveSubagentAssignment({

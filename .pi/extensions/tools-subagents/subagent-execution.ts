@@ -10,7 +10,7 @@ import {
 	type SubagentChildExecution,
 	type SubagentChildExecutionRequest,
 } from "./child-execution.ts";
-import { getDefaultSubagentConfig, type SubagentConfigStore } from "./config.ts";
+import { getDefaultSubagentConfig, type ExtensionConfig, type SubagentConfigStore } from "./config.ts";
 import { prepareSubagentLaunches } from "./launch-preparation.ts";
 
 export const DEFAULT_MAX_CONCURRENCY = 4;
@@ -165,7 +165,8 @@ export function createSubagentExecution(
 	const prepare = (
 		requests: readonly RunSubagentOptions[],
 		config = getConfig(),
-	) => prepareSubagentLaunches(requests, { registry, config });
+		configSnapshot?: ExtensionConfig,
+	) => prepareSubagentLaunches(requests, { registry, config, configSnapshot });
 
 	async function runSubagent(options: RunSubagentOptions): Promise<AgentResult> {
 		const [request] = prepare([options]);
@@ -178,9 +179,12 @@ export function createSubagentExecution(
 		compatibility: CompatibilityCallbacks = {},
 	): Promise<AgentResult[]> {
 		const config = getConfig();
+		const configSnapshot = options.maxConcurrency === undefined || options.maxConcurrency === null
+			? config.load()
+			: undefined;
 		const concurrency = Math.max(
 			1,
-			options.maxConcurrency ?? config.load().maxConcurrency ?? DEFAULT_MAX_CONCURRENCY,
+			options.maxConcurrency ?? configSnapshot?.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY,
 		);
 		const liveResults = tasks.map(pendingResult);
 		const latestEvents: Array<SubagentProgressEvent | undefined> = new Array(tasks.length);
@@ -216,7 +220,7 @@ export function createSubagentExecution(
 				await compatibility.onProgress?.(index, event, progress);
 			},
 		}));
-		const preparedRequests = prepare(requests, config);
+		const preparedRequests = prepare(requests, config, configSnapshot);
 
 		return runOrdered(preparedRequests, concurrency, async (request, index) => {
 			liveResults[index] = {

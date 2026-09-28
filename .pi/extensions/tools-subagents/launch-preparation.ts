@@ -2,13 +2,14 @@ import type { AgentConfig, RunSubagentOptions } from "../_shared/subagent-servic
 import type { AgentRegistry } from "./agent-registry.ts";
 import { deriveSubagentSessionId } from "./cache-affinity.ts";
 import type { SubagentChildExecutionRequest } from "./child-execution.ts";
-import { resolveSubagentAgent, type SubagentConfigStore } from "./config.ts";
+import { resolveSubagentAgent, type ExtensionConfig, type SubagentConfigStore } from "./config.ts";
 
 export function prepareSubagentLaunches(
 	requests: readonly RunSubagentOptions[],
 	dependencies: {
 		registry: Pick<AgentRegistry, "load">;
 		config: Pick<SubagentConfigStore, "resolveLaunchBatch">;
+		configSnapshot?: ExtensionConfig;
 	},
 ): readonly SubagentChildExecutionRequest[] {
 	if (requests.length === 0) return [];
@@ -23,7 +24,7 @@ export function prepareSubagentLaunches(
 		agent: agents[index],
 		explicitModel: request.model,
 		explicitThinkingLevel: request.thinkingLevel,
-	})));
+	})), dependencies.configSnapshot);
 
 	return requests.map((request, index) => {
 		const agent = agents[index];

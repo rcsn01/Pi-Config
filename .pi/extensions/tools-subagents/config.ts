@@ -137,7 +137,10 @@ export interface SubagentConfigStore {
 	resolveMainModel(): string;
 	resolveAssignment(agent: AgentConfig, options?: ResolveStoredAssignmentOptions): ResolvedSubagentAssignment;
 	resolveAssignmentSelection(options: ResolveStoredAssignmentSelectionOptions): ResolvedSubagentAssignmentSelection;
-	resolveLaunchBatch(requests: readonly ResolveLaunchBatchRequest[]): readonly ResolvedLaunchConfiguration[];
+	resolveLaunchBatch(
+		requests: readonly ResolveLaunchBatchRequest[],
+		snapshot?: ExtensionConfig,
+	): readonly ResolvedLaunchConfiguration[];
 	setSettingsPath(path: string): void;
 	migrateLegacy(): Promise<boolean>;
 }
@@ -623,9 +626,10 @@ export function createSubagentConfigStore(options: SubagentConfigStoreOptions = 
 	};
 	const resolveLaunchBatch = (
 		requests: readonly ResolveLaunchBatchRequest[],
+		snapshot?: ExtensionConfig,
 	): readonly ResolvedLaunchConfiguration[] => {
 		const mainModel = activeMainModel;
-		const config = parseModelConfiguration(readSettingsNamespace());
+		const config: ModelConfiguration = snapshot ?? parseModelConfiguration(readSettingsNamespace());
 		return requests.map(({ agent, explicitModel, explicitThinkingLevel }) =>
 			resolveParsedSubagentAssignment({
 				agentName: agent.name,

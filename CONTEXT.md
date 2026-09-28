@@ -392,9 +392,10 @@ extension.
   target-aware current model and thinking choices shown for `all` or one agent
   including legacy direct-model suffix interpretation, semantic model and thinking
   changes, Profile-aware `subagents` namespace persistence, legacy fallback and
-  migration, preview resolution, and batch launch resolution from one effective
-  Settings/legacy namespace and Main-model snapshot; full config loads, not batch
-  assignment resolution, validate `maxConcurrency`. It also owns the assignment edit
+  migration, preview resolution, and batch launch resolution. It uses the parsed
+  `ExtensionConfig` snapshot supplied by execution or reads one effective
+  Settings/legacy namespace, and captures Main once per batch. Only full config
+  loads validate `maxConcurrency`. It also owns the assignment edit
   vocabulary parsed from raw settings (`inherit`, `default`, `main|provider/model[:thinking]`),
   the picker-facing current-selection meaning (model picker value, the explicitly stored
   setting, and the pending-model thinking value, resolved together with the pending preview),
@@ -409,9 +410,11 @@ extension.
 - **Subagent launch preparation** — the deep in-process module that turns raw single
   or parallel Subagent requests into prepared child launches. It owns one registry
   snapshot, whole-request-set agent validation, task normalization, one ordered batch
-  of model and thinking resolution, and cache-affinity identity derivation; changes to
-  assignment files after its batch view is read apply on the next call. Scheduling and
-  child process lifetime stay outside. Named-request resolution delegates to the Subagent
+  of model and thinking resolution, and cache-affinity identity derivation. It forwards
+  an optional parsed config snapshot without interpreting it. The assignment resolver
+  uses that snapshot or reads one effective Settings/legacy namespace; edits after that
+  view is created apply on the next call. Scheduling and child process lifetime stay outside.
+  Named-request resolution delegates to the Subagent
   assignment resolution module's canonical roster lookup, so one unknown-agent error
   format is shared with the registry and the `/subagents` command adapter.
 - **Subagent result status** — the authoritative `AgentProgress.status` meaning
@@ -449,9 +452,16 @@ extension.
   through Subagent launch preparation, configured or caller-selected concurrency,
   ordered results, immutable task-state snapshots, and repair of a missing
   terminal event when prepared child execution rejects — preserving progress-
-  consumer and execution error identity instead of masking them. Without an explicit
-  concurrency override, `runBatch()` keeps its separate Settings load before launch
-  preparation; an override skips that load. Direct one-task calls preserve native
+  consumer and execution error identity instead of masking them. When the caller's
+  concurrency override is nullish, `executeBatch()` loads full config once and reuses
+  that parsed snapshot for concurrency selection and every launch assignment, even if
+  missing `maxConcurrency` makes concurrency fall back to the default. A non-nullish
+  override skips that `executeBatch()` load and its `maxConcurrency` validation; a
+  non-empty assignment batch then reads one effective Settings/legacy view. Empty
+  preparation reads neither registry nor assignments. `runSubagent()` makes no
+  concurrency load. Extension session initialization still loads full config and can
+  reject invalid settings before a tool call. These are in-process snapshots, not a
+  filesystem lock or a cross-process transaction. Direct one-task calls preserve native
   progress callbacks; the Pi invocation adapter uses the batch snapshot path. Child
   process lifetime stays behind the Subagent child execution seam.
 - **Repo query batch** — the read-only batched evidence tool (`repo_query`) behind

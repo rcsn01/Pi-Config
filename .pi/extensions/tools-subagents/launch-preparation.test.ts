@@ -37,7 +37,7 @@ describe("subagent launch preparation", () => {
 
 		expect(load).toHaveBeenCalledTimes(1);
 		expect(resolveLaunchBatch).toHaveBeenCalledTimes(1);
-		expect(resolveLaunchBatch).toHaveBeenCalledWith([
+		expect(resolveLaunchBatch.mock.calls[0]?.[0]).toEqual([
 			{ agent: worker, explicitModel: "openai/resolved", explicitThinkingLevel: "high" },
 			{ agent: direct, explicitModel: undefined, explicitThinkingLevel: undefined },
 			{ agent: empty, explicitModel: undefined, explicitThinkingLevel: undefined },
@@ -66,6 +66,42 @@ describe("subagent launch preparation", () => {
 			expect(request).not.toHaveProperty("prompt");
 			expect(request).not.toHaveProperty("cacheAffinitySeed");
 		}
+	});
+
+	it("uses one supplied config snapshot for every prepared launch", () => {
+		const worker = agent({ name: "worker" });
+		const specialist = agent({ name: "specialist" });
+		const registry = memoryRegistry([worker, specialist]);
+		const config = memoryConfigStore({
+			defaultModel: "openai/old-default",
+			defaultThinkingLevel: "low",
+			defaultContextWindow: 100000,
+			agentModels: { specialist: "anthropic/old-specialist" },
+		});
+		const configSnapshot = config.load();
+		const resolveLaunchBatch = vi.spyOn(config, "resolveLaunchBatch");
+		config.document = {
+			defaultModel: "openai/new-default",
+			defaultThinkingLevel: "high",
+			defaultContextWindow: 200000,
+			agentModels: { specialist: "anthropic/new-specialist" },
+		};
+
+		const prepared = prepareSubagentLaunches([
+			{ agent: "worker", task: "one", cwd: "/root" },
+			{ agent: "specialist", task: "two", cwd: "/root" },
+		], { registry, config, configSnapshot });
+
+		expect(prepared.map(({ launch }) => launch)).toEqual([
+			{ model: "openai/old-default", thinkingLevel: "low", contextWindow: 100000 },
+			{ model: "anthropic/old-specialist", thinkingLevel: "low", contextWindow: 100000 },
+		]);
+		expect(resolveLaunchBatch).toHaveBeenCalledTimes(1);
+		expect(resolveLaunchBatch.mock.calls[0]?.[0]).toEqual([
+			{ agent: worker, explicitModel: undefined, explicitThinkingLevel: undefined },
+			{ agent: specialist, explicitModel: undefined, explicitThinkingLevel: undefined },
+		]);
+		expect(resolveLaunchBatch.mock.calls[0]?.[1]).toBe(configSnapshot);
 	});
 
 	it("validates every named agent before resolving the batch", () => {
