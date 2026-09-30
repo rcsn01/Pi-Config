@@ -92,7 +92,7 @@ describe("Guardian runner profile configuration", () => {
 		writeFileSync(guardianPath, "---\n---\nReview safely.\n");
 
 		const request: GuardianReviewRequest = {
-			conversation: { messages: [], omittedEarlierUserTurns: 0, truncated: false },
+			conversation: { messages: [], askUserInteractions: [], omittedEarlierUserTurns: 0, truncated: false },
 			action: {
 				title: "Command Review",
 				description: "Command: example",

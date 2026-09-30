@@ -48,6 +48,26 @@ function assistantMessage(text: string) {
 	};
 }
 
+function assistantToolCalls(...calls: Array<{ id: string; name: string; arguments: unknown }>) {
+	return {
+		...assistantMessage(""),
+		content: calls.map((call) => ({ type: "toolCall", ...call })),
+		stopReason: "toolUse",
+	};
+}
+
+function toolResultMessage(toolCallId: string, details: unknown) {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName: "ask_user",
+		details,
+		isError: false,
+		content: [{ type: "text", text: "tool summary" }],
+		timestamp: 3,
+	};
+}
+
 function createHarness(options: {
 	settingsPath?: string;
 	branch?: any[];
@@ -398,6 +418,115 @@ describe("auto-review verdict wiring", () => {
 			triggers: ["external-write"],
 		});
 		expect(JSON.stringify(request)).not.toContain("I claim this is authorized");
+	});
+
+	it("passes a completed ask_user result after the newest user message to Guardian", async () => {
+		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe" });
+		const question = {
+			id: "target",
+			question: "Where should the report be written?",
+			options: [
+				{ label: "project", description: "inside the repository" },
+				{ label: "temporary", description: "in a private temporary directory" },
+				{ label: "external", description: "outside the repository" },
+			],
+		};
+		const details = {
+			answers: [{ id: question.id, question: question.question, answer: "project", index: 1, notes: "Keep it in the repository." }],
+			cancelled: false,
+		};
+		const harness = createHarness({ contextEntries: [
+			messageEntry("u1", userMessage("Write a report.")),
+			messageEntry("ask", assistantToolCalls({
+				id: "opaque-ask-id",
+				name: "ask_user",
+				arguments: { questions: [question] },
+			}), "u1"),
+			messageEntry("unrelated", toolResultMessage("unrelated-id", details), "ask"),
+			messageEntry("answer", toolResultMessage("opaque-ask-id", details), "ask"),
+			messageEntry("review", assistantToolCalls({
+				id: "write-call",
+				name: "write",
+				arguments: { path: "/tmp/report.html", content: "report" },
+			}), "answer"),
+		] });
+		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+
+		await harness.handlers.get("tool_call")?.(
+			{ toolName: "write", input: { path: "/tmp/report.html", content: "report" } },
+			harness.ctx,
+		);
+
+		const request = mocked.runAutoReviewer.mock.calls[0]![0] as GuardianReviewRequest;
+		expect(request.conversation.askUserInteractions).toEqual([{
+			questions: [question],
+			answers: [{ id: question.id, question: question.question, answer: "project", index: 1, notes: "Keep it in the repository." }],
+			outcome: "completed",
+		}]);
+		expect(request.conversation.messages).toEqual([{ role: "user", text: "Write a report.", truncated: false }]);
+		expect(JSON.stringify(request)).not.toContain("opaque-ask-id");
+	});
+
+	it("passes an earlier ask_user call from the same assistant message once its result is present", async () => {
+		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe" });
+		const question = {
+			id: "target",
+			question: "Where should the report be written?",
+			options: [{ label: "project" }, { label: "temporary" }, { label: "external" }],
+		};
+		const details = {
+			answers: [{ id: question.id, question: question.question, answer: "temporary", index: 2 }],
+			cancelled: false,
+		};
+		const harness = createHarness({ contextEntries: [
+			messageEntry("u1", userMessage("Write a report.")),
+			messageEntry("assistant", assistantToolCalls(
+				{ id: "ask-first", name: "ask_user", arguments: { questions: [question] } },
+				{ id: "review-second", name: "write", arguments: { path: "/tmp/report.html", content: "report" } },
+			), "u1"),
+			messageEntry("answer", toolResultMessage("ask-first", details), "assistant"),
+		] });
+		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+
+		await harness.handlers.get("tool_call")?.(
+			{ toolName: "write", input: { path: "/tmp/report.html", content: "report" } },
+			harness.ctx,
+		);
+
+		const request = mocked.runAutoReviewer.mock.calls[0]![0] as GuardianReviewRequest;
+		expect(request.conversation.askUserInteractions).toEqual([{
+			questions: [question],
+			answers: [{ id: question.id, question: question.question, answer: "temporary", index: 2 }],
+			outcome: "completed",
+		}]);
+	});
+
+	it("does not include a still-pending ask_user call in the reviewed request", async () => {
+		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe" });
+		const question = {
+			id: "target",
+			question: "Where should the report be written?",
+			options: [{ label: "project" }, { label: "temporary" }, { label: "external" }],
+		};
+		const harness = createHarness({ contextEntries: [
+			messageEntry("u1", userMessage("Write a report.")),
+			messageEntry("assistant", assistantToolCalls(
+				{ id: "pending-ask", name: "ask_user", arguments: { questions: [question] } },
+				{ id: "write-call", name: "write", arguments: { path: "/tmp/report.html", content: "report" } },
+			), "u1"),
+		] });
+		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
+
+		await harness.handlers.get("tool_call")?.(
+			{ toolName: "write", input: { path: "/tmp/report.html", content: "report" } },
+			harness.ctx,
+		);
+
+		const request = mocked.runAutoReviewer.mock.calls[0]![0] as GuardianReviewRequest;
+		expect(request.conversation.askUserInteractions).toEqual([]);
 	});
 
 	it("records an explicitly invoked Skill as separate authorization provenance", async () => {

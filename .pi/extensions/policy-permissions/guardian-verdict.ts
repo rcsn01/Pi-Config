@@ -78,9 +78,10 @@ export const guardianClassificationToolContract = {
 /** Compose the task prompt: untrusted-evidence framing, then the proposed action. */
 export function composeGuardianTask(request: GuardianReviewRequest): string {
 	const evidence = {
-		schema_version: 2,
+		schema_version: 3,
 		conversation: {
 			messages: request.conversation.messages,
+			askUserInteractions: request.conversation.askUserInteractions,
 			omitted_earlier_user_turns: request.conversation.omittedEarlierUserTurns,
 			truncated: request.conversation.truncated,
 		},

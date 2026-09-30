@@ -110,7 +110,7 @@ function fakeSession(plan: FakeSessionPlan = {}) {
 
 function makeReviewRequest(title: string, description: string): GuardianReviewRequest {
 	return {
-		conversation: { messages: [], omittedEarlierUserTurns: 0, truncated: false },
+		conversation: { messages: [], askUserInteractions: [], omittedEarlierUserTurns: 0, truncated: false },
 		action: { title, description, descriptionTruncated: false, triggers: ["dangerous"] },
 	};
 }

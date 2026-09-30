@@ -38,7 +38,7 @@ describe("Guardian review adapter", () => {
 		} as any;
 
 		const request: GuardianReviewRequest = {
-			conversation: { messages: [], omittedEarlierUserTurns: 0, truncated: false },
+			conversation: { messages: [], askUserInteractions: [], omittedEarlierUserTurns: 0, truncated: false },
 			action: {
 				title: "Read file",
 				description: "evaluation context",
@@ -70,7 +70,7 @@ describe("Guardian review adapter", () => {
 			},
 		} as any;
 		const request: GuardianReviewRequest = {
-			conversation: { messages: [], omittedEarlierUserTurns: 0, truncated: false },
+			conversation: { messages: [], askUserInteractions: [], omittedEarlierUserTurns: 0, truncated: false },
 			action: {
 				title: "Command",
 				description: "context",
