@@ -197,18 +197,19 @@ function installSafetyPermissions(
 
 	// ── Custom rendering for auto-review verdict entries ──────────────
 
-	pi.registerEntryRenderer("auto-review-verdict", (entry, options, theme) => {
+	pi.registerEntryRenderer("auto-review-verdict", (entry, _options, theme) => {
 		const data = entry.data as { allowed?: boolean; title?: string; reason?: string; triggers?: string[] } | undefined;
 		const allowed = data?.allowed === true;
 		const title = data?.title ?? "Command Review";
 		const triggers = data?.triggers?.length ? `Triggers: ${data.triggers.join(", ")}` : undefined;
+		const reason = data?.reason ?? "No review reason provided.";
+		const classified = /^risk: (low|medium|high|critical) \| auth: (low|medium|high) \| /i.test(reason);
 		return renderTranscriptCard(theme, {
 			title,
 			state: allowed ? "success" : "error",
-			body: data?.reason ?? "No review reason provided.",
-			summary: `${allowed ? "Allowed" : "Denied"} · ${title} · expand to view`,
+			body: classified ? reason : `${reason}\n\nGuardian classification unavailable. Risk and authorization were not assessed.`,
 			metadata: triggers ? [triggers] : undefined,
-			expanded: Boolean(options?.expanded),
+			expanded: true,
 		});
 	});
 

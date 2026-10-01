@@ -9,7 +9,7 @@ import {
 import type { GuardianAskUserInteraction, GuardianReviewRequest } from "./guardian-evidence.ts";
 
 const INVALID_REASON = "Guardian returned invalid classification; blocked for safety.";
-const NO_RESPONSE_REASON = "Guardian returned no response; blocked for safety.";
+const NO_RESPONSE_REASON = "Guardian returned no response; blocked for safety. (assistant messages: 0, stop: unknown, content types: none)";
 
 function classification(
 	risk_level = "low",
@@ -111,6 +111,21 @@ describe("settleGuardianResponse protocol matrix", () => {
 		expect(result).toEqual({ allowed: false, reason: INVALID_REASON });
 	});
 
+	it.each([
+		["HTTP 401: token rejected", "authentication"],
+		["HTTP 404: model unavailable", "model unavailable"],
+		["HTTP 429: quota exceeded", "rate limit"],
+		["HTTP 400: invalid tool schema", "request rejected"],
+		["unexpected provider failure with secret-token-123", "provider error"],
+	])("classifies provider failure without exposing its raw message: %s", (errorMessage, category) => {
+		const result = settleGuardianResponse([{ ...assistant([], "error"), errorMessage }]);
+		expect(result).toEqual({
+			allowed: false,
+			reason: `Guardian returned no response; blocked for safety. (assistant messages: 1, stop: error, content types: none, error: ${category})`,
+		});
+		expect(result.reason).not.toContain(errorMessage);
+	});
+
 	it("falls back to the exact whole-response JSON when no tool call is available", () => {
 		const result = settleGuardianResponse([assistant(classification("low", "high", false, "safe read"))]);
 
@@ -136,7 +151,7 @@ describe("settleGuardianResponse protocol matrix", () => {
 	});
 
 	it("fails closed on a textless transcript", () => {
-		expect(settleGuardianResponse([assistant([])])).toEqual({ allowed: false, reason: NO_RESPONSE_REASON });
+		expect(settleGuardianResponse([assistant([])])).toEqual({ allowed: false, reason: "Guardian returned no response; blocked for safety. (assistant messages: 1, stop: unknown, content types: none)" });
 	});
 });
 

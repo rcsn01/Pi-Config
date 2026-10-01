@@ -250,13 +250,13 @@ describe("runAutoReviewer decision matrix", () => {
 		const empty = await review({ text: "" }).promise;
 		expect(empty).toMatchObject({
 			allowed: false,
-			reason: "Guardian returned no response; blocked for safety.",
+			reason: expect.stringContaining("Guardian returned no response; blocked for safety. (assistant messages:"),
 		});
 
 		const silent = await review({}).promise;
 		expect(silent).toMatchObject({
 			allowed: false,
-			reason: "Guardian returned no response; blocked for safety.",
+			reason: expect.stringContaining("Guardian returned no response; blocked for safety. (assistant messages:"),
 		});
 
 		const invalid = await review({ text: "I am not sure what to do here." }).promise;

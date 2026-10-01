@@ -31,6 +31,7 @@ export interface GuardianTranscriptMessage {
 	role: string;
 	content?: string | readonly GuardianTranscriptPart[];
 	stopReason?: string;
+	errorMessage?: string;
 	toolCallId?: string;
 	isError?: boolean;
 }
@@ -216,7 +217,24 @@ export function settleGuardianResponse(
 	}
 	const content = lastAssistantText(messages);
 	if (!content.trim()) {
-		return { allowed: false, reason: "Guardian returned no response; blocked for safety." };
+		const assistantMessages = messages.filter((message) => message.role === "assistant");
+		const last = assistantMessages[assistantMessages.length - 1];
+		const stopReason = last?.stopReason && ["stop", "length", "error", "aborted", "toolUse"].includes(last.stopReason)
+			? last.stopReason : "unknown";
+		const error = last?.stopReason === "error" && last.errorMessage
+			? /\b(401|403|unauthori[sz]ed|forbidden|authentication|credential)\b/i.test(last.errorMessage) ? "authentication"
+				: /\b(404|model not found|unknown model|unsupported model)\b/i.test(last.errorMessage) ? "model unavailable"
+				: /\b(429|rate limit|quota)\b/i.test(last.errorMessage) ? "rate limit"
+				: /\b(400|invalid request|invalid.*tool|tool.*unsupported)\b/i.test(last.errorMessage) ? "request rejected"
+				: "provider error"
+			: undefined;
+		const parts = Array.isArray(last?.content)
+			? [...new Set(last.content.map((part) => part.type === "thinking" ? "thinking" : part.type === "text" ? "text" : "other"))].join(",") || "none"
+			: "none";
+		return {
+			allowed: false,
+			reason: `Guardian returned no response; blocked for safety. (assistant messages: ${assistantMessages.length}, stop: ${stopReason}, content types: ${parts}${error ? `, error: ${error}` : ""})`,
+		};
 	}
 	const classification = parseGuardianVerdict(content);
 	if (classification === "unclear") {

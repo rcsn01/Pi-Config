@@ -608,6 +608,27 @@ describe("auto-review verdict wiring", () => {
 		expect(harness.ctx.ui.confirm.mock.calls[0]?.[1]).not.toContain(appendError.message);
 	});
 
+	it.each([
+		["classified denial", "risk: high | auth: low | push was not authorized", "risk: high | auth: low | push was not authorized"],
+		["classified approval", "risk: high | auth: high | release requested", "risk: high | auth: high | release requested"],
+		["empty response", "Guardian returned no response; blocked for safety.", "Guardian classification unavailable. Risk and authorization were not assessed."],
+	])("shows %s without expanding", (_case, reason, detail) => {
+		const renderer = createHarness().renderers.get("auto-review-verdict")!;
+		const entry = { data: { allowed: _case === "classified approval", title: "Command Review", reason } };
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+			italic: (text: string) => text,
+			strikethrough: (text: string) => text,
+			underline: (text: string) => text,
+		};
+		const output = renderer(entry, { expanded: false }, theme).render(160).join("\n");
+		expect(output).toContain(reason);
+		expect(output).toContain(detail);
+		expect(output).not.toContain("expand to view");
+	});
+
 	it("renders triggers on the verdict entry", () => {
 		const harness = createHarness();
 		const renderer = harness.renderers.get("auto-review-verdict");
