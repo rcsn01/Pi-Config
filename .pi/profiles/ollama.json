@@ -3,7 +3,7 @@
     "profiles": {
       "normal": {
         "provider": "ollama-cloud",
-        "modelId": "glm-5.3",
+        "modelId": "glm-5.3-flash",
         "thinkingLevel": "max",
         "contextWindow": 262144
       },

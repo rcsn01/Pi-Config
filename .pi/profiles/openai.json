@@ -2,16 +2,16 @@
   "uiModelSelector": {
     "profiles": {
       "normal": {
-        "provider": "openai-codex",
+        "provider": "openai",
         "modelId": "gpt-6.1-sol",
-        "thinkingLevel": "low",
+        "thinkingLevel": "medium",
         "contextWindow": 272000
       },
       "plan": {
-        "provider": "github-copilot",
-        "modelId": "gpt-6-astra",
-        "thinkingLevel": "low",
-        "contextWindow": 262500
+        "provider": "openai",
+        "modelId": "gpt-6.1-sol",
+        "thinkingLevel": "high",
+        "contextWindow": 272000
       }
     }
   },
@@ -21,7 +21,7 @@
   },
   "subagents": {
     "maxConcurrency": 4,
-    "defaultModel": "openai-codex/gpt-6-luna",
+    "defaultModel": "openai/gpt-6-luna",
     "agentModels": {},
     "defaultThinkingLevel": "max",
     "agentThinkingLevels": {},
@@ -44,7 +44,7 @@
     "maxTokens": 32768
   },
   "guardian": {
-    "provider": "openai-codex",
+    "provider": "openai",
     "modelId": "gpt-6-luna",
     "thinkingLevel": "high",
     "contextWindow": 272000
