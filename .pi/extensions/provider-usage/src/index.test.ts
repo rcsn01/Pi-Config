@@ -63,6 +63,7 @@ function harness(options: {
 	inspection?: CodexCredentialSlotInspection;
 	inspectionOllama?: OllamaAuthInspection;
 	now?: () => Date;
+	currentOpenaiOAuth?: boolean;
 } = {}) {
 	const commands = new Map<string, any>();
 	const tools = new Map<string, any>();
@@ -100,7 +101,13 @@ function harness(options: {
 		probeOllama,
 		inspectOllama,
 		notify,
-		ctx: { signal: controller.signal, mode: "rpc", hasUI: true, ui: { notify } },
+		ctx: {
+			signal: controller.signal, mode: "rpc", hasUI: true, ui: { notify },
+			modelRegistry: {
+				getAll: vi.fn(() => [{ provider: "openai", id: "test-model" }]),
+				isUsingOAuth: vi.fn(() => options.currentOpenaiOAuth ?? false),
+			},
+		},
 	};
 }
 
@@ -108,7 +115,81 @@ function harness(options: {
 // clock to that instant so cache-freshness assertions are deterministic.
 const FIXTURE_NOW = () => new Date("2026-08-17T12:00:00.000Z");
 
+const missingOllamaInspection: OllamaAuthInspection = {
+	state: "missing", path: "/home/user/.ollama/id_ed25519", fileFound: false,
+	message: "The Ollama key was not found.",
+};
+
 describe("/usage (unified)", () => {
+	it.each(["", "refresh", "probe", "auth status"])("omits missing Ollama for combined /usage %s", async (args) => {
+		const h = harness({ inspectionOllama: missingOllamaInspection });
+		await h.command.handler(args, h.ctx);
+		expect(h.inspectOllama).toHaveBeenCalledOnce();
+		expect(h.probeOllama).not.toHaveBeenCalled();
+		expect(h.notify).toHaveBeenCalledOnce();
+		expect(h.notify.mock.calls[0][0]).not.toContain("Ollama");
+		expect(h.notify.mock.calls[0][0]).toContain("Codex");
+	});
+
+	it.each(["codex", "codex refresh", "codex probe", "codex auth status", "", "probe", "auth status"])("recognizes current OpenAI OAuth for /usage %s without probing legacy slots", async (args) => {
+		const h = harness({ currentOpenaiOAuth: true, inspectionOllama: missingOllamaInspection });
+		await h.command.handler(args, h.ctx);
+		expect(h.codex.inspect).not.toHaveBeenCalled();
+		expect(h.codexQuery).not.toHaveBeenCalled();
+		const [text] = h.notify.mock.calls[0];
+		expect(text).toContain("Sign in with ChatGPT");
+		expect(text).not.toContain("/login openai-codex");
+		expect(text).not.toContain("Slot:");
+		if (!args.includes("auth")) {
+			expect(text).toContain("Quota data is not available");
+			expect(text).toContain("https://chatgpt.com/settings/usage");
+		}
+	});
+
+	it("shows current ChatGPT authentication alongside configured Ollama", async () => {
+		const h = harness({ currentOpenaiOAuth: true });
+		await h.command.handler("", h.ctx);
+		expect(h.codexQuery).not.toHaveBeenCalled();
+		expect(h.probeOllama).toHaveBeenCalledOnce();
+		expect(h.notify.mock.calls[0][0]).toContain("ChatGPT subscription · OpenAI");
+		expect(h.notify.mock.calls[0][0]).toContain("Ollama Cloud");
+	});
+
+	it("rechecks current login metadata rather than caching the authentication choice", async () => {
+		const h = harness({ currentOpenaiOAuth: true, inspectionOllama: missingOllamaInspection });
+		await h.command.handler("codex", h.ctx);
+		expect(h.codexQuery).not.toHaveBeenCalled();
+		h.ctx.modelRegistry.isUsingOAuth.mockReturnValue(false);
+		await h.command.handler("codex", h.ctx);
+		expect(h.codexQuery).toHaveBeenCalledOnce();
+		expect(h.notify.mock.calls[1][0]).toContain("Slot: default");
+	});
+
+	it("retains explicit missing-Ollama diagnostics", async () => {
+		const h = harness({ inspectionOllama: missingOllamaInspection });
+		await h.command.handler("ollama auth status", h.ctx);
+		expect(h.notify).toHaveBeenCalledWith(expect.stringContaining("Key file: not found"), "warning");
+	});
+
+	it("does not reuse cached Ollama output after its key is removed", async () => {
+		const h = harness();
+		await h.command.handler("", h.ctx);
+		h.inspectOllama.mockResolvedValue(missingOllamaInspection);
+		await h.command.handler("", h.ctx);
+		expect(h.probeOllama).toHaveBeenCalledOnce();
+		expect(h.notify.mock.calls[1][0]).not.toContain("Ollama");
+	});
+
+	it("keeps errors visible when an Ollama key exists but is invalid", async () => {
+		const h = harness({
+			inspectionOllama: { state: "invalid", path: missingOllamaInspection.path, fileFound: true, message: "Invalid Ollama key." },
+			probeOllamaResult: { state: "auth-required", message: "Invalid Ollama key." },
+		});
+		await h.command.handler("", h.ctx);
+		expect(h.probeOllama).toHaveBeenCalledOnce();
+		expect(h.notify.mock.calls[0][0]).toContain("Ollama Cloud: Invalid Ollama key.");
+	});
+
 	it("shows both providers on a plain /usage", async () => {
 		const { command, codexNetwork, probeOllama, notify, ctx } = harness({
 			now: () => new Date(2026, 7, 17, 21, 20),

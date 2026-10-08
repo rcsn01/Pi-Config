@@ -9,7 +9,9 @@ A minimal extension that shows your usage limits in one place through `/usage`:
 
 Each provider uses its existing local credential. Pi Codex request headers are exposed only to the in-memory usage callback; normalized usage snapshots are cached by an opaque account hash. Tokens, account IDs, headers, response bodies, and key material are never rendered or stored by this extension.
 
-**Codex** uses Pi's `~/.pi/agent/auth.json` (or `$PI_CODING_AGENT_DIR/auth.json`) and the named slots managed by `provider-codex`. `/usage codex` resolves every saved slot with Pi's native `openai-codex` OAuth provider, including refresh and rotated-token writeback, without switching the active slot. Empty, invalid, expired, and failed slots remain visible with a safe per-slot message. Select a slot and sign in with:
+**Current ChatGPT login** is recognized through Pi's runtime authentication metadata for `openai`, regardless of the selected model. When this OAuth login exists, `/usage` and `/usage codex` show it instead of checking legacy slots or requesting `/login openai-codex`. The new login does not have a documented quota-read API in the sources reviewed. The output says that numeric quota is unavailable through this integration and links to [ChatGPT usage settings](https://chatgpt.com/settings/usage). `probe` does not send this API-scoped token to the legacy backend. See `.pi/docs/chatgpt-subscription-usage-research.md` for the primary-source findings.
+
+**Legacy Codex** uses Pi's `~/.pi/agent/auth.json` (or `$PI_CODING_AGENT_DIR/auth.json`) and the named slots managed by `provider-codex` when no current `openai` OAuth login is in use. `/usage codex` then resolves every saved slot with Pi's native `openai-codex` OAuth provider, including refresh and rotated-token writeback, without switching the active slot. Empty, invalid, expired, and failed slots remain visible with a safe per-slot message. For legacy slots only, select a slot and sign in with:
 
 ```text
 /codex use <name>
@@ -29,15 +31,26 @@ Run:
 ## Usage
 
 ```text
-/usage               # show both providers (cached if fresh (<15 min), else fetch)
-/usage refresh       # always fetch both from their providers
-/usage probe         # single-endpoint contract check for both (diagnostic if contracts drift)
-/usage auth status   # inspect both credential files (no network)
+/usage               # show ChatGPT and Ollama when its key exists; reuse fresh quota caches
+/usage refresh       # refresh available quota data
+/usage probe         # check supported quota endpoints; report the current login's limitation
+/usage auth status   # inspect authentication; omit missing Ollama (no network)
 /usage codex [...]   # limit any action to ChatGPT Codex
 /usage ollama [...]  # limit any action to Ollama Cloud
 ```
 
-Plain `/usage` shows every Codex slot and the Ollama block; a failing slot or provider is reported inline instead of hiding healthy results:
+Plain `/usage` omits Ollama when `~/.ollama/id_ed25519` is missing. This also applies to combined `refresh`, `probe`, and `auth status` commands. An existing but invalid or unreadable key remains visible for diagnosis. Explicit `/usage ollama` commands retain missing-key diagnostics.
+
+With a current ChatGPT login, the ChatGPT block is:
+
+```text
+ChatGPT subscription · OpenAI
+Authentication: Sign in with ChatGPT (/login openai)
+Quota data is not available through this integration for the current login.
+Manage usage: https://chatgpt.com/settings/usage
+```
+
+With legacy credentials, `/usage` shows every Codex slot and, when its key exists, the Ollama block. A failing slot or provider is reported inline instead of hiding healthy results:
 
 ```text
 ChatGPT Codex · Slot: default (active) · Plan: Pro

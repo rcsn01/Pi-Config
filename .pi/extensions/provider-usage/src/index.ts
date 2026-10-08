@@ -4,7 +4,6 @@ import {
 	CodexSlotUsageClient,
 	formatCodexAuthStatus,
 	formatCodexProbeResults,
-	type CodexSlotQuotaBatch,
 	type CodexSlotUsageClientLike,
 } from "./codex-slots.ts";
 import { isStale } from "./probe.ts";
@@ -76,136 +75,107 @@ export function createSubscriptionUsageExtension(options: {
 } = {}) {
 	return function subscriptionUsageExtension(pi: ExtensionAPI): void {
 		const now = options.now ?? (() => new Date());
-		const codex = options.codex ?? new CodexSlotUsageClient({ now });
+		// The current login needs only runtime metadata. Do not open or initialize
+		// the legacy credential store unless a legacy action is actually requested.
+		let codex = options.codex;
+		const legacyCodex = () => codex ??= new CodexSlotUsageClient({ now });
 		const probeOllama = options.probeOllama ?? probeUsage;
 		const inspectOllama = options.inspectOllama ?? inspectOllamaAuth;
 		let latestOllama: UsageSnapshot | undefined;
 
-		const fetchCodex = async (force: boolean, signal?: AbortSignal): Promise<CodexSlotQuotaBatch> =>
-			codex.query({ cache: force ? "refresh" : "prefer", signal });
-
-		const fetchOllama = async (force: boolean, signal?: AbortSignal): Promise<UsageSnapshot> => {
-			if (!force && latestOllama && !isStale(latestOllama.fetchedAt, now())) return latestOllama;
-			const result = await probeOllama({ signal });
-			if (result.state !== "ok") throw new Error(result.message);
-			latestOllama = result.snapshot;
-			return latestOllama;
-		};
-
-		const runAuthStatus = async (provider: Provider, ctx: ExtensionCommandContext): Promise<void> => {
-			if (provider === "codex") {
-				try {
-					const inspection = codex.inspect();
-					const hasCredential = inspection.slots.some((slot) => slot.hasCredential);
-					ctx.ui.notify(formatCodexAuthStatus(inspection), hasCredential ? "info" : "warning");
-				} catch (error) {
-					ctx.ui.notify(safeCodexError(error), "warning");
-				}
-				return;
+		const readCodex = async (
+			ctx: ExtensionCommandContext,
+			action: string,
+			captured: Date,
+		): Promise<{ ok: boolean; text: string }> => {
+			const openaiModel = ctx.modelRegistry.getAll().find((model) => model.provider === "openai");
+			if (openaiModel && ctx.modelRegistry.isUsingOAuth(openaiModel)) {
+				// SIWC tokens target api.openai.com and contain opaque auth metadata,
+				// not the account ID required by the legacy backend-api quota probe.
+				return {
+					ok: true,
+					text: [
+						"ChatGPT subscription · OpenAI",
+						"Authentication: Sign in with ChatGPT (/login openai)",
+						"Quota data is not available through this integration for the current login.",
+						"Manage usage: https://chatgpt.com/settings/usage",
+					].join("\n"),
+				};
 			}
-			if (provider === "ollama") {
-				const status = await inspectOllama();
-				ctx.ui.notify(formatOllamaAuthStatus(status), status.state === "ready" ? "info" : "warning");
-				return;
-			}
-
-			let codexText: string;
-			let codexReady = false;
 			try {
-				const inspection = codex.inspect();
-				codexText = formatCodexAuthStatus(inspection);
-				codexReady = inspection.slots.some((slot) => slot.hasCredential);
+				if (action === "auth status") {
+					const inspection = legacyCodex().inspect();
+					return {
+						ok: inspection.slots.some((slot) => slot.hasCredential),
+						text: formatCodexAuthStatus(inspection),
+					};
+				}
+				const batch = await legacyCodex().query({
+					cache: action === "probe" ? "bypass" : action === "refresh" ? "refresh" : "prefer",
+					signal: ctx.signal,
+				});
+				return { ok: batch.anySuccess, text: formatCodexProbeResults(batch, captured) };
 			} catch (error) {
-				codexText = safeCodexError(error);
+				return { ok: false, text: safeCodexError(error) };
 			}
-			const ollamaStatus = await inspectOllama();
-			ctx.ui.notify(
-				`${codexText}\n\n${formatOllamaAuthStatus(ollamaStatus)}`,
-				codexReady || ollamaStatus.state === "ready" ? "info" : "warning",
-			);
 		};
 
-		const runProbe = async (provider: Provider, ctx: ExtensionCommandContext): Promise<void> => {
-			if (provider === "codex") {
-				const batch = await codex.query({ cache: "bypass", signal: ctx.signal });
-				ctx.ui.notify(
-					formatCodexProbeResults(batch, now()),
-					batch.anySuccess ? "info" : "warning",
-				);
-				return;
+		const readOllama = async (
+			ctx: ExtensionCommandContext,
+			action: string,
+			captured: Date,
+			inspection?: OllamaAuthInspection,
+		): Promise<{ ok: boolean; text: string }> => {
+			if (action === "auth status") {
+				const status = inspection ?? await inspectOllama();
+				return { ok: status.state === "ready", text: formatOllamaAuthStatus(status) };
 			}
-			if (provider === "ollama") {
+			if (action === "probe") {
 				const result = await probeOllama({ signal: ctx.signal });
-				ctx.ui.notify(formatOllamaProbeResult(result), result.state === "ok" ? "info" : "warning");
-				return;
+				return { ok: result.state === "ok", text: formatOllamaProbeResult(result) };
 			}
-			const [codexResult, ollamaResult] = await Promise.all([
-				codex.query({ cache: "bypass", signal: ctx.signal }),
-				probeOllama({ signal: ctx.signal }),
-			]);
-			const ready = codexResult.anySuccess || ollamaResult.state === "ok";
-			ctx.ui.notify(
-				`${formatCodexProbeResults(codexResult, now())}\n${formatOllamaProbeResult(ollamaResult)}`,
-				ready ? "info" : "warning",
-			);
-		};
-
-		const runFetch = async (provider: Provider, force: boolean, ctx: ExtensionCommandContext): Promise<void> => {
-			const captured = now();
-			if (provider === "codex") {
-				try {
-					const batch = await fetchCodex(force, ctx.signal);
-					ctx.ui.notify(
-						styleUsageText(formatCodexProbeResults(batch, captured)),
-						batch.anySuccess ? "info" : "error",
-					);
-				} catch (error) {
-					ctx.ui.notify(safeCodexError(error), "error");
+			try {
+				if (action !== "refresh" && latestOllama && !isStale(latestOllama.fetchedAt, captured)) {
+					return { ok: true, text: formatUsageText(latestOllama, captured) };
 				}
-				return;
+				const result = await probeOllama({ signal: ctx.signal });
+				if (result.state !== "ok") throw new Error(result.message);
+				latestOllama = result.snapshot;
+				return { ok: true, text: formatUsageText(latestOllama, captured) };
+			} catch (error) {
+				return { ok: false, text: (error as Error).message };
 			}
-			if (provider === "ollama") {
-				try {
-					const snapshot = await fetchOllama(force, ctx.signal);
-					ctx.ui.notify(styleUsageText(formatUsageText(snapshot, captured)), "info");
-				} catch (error) {
-					ctx.ui.notify((error as Error).message, "error");
-				}
-				return;
-			}
-			const results = await Promise.all([
-				fetchCodex(force, ctx.signal)
-					.then((batch) => ({ ok: batch.anySuccess, text: formatCodexProbeResults(batch, captured) }))
-					.catch((error) => ({ ok: false as const, text: `ChatGPT Codex: ${safeCodexError(error)}` })),
-				fetchOllama(force, ctx.signal)
-					.then((snapshot) => ({ ok: true as const, text: formatUsageText(snapshot, captured) }))
-					.catch((error) => ({ ok: false as const, text: `Ollama Cloud: ${(error as Error).message}` })),
-			]);
-			const ready = results.some((result) => result.ok);
-			ctx.ui.notify(styleUsageText(results.map((result) => result.text).join("\n\n")), ready ? "info" : "error");
 		};
 
 		pi.registerCommand("usage", {
-			description: "Show ChatGPT Codex quota and Ollama Cloud usage (plan, limits, resets)",
+			description: "Show ChatGPT subscription status, legacy Codex quota, and configured Ollama usage",
 			handler: async (rawArgs, ctx) => {
 				const { provider, action } = parseUsageArgs(rawArgs);
 				const normalized = action === "auth" ? "auth status" : action;
-				if (normalized === "auth status") {
-					await runAuthStatus(provider, ctx);
-					return;
-				}
-				if (normalized === "probe") {
-					await runProbe(provider, ctx);
-					return;
-				}
-				if (normalized !== "" && normalized !== "refresh") {
+				if (!["", "refresh", "probe", "auth status"].includes(normalized)) {
 					ctx.ui.notify(
 						"Usage: /usage [codex|ollama] [refresh] | /usage [codex|ollama] probe | /usage [codex|ollama] auth status",
 						"error",
 					);
 					return;
 				}
-				await runFetch(provider, normalized === "refresh", ctx);
+				const captured = now();
+				const ollamaStatus = provider === "both" ? await inspectOllama() : undefined;
+				const includeOllama = provider === "ollama" || (provider === "both" && ollamaStatus?.state !== "missing");
+				if (ollamaStatus?.state === "missing") latestOllama = undefined;
+				const requests: Array<Promise<{ ok: boolean; text: string }>> = [];
+				if (provider !== "ollama") requests.push(readCodex(ctx, normalized, captured));
+				if (includeOllama) {
+					requests.push(readOllama(ctx, normalized, captured, ollamaStatus).then((result) => ({
+						...result,
+						text: provider === "both" && !result.ok && normalized !== "probe" && normalized !== "auth status"
+							? `Ollama Cloud: ${result.text}` : result.text,
+					})));
+				}
+				const results = await Promise.all(requests);
+				const ready = results.some((result) => result.ok);
+				const failureLevel = normalized === "probe" || normalized === "auth status" ? "warning" : "error";
+				ctx.ui.notify(styleUsageText(results.map((result) => result.text).join("\n\n")), ready ? "info" : failureLevel);
 			},
 		});
 	};
