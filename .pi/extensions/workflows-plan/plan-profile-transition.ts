@@ -48,6 +48,9 @@ export interface PlanProfileTransitionResult {
 	profile?: ModeModelProfile;
 	/** Primary failure, if any. */
 	error?: unknown;
+	/** True when the target apply itself failed (e.g. the model is unavailable
+	 *  or unauthenticated); the session model was left unchanged. */
+	applyFailed?: boolean;
 	/** Failure while restoring the fallback, if any. */
 	rollbackError?: unknown;
 }
@@ -117,9 +120,8 @@ export function createPlanProfileTransition(
 				);
 				return { ok: true, profile };
 			} catch (error) {
-				if (!applied || !request.rollback) {
-					return { ok: false, error, profile: applied ? profile : undefined };
-				}
+				if (!applied) return { ok: false, error, applyFailed: true };
+				if (!request.rollback) return { ok: false, error, profile };
 				let rollbackProfile: ModeModelProfile | undefined;
 				let rollbackError: unknown;
 				try {

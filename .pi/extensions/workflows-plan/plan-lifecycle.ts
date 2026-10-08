@@ -591,6 +591,16 @@ export function createPlanLifecycle(
 				rollback: { target: normalProfile, label: "Normal profile", defaults: capturedDefaults },
 			});
 			if (!guard.isCurrent()) return false;
+			if (!outcome.ok && outcome.applyFailed) {
+				// The Plan Mode model could not be applied (unavailable or not
+				// authenticated): enter with the main model and keep the stored
+				// Plan Mode profile so it applies once the provider is available.
+				ctx.ui.notify(
+					`Plan Mode model unavailable, using ${profileLabel(normalProfile)}: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`,
+					"warning",
+				);
+				return await guard.run(adoptEntry(normalProfile));
+			}
 			if (!outcome.ok) return abortEnter(outcome.error, outcome.rollbackError);
 			return await guard.run(adoptEntry(outcome.profile!));
 		} catch (error) {

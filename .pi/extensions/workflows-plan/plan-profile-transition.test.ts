@@ -225,7 +225,7 @@ describe("Plan profile transition", () => {
 			rollback: { target: normalProfile, label: "Normal profile" },
 		});
 
-		expect(outcome).toEqual({ ok: false, error: failure, profile: undefined });
+		expect(outcome).toEqual({ ok: false, error: failure, applyFailed: true });
 		expect(applyModelSelection).toHaveBeenCalledTimes(1);
 	});
 

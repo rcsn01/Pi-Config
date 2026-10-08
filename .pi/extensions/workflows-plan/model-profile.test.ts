@@ -343,14 +343,16 @@ describe("Plan Mode model and thinking profiles", () => {
 		}));
 	});
 
-	it("reports unavailable and malformed profiles without entering", async () => {
+	it("falls back to the main model when the Plan Mode model is unavailable", async () => {
 		const missing = createProfileDependencies(profileFor(planModel, "high"));
 		const missingHarness = createHarness({
 			branch: [], model: normalModel, availableModels: [normalModel], dependencies: missing.dependencies,
 		});
 		await missingHarness.emit("session_start", { type: "session_start", reason: "startup" });
 		await missingHarness.commands.get("plan").handler("", missingHarness.ctx);
-		expect(missingHarness.notify).toHaveBeenCalledWith(expect.stringContaining("is unavailable"), "error");
+		expect(missingHarness.notify).toHaveBeenCalledWith(expect.stringContaining("is unavailable"), "warning");
+		expect(missingHarness.appendedEntries.at(-1)?.data).toMatchObject({ mode: "plan" });
+		expect(missing.getStored()).toEqual(profileFor(planModel, "high"));
 
 		const auth = createProfileDependencies(profileFor(planModel, "high"));
 		const authHarness = createHarness({
@@ -361,9 +363,14 @@ describe("Plan Mode model and thinking profiles", () => {
 		await authHarness.commands.get("plan").handler("", authHarness.ctx);
 		expect(authHarness.notify).toHaveBeenCalledWith(
 			expect.stringContaining("No configured authentication"),
-			"error",
+			"warning",
 		);
+		expect(authHarness.appendedEntries.at(-1)?.data).toMatchObject({ mode: "plan" });
+		expect(auth.getStored()).toEqual(profileFor(planModel, "high"));
+	});
 
+	it("reports malformed profiles without entering", async () => {
+		const missing = createProfileDependencies(profileFor(planModel, "high"));
 		const malformedHarness = createHarness({
 			branch: [], model: normalModel, availableModels: [normalModel],
 			dependencies: {
