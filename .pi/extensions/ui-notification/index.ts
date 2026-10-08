@@ -1,7 +1,7 @@
 /**
  * Turn Notify Extension - Recreates Codex's desktop notification feature
  *
- * Sends notifications when the agent completes a turn.
+ * Sends notifications after the agent settles, including retries and compaction.
  * Supports desktop notifications and cmux in-app notifications.
  *
  * Command:
@@ -50,43 +50,59 @@ async function sendNotifications(title: string, message: string): Promise<void> 
 	]);
 }
 
-export default function (pi: ExtensionAPI) {
-	// ── Notify on Agent End ───────────────────────────────────────────────
+export function createNotificationExtension(notify = sendNotifications) {
+	return (pi: ExtensionAPI) => {
+		let pendingMessage: string | undefined;
+		const reset = () => { pendingMessage = undefined; };
+		pi.on("session_start", reset);
+		pi.on("session_shutdown", reset);
+		pi.on("agent_start", reset);
 
-	pi.on("agent_end", async (event) => {
-		// Get the last assistant message
-		const messages = event.messages || [];
-		const lastAssistant = [...messages].reverse().find(
-			(message) => message.role === "assistant",
-		);
+		// A low-level run may still be followed by compaction, retries, or queued work.
+		// Capture its preview here, but dispatch only at final settlement.
+		pi.on("agent_end", (event) => {
+			// Get the last assistant message
+			const messages = event.messages || [];
+			const lastAssistant = [...messages].reverse().find(
+				(message) => message.role === "assistant",
+			);
 
-		if (lastAssistant) {
-			let text = "";
-			if (typeof lastAssistant.content === "string") {
-				text = lastAssistant.content;
-			} else if (Array.isArray(lastAssistant.content)) {
-				const textBlock = lastAssistant.content.find(
-					(block) => block.type === "text",
-				);
-				if (textBlock) text = textBlock.text;
+			if (lastAssistant) {
+				let text = "";
+				if (typeof lastAssistant.content === "string") {
+					text = lastAssistant.content;
+				} else if (Array.isArray(lastAssistant.content)) {
+					const textBlock = lastAssistant.content.find(
+						(block) => block.type === "text",
+					);
+					if (textBlock) text = textBlock.text;
+				}
+
+				const preview = text.slice(0, 120).replace(/\n/g, " ");
+				const display = preview.length < text.length ? preview + "…" : preview;
+
+				pendingMessage = display || "Task completed";
+			} else {
+				pendingMessage = "Agent finished processing";
 			}
+		});
 
-			const preview = text.slice(0, 120).replace(/\n/g, " ");
-			const display = preview.length < text.length ? preview + "…" : preview;
+		pi.on("agent_settled", async () => {
+			const message = pendingMessage;
+			reset();
+			if (message !== undefined) await notify("Pi - Turn Complete", message);
+		});
 
-			await sendNotifications("Pi - Turn Complete", display || "Task completed");
-		} else {
-			await sendNotifications("Pi - Turn Complete", "Agent finished processing");
-		}
-	});
+		// ── Command: /notify ──────────────────────────────────────────────────
 
-	// ── Command: /notify ──────────────────────────────────────────────────
-
-	pi.registerCommand("notify", {
-		description: "Send a test desktop and cmux notification",
-		handler: async (_args, ctx) => {
-			await sendNotifications("Pi", "Notifications are enabled ✓");
-			ctx.ui.notify("Sent desktop and cmux notification test.", "info");
-		},
-	});
+		pi.registerCommand("notify", {
+			description: "Send a test desktop and cmux notification",
+			handler: async (_args, ctx) => {
+				await notify("Pi", "Notifications are enabled ✓");
+				ctx.ui.notify("Sent desktop and cmux notification test.", "info");
+			},
+		});
+	};
 }
+
+export default createNotificationExtension();
