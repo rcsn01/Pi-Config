@@ -4,8 +4,8 @@ Each project tracks its own Pi-Config settings in a committed
 `.pi/pi-config.json` at the project root. This file is **owned by the
 Pi-Config extensions** — pi never parses, merges, or validates it (that is
 `.pi/settings.json`'s job). Because it travels with the repo, it is only
-honored for **trusted projects** (`ctx.isProjectTrusted()`); for untrusted
-projects everything falls back to machine-local state.
+honored for **trusted projects** (`ctx.isProjectTrusted()`); untrusted
+projects ignore it.
 
 ## Schema
 
@@ -37,7 +37,7 @@ Namespaced and additive; readers ignore unknown keys.
 | Concern | Winner first |
 | --- | --- |
 | Profile | session entry → handoff → project `profile` → global `configProfiles.active` marker |
-| Approval mode | project `permissions.mode` → legacy hashed store (`~/.pi/state/pi-config/<hash>/approval-mode.json`) → `"default"` |
+| Approval mode | project `permissions.mode` → `"default"` |
 | Exec policy | global rules → project `execPolicy.rules` → global `defaultAction` (global always wins) |
 
 Notes:
@@ -47,11 +47,10 @@ Notes:
   repo. `full-access` in a committed file is visible in review — that is
   intentional; pi's project-trust gate is what keeps hostile repos from
   declaring it.
-- The hashed store fallback is **read-only**. A trusted project adopts the
-  pi-config document on its first mode change; nothing is written into the
-  repo when merely loading.
-- Untrusted projects ignore `.pi/pi-config.json` entirely and behave exactly
-  as before (hashed store, legacy `.pi/approval-mode.json` migration).
+- The project document is the only mode store. Nothing is written into the
+  repo when merely loading; the first `/permissions` change creates it.
+- Untrusted projects ignore `.pi/pi-config.json` entirely. Their mode starts
+  at `"default"` and a `/permissions` change lasts for the session only.
 - Exec policy: global rules are authoritative — a project rule only fires when
   no global rule matches, so a repo file can add coverage but never neutralize
   a global rule. The project layer is rules-only; `defaultAction` stays global.

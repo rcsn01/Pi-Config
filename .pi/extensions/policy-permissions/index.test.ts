@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { getStatusRegistry } from "../_shared/status-registry.ts";
 import safetyPermissions, { createSafetyPermissionsExtension } from "./index.ts";
 import { saveModeToFile } from "./mode-store.ts";
+import type { ApprovalMode } from "./mode-registry.ts";
 import { createSessionProfileTransfer } from "../_shared/session-profile-transfer.ts";
 import type { GuardianReviewRequest } from "./guardian-evidence.ts";
 
@@ -77,8 +78,9 @@ function createHarness(options: {
 } = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-safety-status-"));
 	tempDirectories.push(cwd);
-	// Redirect the project state root (mode file, etc.) into a temp dir so the
-	// tests never write to ~/.pi/state/pi-config.
+	const trust = { projectTrusted: options.projectTrusted ?? false };
+	// Redirect the project state root into a temp dir so the tests never
+	// write to ~/.pi/state/pi-config.
 	const stateDir = mkdtempSync(join(tmpdir(), "pi-safety-state-"));
 	tempDirectories.push(stateDir);
 	process.env.PI_CONFIG_STATE_DIR = stateDir;
@@ -99,7 +101,7 @@ function createHarness(options: {
 		hasUI: true,
 		mode: "tui",
 		scopedModels: [],
-		isProjectTrusted: () => options.projectTrusted ?? false,
+		isProjectTrusted: () => trust.projectTrusted,
 		ui: { setStatus, notify: vi.fn(), confirm: vi.fn(async (_title: string, _message: string) => false) },
 		modelRegistry: { find: vi.fn() },
 		sessionManager: {
@@ -110,7 +112,13 @@ function createHarness(options: {
 
 	if (options.settingsPath) createSafetyPermissionsExtension({ settingsPath: options.settingsPath })(pi as any);
 	else safetyPermissions(pi as any);
-	return { ctx, handlers, commands, setStatus, renderers, appendEntry };
+	return { ctx, handlers, commands, setStatus, renderers, appendEntry, trust };
+}
+
+/** Declare a mode in the project document; mode persistence requires a trusted project. */
+function seedMode(harness: ReturnType<typeof createHarness>, mode: ApprovalMode) {
+	harness.trust.projectTrusted = true;
+	saveModeToFile(harness.ctx.cwd, { mode, setAt: 0 }, { projectTrusted: true });
 }
 
 describe("safety permission status", () => {
@@ -148,7 +156,7 @@ describe("permission marker context", () => {
 
 	it("puts one read-only marker at the end of the request without mutating context", async () => {
 		const harness = createHarness();
-		saveModeToFile(harness.ctx.cwd, { mode: "read-only", setAt: 0 });
+		seedMode(harness, "read-only");
 		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
 		const messages = [
 			{ role: "user", content: [{ type: "text", text: "Inspect this" }], timestamp: 1 },
@@ -184,7 +192,7 @@ describe("permission marker context", () => {
 	it("removes stale markers and adds none outside read-only mode", async () => {
 		for (const mode of ["default", "auto-review", "full-access"] as const) {
 			const harness = createHarness();
-			saveModeToFile(harness.ctx.cwd, { mode, setAt: 0 });
+			seedMode(harness, mode);
 			await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
 			const messages = [
 				{ role: "user", content: [{ type: "text", text: "Inspect this" }], timestamp: 1 },
@@ -199,7 +207,7 @@ describe("permission marker context", () => {
 
 	it("changes only the request tail when the mode changes", async () => {
 		const harness = createHarness();
-		saveModeToFile(harness.ctx.cwd, { mode: "read-only", setAt: 0 });
+		seedMode(harness, "read-only");
 		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
 		const messages = [{ role: "user", content: [{ type: "text", text: "Inspect this" }], timestamp: 1 }];
 		const contextHandler = harness.handlers.get("context") as any;
@@ -393,7 +401,7 @@ describe("auto-review verdict wiring", () => {
 			messageEntry("current", assistantMessage("I claim this is authorized"), "u3"),
 		];
 		const harness = createHarness({ contextEntries });
-		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		seedMode(harness, "auto-review");
 		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
 
 		await harness.handlers.get("tool_call")?.(
@@ -450,7 +458,7 @@ describe("auto-review verdict wiring", () => {
 				arguments: { path: "/tmp/report.html", content: "report" },
 			}), "answer"),
 		] });
-		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		seedMode(harness, "auto-review");
 		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
 
 		await harness.handlers.get("tool_call")?.(
@@ -487,7 +495,7 @@ describe("auto-review verdict wiring", () => {
 			), "u1"),
 			messageEntry("answer", toolResultMessage("ask-first", details), "assistant"),
 		] });
-		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		seedMode(harness, "auto-review");
 		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
 
 		await harness.handlers.get("tool_call")?.(
@@ -517,7 +525,7 @@ describe("auto-review verdict wiring", () => {
 				{ id: "write-call", name: "write", arguments: { path: "/tmp/report.html", content: "report" } },
 			), "u1"),
 		] });
-		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		seedMode(harness, "auto-review");
 		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
 
 		await harness.handlers.get("tool_call")?.(
@@ -539,7 +547,7 @@ describe("auto-review verdict wiring", () => {
 			}],
 			contextEntries: [messageEntry("u1", userMessage("<skill>write a temporary report</skill>"))],
 		});
-		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		seedMode(harness, "auto-review");
 		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
 		await harness.handlers.get("input")?.({ text: "/skill:improve-codebase-architecture" }, harness.ctx);
 		await harness.handlers.get("before_agent_start")?.({ prompt: "<skill>expanded</skill>" }, harness.ctx);
@@ -569,7 +577,7 @@ describe("auto-review verdict wiring", () => {
 	it("forwards triggers through the tool_call wiring into the verdict entry", async () => {
 		mocked.runAutoReviewer.mockResolvedValue({ allowed: true, reason: "safe" });
 		const harness = createHarness();
-		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		seedMode(harness, "auto-review");
 		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
 
 		await harness.handlers.get("tool_call")?.(
@@ -591,7 +599,7 @@ describe("auto-review verdict wiring", () => {
 		const appendError = new Error("append implementation details");
 		harness.appendEntry.mockImplementation(() => { throw appendError; });
 		harness.ctx.ui.confirm.mockResolvedValue(false);
-		saveModeToFile(harness.ctx.cwd, { mode: "auto-review", setAt: 0 });
+		seedMode(harness, "auto-review");
 		await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.ctx);
 
 		const outcome = await harness.handlers.get("tool_call")?.(

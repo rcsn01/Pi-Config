@@ -16,7 +16,7 @@
  *
  * Precedence (see .pi/docs/pi-config.md):
  *   profile       session entry > handoff > project `profile` > global marker
- *   approval mode project `permissions.mode` > hashed store > "default"
+ *   approval mode project `permissions.mode` > "default"
  *   exec policy   global rules > project rules > global defaultAction
  *
  * Mutation is a synchronous read-modify-write: the read, the mutation, and

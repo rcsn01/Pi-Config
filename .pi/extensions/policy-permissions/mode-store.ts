@@ -1,19 +1,14 @@
 /**
  * Permission-mode persistence.
  *
- * Trusted projects: `<project>/.pi/pi-config.json` (`permissions.mode`) is the
- * source of truth — `/permissions` writes it, and it travels with the repo.
- * Untrusted projects (and projects without a declaration) fall back to the
- * legacy hashed state store `~/.pi/state/pi-config/<hash>/approval-mode.json`,
- * including the `.pi/approval-mode.json` migration. The fallback is read-only:
- * a trusted project adopts the pi-config document on its first mode change.
+ * The only store is `<project>/.pi/pi-config.json` (`permissions.mode`) in
+ * trusted projects — `/permissions` writes it, and it travels with the repo.
+ * Untrusted projects persist nothing: loads return null and saves are no-ops,
+ * so a mode change there lasts for the session only.
  */
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { isApprovalMode, type ApprovalMode } from "./mode-registry.ts";
 import { mutateProjectNamespace, readProjectDocument } from "../_shared/pi-config.ts";
 import { isRecord } from "../_shared/settings-document.ts";
-import { projectStatePath } from "../_shared/state-paths.ts";
 
 export interface ModeState {
 	mode: ApprovalMode;
@@ -24,9 +19,6 @@ export interface ModePersistenceOptions {
 	/** Honor the per-project `.pi/pi-config.json` document (pi project trust granted). */
 	projectTrusted?: boolean;
 }
-
-const MODE_FILE = "approval-mode.json";
-const LEGACY_MODE_FILE = path.join(".pi", MODE_FILE);
 
 export const DEFAULT_MODE_STATE: ModeState = { mode: "default", setAt: Date.now() };
 
@@ -40,40 +32,20 @@ export function saveModeToFile(
 	mode: ModeState,
 	options: ModePersistenceOptions = {},
 ): void {
-	// The module gates untrusted projects to a no-op; their state stays in the
-	// hashed store below. Namespace merge preserves siblings (e.g. "profile").
-	const applied = mutateProjectNamespace(
+	// The module gates untrusted projects to a no-op. Namespace merge
+	// preserves siblings (e.g. "profile").
+	mutateProjectNamespace(
 		cwd,
 		options.projectTrusted === true,
 		"permissions",
 		(namespace) => ({ ...namespace, mode: mode.mode }),
 	);
-	if (applied !== undefined) return;
-	try {
-		const filePath = projectStatePath(cwd, MODE_FILE);
-		fs.mkdirSync(path.dirname(filePath), { recursive: true });
-		fs.writeFileSync(filePath, JSON.stringify(mode, null, "\t"), { encoding: "utf-8" });
-	} catch {}
 }
 
 export function loadModeFromFile(
 	cwd: string,
 	options: ModePersistenceOptions = {},
 ): ModeState | null {
-	const declared = options.projectTrusted === true
-		? parseModeState(readProjectDocument(cwd, true)?.permissions)
-		: undefined;
-	if (declared) return declared;
-	try {
-		const filePath = projectStatePath(cwd, MODE_FILE);
-		const legacyPath = path.join(cwd, LEGACY_MODE_FILE);
-		if (!fs.existsSync(filePath) && fs.existsSync(legacyPath)) {
-			fs.mkdirSync(path.dirname(filePath), { recursive: true });
-			fs.copyFileSync(legacyPath, filePath, fs.constants.COPYFILE_EXCL);
-		}
-		if (fs.existsSync(filePath)) {
-			return parseModeState(JSON.parse(fs.readFileSync(filePath, "utf-8")));
-		}
-	} catch {}
-	return null;
+	if (options.projectTrusted !== true) return null;
+	return parseModeState(readProjectDocument(cwd, true)?.permissions);
 }
