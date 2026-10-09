@@ -260,8 +260,11 @@ describe("subagent tool wiring", () => {
 			roots.push(root);
 			const settingsPath = join(root, "settings.json");
 			mkdirSync(join(root, "profiles"));
-			writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+			writeFileSync(settingsPath, "{}");
+			mkdirSync(join(root, ".pi"));
+			writeFileSync(join(root, ".pi", "pi-config.json"), JSON.stringify({ profile: "focused" }));
 			const harness = extensionHarness(undefined, { settingsPath });
+			harness.ctx.cwd = root;
 			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
 			expect(harness.config.configPath).toBe(join(profilesDirectoryFor(settingsPath), "focused.json"));
 		});
@@ -271,7 +274,9 @@ describe("subagent tool wiring", () => {
 			roots.push(root);
 			const settingsPath = join(root, "settings.json");
 			mkdirSync(join(root, "profiles"));
-			writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+			writeFileSync(settingsPath, "{}");
+			mkdirSync(join(root, ".pi"));
+			writeFileSync(join(root, ".pi", "pi-config.json"), JSON.stringify({ profile: "focused" }));
 			const config = memoryConfigStore();
 			const calls: string[] = [];
 			const setSettingsPath = config.setSettingsPath.bind(config);
@@ -281,6 +286,7 @@ describe("subagent tool wiring", () => {
 			const load = config.load.bind(config);
 			config.load = () => { calls.push("load"); return load(); };
 			const harness = extensionHarness(undefined, { settingsPath, config });
+			harness.ctx.cwd = root;
 			calls.length = 0;
 
 			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
@@ -310,7 +316,9 @@ describe("subagent tool wiring", () => {
 			const profilesPath = join(root, "profiles");
 			const focusedPath = join(profilesPath, "focused.json");
 			mkdirSync(profilesPath);
-			writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+			writeFileSync(settingsPath, "{}");
+			mkdirSync(join(root, ".pi"));
+			writeFileSync(join(root, ".pi", "pi-config.json"), JSON.stringify({ profile: "focused" }));
 			writeFileSync(focusedPath, JSON.stringify({ subagents: { maxConcurrency: 1 } }));
 
 			let release!: () => void;
@@ -325,6 +333,7 @@ describe("subagent tool wiring", () => {
 				return agentResult({ agent: request.agent.name, task: request.task });
 			});
 			const harness = extensionHarness(executeChild, { settingsPath, injectConfig: false });
+			harness.ctx.cwd = root;
 			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
 			writeFileSync(focusedPath, JSON.stringify({ subagents: { maxConcurrency: 3 } }));
 

@@ -23,14 +23,24 @@ import { createSessionProfileTransfer } from "./session-profile-transfer.ts";
 const roots: string[] = [];
 const registrations: SessionProfileBindingRegistration[] = [];
 
+/** Root of the most recent fixture; `lifecycle()` uses it as ctx.cwd unless told otherwise. */
+let latestRoot: string | undefined;
+
+/**
+ * Project layout: `<root>/.pi/settings.json`, `<root>/.pi/profiles/`, and the
+ * Profile marker as `profile` in `<root>/.pi/pi-config.json`.
+ */
 function fixture(marker: string | null = "focused") {
 	const root = mkdtempSync(join(tmpdir(), "session-profile-binding-"));
 	roots.push(root);
-	const settingsPath = join(root, "settings.json");
-	const profilesDirectory = join(root, "profiles");
-	mkdirSync(profilesDirectory);
-	writeFileSync(settingsPath, JSON.stringify(marker ? { configProfiles: { active: marker } } : {}));
-	return { root, settingsPath, profilesDirectory };
+	const settingsPath = join(root, ".pi", "settings.json");
+	const profilesDirectory = join(root, ".pi", "profiles");
+	const piConfigPath = join(root, ".pi", "pi-config.json");
+	mkdirSync(profilesDirectory, { recursive: true });
+	writeFileSync(settingsPath, "{}");
+	if (marker) writeFileSync(piConfigPath, JSON.stringify({ profile: marker }));
+	latestRoot = root;
+	return { root, settingsPath, profilesDirectory, piConfigPath };
 }
 
 const entry = (active: unknown) => ({
@@ -48,7 +58,7 @@ function lifecycle(
 	const event = { type: "session_start", reason, previousSessionFile } as SessionStartEvent;
 	const ctx = {
 		sessionManager: { getBranch: vi.fn(() => entries) },
-		cwd: options.cwd,
+		cwd: options.cwd ?? latestRoot,
 		isProjectTrusted: vi.fn(() => options.projectTrusted ?? false),
 	} as unknown as ExtensionContext;
 	return { event, ctx };
@@ -110,6 +120,7 @@ afterEach(async () => {
 	for (const registration of registrations) registration.unregister();
 	registrations.length = 0;
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+	latestRoot = undefined;
 });
 
 describe("Session profile binding", () => {
@@ -143,74 +154,42 @@ describe("Session profile binding", () => {
 		expect(Object.isFrozen(observed)).toBe(true);
 	});
 
-	it("prefers the trusted project pi-config profile over the settings marker", async () => {
-		const paths = fixture("focused");
-		mkdirSync(join(paths.root, ".pi"), { recursive: true });
-		writeFileSync(join(paths.root, ".pi", "pi-config.json"), JSON.stringify({ profile: "project-profile" }));
+	it.each([true, false])("binds the project declaration regardless of trust (trusted=%s)", async (projectTrusted) => {
+		const paths = fixture("project-profile");
 		let observed: SessionProfileBinding | undefined;
 		const registration = register(paths, testAdapter("tools-advisor", [], {
 			initialize: (binding) => { observed = binding; },
 		}));
 
-		const { event, ctx } = lifecycle([], "startup", undefined, {
-			cwd: paths.root,
-			projectTrusted: true,
-		});
+		const { event, ctx } = lifecycle([], "startup", undefined, { projectTrusted });
 		await registration.start(event, ctx);
 
 		expect(observed?.profileName).toBe("project-profile");
 		expect(observed?.settingsPath).toBe(join(paths.profilesDirectory, "project-profile.json"));
 	});
 
-	it("ignores the project declaration for untrusted projects", async () => {
+	it("binds no Profile for an invalid project profile name", async () => {
 		const paths = fixture("focused");
-		mkdirSync(join(paths.root, ".pi"), { recursive: true });
-		writeFileSync(join(paths.root, ".pi", "pi-config.json"), JSON.stringify({ profile: "project-profile" }));
+		writeFileSync(paths.piConfigPath, JSON.stringify({ profile: "../escape" }));
 		let observed: SessionProfileBinding | undefined;
 		const registration = register(paths, testAdapter("tools-advisor", [], {
 			initialize: (binding) => { observed = binding; },
 		}));
 
-		const { event, ctx } = lifecycle([], "startup", undefined, {
-			cwd: paths.root,
-			projectTrusted: false,
-		});
+		const { event, ctx } = lifecycle();
 		await registration.start(event, ctx);
 
-		expect(observed?.profileName).toBe("focused");
+		expect(observed).toEqual({ profileName: undefined, settingsPath: paths.settingsPath });
 	});
 
-	it("falls back to the settings marker for an invalid project profile name", async () => {
-		const paths = fixture("focused");
-		mkdirSync(join(paths.root, ".pi"), { recursive: true });
-		writeFileSync(join(paths.root, ".pi", "pi-config.json"), JSON.stringify({ profile: "../escape" }));
+	it("prefers session entries over the project declaration", async () => {
+		const paths = fixture("project-profile");
 		let observed: SessionProfileBinding | undefined;
 		const registration = register(paths, testAdapter("tools-advisor", [], {
 			initialize: (binding) => { observed = binding; },
 		}));
 
-		const { event, ctx } = lifecycle([], "startup", undefined, {
-			cwd: paths.root,
-			projectTrusted: true,
-		});
-		await registration.start(event, ctx);
-
-		expect(observed?.profileName).toBe("focused");
-	});
-
-	it("prefers session entries over the trusted project declaration", async () => {
-		const paths = fixture("focused");
-		mkdirSync(join(paths.root, ".pi"), { recursive: true });
-		writeFileSync(join(paths.root, ".pi", "pi-config.json"), JSON.stringify({ profile: "project-profile" }));
-		let observed: SessionProfileBinding | undefined;
-		const registration = register(paths, testAdapter("tools-advisor", [], {
-			initialize: (binding) => { observed = binding; },
-		}));
-
-		const { event, ctx } = lifecycle([entry("remembered")], "startup", undefined, {
-			cwd: paths.root,
-			projectTrusted: true,
-		});
+		const { event, ctx } = lifecycle([entry("remembered")]);
 		await registration.start(event, ctx);
 
 		expect(observed?.profileName).toBe("remembered");
@@ -227,7 +206,7 @@ describe("Session profile binding", () => {
 		const parentCtx = {
 			sessionManager: { getSessionFile: () => "parent.jsonl" },
 			newSession: async () => {
-				await handoff.start(...Object.values(lifecycle([], "new", "parent.jsonl")) as [SessionStartEvent, ExtensionContext]);
+				await handoff.start(...Object.values(lifecycle([], "new", "parent.jsonl", { cwd: handoffPaths.root })) as [SessionStartEvent, ExtensionContext]);
 				return { cancelled: false };
 			},
 		} as any;
@@ -236,8 +215,8 @@ describe("Session profile binding", () => {
 			profileName: "handoff",
 			settingsPath: join(handoffPaths.profilesDirectory, "handoff.json"),
 		});
-		await marker.start(...Object.values(lifecycle([], "new", "other.jsonl")) as [SessionStartEvent, ExtensionContext]);
-		await unbound.start(...Object.values(lifecycle([], "startup")) as [SessionStartEvent, ExtensionContext]);
+		await marker.start(...Object.values(lifecycle([], "new", "other.jsonl", { cwd: markerPaths.root })) as [SessionStartEvent, ExtensionContext]);
+		await unbound.start(...Object.values(lifecycle([], "startup", undefined, { cwd: unboundPaths.root })) as [SessionStartEvent, ExtensionContext]);
 
 		expect(observed.map((binding) => binding.profileName)).toEqual(["handoff", "focused", undefined]);
 		expect(observed[2]?.settingsPath).toBe(unboundPaths.settingsPath);

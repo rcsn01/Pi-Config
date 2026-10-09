@@ -34,9 +34,6 @@
       "judge": 256000
     }
   },
-  "configProfiles": {
-    "active": "openai"
-  },
   "advisor": {
     "enabled": false,
     "model": "openai-codex/gpt-6-astra",

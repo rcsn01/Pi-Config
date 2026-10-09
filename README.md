@@ -113,7 +113,7 @@ Use:
 
 To create a profile, copy an existing file in `.pi/profiles`, rename the copy, and edit its settings. Edit the active profile through `.pi/settings.json`; changes made there—including changes from `/model`, `/subagents`, and `/settings`—are automatically written back to the active profile. Inactive profile files may be edited directly.
 
-The `configProfiles.active` field is reserved for the profile extension. It identifies the active profile and is normalized during a switch while other settings and other fields under `configProfiles` are preserved.
+The active profile is recorded as `profile` in `.pi/pi-config.json` (see `.pi/docs/pi-config.md`); `/profile` writes it, and it is honored whether or not the project is trusted.
 
 Switching writes back the outgoing settings, replaces the complete active document, applies the new profile's saved model selection for the current mode (`uiModelSelector.profiles.normal` or `.plan`) to the current session, and reloads Pi's resources while retaining the current conversation. A plain `/reload` without a profile switch still preserves the session model.
 

@@ -195,11 +195,13 @@ extension.
   the module owns document mechanics and the trust gate. Mutation is a
   synchronous read-modify-write, atomic per call because it never interleaves
   in-process; cross-process concurrent writes to one document remain
-  unsupported. Trust-evaluation timing (frozen per session start in the
-  Session profile binding, re-evaluated per event in the enforcement
-  lifecycle) is caller-owned.
+  unsupported. Trust-evaluation timing (re-evaluated per event in the
+  enforcement lifecycle) is caller-owned; the `profile` key is not
+  trust-gated.
 - **Profile** — a full settings document in `.pi/profiles/<name>.json`;
-  switching replaces the active document.
+  switching replaces the active document. The active Profile marker is the
+  `profile` key of the Per-project document, read and written regardless of
+  project trust.
 - **Profile transition lifecycle** — the deep in-process module in
   `config-profiles/` that owns switch, create-and-activate, and active-Profile
   deletion ordering through model application, transition notices, and reload.

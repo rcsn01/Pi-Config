@@ -8,14 +8,14 @@ import {
 	writeSettingsDocument,
 } from "../_shared/settings-document.ts";
 import {
-	CONFIG_PROFILES_KEY,
-	parseActiveProfileName,
 	profilePath as resolveProfilePath,
 	profilesDirectoryFor,
+	readProjectProfile,
 	validateProfileName,
+	writeProjectProfile,
 } from "../_shared/profile-document.ts";
 
-export { CONFIG_PROFILES_KEY, validateProfileName } from "../_shared/profile-document.ts";
+export { validateProfileName } from "../_shared/profile-document.ts";
 
 export interface ProfileSwitchResult {
 	changed: boolean;
@@ -38,24 +38,24 @@ export interface ProfileDeleteResult {
 	markerReplaced: boolean;
 }
 
+/**
+ * Profile documents live beside the Settings document; the active Profile
+ * marker is the `profile` key of `<projectCwd>/.pi/pi-config.json`. Pi still
+ * reads `compaction.keepRecentTokens` from settings.json, so activation
+ * projects that one Profile-owned value there.
+ */
 export interface ProfileStore {
 	readonly settingsPath: string;
 	readonly profilesDirectory: string;
 	listProfiles(): string[];
 	readProfile(name: string): Record<string, unknown>;
-	createProfile(name: string, source?: string): Promise<ProfileCreateResult>;
-	deleteProfile(name: string, options?: ProfileDeleteOptions): Promise<ProfileDeleteResult>;
-	switchProfile(name: string): Promise<ProfileSwitchResult>;
+	createProfile(projectCwd: string, name: string, source?: string): Promise<ProfileCreateResult>;
+	deleteProfile(projectCwd: string, name: string, options?: ProfileDeleteOptions): Promise<ProfileDeleteResult>;
+	switchProfile(projectCwd: string, name: string): Promise<ProfileSwitchResult>;
 	profilePath(name: string): string;
 }
 
 const DEFAULT_PROFILE_NAME = "default";
-
-function withActiveProfile(document: Record<string, unknown>, name: string): Record<string, unknown> {
-	const current = document[CONFIG_PROFILES_KEY];
-	const namespace = isRecord(current) ? current : {};
-	return { ...document, [CONFIG_PROFILES_KEY]: { ...namespace, active: name } };
-}
 
 /**
  * Pi reads compaction retention from the root settings document rather than
@@ -72,19 +72,16 @@ function profileKeepRecentTokens(profile: Record<string, unknown>): number | und
 	return value as number;
 }
 
-function activateProfileSettings(
+/** Return settings with the Profile's keepRecentTokens applied, or undefined when already current. */
+function activatedSettings(
 	settings: Record<string, unknown>,
 	profile: Record<string, unknown>,
-	name: string,
-): Record<string, unknown> {
-	const activated = withActiveProfile(settings, name);
+): Record<string, unknown> | undefined {
 	const keepRecentTokens = profileKeepRecentTokens(profile);
-	if (keepRecentTokens === undefined) return activated;
-	const compaction = isRecord(activated.compaction) ? activated.compaction : {};
-	return {
-		...activated,
-		compaction: { ...compaction, keepRecentTokens },
-	};
+	if (keepRecentTokens === undefined) return undefined;
+	const compaction = isRecord(settings.compaction) ? settings.compaction : {};
+	if (compaction.keepRecentTokens === keepRecentTokens) return undefined;
+	return { ...settings, compaction: { ...compaction, keepRecentTokens } };
 }
 
 export function createProfileStore(options: {
@@ -119,7 +116,7 @@ export function createProfileStore(options: {
 			return readSettingsDocument(profilePath(name), { missing: "throw" });
 		},
 
-		async createProfile(name, source) {
+		async createProfile(projectCwd, name, source) {
 			validateProfileName(name);
 			if (source !== undefined) {
 				validateProfileName(source);
@@ -136,18 +133,27 @@ export function createProfileStore(options: {
 					const sourceDocument = source === undefined
 						? settings
 						: readSettingsDocument(sourcePath, { missing: "throw" });
-					const activatedSettings = activateProfileSettings(settings, sourceDocument, name);
-					writeSettingsDocument(destinationPath, withActiveProfile(sourceDocument, name));
+					const nextSettings = activatedSettings(settings, sourceDocument);
+					const previousProfile = readProjectProfile(projectCwd);
+					writeSettingsDocument(destinationPath, sourceDocument);
 
 					try {
-						writeSettingsDocument(settingsPath, activatedSettings);
+						if (nextSettings) writeSettingsDocument(settingsPath, nextSettings);
+						writeProjectProfile(projectCwd, name);
 					} catch (error) {
+						// Keep the original mutation error; restore what was written so an
+						// extra profile file or projected setting cannot outlive a failure.
 						try {
 							unlinkSync(destinationPath);
-						} catch {
-							// Keep the original mutation error. The marker was not changed, so
-							// an extra profile file cannot affect the active binding.
+						} catch {}
+						if (nextSettings) {
+							try {
+								writeSettingsDocument(settingsPath, settings);
+							} catch {}
 						}
+						try {
+							writeProjectProfile(projectCwd, previousProfile);
+						} catch {}
 						throw error;
 					}
 
@@ -156,7 +162,7 @@ export function createProfileStore(options: {
 			});
 		},
 
-		async deleteProfile(name, options = {}) {
+		async deleteProfile(projectCwd, name, options = {}) {
 			validateProfileName(name);
 			if (name === DEFAULT_PROFILE_NAME) {
 				throw new Error('The "default" profile cannot be deleted.');
@@ -171,27 +177,26 @@ export function createProfileStore(options: {
 
 				return withFileMutationQueue(settingsPath, async () => {
 					const settings = readSettingsDocument(settingsPath, { missing: "throw" });
-					const active = parseActiveProfileName(settings);
+					const active = readProjectProfile(projectCwd);
 					const shouldReplaceMarker = options.replaceMarker === true || active === name;
 					const markerReplaced = shouldReplaceMarker && active !== DEFAULT_PROFILE_NAME;
+					const nextSettings = shouldReplaceMarker ? activatedSettings(settings, replacement) : undefined;
 
 					if (shouldReplaceMarker) {
-						writeSettingsDocument(
-							settingsPath,
-							activateProfileSettings(settings, replacement, DEFAULT_PROFILE_NAME),
-						);
+						if (nextSettings) writeSettingsDocument(settingsPath, nextSettings);
+						writeProjectProfile(projectCwd, DEFAULT_PROFILE_NAME);
 					}
 
 					try {
 						unlinkSync(targetPath);
 					} catch (error) {
 						if (shouldReplaceMarker) {
+							// The marker still references a valid fallback. Do not replace the
+							// unlink error with a rollback error.
 							try {
-								writeSettingsDocument(settingsPath, settings);
-							} catch {
-								// The settings still reference a valid fallback. Do not replace
-								// the unlink error with a rollback error.
-							}
+								if (nextSettings) writeSettingsDocument(settingsPath, settings);
+								writeProjectProfile(projectCwd, active);
+							} catch {}
 						}
 						throw error;
 					}
@@ -205,22 +210,24 @@ export function createProfileStore(options: {
 			});
 		},
 
-		async switchProfile(name) {
+		async switchProfile(projectCwd, name) {
 			validateProfileName(name);
 			// Validate every input before the first mutation.
 			parseSettingsText(readFileSync(settingsPath, "utf-8"), settingsPath);
 			const destinationPath = profilePath(name);
 			const profile = parseSettingsText(readFileSync(destinationPath, "utf-8"), destinationPath);
-			const keepRecentTokens = profileKeepRecentTokens(profile);
+			profileKeepRecentTokens(profile);
 			let changed = false;
 			await mutateSettingsDocument(settingsPath, (settings) => {
-				const compaction = isRecord(settings.compaction) ? settings.compaction : {};
-				const settingIsCurrent = keepRecentTokens === undefined ||
-					compaction.keepRecentTokens === keepRecentTokens;
-				if (parseActiveProfileName(settings) === name && settingIsCurrent) return settings;
+				const next = activatedSettings(settings, profile);
+				if (!next) return settings;
 				changed = true;
-				return activateProfileSettings(settings, profile, name);
+				return next;
 			});
+			if (readProjectProfile(projectCwd) !== name) {
+				writeProjectProfile(projectCwd, name);
+				changed = true;
+			}
 			return { changed, active: name };
 		},
 

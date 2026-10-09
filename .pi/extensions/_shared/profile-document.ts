@@ -1,8 +1,5 @@
-import { readFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
-import { readProjectDocument } from "./pi-config.ts";
-/** Top-level settings.json key holding the active profile marker. */
-export const CONFIG_PROFILES_KEY = "configProfiles";
+import { mutateProjectDocument, readProjectDocument } from "./pi-config.ts";
 /** Custom session entry type recording the session's profile name. */
 export const CONFIG_PROFILES_ENTRY_TYPE = "configProfiles";
 
@@ -21,29 +18,6 @@ export function validateProfileName(name: string): string {
 		throw new Error(`Invalid profile name "${name}". Use letters, numbers, dots, underscores, or hyphens.`);
 	}
 	return name;
-}
-
-/** Return a validated active Profile marker, or undefined for an absent or invalid marker. */
-export function parseActiveProfileName(document: Record<string, unknown>): string | undefined {
-	const namespace = document[CONFIG_PROFILES_KEY];
-	if (!isRecord(namespace) || typeof namespace.active !== "string") return undefined;
-	try {
-		return validateProfileName(namespace.active);
-	} catch {
-		return undefined;
-	}
-}
-
-/** Read a Profile marker without throwing for a missing or malformed Settings document. */
-export function readActiveProfileName(settingsPath: string): string | undefined {
-	let document: unknown;
-	try {
-		document = JSON.parse(readFileSync(settingsPath, "utf-8"));
-	} catch {
-		return undefined;
-	}
-	if (!isRecord(document)) return undefined;
-	return parseActiveProfileName(document);
 }
 
 /** Return the validated Profile name in the last configProfiles session entry. */
@@ -69,12 +43,11 @@ export function profilePath(profilesDirectory: string, name: string): string {
 
 /**
  * Return the validated Profile name declared in the per-project document
- * (`<project>/.pi/pi-config.json`), or undefined for an untrusted project or
- * a missing, malformed, or invalid declaration. Untrusted projects never
- * touch the file.
+ * (`<project>/.pi/pi-config.json`), or undefined for a missing, malformed, or
+ * invalid declaration. The active Profile is per-project state regardless of
+ * project trust, so this read is not trust-gated.
  */
-export function readProjectProfile(cwd: string, projectTrusted: boolean): string | undefined {
-	if (!projectTrusted) return undefined;
+export function readProjectProfile(cwd: string): string | undefined {
 	const profile = readProjectDocument(cwd, true)?.profile;
 	if (typeof profile !== "string") return undefined;
 	try {
@@ -83,3 +56,17 @@ export function readProjectProfile(cwd: string, projectTrusted: boolean): string
 		return undefined;
 	}
 }
+
+/**
+ * Declare `name` as the project's active Profile, preserving every other key.
+ * `undefined` removes the declaration (used to roll back a failed transition).
+ */
+export function writeProjectProfile(cwd: string, name: string | undefined): void {
+	if (name !== undefined) validateProfileName(name);
+	mutateProjectDocument(cwd, true, (document) => {
+		if (name !== undefined) return { ...document, profile: name };
+		const { profile: _previous, ...rest } = document;
+		return rest;
+	});
+}
+

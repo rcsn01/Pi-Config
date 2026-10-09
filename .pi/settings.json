@@ -17,8 +17,5 @@
     "enabled": true,
     "maxRetries": 5,
     "baseDelayMs": 2000
-  },
-  "configProfiles": {
-    "active": "ollama"
   }
 }

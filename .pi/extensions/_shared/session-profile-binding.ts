@@ -5,11 +5,9 @@ import type {
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { resolve } from "node:path";
-import { isProjectTrustedContext } from "../_shared/pi-config.ts";
 import {
 	profilePath,
 	profilesDirectoryFor,
-	readActiveProfileName,
 	readProjectProfile,
 	sessionProfileName,
 } from "./profile-document.ts";
@@ -133,8 +131,6 @@ function resolveSessionProfileSlot(input: {
 	profilesDirectory: string;
 	/** Project cwd; undefined skips the project layer entirely. */
 	projectCwd?: string;
-	/** Honored only together with `projectCwd`; the accessor gates untrusted. */
-	projectTrusted?: boolean;
 }): SessionProfileSlot {
 	const fromEntry = sessionProfileName(input.entries);
 	if (fromEntry !== undefined) {
@@ -165,28 +161,16 @@ function resolveSessionProfileSlot(input: {
 			};
 		}
 
-		// Trusted project declaration wins over the global settings marker; the
-		// accessor gates untrusted projects without filesystem access.
+		// The project declaration (`.pi/pi-config.json` `profile`) is the only
+		// persisted marker; it applies regardless of project trust.
 		const fromProject = input.projectCwd === undefined
 			? undefined
-			: readProjectProfile(input.projectCwd, input.projectTrusted === true);
+			: readProjectProfile(input.projectCwd);
 		if (fromProject !== undefined) {
 			return {
 				binding: Object.freeze({
 					profileName: fromProject,
 					settingsPath: profilePath(input.profilesDirectory, fromProject),
-				}),
-				origin: "marker",
-				remembered: false,
-			};
-		}
-
-		const fromMarker = readActiveProfileName(input.settingsPath);
-		if (fromMarker !== undefined) {
-			return {
-				binding: Object.freeze({
-					profileName: fromMarker,
-					settingsPath: profilePath(input.profilesDirectory, fromMarker),
 				}),
 				origin: "marker",
 				remembered: false,
@@ -221,11 +205,7 @@ function enterSessionProfile(
 		previousSessionFile: event.previousSessionFile,
 		settingsPath: state.settingsPath,
 		profilesDirectory: state.profilesDirectory,
-		// Capability probe shared with pi-config.ts: an absent API on older pi
-		// hosts means the project layer cannot be evaluated — treat as untrusted
-		// rather than crash session start for every Profile-aware adapter.
 		projectCwd: ctx.cwd,
-		projectTrusted: isProjectTrustedContext(ctx),
 	});
 	slots.set(state.pathKey, slot);
 	return slot;

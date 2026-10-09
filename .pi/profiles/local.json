@@ -34,9 +34,6 @@
       "judge": "default"
     }
   },
-  "configProfiles": {
-    "active": "local"
-  },
   "guardian": {
     "provider": "ollama-cloud",
     "modelId": "glm-5.3-flash",

@@ -134,13 +134,13 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 		) => {
 			const adapter: ProfileTransitionLifecycleAdapter = {
 				switchProfile: async (name) => {
-					await store.switchProfile(name);
+					await store.switchProfile(ctx.cwd, name);
 				},
 				createProfile: async (name, source) => {
-					await store.createProfile(name, source);
+					await store.createProfile(ctx.cwd, name, source);
 				},
 				deleteProfile: async (name, options) => {
-					await store.deleteProfile(name, options);
+					await store.deleteProfile(ctx.cwd, name, options);
 				},
 				readProfile: (name) => store.readProfile(name),
 				publishSessionProfile: (name) => {
@@ -205,7 +205,7 @@ export function createConfigProfilesExtension(dependencies: ConfigProfilesDepend
 				if (sessionOwnsProfile) {
 					await runProfileTransition(deleteActiveProfile(name), ctx);
 				} else {
-					await store.deleteProfile(name, { replaceMarker: false });
+					await store.deleteProfile(ctx.cwd, name, { replaceMarker: false });
 					ctx.ui.notify(`Deleted profile "${name}".`, "info");
 				}
 			} catch (error) {

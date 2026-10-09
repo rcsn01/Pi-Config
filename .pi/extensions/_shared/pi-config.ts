@@ -3,10 +3,11 @@
  *
  * Extension-owned per-project state for the Pi-Config suite. Pi never parses,
  * merges, or validates this file — it is not part of the pi-native
- * `.pi/settings.json` namespace. It travels with the repo, so it is honored
- * only for trusted projects (`ctx.isProjectTrusted()`); every accessor here
- * takes an explicit `projectTrusted` flag and treats untrusted projects as
- * "nothing declared" without touching the file.
+ * `.pi/settings.json` namespace. It travels with the repo, so every accessor
+ * here takes an explicit `projectTrusted` flag and treats untrusted projects
+ * as "nothing declared" without touching the file. The `profile` key is the
+ * one exception: its owner (profile-document.ts) always passes `true`, because
+ * the active Profile is per-project state regardless of trust.
  *
  * Namespace semantics live with their domain owners — profile-document.ts
  * (`profile`), policy-permissions/mode-store.ts (`permissions`), and
@@ -15,7 +16,7 @@
  * atomic writes, and sibling/unknown-key preservation.
  *
  * Precedence (see .pi/docs/pi-config.md):
- *   profile       session entry > handoff > project `profile` > global marker
+ *   profile       session entry > handoff > project `profile` > none
  *   approval mode project `permissions.mode` > "default"
  *   exec policy   global rules > project rules > global defaultAction
  *
@@ -74,9 +75,8 @@ export function mutateProjectNamespace(
 	namespace: string,
 	mutate: (namespace: Record<string, unknown> | undefined) => Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
-	if (!projectTrusted) return undefined;
 	let applied: Record<string, unknown> | undefined;
-	mutateDocumentAtPath(piConfigPath(cwd), (document) => {
+	mutateProjectDocument(cwd, projectTrusted, (document) => {
 		const existing = document[namespace];
 		const current = isRecord(existing) ? existing : undefined;
 		applied = mutate(current);
@@ -85,6 +85,20 @@ export function mutateProjectNamespace(
 		return document;
 	});
 	return applied;
+}
+
+/**
+ * Trust-gated whole-document mutation for top-level scalar keys (e.g.
+ * `profile`). Unknown keys survive unless `mutate` drops them. Untrusted
+ * projects: no read, no write, returns undefined.
+ */
+export function mutateProjectDocument(
+	cwd: string,
+	projectTrusted: boolean,
+	mutate: (document: Record<string, unknown>) => Record<string, unknown>,
+): Record<string, unknown> | undefined {
+	if (!projectTrusted) return undefined;
+	return mutateDocumentAtPath(piConfigPath(cwd), mutate);
 }
 
 /**

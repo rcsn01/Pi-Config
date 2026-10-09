@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { piConfigPath } from "../_shared/pi-config.ts";
 import { getStatusRegistry } from "../_shared/status-registry.ts";
 import { registerSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { createConfigProfilesExtension } from "./index.ts";
@@ -13,7 +14,6 @@ interface HarnessOptions {
 	profiles?: string[];
 	active?: string;
 	cwd?: string;
-	projectTrusted?: boolean;
 	switchError?: Error;
 	createError?: Error;
 	deleteError?: Error;
@@ -31,24 +31,26 @@ const DEFAULT_MODEL = { provider: "ollama", id: "deepseek-v4-flash:0731-cloud" }
 function createHarness(options: HarnessOptions = {}) {
 	const handlers = new Map<string, (event: any, ctx: any) => unknown>();
 	const commands = new Map<string, any>();
-	const settingsDirectory = mkdtempSync(join(tmpdir(), "pi-config-profiles-"));
-	tempDirectories.push(settingsDirectory);
-	const settingsPath = join(settingsDirectory, "settings.json");
-	const profilesDirectory = join(settingsDirectory, "profiles");
-	mkdirSync(profilesDirectory);
-	writeFileSync(
-		settingsPath,
-		`${JSON.stringify({ configProfiles: { active: options.active ?? "default" } }, null, 2)}\n`,
-	);
-	const switchProfile = vi.fn(async (name: string) => {
+	// Project layout: settings and profiles under <root>/.pi, marker in
+	// <root>/.pi/pi-config.json, ctx.cwd = <root>.
+	const projectRoot = mkdtempSync(join(tmpdir(), "pi-config-profiles-"));
+	tempDirectories.push(projectRoot);
+	const settingsPath = join(projectRoot, ".pi", "settings.json");
+	const profilesDirectory = join(projectRoot, ".pi", "profiles");
+	mkdirSync(profilesDirectory, { recursive: true });
+	writeFileSync(settingsPath, "{}\n");
+	const writeMarker = (name: string) =>
+		writeFileSync(piConfigPath(projectRoot), `${JSON.stringify({ profile: name }, null, 2)}\n`);
+	writeMarker(options.active ?? "default");
+	const switchProfile = vi.fn(async (_cwd: string, name: string) => {
 		if (options.switchError) throw options.switchError;
 		return { changed: name !== (options.active ?? "default"), active: name };
 	});
-	const createProfile = vi.fn(async (name: string, source?: string) => {
+	const createProfile = vi.fn(async (_cwd: string, name: string, source?: string) => {
 		if (options.createError) throw options.createError;
 		return { name, source };
 	});
-	const deleteProfile = vi.fn(async (name: string, deleteOptions?: { replaceMarker?: boolean }) => {
+	const deleteProfile = vi.fn(async (_cwd: string, name: string, deleteOptions?: { replaceMarker?: boolean }) => {
 		if (options.deleteError) throw options.deleteError;
 		return {
 			name,
@@ -95,8 +97,8 @@ function createHarness(options: HarnessOptions = {}) {
 	const ctx = {
 		hasUI: true,
 		mode: "tui",
-		cwd: options.cwd ?? "/project",
-		isProjectTrusted: vi.fn(() => options.projectTrusted ?? false),
+		cwd: options.cwd ?? projectRoot,
+		isProjectTrusted: vi.fn(() => false),
 		ui: { notify, select, input, confirm, setStatus },
 		reload,
 		model: options.model ?? DEFAULT_MODEL,
@@ -151,6 +153,7 @@ function createHarness(options: HarnessOptions = {}) {
 		appendEntry,
 		modelRegistry,
 		settingsPath,
+		writeMarker,
 	};
 }
 
@@ -183,10 +186,12 @@ describe("config profiles extension", () => {
 	it("coordinates an injected ProfileStore using a custom directory", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-config-profiles-custom-"));
 		tempDirectories.push(root);
-		const settingsPath = join(root, "settings.json");
+		const settingsPath = join(root, ".pi", "settings.json");
 		const profilesDirectory = join(root, "custom-profiles");
-		mkdirSync(profilesDirectory);
-		writeFileSync(settingsPath, `${JSON.stringify({ configProfiles: { active: "focused" } })}\n`);
+		mkdirSync(profilesDirectory, { recursive: true });
+		mkdirSync(join(root, ".pi"));
+		writeFileSync(settingsPath, "{}\n");
+		writeFileSync(piConfigPath(root), `${JSON.stringify({ profile: "focused" })}\n`);
 		writeFileSync(join(profilesDirectory, "focused.json"), "{}\n");
 		const store = createProfileStore({ settingsPath, profilesDirectory });
 		const handlers = new Map<string, (event: any, ctx: any) => unknown>();
@@ -207,7 +212,7 @@ describe("config profiles extension", () => {
 		const ctx = {
 			hasUI: true,
 			ui: { notify: vi.fn(), setStatus: vi.fn() },
-			cwd: "/project",
+			cwd: root,
 			isProjectTrusted: () => false,
 			sessionManager: { getBranch: vi.fn(() => []) },
 		} as any;
@@ -324,12 +329,12 @@ describe("config profiles extension", () => {
 	it("copies the session startup profile after another session changes the marker", async () => {
 		const harness = createHarness({ active: "default" });
 		await harness.emit("session_start", "startup");
-		writeFileSync(harness.settingsPath, `${JSON.stringify({ configProfiles: { active: "focused" } }, null, 2)}\n`);
+		harness.writeMarker("focused");
 		harness.select.mockResolvedValue("  Add profile");
 		harness.input.mockResolvedValue("copy");
 		await harness.commands.get("profile").handler("", harness.ctx);
 
-		expect(harness.createProfile).toHaveBeenCalledWith("copy", "default");
+		expect(harness.createProfile).toHaveBeenCalledWith(harness.ctx.cwd, "copy", "default");
 	});
 
 	it("clears the profile status on shutdown", async () => {
@@ -350,7 +355,7 @@ describe("config profiles extension", () => {
 	it("switches a direct argument, records the entry, notifies, and reloads exactly once", async () => {
 		const harness = createHarness({ active: "default" });
 		await harness.runProfileCommand("focused");
-		expect(harness.switchProfile).toHaveBeenCalledWith("focused");
+		expect(harness.switchProfile).toHaveBeenCalledWith(harness.ctx.cwd, "focused");
 		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "focused" });
 		expect(harness.notify).toHaveBeenCalledWith('Switched to profile "focused". Reloading…', "info");
 		expect(harness.reload).toHaveBeenCalledOnce();
@@ -511,7 +516,7 @@ describe("config profiles extension", () => {
 			"  Add profile",
 			"  Delete profile",
 		]);
-		expect(harness.switchProfile).toHaveBeenCalledWith("focused");
+		expect(harness.switchProfile).toHaveBeenCalledWith(harness.ctx.cwd, "focused");
 		expect(harness.reload).toHaveBeenCalledOnce();
 	});
 
@@ -522,7 +527,7 @@ describe("config profiles extension", () => {
 		await harness.runProfileCommand("");
 
 		expect(harness.input).toHaveBeenCalledWith("New settings profile name", "profile-name");
-		expect(harness.createProfile).toHaveBeenCalledWith("focused-copy", "default");
+		expect(harness.createProfile).toHaveBeenCalledWith(harness.ctx.cwd, "focused-copy", "default");
 		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "focused-copy" });
 		expect(harness.notify).toHaveBeenCalledWith('Added profile "focused-copy". Reloading…', "info");
 		expect(harness.reload).toHaveBeenCalledOnce();
@@ -535,7 +540,7 @@ describe("config profiles extension", () => {
 		await harness.runProfileCommand("");
 
 		expect(harness.select).toHaveBeenCalledWith("Select settings profile", ["  Add profile", "  Delete profile"]);
-		expect(harness.createProfile).toHaveBeenCalledWith("first", undefined);
+		expect(harness.createProfile).toHaveBeenCalledWith(harness.ctx.cwd, "first", undefined);
 		expect(harness.reload).toHaveBeenCalledOnce();
 	});
 
@@ -576,7 +581,7 @@ describe("config profiles extension", () => {
 			'Delete settings profile "other"?',
 			"This cannot be undone.",
 		);
-		expect(harness.deleteProfile).toHaveBeenCalledWith("other", { replaceMarker: false });
+		expect(harness.deleteProfile).toHaveBeenCalledWith(harness.ctx.cwd, "other", { replaceMarker: false });
 		expect(harness.notify).toHaveBeenCalledWith('Deleted profile "other".', "info");
 		expect(harness.reload).not.toHaveBeenCalled();
 	});
@@ -629,7 +634,7 @@ describe("config profiles extension", () => {
 		harness.confirm.mockResolvedValue(true);
 		await harness.runProfileCommand("");
 
-		expect(harness.deleteProfile).toHaveBeenCalledWith("focused", { replaceMarker: true });
+		expect(harness.deleteProfile).toHaveBeenCalledWith(harness.ctx.cwd, "focused", { replaceMarker: true });
 		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "default" });
 		expect(harness.notify).toHaveBeenCalledWith('Deleted profile "focused". Switched to "default". Reloading…', "info");
 		expect(harness.reload).toHaveBeenCalledOnce();
@@ -720,7 +725,7 @@ describe("config profiles extension", () => {
 		await harness.emit("session_start", "startup");
 		// Another session switches the marker after this session started. The
 		// captured binding remains focused for this session.
-		writeFileSync(harness.settingsPath, `${JSON.stringify({ configProfiles: { active: "github" } }, null, 2)}\n`);
+		harness.writeMarker("github");
 		harness.notify.mockClear();
 		await harness.commands.get("profile").handler("focused", harness.ctx);
 
@@ -750,7 +755,7 @@ describe("config profiles extension", () => {
 		});
 		await harness.runProfileCommand("github");
 
-		expect(harness.switchProfile).toHaveBeenCalledWith("github");
+		expect(harness.switchProfile).toHaveBeenCalledWith(harness.ctx.cwd, "github");
 		expect(harness.appendEntry).toHaveBeenCalledWith("configProfiles", { active: "github" });
 		expect(harness.notify).toHaveBeenCalledWith('Switched to profile "github". Reloading…', "info");
 		expect(harness.reload).toHaveBeenCalledOnce();

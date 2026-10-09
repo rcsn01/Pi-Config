@@ -34,9 +34,6 @@
       "judge": 256000
     }
   },
-  "configProfiles": {
-    "active": "ollama"
-  },
   "advisor": {
     "enabled": true,
     "model": "ollama-cloud/glm-5.3",

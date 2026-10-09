@@ -34,9 +34,6 @@
       "judge": "default"
     }
   },
-  "configProfiles": {
-    "active": "default"
-  },
   "guardian": {
     "provider": "openai-codex",
     "modelId": "gpt-5.6-luna",

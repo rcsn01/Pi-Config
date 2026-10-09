@@ -136,9 +136,12 @@ describe("advisor extension", () => {
 		roots.push(root);
 		const settingsPath = join(root, "settings.json");
 		mkdirSync(join(root, "profiles"));
-		writeFileSync(settingsPath, JSON.stringify({ configProfiles: { active: "focused" } }));
+		writeFileSync(settingsPath, "{}");
+		mkdirSync(join(root, ".pi"));
+		writeFileSync(join(root, ".pi", "pi-config.json"), JSON.stringify({ profile: "focused" }));
 		writeFileSync(join(root, "profiles", "focused.json"), JSON.stringify({ advisor: { model: "anthropic/strong", enabled: true } }));
 		const harness = makePi({ settingsPath });
+		harness.ctx.cwd = root;
 		createAdvisorExtension({ settingsPath })(harness.pi);
 		await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
 		expect(harness.getActiveTools()).toContain("advisor");
