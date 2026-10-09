@@ -1,7 +1,11 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { extractPathsFromInput } from "./path-policy.ts";
 import {
+	extractExternalPathsFromCommand,
 	githubRepositorySnapshotOperation,
 	isNetworkCommand,
 	isReadOnlyShellCommand,
@@ -18,6 +22,35 @@ describe("tool classifications", () => {
 		expect(githubRepositorySnapshotOperation(`node ${relativeScript} list`, foreignCwd)).toBeUndefined();
 		expect(isNetworkCommand(`node ${relativeScript} list`, foreignCwd)).toBe(true);
 		expect(isReadOnlyShellCommand(`node ${relativeScript} list`, foreignCwd)).toBe(false);
+	});
+
+	it("recognizes the helper addressed through a symlink from a foreign workspace", () => {
+		// pi presents global skills via ~/.pi/agent/skills, a symlink into this
+		// repository; that path must classify as the same trusted script.
+		const realScript = fileURLToPath(new URL("../../skills/github-repo-explorer/scripts/github-repo-snapshot.mjs", import.meta.url));
+		const foreignCwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-snapshot-policy-"));
+		try {
+			const linkedScript = path.join(foreignCwd, "github-repo-snapshot.mjs");
+			fs.symlinkSync(realScript, linkedScript);
+			expect(githubRepositorySnapshotOperation(`node ${linkedScript} list`, foreignCwd)).toBe("list");
+			expect(githubRepositorySnapshotOperation(`node ${linkedScript} acquire owner/repo`, foreignCwd)).toBe("acquire");
+			expect(githubRepositorySnapshotOperation(`node ${linkedScript} acquire https://github.com/owner/repo`, foreignCwd)).toBe("acquire");
+			expect(githubRepositorySnapshotOperation(`node ${linkedScript} remove ghr_${"a".repeat(24)} --confirm`, foreignCwd)).toBe("remove");
+			expect(isNetworkCommand(`node ${linkedScript} acquire owner/repo`, foreignCwd)).toBe(true);
+			expect(isReadOnlyShellCommand(`node ${linkedScript} list`, foreignCwd)).toBe(true);
+			expect(extractExternalPathsFromCommand(`node ${linkedScript} acquire owner/repo`, foreignCwd)).toEqual([]);
+
+			// Symlinks to anything else — or to nothing — are not the bundled helper.
+			const strangerScript = path.join(foreignCwd, "stranger.mjs");
+			fs.symlinkSync(process.execPath, strangerScript);
+			expect(githubRepositorySnapshotOperation(`node ${strangerScript} list`, foreignCwd)).toBeUndefined();
+			fs.rmSync(strangerScript);
+			const brokenScript = path.join(foreignCwd, "broken.mjs");
+			fs.symlinkSync(path.join(foreignCwd, "missing.mjs"), brokenScript);
+			expect(githubRepositorySnapshotOperation(`node ${brokenScript} list`, foreignCwd)).toBeUndefined();
+		} finally {
+			fs.rmSync(foreignCwd, { recursive: true, force: true });
+		}
 	});
 
 	it("classifies skill snapshot commands by operation from the owning workspace", () => {

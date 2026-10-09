@@ -186,8 +186,12 @@ export function extractExternalPathsFromCommand(command: string, cwd: string): s
 	const pathPattern = /(?:^|[\s;|&`$()!])((?:\/[^\s;|&`$()!*?"'<>{}[\]\\#]{2,})|~\/[^\s;|&`$()!*?"'<>{}[\]\\#]+|[A-Z]:\\[^\s;|&`$()!*?"'<>{}[\]\\#]+)/g;
 	const normalized = normalizeShellCommand(command);
 	// The helper's absolute script path may be outside the workspace; scan its arguments, not the trusted executable path.
-	const trustedHelperPrefix = `node ${GITHUB_SNAPSHOT_HELPER_ABSOLUTE_PATH}`;
-	const pathScanCommand = normalized.startsWith(trustedHelperPrefix)
+	const tokens = normalized.split(/[ \t]+/);
+	const trustedHelperPrefix = tokens.length >= 2 && tokens[0] === "node" && isBundledSnapshotHelperPath(tokens[1] ?? "", cwd)
+		? `node ${tokens[1]}`
+		: undefined;
+	const pathScanCommand = trustedHelperPrefix !== undefined
+		&& normalized.startsWith(trustedHelperPrefix)
 		&& (normalized.length === trustedHelperPrefix.length || /[ \t]/.test(normalized[trustedHelperPrefix.length]))
 		? normalized.slice(trustedHelperPrefix.length)
 		: command;
@@ -240,15 +244,36 @@ export function mentionsGithubRepositorySnapshotHelper(command: string): boolean
 	return normalizeShellCommand(command).includes(GITHUB_SNAPSHOT_HELPER_BASENAME);
 }
 
+/**
+ * True when `candidate` names the bundled snapshot helper script: the
+ * workspace-relative path resolved against cwd, or a clean absolute path —
+ * no `.` or `..` segments — that canonicalizes to the bundled script.
+ * Canonicalization matters because pi presents global skills through
+ * ~/.pi/agent/skills, a symlink into this repository, while Node's ESM
+ * loader resolves this extension to its real path, so the same trusted
+ * script is legitimately addressed by more than one string. Symlinked
+ * aliases stay pinned to the bundled file's identity; traversal spellings
+ * and every other path keep failing closed.
+ */
+function isBundledSnapshotHelperPath(candidate: string, cwd: string): boolean {
+	if (candidate === GITHUB_SNAPSHOT_HELPER_PATH) {
+		return path.resolve(cwd, candidate) === GITHUB_SNAPSHOT_HELPER_ABSOLUTE_PATH;
+	}
+	if (!path.isAbsolute(candidate)) return false;
+	if (candidate.split("/").some((segment) => segment === "." || segment === "..")) return false;
+	if (candidate === GITHUB_SNAPSHOT_HELPER_ABSOLUTE_PATH) return true;
+	try {
+		return fs.realpathSync(candidate) === fs.realpathSync(GITHUB_SNAPSHOT_HELPER_ABSOLUTE_PATH);
+	} catch {
+		return false;
+	}
+}
+
 export function githubRepositorySnapshotOperation(command: string, cwd = process.cwd()): "acquire" | "list" | "remove" | undefined {
 	const normalized = normalizeShellCommand(command);
 	if (containsSnapshotCommandSyntax(normalized)) return undefined;
 	const args = normalized.split(/[ \t]+/);
-	const helperPath = args[1];
-	const isBundledAbsolutePath = helperPath === GITHUB_SNAPSHOT_HELPER_ABSOLUTE_PATH;
-	const isBundledWorkspacePath = helperPath === GITHUB_SNAPSHOT_HELPER_PATH
-		&& path.resolve(cwd, helperPath) === GITHUB_SNAPSHOT_HELPER_ABSOLUTE_PATH;
-	if (args[0] !== "node" || (!isBundledAbsolutePath && !isBundledWorkspacePath)) return undefined;
+	if (args[0] !== "node" || !isBundledSnapshotHelperPath(args[1] ?? "", cwd)) return undefined;
 
 	switch (args[2]) {
 		case "list":
