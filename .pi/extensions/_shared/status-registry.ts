@@ -8,7 +8,8 @@
  * Canonical status order and style:
  *   profile 10 muted, approval-mode 20 muted, plan 30 accent,
  *   plan-pending 40 accent, plan-runtime 50 warning, workflow 60 accent,
- *   side-mode 70 accent, advisor 80 muted right, cache-effort 90 muted.
+ *   side-mode 70 accent, advisor 80 muted right, cache-effort 90 muted,
+ *   monitor 100 accent.
  *
  * Re-declaring an id replaces its previous declaration. This makes identical
  * declarations idempotent and gives conflicting declarations a deterministic

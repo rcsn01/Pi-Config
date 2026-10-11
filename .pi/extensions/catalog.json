@@ -169,6 +169,13 @@
 			"requires": ["policy-permissions", "session-compaction"],
 			"conflicts": []
 		},
+		"tools-monitor": {
+			"displayName": "Background Monitor",
+			"pack": "core",
+			"defaultEnabled": true,
+			"requires": [],
+			"conflicts": []
+		},
 		"tools-todo": {
 			"displayName": "Todo",
 			"pack": "core",

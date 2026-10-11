@@ -76,6 +76,21 @@ function guardianAsk(
 }
 
 /**
+ * Tools that wrap a built-in capability are classified as that capability:
+ * `monitor_start` runs its `command` like bash and follows its `log_path` like
+ * a read. Anything else passes through unchanged.
+ */
+function asBuiltinCall(input: ToolCallInput): ToolCallInput {
+	if (input.toolName !== "monitor_start") return input;
+	const args = (input.input && typeof input.input === "object" ? input.input : {}) as Record<string, unknown>;
+	if (typeof args.command === "string" && args.command.trim() !== "") {
+		return { toolName: "bash", input: { command: args.command } };
+	}
+	if (typeof args.log_path === "string") return { toolName: "read", input: { path: args.log_path } };
+	return input;
+}
+
+/**
  * Classify a tool call into an ordered verdict. Empty list = allowed by policy.
  * Order of checks preserved from the original handler:
  *  1. execpolicy (bash, all modes)
@@ -86,9 +101,10 @@ function guardianAsk(
  *  6. default/auto-review: external path writes
  */
 export function classifyToolCall(
-	input: ToolCallInput,
+	originalInput: ToolCallInput,
 	ctx: EvaluateContext,
 ): readonly PermissionStep[] {
+	const input = asBuiltinCall(originalInput);
 	const steps: PermissionStep[] = [];
 	const { toolName } = input;
 	const { mode, cwd, hasUI, execPolicy } = ctx;

@@ -82,7 +82,7 @@ extension.
   to muted style and tail ordering. Adapters: config-profiles,
   policy-permissions, workflows-plan (`plan`, `plan-pending`, `plan-runtime`),
   workflows-engine, workflows-side-conversation, tools-advisor (right
-  placement), and telemetry-cache-effort.
+  placement), telemetry-cache-effort, and tools-monitor.
 
 ## Telemetry dashboards
 
@@ -374,6 +374,10 @@ extension.
 - **Repository snapshot** — an immutable, commit-pinned source tree under `.pi/repos`.
 - **Repository snapshot helper** — the deep module in `.pi/skills/github-repo-explorer/scripts/github-repo-snapshot.mjs` that owns acquisition, manifests, limits, listing, locking, and explicit removal behind a small CLI interface.
 - **GitHub repository exploration skill** — the project skill at `.pi/skills/github-repo-explorer/SKILL.md`; it directs remote inspection through the helper and the built-in file tools while keeping repository files treated as untrusted data.
+
+## Background monitors
+
+- **Monitor** — a session-scoped watcher in `tools-monitor` over a command it runs or a log file it follows (optionally tied to a pid). Lines are classed as alert, done, or progress; progress only updates the status line, while batched alert/done reports and the final report (end reason plus output tail) are follow-up messages that wake the agent. Monitors end on exit, pid exit, a log done line, stop, or hard expiry, and owned commands die with the session. Policy permissions classify `monitor_start` as bash (command) or read (log path).
 
 ## Ollama Cloud catalog
 

@@ -597,4 +597,22 @@ describe("classifyToolCall", () => {
 			}
 		});
 	});
+
+	// ── Wrapping tools ──────────────────────────────────────────────
+	describe("monitor_start", () => {
+		it("classifies a monitored command exactly like bash", () => {
+			for (const mode of ["read-only", "default", "auto-review"] as const) {
+				expect(classify("monitor_start", { command: "sudo rm -rf /tmp/x", label: "x" }, mode))
+					.toEqual(classify("bash", { command: "sudo rm -rf /tmp/x" }, mode));
+			}
+		});
+
+		it("classifies a followed log exactly like a read", () => {
+			for (const mode of ["read-only", "default"] as const) {
+				expect(classify("monitor_start", { log_path: "/etc/hosts", pid: 1 }, mode))
+					.toEqual(classify("read", { path: "/etc/hosts" }, mode));
+			}
+			expect(classify("monitor_start", { log_path: `${CWD}/build.log` }, "read-only")).toEqual([]);
+		});
+	});
 });
