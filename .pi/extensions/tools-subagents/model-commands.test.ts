@@ -556,3 +556,16 @@ describe("subagents model command", () => {
 		expect(config.edits).toHaveLength(0);
 	});
 });
+describe("human background run controls", () => {
+	it("lists and cancels runs without changing model or thinking configuration", async () => {
+		const { runHarness } = await import("./background-test-harness.ts");
+		const { agentResult } = await import("./test-harness.ts");
+		const h = runHarness(); const [run] = h.spawn(); const config = memoryConfigStore(); const ctx = context();
+		const command = createSubagentsCommand({ config, registry: memoryRegistry(), getRuns: () => h.manager });
+		await command.handler("runs", ctx);
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(run.runId), "info");
+		await command.handler(`cancel ${run.runId}`, ctx);
+		expect(h.requests[0].signal.aborted).toBe(true); expect(config.updates).toEqual([]);
+		h.gates[0].resolve(agentResult()); await h.manager.wait([run.runId]);
+	});
+});

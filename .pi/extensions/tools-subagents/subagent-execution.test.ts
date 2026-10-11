@@ -53,7 +53,7 @@ describe("Subagent execution", () => {
 		});
 		const execution = createSubagentExecution({
 			registry,
-			config: memoryConfigStore({ maxConcurrency: 1 }),
+			config: memoryConfigStore({ maxConcurrency: 2 }),
 			childExecution: { execute },
 		});
 
@@ -175,29 +175,11 @@ describe("Subagent execution", () => {
 		expect(execute).not.toHaveBeenCalled();
 	});
 
-	it("uses assignments without loading invalid configured concurrency when overridden", async () => {
-		const configStore = memoryConfigStore({ maxConcurrency: 0, defaultModel: "openai/assignment" });
-		const load = vi.spyOn(configStore, "load");
-		const resolveLaunchBatch = vi.spyOn(configStore, "resolveLaunchBatch");
-		const execute = vi.fn(async (request: any) => agentResult({ agent: request.agent.name, task: request.task }));
-		const execution = createSubagentExecution({
-			registry: memoryRegistry(),
-			config: configStore,
-			childExecution: { execute },
-		});
-
-		const [result] = await execution.runBatch(
-			[{ agent: "worker", task: "inspect" }],
-			{ cwd: "/root", maxConcurrency: 2 },
-		);
-
-		expect(result.agent).toBe("worker");
-		expect(execute).toHaveBeenCalledWith(expect.objectContaining({
-			launch: { model: "openai/assignment", thinkingLevel: undefined, contextWindow: undefined },
-		}));
-		expect(load).not.toHaveBeenCalled();
-		expect(resolveLaunchBatch).toHaveBeenCalledTimes(1);
-		expect(resolveLaunchBatch.mock.calls[0]?.[1]).toBeUndefined();
+	it("validates aggregate concurrency even when a local limit is supplied", async () => {
+		const execute = vi.fn();
+		const execution = createSubagentExecution({ registry: memoryRegistry(), config: memoryConfigStore({ maxConcurrency: 0 }), childExecution: { execute } });
+		await expect(execution.runBatch([{ agent: "worker", task: "inspect" }], { cwd: "/root", maxConcurrency: 2 })).rejects.toThrow(/maxConcurrency/);
+		expect(execute).not.toHaveBeenCalled();
 	});
 
 	it("uses configured concurrency when the caller does not override it", async () => {
@@ -299,8 +281,8 @@ describe("Subagent execution", () => {
 		expect(load).toHaveBeenCalledTimes(2);
 
 		configStore.document = { maxConcurrency: 0, defaultModel: "" };
-		expect(await execution.runBatch([], { cwd: "/root", maxConcurrency: 2 })).toEqual([]);
-		expect(load).toHaveBeenCalledTimes(2);
+		await expect(execution.runBatch([], { cwd: "/root", maxConcurrency: 2 })).rejects.toThrow(/defaultModel/);
+		expect(load).toHaveBeenCalledTimes(3);
 		expect(loadAgents).not.toHaveBeenCalled();
 		expect(resolveLaunchBatch).not.toHaveBeenCalled();
 		expect(execute).not.toHaveBeenCalled();
@@ -332,8 +314,8 @@ describe("Subagent execution", () => {
 
 		calls.length = 0;
 		await expect(execution.runBatch([{ agent: "missing" }], { cwd: "/root", maxConcurrency: 1 }))
-			.rejects.toThrow("Unknown subagent: missing. Available: none");
-		expect(calls).toEqual(["registry"]);
+			.rejects.toThrow("invalid full config");
+		expect(calls).toEqual(["config"]);
 		expect(resolveLaunchBatch).not.toHaveBeenCalled();
 		expect(execute).not.toHaveBeenCalled();
 	});
@@ -410,7 +392,7 @@ describe("Subagent execution", () => {
 		});
 
 		expect(execute).toHaveBeenCalledTimes(1);
-		expect(load).not.toHaveBeenCalled();
+		expect(load).toHaveBeenCalledOnce();
 		expect(resolveLaunchBatch).toHaveBeenCalledTimes(1);
 		expect(execute).toHaveBeenCalledWith(expect.objectContaining({
 			agent: worker,
@@ -618,5 +600,26 @@ describe("Subagent execution", () => {
 		expect(failure).toBeTruthy();
 		expect(failure![1]).toMatchObject({ type: "failed", agent: "worker", error: "parallel-child-sentinel" });
 		expect(onProgress.mock.calls.filter(([, event]) => event.type === "failed")).toHaveLength(1);
+	});
+});
+
+describe("aggregate prepared execution", () => {
+	it("foreground batches and service methods share slots, local limits cannot raise the budget, and queued launches stay resolved", async () => {
+		const config = memoryConfigStore({ maxConcurrency: 1, defaultModel: "main", defaultThinkingLevel: "low" });
+		config.rememberMainModel({ provider: "openai", id: "old" } as any);
+		const requests: any[] = []; const gates = [deferred<void>(), deferred<void>(), deferred<void>()];
+		const execution = createSubagentExecution({ registry: memoryRegistry(), config, childExecution: { execute: async (request) => {
+			const index = requests.length; requests.push(request); await gates[index].promise; return agentResult({ task: request.task });
+		} } });
+		const foreground = execution.runBatch([{ agent: "worker", task: "one" }], { cwd: "/one", maxConcurrency: 20 });
+		const service = execution.runSubagent({ agent: "worker", task: "two", cwd: "/two", cacheAffinitySeed: "session" });
+		const batch = execution.prepareBatch([{ agent: "worker", task: "three", cwd: "/three" }], { cwd: "/root", cacheAffinitySeed: "session" });
+		const background = execution.runPrepared(batch.requests[0]);
+		config.rememberMainModel({ provider: "openai", id: "new" } as any); config.document.defaultThinkingLevel = "high";
+		expect(requests).toHaveLength(1);
+		gates[0].resolve(); await foreground; expect(requests).toHaveLength(2);
+		gates[1].resolve(); await service; expect(requests).toHaveLength(3);
+		expect(requests[2]).toMatchObject({ cwd: "/three", launch: { model: "openai/old", thinkingLevel: "low" }, cacheSessionId: deriveSubagentSessionId("session", "openai/old") });
+		gates[2].resolve(); await background;
 	});
 });

@@ -118,3 +118,11 @@ The active profile is recorded as `profile` in `.pi/pi-config.json` (see `.pi/do
 Switching writes back the outgoing settings, replaces the complete active document, applies the new profile's saved model selection for the current mode (`uiModelSelector.profiles.normal` or `.plan`) to the current session, and reloads Pi's resources while retaining the current conversation. A plain `/reload` without a profile switch still preserves the session model.
 
 Plan Mode reads its model from `uiModelSelector.profiles.plan` in the active `.pi/settings.json`. Model or thinking-level changes made while Plan Mode is active are saved back to that project setting; no separate global Plan Mode profile is used.
+
+Subagents run in the background by default in TUI/RPC and deliver their final
+results as follow-up messages. Use `background: false` for awaited execution,
+`subagent_status`, `subagent_wait`, and `subagent_cancel` for run control, or
+`/subagents runs` and `/subagents cancel <runId>` from the terminal. Print/JSON
+remain foreground-only. Handles expire on runtime or branch replacement. See
+[the subagent guide](.pi/extensions/tools-subagents/README.md#background-runs)
+for limits, cancellation, and Plan Mode restrictions.

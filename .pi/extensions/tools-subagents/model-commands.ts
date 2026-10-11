@@ -37,7 +37,11 @@ import {
 } from "./child-execution.ts";
 import { DEFAULT_MAX_CONCURRENCY } from "./subagent-execution.ts";
 
+import type { SubagentRunManager } from "./subagent-runs.ts";
+import { formatRunReports } from "./run-tools.ts";
+
 export interface ModelCommandDependencies {
+	getRuns?: () => SubagentRunManager | undefined;
 	registry?: AgentRegistry;
 	config?: SubagentConfigStore;
 	childExecution?: Pick<SubagentChildExecution, "inspectTools">;
@@ -480,7 +484,7 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 				`model ${agent.name} main`,
 				`thinking ${agent.name} inherit`,
 			]);
-			const values = ["status", "models", "model", "model all main", "thinking all default", "thinking all medium", ...agentCommands];
+			const values = ["runs", "cancel", "status", "models", "model", "model all main", "thinking all default", "thinking all medium", ...agentCommands];
 			const matches = values.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
 			return matches.length > 0 ? matches : null;
 		},
@@ -489,6 +493,16 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			const agents = registry.load();
 			const parts = args.trim().split(/\s+/).filter(Boolean);
 			try {
+				if (parts[0] === "runs" && parts.length === 1) {
+					ctx.ui.notify(formatRunReports(dependencies.getRuns?.()?.list() ?? [], false), "info");
+					return;
+				}
+				if (parts[0] === "cancel" && parts.length === 2) {
+					const manager = dependencies.getRuns?.();
+					if (!manager) throw new Error("No active background subagent runs.");
+					ctx.ui.notify(formatRunReports(manager.cancel([parts[1]!]), false), "info");
+					return;
+				}
 				if (parts.length === 0) {
 					if (ctx.mode === "tui") await runInteractiveModelCommand(agents, ctx);
 					else ctx.ui.notify(statusLines(agents).join("\n"), "info");

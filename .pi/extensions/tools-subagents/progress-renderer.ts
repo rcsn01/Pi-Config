@@ -168,6 +168,17 @@ export function renderSubagentResult(
 	terminalWidth: () => number = getTermWidth,
 	context: { isError?: boolean } = {},
 ): Text | Container {
+	const background = result.details as { mode?: string; runs?: import("./subagent-runs.ts").SubagentRunSnapshot[] } | undefined;
+	if (background?.mode === "background" && background.runs) {
+		const container = new Container();
+		const width = Math.max(1, terminalWidth() - 4);
+		for (const run of background.runs) {
+			container.addChild(new Text(truncateToolLine(theme.fg("accent", `background · ${run.runId} · ${run.agent} · ${run.status}`), width), 0, 0));
+			if (run.result) container.addChild(renderAgentProgress(run.result, theme, options.expanded, width));
+			else if (run.error) container.addChild(new Text(truncateToolLine(theme.fg("error", run.error), width), 0, 0));
+		}
+		return container;
+	}
 	const details = result.details as SubagentRenderDetails | undefined;
 	if (!details?.results?.length) {
 		const text = result.content

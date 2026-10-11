@@ -144,3 +144,17 @@ describe("subagent progress rendering", () => {
 		expect(output(error, 100)).toContain("✗ failed");
 	});
 });
+
+describe("background run rendering", () => {
+	it.each(["queued", "running", "cancelling", "completed", "failed", "cancelled"])("renders %s with run IDs and bounded widths", (status) => {
+		const result = {
+			content: [{ type: "text", text: "report" }],
+			details: { mode: "background", runs: [{ runId: "opaque-id", agent: "explorer", status, result: status === "completed" ? agentResult({ output: "Final output" }) : undefined }] },
+		};
+		const rendered = output(renderSubagentResult(result, { expanded: true }, theme(), () => 100));
+		expect(rendered).toContain(status); expect(rendered).toContain("opaque-id");
+		if (status === "completed") expect(rendered).toContain("Final output");
+		const narrow = renderSubagentResult(result, { expanded: false }, theme(), () => 25).render(25);
+		for (const line of narrow) expect(visibleWidth(line)).toBeLessThanOrEqual(25);
+	});
+});

@@ -115,6 +115,7 @@ export interface RunSubagentsParallelOptions {
 
 export interface SubagentService {
 	id: string;
+	cancelBackgroundRuns?(reason: string): Promise<void>;
 	registerAgent(config: AgentConfig): void;
 	unregisterAgent(name: string): void;
 	loadAgents(): AgentConfig[];

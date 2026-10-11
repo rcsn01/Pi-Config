@@ -402,10 +402,11 @@ describe("terminateChildProcess", () => {
 
 	it("resolves without signaling an already-exited or already-signaled child", async () => {
 		const killSpy = mockGroupKill();
+		killSpy.mockImplementation(() => { throw new Error("ESRCH"); });
 		const exited = fakeChild({ pid: 123, exitCode: 0 });
 		await expect(terminateChildProcess(exited, { graceMs: 1000, group: true })).resolves.toBeUndefined();
 		expect(exited.kill).not.toHaveBeenCalled();
-		expect(killSpy).not.toHaveBeenCalled();
+		expect(killSpy).toHaveBeenCalledWith(-123, 0);
 		expect(exited.listenerCount("exit")).toBe(0);
 
 		const signaled = fakeChild({ pid: 123, signalCode: "SIGKILL" });
@@ -909,5 +910,19 @@ describe("spawnInGroup", () => {
 		await expect(pending).resolves.toEqual({ kind: "exit", exitCode: 0 });
 		expect(stdout).toEqual([first, third]);
 		expect(stderr).toEqual([second]);
+	});
+});
+
+describe("exited group leader cancellation", () => {
+	it.skipIf(realPlatform === "win32")("signals surviving descendants even after leader exit", async () => {
+		vi.useFakeTimers();
+		const groupKill = vi.spyOn(process, "kill").mockImplementation(() => true);
+		try {
+			const child = fakeChild({ pid: 4321, exitCode: 0 });
+			const cleanup = terminateChildProcess(child, { graceMs: 3000, killWaitMs: 1000, group: true });
+			expect(groupKill).toHaveBeenCalledWith(-4321, "SIGTERM");
+			await vi.advanceTimersByTimeAsync(4000); await cleanup;
+			expect(groupKill).toHaveBeenCalledWith(-4321, "SIGKILL");
+		} finally { vi.restoreAllMocks(); vi.useRealTimers(); }
 	});
 });

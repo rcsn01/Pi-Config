@@ -1,6 +1,6 @@
 # Tools Subagents
 
-A Pi extension that registers one `subagent` tool and runs specialized agents in isolated child Pi processes.
+A Pi extension that runs specialized agents in isolated child Pi processes and provides background run controls.
 
 | Agent | Tools | Purpose |
 |---|---|---|
@@ -113,7 +113,7 @@ The subagent model and thinking configuration lives in the project-level `settin
 - `defaultContextWindow` is the intended context window (tokens) for agents without an individual override.
 - `agentContextWindows.<agent>` overrides the intended context window for one agent.
 - Thinking levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the UI only offers levels supported by the selected model.
-- `main` means the main Pi session's active `provider/model` at the moment the child is launched.
+- `main` means the main Pi session's active `provider/model` when the invocation is prepared, before it queues.
 - Legacy `default` remains accepted as an alias for `main`.
 - A specific model uses canonical `provider/model` syntax, such as `anthropic/claude-sonnet-4-6`.
 - Existing `provider/model:thinking` values remain supported and are normalized into separate child `--model` and `--thinking` arguments at launch.
@@ -147,7 +147,7 @@ Thinking is selected independently in this order:
 
 ### Dynamic `main` behavior
 
-The extension tracks the main model on session start and whenever `/model` changes it. It also checks the current tool context before an ordinary `subagent` call. Therefore, changing the main session model affects subsequently launched agents configured as `main`. An agent that is already running keeps the concrete model selected at its launch.
+The extension tracks the main model on session start and whenever `/model` changes it. It also checks the current tool context before an ordinary `subagent` call. Therefore, changing the main session model affects subsequently prepared invocations configured as `main`. Queued and running agents keep the concrete model selected during preparation.
 
 Only model identity is inherited from `main`. Configure thinking separately in `/subagents`; the main session's current thinking level is not copied automatically.
 
@@ -156,6 +156,8 @@ Only model identity is inherited from `main`. Configure thinking separately in `
 ```text
 /subagents
 /subagents status
+/subagents runs
+/subagents cancel <runId>
 /subagents models
 /subagents model
 /subagents model all main
@@ -306,7 +308,11 @@ tools-subagents/
 ├── launch-preparation.ts    # Agent validation and resolved child requests
 ├── child-execution.ts       # Child tool admission, launch arguments, process lifetime, observation, abort, and cleanup
 ├── child-event-ingestion.ts # Stdout framing, event state, usage, timing input, and terminal results
-├── subagent-execution.ts    # Direct execution, bounded scheduling, ordered results, and task-state snapshots
+├── subagent-execution.ts    # Prepared execution, ordered results, and task-state snapshots
+├── execution-scheduler.ts   # Shared FIFO child-process budget
+├── subagent-runs.ts         # Session-owned handles, waiting, and cancellation
+├── run-tools.ts             # Status, wait, and cancel tool adapters
+├── background-notifications.ts # Owned completion-message delivery
 ├── progress-renderer.ts     # Tool call and progress presentation
 ├── model-commands.ts        # /subagents command and interactive configuration
 ├── formatting.ts            # Token, duration, preview, and width formatting
@@ -317,3 +323,54 @@ tools-subagents/
     ├── repo-query.ts        # Pi tool adapter
     └── safe-bash.ts         # Restricted child bash extension
 ```
+
+## Background runs
+
+In TUI and RPC modes, `subagent` now returns background run handles by default.
+Each task gets its own `runId`. Continue unrelated work after admission. Pi sends
+one model-visible `subagent-completion` follow-up per terminal run and starts a
+turn when the parent is idle. Children remain one-shot, with no follow-up input.
+
+```json
+{"tasks":[{"agent":"explorer","task":"Objective: inspect the parser. Scope: src/parser. Allowed actions: read/search. Forbidden actions: edits. Required output: findings with paths. Stop conditions: identify the parser entry points."}]}
+```
+
+Set `"background": false` to await final results directly. Print and JSON modes
+default to foreground and reject explicit background requests.
+
+Control tools:
+
+- `subagent_status`: optional `runId`. Without it, list summaries without output
+  bodies. With it, retrieve progress, final output, usage, and timing diagnostics.
+- `subagent_wait`: `runIds`, optional integer `timeoutMs` from 0 to 300000,
+  default 30000. Zero polls current snapshots. Timeout and abort leave children
+  running. Results follow the requested ID order.
+- `subagent_cancel`: `runIds`. Cancellation affects only those runs. Queued runs
+  do not spawn; running processes receive SIGTERM, then SIGKILL after three seconds.
+
+`runIds` must contain 1–32 unique available IDs. All IDs are validated before any
+wait or cancellation. Aggregated output is limited to 50KB or 2,000 lines; use
+individual status retrieval for omitted output. `/subagents runs` lists handles
+and `/subagents cancel <runId>` cancels without another model turn.
+
+At most 32 tasks can be submitted at once, with at most 64 unfinished background
+runs. The latest 100 terminal results remain available. Handles belong to the
+current runtime and branch. Reload, shutdown, session replacement, and tree
+navigation cancel unfinished runs and do not reconnect children. Historical
+reports remain in the transcript. Compaction and ordinary turn completion do
+not cancel runs.
+
+All callers, including workflows and foreground tools, share the configured
+`maxConcurrency` process budget, default four. A service batch's explicit limit
+can lower but not raise that budget. Prepared launches retain resolved models,
+thinking levels, working directories, and cache-affinity IDs while queued.
+
+Plan Mode entry awaits background cleanup and refuses entry if cleanup fails.
+It permits only agents whose complete tool lists contain known read-only tools.
+`default`, mutating tools, and unknown custom capabilities are blocked in both
+execution modes. `worker` and `judge` remain workflow-only.
+
+POSIX children use isolated process groups for descendant cancellation. Windows
+termination is best effort and does not provide POSIX group guarantees. Child
+usage remains in results and diagnostics; this change does not add parent-session
+aggregate billing accounting.

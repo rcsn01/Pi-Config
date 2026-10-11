@@ -20,6 +20,7 @@ import type {
 	ToolCallEvent,
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
+import { getSubagentService } from "../_shared/subagent-service.ts";
 import type { PiNativeDefaults } from "../_shared/pi-defaults.ts";
 import { declareStatus } from "../_shared/status-registry.ts";
 import {
@@ -553,6 +554,7 @@ export function createPlanLifecycle(
 		try {
 			const prepared = await guard.run(
 				async () => {
+					await getSubagentService()?.cancelBackgroundRuns?.("Entering Plan Mode");
 					capturedDefaults = await normalDefaultsStore.capture(ctx.cwd, normalProfile);
 				},
 				async () => {
@@ -1085,7 +1087,17 @@ export function createPlanLifecycle(
 				await refreshRequested(event.ctx, currency.require(event.ctx));
 				return undefined as PlanLifecycleResult<E>;
 			case "toolCall":
-				if (!isPlanMode(planState)) return undefined as PlanLifecycleResult<E>;
+				if (!isPlanMode(planState) && modeTransition !== "entering") return undefined as PlanLifecycleResult<E>;
+				if (event.event.toolName === "subagent") {
+					const input = event.event.input as { tasks?: Array<{ agent?: unknown }>; agent?: unknown };
+					const tasks = Array.isArray(input.tasks) ? input.tasks : [{ agent: input.agent }];
+					const agents = getSubagentService()?.loadAgents() ?? [];
+					const allowed = new Set(["read", "grep", "find", "ls", "repo_query", "ddg_search", "ddg_fetch"]);
+					if (!tasks.length || tasks.some((task) => {
+						const agent = agents.find((agent) => agent.name === task.agent);
+						return !agent || agent.name === "default" || agent.tools.some((tool) => !allowed.has(tool));
+					})) return { block: true, reason: "Plan Mode only permits read-only explorer/researcher subagents with known tool capabilities." } as PlanLifecycleResult<E>;
+				}
 				if (MUTATING_TOOLS.has(event.event.toolName)) {
 					return {
 						block: true,

@@ -11,6 +11,7 @@ import {
 	type SubagentChildExecutionRequest,
 } from "./child-execution.ts";
 import { getDefaultSubagentConfig, type ExtensionConfig, type SubagentConfigStore } from "./config.ts";
+import { createSubagentExecutionScheduler } from "./execution-scheduler.ts";
 import { prepareSubagentLaunches } from "./launch-preparation.ts";
 
 export const DEFAULT_MAX_CONCURRENCY = 4;
@@ -35,7 +36,14 @@ export interface RunSubagentBatchOptions {
 	onSnapshot?: (snapshot: SubagentExecutionSnapshot) => void;
 }
 
+export interface PreparedSubagentBatch {
+	requests: readonly SubagentChildExecutionRequest[];
+	concurrency: number;
+}
+
 export interface SubagentExecution {
+	prepareBatch(tasks: readonly SubagentExecutionTask[], options: RunSubagentBatchOptions): PreparedSubagentBatch;
+	runPrepared(request: SubagentChildExecutionRequest, onStart?: () => void): Promise<AgentResult>;
 	runSubagent(options: RunSubagentOptions): Promise<AgentResult>;
 	runBatch(
 		tasks: readonly SubagentExecutionTask[],
@@ -162,6 +170,7 @@ export function createSubagentExecution(
 	const registry = dependencies.registry ?? agentRegistry;
 	const getConfig = () => dependencies.config ?? getDefaultSubagentConfig();
 	const childExecution = dependencies.childExecution ?? createSubagentChildExecution();
+	const scheduler = createSubagentExecutionScheduler();
 	const prepare = (
 		requests: readonly RunSubagentOptions[],
 		config = getConfig(),
@@ -169,8 +178,11 @@ export function createSubagentExecution(
 	) => prepareSubagentLaunches(requests, { registry, config, configSnapshot });
 
 	async function runSubagent(options: RunSubagentOptions): Promise<AgentResult> {
-		const [request] = prepare([options]);
-		return executePreparedSubagent(request, childExecution);
+		const config = getConfig();
+		const snapshot = config.load();
+		const [request] = prepare([options], config, snapshot);
+		scheduler.setLimit(snapshot.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
+		return runPrepared(request);
 	}
 
 	async function executeBatch(
@@ -178,14 +190,6 @@ export function createSubagentExecution(
 		options: RunSubagentBatchOptions,
 		compatibility: CompatibilityCallbacks = {},
 	): Promise<AgentResult[]> {
-		const config = getConfig();
-		const configSnapshot = options.maxConcurrency === undefined || options.maxConcurrency === null
-			? config.load()
-			: undefined;
-		const concurrency = Math.max(
-			1,
-			options.maxConcurrency ?? configSnapshot?.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY,
-		);
 		const liveResults = tasks.map(pendingResult);
 		const latestEvents: Array<SubagentProgressEvent | undefined> = new Array(tasks.length);
 		const publish = (changedIndex: number, phase: SubagentExecutionPhase, event?: SubagentProgressEvent) => {
@@ -220,9 +224,12 @@ export function createSubagentExecution(
 				await compatibility.onProgress?.(index, event, progress);
 			},
 		}));
-		const preparedRequests = prepare(requests, config, configSnapshot);
+		const { requests: preparedRequests, concurrency } = prepareBatch(tasks, options);
+		const observedRequests = preparedRequests.map((request, index) => ({
+			...request, onUpdate: requests[index].onUpdate, onProgress: requests[index].onProgress,
+		}));
 
-		return runOrdered(preparedRequests, concurrency, async (request, index) => {
+		return runOrdered(observedRequests, concurrency, async (request, index) => {
 			liveResults[index] = {
 				...liveResults[index],
 				model: request.launch.model,
@@ -231,7 +238,7 @@ export function createSubagentExecution(
 			};
 			publish(index, "started");
 
-			const result = await executePreparedSubagent(request, childExecution);
+			const result = await runPrepared(request);
 
 			liveResults[index] = result;
 			publish(index, "completed", latestEvents[index]);
@@ -241,7 +248,27 @@ export function createSubagentExecution(
 		});
 	}
 
+	function prepareBatch(tasks: readonly SubagentExecutionTask[], options: RunSubagentBatchOptions): PreparedSubagentBatch {
+		const config = getConfig();
+		const snapshot = config.load();
+		const aggregate = snapshot.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+		const concurrency = Math.min(aggregate, options.maxConcurrency ?? aggregate);
+		if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("Concurrency must be a positive integer.");
+		const requests = prepare(tasks.map((task) => ({
+			...task, cwd: task.cwd ?? options.cwd, signal: options.signal,
+			timeoutMs: options.timeoutMs, maxOutputBytes: options.maxOutputBytes,
+			cacheAffinitySeed: options.cacheAffinitySeed,
+		})), config, snapshot);
+		scheduler.setLimit(aggregate);
+		return { requests, concurrency };
+	}
+	function runPrepared(request: SubagentChildExecutionRequest, onStart?: () => void): Promise<AgentResult> {
+		return scheduler.run(() => { onStart?.(); return executePreparedSubagent(request, childExecution); }, request.signal);
+	}
+
 	return {
+		prepareBatch,
+		runPrepared,
 		runSubagent,
 		runBatch: (tasks, options) => executeBatch(tasks, options),
 		runSubagentsParallel: (options) => executeBatch(options.tasks, options, {

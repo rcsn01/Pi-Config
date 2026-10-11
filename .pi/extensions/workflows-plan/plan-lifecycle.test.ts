@@ -1033,3 +1033,45 @@ describe("stale work across branch changes", () => {
 	});
 });
 
+
+describe("Plan Mode subagent policy", () => {
+	it("allows read-only agents and blocks mixed, mutating, unknown, and legacy default requests", async () => {
+		const { registerSubagentService } = await import("../_shared/subagent-service.ts");
+		const unregister = registerSubagentService({
+			id: "tools-subagents", registerAgent() {}, unregisterAgent() {},
+			loadAgents: () => [
+				{ name: "explorer", tools: ["read", "repo_query"] },
+				{ name: "researcher", tools: ["ddg_search", "ddg_fetch"] },
+				{ name: "default", tools: ["bash"] },
+				{ name: "custom", tools: ["unknown"] },
+			] as any,
+			runSubagent: vi.fn(), runSubagentsParallel: vi.fn(),
+		});
+		try {
+			const h = createHarness({ branch: [activePlanningEntry()], model: normalModel, availableModels: [normalModel], dependencies: createProfileDependencies().dependencies });
+			await h.emit("session_start", { type: "session_start", reason: "startup" });
+			for (const input of [{ tasks: [{ agent: "explorer" }, { agent: "researcher" }] }, { agent: "explorer" }]) {
+				expect((await h.emit("tool_call", { type: "tool_call", toolName: "subagent", input }))[0]).toBeUndefined();
+			}
+			for (const input of [{ agent: "default" }, { tasks: [{ agent: "explorer" }, { agent: "default" }], background: true }, { tasks: [{ agent: "custom" }] }, { agent: "missing" }]) {
+				expect((await h.emit("tool_call", { type: "tool_call", toolName: "subagent", input }))[0]).toMatchObject({ block: true });
+			}
+		} finally { unregister(); }
+	});
+	it.each([false, true])("awaits background cleanup before entry, failure=%s", async (fails) => {
+		const { registerSubagentService } = await import("../_shared/subagent-service.ts");
+		const gate = deferred<void>();
+		const cancel = vi.fn(async () => { await gate.promise; if (fails) throw new Error("cleanup failed"); });
+		const unregister = registerSubagentService({ id: "tools-subagents", registerAgent() {}, unregisterAgent() {}, loadAgents: () => [], runSubagent: vi.fn(), runSubagentsParallel: vi.fn(), cancelBackgroundRuns: cancel });
+		try {
+			const h = createHarness({ branch: [], model: normalModel, availableModels: [normalModel], dependencies: createProfileDependencies().dependencies });
+			await h.emit("session_start", { type: "session_start", reason: "startup" });
+			const entering = h.shortcuts.get("shift+tab").handler(h.ctx);
+			await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+			expect(h.appendedEntries.some((entry) => entry.data?.mode === "plan")).toBe(false);
+			gate.resolve(); await entering;
+			if (fails) expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("cleanup failed"), "error");
+			else expect(h.getActiveToolNames()).toContain("plan_bash");
+		} finally { unregister(); }
+	});
+});

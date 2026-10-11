@@ -2,6 +2,7 @@ import type { AgentResult } from "../_shared/subagent-service.ts";
 import type { SubagentExecution, SubagentExecutionTask } from "./subagent-execution.ts";
 
 export interface SubagentInvocationParameters {
+	background?: boolean;
 	tasks: readonly SubagentExecutionTask[];
 }
 

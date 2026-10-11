@@ -328,7 +328,7 @@ describe("Subagent child execution", () => {
 		});
 		await waitForProcess(spawn.processes);
 		const [, , options] = spawn.spawnProcess.mock.calls[0];
-		expect(options).toEqual({ cwd: "/workspace", stdio: ["ignore", "pipe", "pipe"] });
+		expect(options).toEqual({ detached: process.platform !== "win32", cwd: "/workspace", stdio: ["ignore", "pipe", "pipe"] });
 		spawn.processes[0].emit("close", 0);
 		await promise;
 	});
@@ -580,4 +580,57 @@ describe("Subagent child execution", () => {
 		expect(existsSync(promptPath)).toBe(false);
 		expect(readdirSync(root)).toEqual([]);
 	});
+});
+
+describe("background cancellation process guarantees", () => {
+	it("does not prepare temporary files or spawn for pre-aborted requests", async () => {
+		const root = tempRoot(); const spawn = spawnHarness(); const controller = new AbortController();
+		controller.abort(new Error("pre-cancelled"));
+		const execution = createSubagentChildExecution({ pathExists: () => true, tempRoot: root, spawnProcess: spawn.spawnProcess });
+		await expect(execution.execute({ agent: agent(), task: "inspect", cwd: process.cwd(), launch: { model: "test/model" }, signal: controller.signal })).rejects.toThrow("pre-cancelled");
+		expect(spawn.spawnProcess).not.toHaveBeenCalled(); expect(readdirSync(root)).toEqual([]);
+	});
+	it("cannot turn an exit-zero cancellation into success and preserves partial output", async () => {
+		const root = tempRoot(); const spawn = spawnHarness(); const controller = new AbortController();
+		const execution = createSubagentChildExecution({ pathExists: () => true, tempRoot: root, spawnProcess: spawn.spawnProcess });
+		const promise = execution.execute({ agent: agent(), task: "inspect", cwd: process.cwd(), launch: { model: "test/model" }, signal: controller.signal });
+		await waitForProcess(spawn.processes);
+		spawn.processes[0].stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "partial" }] } }) + "\n");
+		controller.abort(new Error("selected cancellation")); spawn.processes[0].emit("close", 0);
+		const result = await promise;
+		expect(result.progress.status).toBe("failed"); expect(result.progress.error).toContain("selected cancellation"); expect(result.output).toBe("partial");
+		expect(readdirSync(root)).toEqual([]);
+	});
+	it("settles cancellation without close after bounded kill and pipe-drain waits", async () => {
+		const root = tempRoot(); const spawn = spawnHarness(); const controller = new AbortController();
+		const execution = createSubagentChildExecution({ pathExists: () => true, tempRoot: root, spawnProcess: spawn.spawnProcess });
+		const promise = execution.execute({ agent: agent(), task: "inspect", cwd: process.cwd(), launch: { model: "test/model" }, signal: controller.signal });
+		await waitForProcess(spawn.processes); vi.useFakeTimers(); controller.abort(new Error("cancel"));
+		await vi.advanceTimersByTimeAsync(4500);
+		expect((await promise).progress.status).toBe("failed"); expect(spawn.processes[0].stdout.destroyed).toBe(true); expect(readdirSync(root)).toEqual([]);
+	});
+	it.skipIf(process.platform === "win32")("kills a TERM-resistant descendant even when the group leader exits first", async () => {
+		const { spawn } = await import("node:child_process");
+		const root = tempRoot(); const controller = new AbortController();
+		let leader: import("node:child_process").ChildProcess | undefined;
+		let descendant = 0;
+		const descendantScript = `process.on('SIGTERM',()=>{}); console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:String(process.pid)}]}})); setInterval(()=>{},1000);`;
+		const parentScript = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendantScript)}],{stdio:['ignore','inherit','inherit']}); setInterval(()=>{},1000);`;
+		const execution = createSubagentChildExecution({ pathExists: () => true, tempRoot: root, spawnProcess: (_command, _args, options) => {
+			leader = spawn(process.execPath, ["-e", parentScript], options);
+			leader.stdout!.on("data", (chunk) => { try { descendant = Number(JSON.parse(chunk.toString()).message.content[0].text); } catch {} });
+			return leader;
+		} });
+		const running = execution.execute({ agent: agent(), task: "inspect", cwd: process.cwd(), launch: { model: "test/model" }, signal: controller.signal });
+		try {
+			await vi.waitFor(() => expect(descendant).toBeGreaterThan(0)); controller.abort(new Error("tree cancellation"));
+			expect((await running).progress.status).toBe("failed");
+			await vi.waitFor(() => expect(() => process.kill(descendant, 0)).toThrow(), { timeout: 2000 });
+			expect(() => process.kill(leader!.pid!, 0)).toThrow();
+			expect(readdirSync(root)).toEqual([]);
+		} finally {
+			controller.abort();
+			if (leader?.pid) { try { process.kill(-leader.pid, "SIGKILL"); } catch {} }
+		}
+	}, 10000);
 });

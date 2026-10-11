@@ -46,6 +46,7 @@ function extensionHarness(
 			registrations.push(`command:${name}`);
 			commands.set(name, command);
 		},
+		sendMessage: vi.fn(),
 		registerTool: (tool: any) => {
 			registrations.push(`tool:${tool.name}`);
 			tools.set(tool.name, tool);
@@ -67,11 +68,12 @@ function extensionHarness(
 		model: { provider: "anthropic", id: "main" },
 		sessionManager: { getSessionId: () => "main-session-123", getBranch: () => [] },
 		mode: "print",
-		ui: { notify: vi.fn() },
+		ui: { notify: vi.fn(), setStatus: vi.fn() },
 		modelRegistry: { refresh: vi.fn(), getAvailable: vi.fn(() => []), find: vi.fn() },
 		scopedModels: [],
 	} as any;
 	return {
+		pi,
 		handlers,
 		commands,
 		tools,
@@ -142,6 +144,11 @@ describe("subagent extension interfaces", () => {
 			"event:tool_result",
 			"event:session_start",
 			"event:session_shutdown",
+			"event:session_shutdown",
+			"event:session_tree",
+			"tool:subagent_status",
+			"tool:subagent_wait",
+			"tool:subagent_cancel",
 			"event:model_select",
 			"command:subagents",
 			"tool:subagent",
@@ -164,7 +171,7 @@ describe("subagent extension interfaces", () => {
 		expect(subagentDescription).not.toContain("judge");
 		expect(harness.tools.get("subagent")).not.toHaveProperty("promptGuidelines");
 		const parameters = harness.tools.get("subagent").parameters as any;
-		expect(Object.keys(parameters.properties)).toEqual(["tasks"]);
+		expect(Object.keys(parameters.properties)).toEqual(["background", "tasks"]);
 		expect(parameters.required).toEqual(["tasks"]);
 		expect(parameters.properties.tasks.minItems).toBe(1);
 		expect(parameters.properties.tasks.items.properties.agent.description).toContain(
@@ -352,5 +359,49 @@ describe("subagent tool wiring", () => {
 			}
 			expect(peak).toBe(3);
 		});
+	});
+});
+
+describe("background extension routing and ownership", () => {
+	it.each(["tui", "rpc"])("acknowledges immediately in %s and reports completion exactly once", async (mode) => {
+		let resolve!: (value: any) => void;
+		const child = vi.fn(() => new Promise<any>((done) => { resolve = done; }));
+		const h = extensionHarness(child); h.ctx.mode = mode; h.ctx.cwd = process.cwd();
+		const updates = vi.fn();
+		const result = await h.tools.get("subagent").execute("id", { tasks: [{ agent: "explorer", task: "inspect" }] }, undefined, updates, h.ctx);
+		expect(result.details).toMatchObject({ mode: "background", runs: [{ status: "queued" }] });
+		expect(h.pi.sendMessage).not.toHaveBeenCalled();
+		resolve(agentResult({ agent: "explorer", output: "done" }));
+		await h.tools.get("subagent_wait").execute("wait", { runIds: [result.details.runs[0].runId] }, undefined, undefined, h.ctx);
+		expect(h.pi.sendMessage).toHaveBeenCalledOnce(); expect(updates).not.toHaveBeenCalled();
+		await h.handlers.get("session_shutdown")({}, h.ctx);
+	});
+	it.each(["print", "json"])("rejects explicit background requests in %s before launch", async (mode) => {
+		const h = extensionHarness(); h.ctx.mode = mode;
+		await expect(h.tools.get("subagent").execute("id", { background: true, tasks: [{ agent: "explorer", task: "inspect" }] }, undefined, undefined, h.ctx)).rejects.toThrow(/background: false/);
+		expect(h.executeChild).not.toHaveBeenCalled();
+	});
+	it("preserves explicit foreground execution in RPC and background normalization", async () => {
+		const h = extensionHarness(); h.ctx.mode = "rpc";
+		const tool = h.tools.get("subagent");
+		expect(tool.prepareArguments({ agent: "explorer", task: "inspect", background: false, polluted: true })).toEqual({ tasks: [{ agent: "explorer", task: "inspect" }], background: false });
+		const result = await tool.execute("id", { background: false, tasks: [{ agent: "explorer", task: "inspect" }] }, undefined, undefined, h.ctx);
+		expect(result.details.mode).toBe("single"); expect(result.details.results[0].output).toBeDefined();
+	});
+	it.each(["session_tree", "session_shutdown"])("revokes old delivery and waits for cancellation during %s", async (event) => {
+		let resolve!: (value: any) => void;
+		const child = vi.fn((request: any) => new Promise<any>((done) => { resolve = done; }));
+		const h = extensionHarness(child); h.ctx.mode = "rpc"; h.ctx.cwd = process.cwd();
+		const result = await h.tools.get("subagent").execute("id", { tasks: [{ agent: "explorer", task: "inspect" }] }, undefined, undefined, h.ctx);
+		let finished = false;
+		const cleanup = h.handlers.get(event)({}, h.ctx).then(() => { finished = true; });
+		expect(child.mock.calls[0][0].signal.aborted).toBe(true); expect(finished).toBe(false);
+		resolve(agentResult()); await cleanup;
+		if (event === "session_tree") expect(h.pi.sendMessage).not.toHaveBeenCalled();
+		else expect(h.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ details: expect.objectContaining({ status: "cancelled" }) }), { deliverAs: "followUp", triggerTurn: false });
+		if (event === "session_tree") {
+			await expect(h.tools.get("subagent_status").execute("id", { runId: result.details.runs[0].runId }, undefined, undefined, h.ctx)).rejects.toThrow(/unavailable/);
+		}
+		expect(h.ctx.ui.setStatus).toHaveBeenCalledWith("subagents", undefined);
 	});
 });

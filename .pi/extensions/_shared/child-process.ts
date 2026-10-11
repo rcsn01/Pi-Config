@@ -243,8 +243,9 @@ export interface TerminateChildProcessOptions {
 
 /**
  * Graceful termination escalation: SIGTERM immediately, SIGKILL at `graceMs`
- * (unless the child already exited), and resolution on `exit` or `close` — or,
- * with `killWaitMs`, that long after the SIGKILL attempt. Every signal failure
+ * (unless the child and requested POSIX group already exited), and resolution on `exit` or `close` — or,
+ * with `killWaitMs`, that long after the SIGKILL attempt. Group termination defaults
+ * to a one-second kill wait when descendants survive the leader. Every signal failure
  * is contained, so the call is safe to fire-and-forget with `void`. Invalid
  * options throw synchronously before any listener or timer is installed.
  */
@@ -258,14 +259,23 @@ export function terminateChildProcess(
 	if (options.killWaitMs !== undefined && (!Number.isInteger(options.killWaitMs) || options.killWaitMs < 0)) {
 		throw new Error(`killWaitMs must be a nonnegative integer, received ${options.killWaitMs}.`);
 	}
-	if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) return Promise.resolve();
+	if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) {
+		if (!options.group || process.platform === "win32" || !child.pid) return Promise.resolve();
+		try { process.kill(-child.pid, 0); } catch { return Promise.resolve(); }
+	}
 
 	return new Promise<void>((resolve) => {
 		let settled = false;
 		let killTimer: NodeJS.Timeout | undefined;
 		let giveUpTimer: NodeJS.Timeout | undefined;
-		const onExit = () => finish();
-		const onClose = () => finish();
+		const onExit = () => {
+			// A leader can exit while a TERM-resistant descendant remains alive.
+			if (options.group && process.platform !== "win32" && child.pid) {
+				try { process.kill(-child.pid, 0); return; } catch { /* group is gone */ }
+			}
+			finish();
+		};
+		const onClose = onExit;
 		const finish = (): void => {
 			if (settled) return;
 			settled = true;
@@ -293,13 +303,13 @@ export function terminateChildProcess(
 			killTimer = setTimeout(() => {
 				killTimer = undefined;
 				sendSignal("SIGKILL");
-				if (options.killWaitMs !== undefined) giveUpTimer = setTimeout(finish, options.killWaitMs);
+				if (options.killWaitMs !== undefined || options.group) giveUpTimer = setTimeout(finish, options.killWaitMs ?? 1000);
 			}, options.graceMs);
 		}
 		sendSignal("SIGTERM");
 		if (options.graceMs === 0 && !settled) {
 			sendSignal("SIGKILL");
-			if (options.killWaitMs !== undefined) giveUpTimer = setTimeout(finish, options.killWaitMs);
+			if (options.killWaitMs !== undefined || options.group) giveUpTimer = setTimeout(finish, options.killWaitMs ?? 1000);
 		}
 	});
 }

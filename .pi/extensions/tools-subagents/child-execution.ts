@@ -39,7 +39,7 @@ const CUSTOM_TOOL_EXTENSIONS: ReadonlyMap<string, string> = new Map([
 export type SpawnSubagentProcess = (
 	command: string,
 	args: string[],
-	options: { cwd: string; env?: NodeJS.ProcessEnv; stdio: ["ignore", "pipe", "pipe"] | ["ignore", "pipe", "pipe", "pipe"] },
+	options: { detached?: boolean; cwd: string; env?: NodeJS.ProcessEnv; stdio: ["ignore", "pipe", "pipe"] | ["ignore", "pipe", "pipe", "pipe"] },
 ) => ChildProcess;
 
 export interface SubagentChildExecutionRequest {
@@ -232,6 +232,7 @@ export function createSubagentChildExecution(
 			return resolveChildTools(tools, pathExists).diagnostics;
 		},
 		async execute(request) {
+			request.signal?.throwIfAborted();
 			const resolution = resolveChildTools(request.agent.tools, pathExists);
 			if (resolution.diagnostics.length > 0) {
 				throw new Error(formatLaunchFailure(request.agent.name, resolution.diagnostics));
@@ -243,6 +244,7 @@ export function createSubagentChildExecution(
 			let cancelProcessWait: () => void = () => undefined;
 			try {
 				await request.onProgress?.({ type: "started", agent: agent.name, task });
+				timeout.signal?.throwIfAborted();
 				const prepared = await buildPiArgs(
 					agent,
 					task,
@@ -252,6 +254,7 @@ export function createSubagentChildExecution(
 					dependencies.tempRoot ?? os.tmpdir(),
 				);
 				tempDir = prepared.tempDir;
+				timeout.signal?.throwIfAborted();
 				const [command, ...spawnArgs] = prepared.args;
 				const childObservation = createChildObservation(getObservabilityService()).prepare(
 					{ args: spawnArgs, stdio: ["ignore", "pipe", "pipe"] },
@@ -268,6 +271,7 @@ export function createSubagentChildExecution(
 					onProgress: request.onProgress,
 				});
 
+				let termination: Promise<void> | undefined;
 				let cancelAbort: () => void = () => undefined;
 				cancelProcessWait = () => cancelAbort();
 
@@ -275,19 +279,38 @@ export function createSubagentChildExecution(
 					const spawnProcess = dependencies.spawnProcess ?? spawn;
 					const proc = spawnProcess(command, childObservation.args, {
 						cwd: request.cwd,
+						detached: process.platform !== "win32",
 						...(childObservation.env === undefined ? {} : { env: childObservation.env }),
 						stdio: childObservation.stdio,
 					});
 					childObservation.attach(proc);
 					let stderr = "";
+					let settled = false;
+					let drainTimer: ReturnType<typeof setTimeout> | undefined;
+					const finish = (outcome: SubagentChildProcessOutcome) => {
+						if (settled) return;
+						settled = true;
+						if (drainTimer) clearTimeout(drainTimer);
+						resolve(timeout.signal?.aborted ? { ...outcome, exitCode: outcome.exitCode === 0 ? 1 : outcome.exitCode, processError: String(timeout.signal.reason ?? "Subagent cancelled") } : outcome);
+					};
 
 					proc.stdout!.on("data", (chunk: Buffer) => ingestion.write(chunk));
 					proc.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-					proc.on("close", (code) => resolve({ exitCode: code ?? 1, stderr }));
-					proc.on("error", (error) => resolve({ exitCode: 1, stderr, processError: error.message }));
+					proc.on("close", (code) => finish({ exitCode: code ?? 1, stderr }));
+					proc.on("error", (error) => finish({ exitCode: 1, stderr, processError: error.message }));
 
 					if (timeout.signal) {
-						const kill = () => { void terminateChildProcess(proc, { graceMs: 3000 }); };
+						const kill = () => {
+							termination = terminateChildProcess(proc, { graceMs: 3000, killWaitMs: 1000, group: true });
+							void termination.then(() => {
+								if (settled) return;
+								drainTimer = setTimeout(() => {
+									proc.stdout?.destroy();
+									proc.stderr?.destroy();
+									finish({ exitCode: 1, stderr });
+								}, 500);
+							});
+						};
 						if (timeout.signal.aborted) kill();
 						else {
 							timeout.signal.addEventListener("abort", kill, { once: true });
@@ -296,6 +319,7 @@ export function createSubagentChildExecution(
 					}
 				});
 				cancelProcessWait();
+				await termination;
 				return await ingestion.finish(outcome);
 			} finally {
 				cancelProcessWait();
