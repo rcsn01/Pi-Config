@@ -1,6 +1,7 @@
 import { truncateHead, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
-import type { SubagentRunManager, SubagentRunSnapshot } from "./subagent-runs.ts";
+import type { SubagentRunSnapshot } from "./subagent-runs.ts";
+import type { SubagentRunControl } from "./session-execution.ts";
 import { renderSubagentResult } from "./progress-renderer.ts";
 
 export const RunSnapshotSchema = Type.Object({
@@ -70,7 +71,7 @@ export function runToolResult(runs: SubagentRunSnapshot[], includeOutput = true)
 export function registerStructuredTool<P extends TSchema, D>(pi: ExtensionAPI, tool: ToolDefinition<P, D> & { outputSchema: TSchema }) {
 	pi.registerTool(tool);
 }
-export function registerSubagentRunTools(pi: ExtensionAPI, getManager: (ctx: import("@earendil-works/pi-coding-agent").ExtensionContext) => SubagentRunManager) {
+export function registerSubagentRunTools(pi: ExtensionAPI, runs: SubagentRunControl) {
 	const renderResult: NonNullable<Parameters<ExtensionAPI["registerTool"]>[0]["renderResult"]> =
 		(result, options, theme, context) => renderSubagentResult(result, options, theme, undefined, context);
 	const ids = Type.Array(Type.String(), { minItems: 1, maxItems: 32, uniqueItems: true });
@@ -78,12 +79,11 @@ export function registerSubagentRunTools(pi: ExtensionAPI, getManager: (ctx: imp
 		name: "subagent_status", label: "Subagent status",
 		description: "List retained background runs without output bodies, or retrieve progress and terminal output for one runId.",
 		parameters: Type.Object({ runId: Type.Optional(Type.String()) }), outputSchema: RunDetailsSchema,
-		async execute(_id, params, _signal, _update, ctx) {
-			const manager = getManager(ctx);
-			if (params.runId) return runToolResult([manager.get(params.runId)]);
-			const runs = manager.list().map(({ runId, agent, model, status, createdAt, finishedAt }) => ({ runId, agent: truncateHead(agent, { maxBytes: 64, maxLines: 1 }).content, model: truncateHead(model, { maxBytes: 64, maxLines: 1 }).content, status, createdAt, finishedAt }));
-			const details = { mode: "background" as const, runs };
-			return { content: [{ type: "text" as const, text: formatRunReports(runs, false) }], details, structuredContent: details, isError: false };
+		async execute(_id, params) {
+			if (params.runId) return runToolResult([runs.get(params.runId)]);
+			const summaries = runs.list().map(({ runId, agent, model, status, createdAt, finishedAt }) => ({ runId, agent: truncateHead(agent, { maxBytes: 64, maxLines: 1 }).content, model: truncateHead(model, { maxBytes: 64, maxLines: 1 }).content, status, createdAt, finishedAt }));
+			const details = { mode: "background" as const, runs: summaries };
+			return { content: [{ type: "text" as const, text: formatRunReports(summaries, false) }], details, structuredContent: details, isError: false };
 		}, renderResult,
 	});
 	registerStructuredTool(pi, {
@@ -91,12 +91,12 @@ export function registerSubagentRunTools(pi: ExtensionAPI, getManager: (ctx: imp
 		description: "Wait for all selected background runs, in caller order. Timeout or abort does not cancel children. timeoutMs defaults to 30000; zero polls current state.",
 		parameters: Type.Object({ runIds: ids, timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 300000 })) }),
 		outputSchema: RunDetailsSchema,
-		async execute(_id, params, signal, _update, ctx) { return runToolResult(await getManager(ctx).wait(params.runIds, params.timeoutMs, signal)); }, renderResult,
+		async execute(_id, params, signal) { return runToolResult(await runs.wait(params.runIds, params.timeoutMs, signal)); }, renderResult,
 	});
 	registerStructuredTool(pi, {
 		name: "subagent_cancel", label: "Cancel subagents",
 		description: "Cancel selected background runs without affecting the parent or other children. Validate all IDs before cancelling any.",
 		parameters: Type.Object({ runIds: ids }), outputSchema: RunDetailsSchema,
-		async execute(_id, params, _signal, _update, ctx) { return runToolResult(getManager(ctx).cancel(params.runIds), false); }, renderResult,
+		async execute(_id, params) { return runToolResult(runs.cancel(params.runIds), false); }, renderResult,
 	});
 }

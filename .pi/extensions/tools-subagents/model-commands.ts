@@ -37,11 +37,11 @@ import {
 } from "./child-execution.ts";
 import { DEFAULT_MAX_CONCURRENCY } from "./subagent-execution.ts";
 
-import type { SubagentRunManager } from "./subagent-runs.ts";
+import type { SubagentRunControl } from "./session-execution.ts";
 import { formatRunReports } from "./run-tools.ts";
 
 export interface ModelCommandDependencies {
-	getRuns?: () => SubagentRunManager | undefined;
+	runs?: Pick<SubagentRunControl, "list" | "cancel">;
 	registry?: AgentRegistry;
 	config?: SubagentConfigStore;
 	childExecution?: Pick<SubagentChildExecution, "inspectTools">;
@@ -494,13 +494,13 @@ export function createSubagentsCommand(dependencies: ModelCommandDependencies = 
 			const parts = args.trim().split(/\s+/).filter(Boolean);
 			try {
 				if (parts[0] === "runs" && parts.length === 1) {
-					ctx.ui.notify(formatRunReports(dependencies.getRuns?.()?.list() ?? [], false), "info");
+					ctx.ui.notify(formatRunReports(dependencies.runs?.list() ?? [], false), "info");
 					return;
 				}
 				if (parts[0] === "cancel" && parts.length === 2) {
-					const manager = dependencies.getRuns?.();
-					if (!manager) throw new Error("No active background subagent runs.");
-					ctx.ui.notify(formatRunReports(manager.cancel([parts[1]!]), false), "info");
+					const runs = dependencies.runs;
+					if (!runs) throw new Error("No active background subagent runs.");
+					ctx.ui.notify(formatRunReports(runs.cancel([parts[1]!]), false), "info");
 					return;
 				}
 				if (parts.length === 0) {

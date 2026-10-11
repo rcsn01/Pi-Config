@@ -448,24 +448,31 @@ extension.
   formats final text and details, and reads authoritative Subagent result status
   when applying Pi's error flag. The Subagent execution module owns scheduling
   and calls child execution directly.
-- **Subagent execution module** — the deep in-process module for one-task and
-  bounded batch execution. It owns execution behind the registered cross-extension
-  Subagent service seam, launch preparation dispatch, named request resolution
-  through Subagent launch preparation, configured or caller-selected concurrency,
-  ordered results, immutable task-state snapshots, and repair of a missing
-  terminal event when prepared child execution rejects — preserving progress-
-  consumer and execution error identity instead of masking them. When the caller's
-  concurrency override is nullish, `executeBatch()` loads full config once and reuses
-  that parsed snapshot for concurrency selection and every launch assignment, even if
-  missing `maxConcurrency` makes concurrency fall back to the default. A non-nullish
-  override skips that `executeBatch()` load and its `maxConcurrency` validation; a
-  non-empty assignment batch then reads one effective Settings/legacy view. Empty
-  preparation reads neither registry nor assignments. `runSubagent()` makes no
-  concurrency load. Extension session initialization still loads full config and can
-  reject invalid settings before a tool call. These are in-process snapshots, not a
-  filesystem lock or a cross-process transaction. Direct one-task calls preserve native
-  progress callbacks; the Pi invocation adapter uses the batch snapshot path. Child
-  process lifetime stays behind the Subagent child execution seam.
+- **Subagent execution module**: the deep in-process module for Session-owned
+  background work and awaited one-task/batch execution. Its private composition
+  keeps `session-execution.ts` responsible for readiness, branch replacement,
+  retirement, temporary background admission gating, guarded host effects,
+  at-most-once delivery attempts, status timers, and identity-safe registration
+  behind the cross-extension Subagent service seam. Callers use lifecycle events,
+  background submission and restricted list/get/wait/cancel controls, not the
+  retained-run manager. `subagent-runs.ts` owns immutable retained snapshots,
+  validation, per-run cancellation, wait subscriptions, eviction and bounded
+  disposal. `subagent-execution.ts` keeps launch preparation dispatch, named
+  resolution through Subagent launch preparation, one aggregate FIFO scheduler
+  per execution instance, local batch limits, ordered results, immutable task-state
+  snapshots and missing-terminal-event repair while preserving progress-consumer
+  and execution rejection identity. Direct `runSubagent()` and every `prepareBatch()`
+  load full config once, validate concurrency and update that instance's budget;
+  a batch caller override can lower but not raise it. Empty launch preparation
+  reads neither registry nor assignments, but empty execution batches still load
+  concurrency config. Each extension instance shares its execution across branches,
+  background work, foreground tools and its registered facade. Direct exported
+  helpers keep a separate compatibility instance. Configuration paths/preparation
+  and concrete Pi effects remain in the extension adapter; Plan policy remains
+  with Plan Mode lifecycle. These are in-process snapshots, not a filesystem lock
+  or a cross-process transaction. Direct one-task calls preserve native progress
+  callbacks; the Pi invocation adapter uses the batch snapshot path. Child process
+  lifetime stays behind the Subagent child execution seam.
 - **Repo query batch** — the read-only batched evidence tool (`repo_query`) behind
   the subagent runner: one `executeRepoQuery` interface; validation, path safety,
   dedupe, truncation, and formatting hide inside.

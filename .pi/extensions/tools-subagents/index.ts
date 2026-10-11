@@ -4,21 +4,18 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolve } from "node:path";
-import { createSubagentRunManager, type SubagentRunManager } from "./subagent-runs.ts";
-import { createSubagentBackgroundNotifications } from "./background-notifications.ts";
+import { createSubagentSessionExecution, type SubagentSessionHost } from "./session-execution.ts";
 import { registerStructuredTool, registerSubagentRunTools, RunDetailsSchema, formatRunReports } from "./run-tools.ts";
 import { declareStatus } from "../_shared/status-registry.ts";
 import { Type } from "typebox";
 import { registerToolErrorHandler } from "../_shared/tool-result-ui.ts";
 import {
-	registerSubagentService,
 	type AgentConfig,
 	type AgentProgress,
 	type AgentResult,
 	type RunSubagentOptions,
 	type RunSubagentsParallelOptions,
 	type SubagentProgressEvent,
-	type SubagentService,
 } from "../_shared/subagent-service.ts";
 import { registerSessionProfileBinding, wireSessionProfileBinding } from "../_shared/session-profile-binding.ts";
 import { PROJECT_SETTINGS_PATH } from "../_shared/settings-document.ts";
@@ -96,112 +93,42 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		const childExecution = dependencies.childExecution ?? createSubagentChildExecution();
 		const execution = createSubagentExecution({ registry, config: configStore, childExecution });
 		const invocationAdapter = createSubagentInvocationAdapter({ batch: execution });
-		let generation = 0;
-		let owner: { ctx: ExtensionContext; sessionId: string; generation: number } | undefined;
-		let manager: SubagentRunManager | undefined;
-		let notifications: ReturnType<typeof createSubagentBackgroundNotifications> | undefined;
-		let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-		let stopping: Promise<void> | undefined;
-		let admissionClosed = false;
-		function ensureManager(ctx?: ExtensionContext): SubagentRunManager {
-			if (admissionClosed) throw new Error("Background subagent admission is closed during session cleanup.");
-			if (manager) return manager;
-			if (!ctx) throw new Error("No active background subagent session.");
-			const sessionId = ctx.sessionManager.getSessionId();
-			const token = ++generation;
-			owner = { ctx, sessionId, generation: token };
-			const current = () => {
-				if (owner?.generation !== token || owner.sessionId !== sessionId) return false;
-				try { return ctx.sessionManager.getSessionId() === sessionId; } catch { return false; }
+		const sessionExecution = createSubagentSessionExecution({ execution, registry, childExecution });
+		function sessionHost(ctx: ExtensionContext): SubagentSessionHost {
+			return {
+				sessionId: ctx.sessionManager.getSessionId(),
+				getSessionId: () => ctx.sessionManager.getSessionId(),
+				setStatus: (status) => ctx.ui.setStatus("subagents", status),
+				publishCompletion: (run, options) => pi.sendMessage({
+					customType: "subagent-completion", content: formatRunReports([run]), display: true, details: run,
+				}, { deliverAs: "followUp", triggerTurn: options.triggerTurn }),
 			};
-			notifications = createSubagentBackgroundNotifications(pi, { sessionId, isCurrent: current });
-			const delivery = notifications;
-			manager = createSubagentRunManager({ execution, childExecution,
-				onTerminal: (run) => delivery.complete(run),
-				onChange() {
-					if (!current() || refreshTimer) return;
-					refreshTimer = setTimeout(() => {
-						refreshTimer = undefined;
-						if (!current()) return;
-						const runs = manager!.list();
-						const running = runs.filter((r) => r.status === "running" || r.status === "cancelling").length;
-						const queued = runs.filter((r) => r.status === "queued").length;
-						ctx.ui.setStatus("subagents", running || queued ? `${running} running · ${queued} queued` : undefined);
-					}, 150);
-				},
-			});
-			return manager;
 		}
-		function cleanup(reason: string, unregister = false): Promise<void> {
-			if (stopping) return stopping;
-			admissionClosed = true;
-			notifications?.disable();
-			manager?.close();
-			const oldOwner = owner;
-			const shutdownIds = unregister ? manager?.list().filter((r) => !["completed", "failed", "cancelled"].includes(r.status)).map((r) => r.runId) ?? [] : [];
-			owner = undefined;
-			generation++;
-			if (refreshTimer) clearTimeout(refreshTimer);
-			refreshTimer = undefined;
-			stopping = (async () => {
-				try {
-					await manager?.dispose(reason);
-					if (unregister && oldOwner && oldOwner.ctx.sessionManager.getSessionId() === oldOwner.sessionId) {
-						for (const id of shutdownIds) {
-							const run = manager!.get(id);
-							try { pi.sendMessage({ customType: "subagent-completion", content: formatRunReports([run]), display: true, details: run }, { deliverAs: "followUp", triggerTurn: false }); } catch { /* Shutdown reports are best effort. */ }
-						}
-					}
-				}
-				finally {
-					try { oldOwner?.ctx.ui.setStatus("subagents", undefined); } catch { /* SDK disposal may already have invalidated the UI. */ }
-					if (unregister) unregisterService();
-				}
-			})();
-			return stopping;
-		}
-		const service: SubagentService = {
-			id: "tools-subagents",
-			cancelBackgroundRuns: async (reason) => { await manager?.cancelAll(reason); },
-			registerAgent: (config) => registry.register(config),
-			unregisterAgent: (name) => registry.unregister(name),
-			loadAgents: () => registry.load(),
-			runSubagent: (options) => execution.runSubagent(options),
-			runSubagentsParallel: (options) => execution.runSubagentsParallel(options),
-		};
-
-		const unregisterService = registerSubagentService(service);
 		const profileInitialization = registerSessionProfileBinding(
 			{ settingsPath },
 			{
 				name: "tools-subagents",
 				applyPath: (binding) => configStore.setSettingsPath(binding.settingsPath),
-				dispose: () => cleanup("Session ended", true),
-				async initialize(_binding, _event, ctx) {
-					registerSubagentService(service);
-					admissionClosed = false;
-					stopping = undefined;
-					manager = undefined;
-					configStore.rememberMainModel(ctx.model);
-					// Carry a legacy config.json into the active Settings document once.
-					await configStore.migrateLegacy();
-					configStore.load();
+				dispose: () => sessionExecution.handle({ type: "shutdown", reason: "Session ended" }),
+				initialize(_binding, _event, ctx) {
+					const mainModel = ctx.model;
+					return sessionExecution.handle({
+						type: "sessionStarted", host: sessionHost(ctx),
+						prepare: async () => {
+							configStore.rememberMainModel(mainModel);
+							await configStore.migrateLegacy();
+							configStore.load();
+						},
+					});
 				},
 			},
 		);
 		registry.initialize();
-
-		wireSessionProfileBinding(pi, profileInitialization);
-		pi.on("session_shutdown", () => cleanup("Session ended", true));
-		pi.on("session_tree", async (_event, ctx) => {
-			await cleanup("Session branch changed");
-			manager = undefined;
-			notifications = undefined;
-			stopping = undefined;
-			admissionClosed = false;
-			ensureManager(ctx);
+		wireSessionProfileBinding(pi, profileInitialization, {
+			afterStop: () => sessionExecution.handle({ type: "shutdown", reason: "Session ended" }),
 		});
-		registerSubagentRunTools(pi, (ctx) => ensureManager(ctx));
+		pi.on("session_tree", (_event, ctx) => sessionExecution.handle({ type: "branchChanged", host: sessionHost(ctx) }));
+		registerSubagentRunTools(pi, sessionExecution.runs);
 		pi.registerMessageRenderer?.("subagent-completion", (message, options, theme) =>
 			renderSubagentResult({ content: [{ type: "text", text: String(message.content) }], details: { mode: "background", runs: [message.details] } }, options, theme));
 		pi.on("model_select", (event) => configStore.rememberMainModel(event.model));
@@ -210,7 +137,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 			registry,
 			config: configStore,
 			childExecution,
-			getRuns: () => manager,
+			runs: sessionExecution.runs,
 		}));
 
 		registerStructuredTool(pi, {
@@ -270,7 +197,7 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 			const background = params.background ?? longLived;
 			if (background && !longLived) throw new Error("Background subagents require TUI or RPC mode. Use background: false in print/JSON mode.");
 			if (background) {
-				const runs = ensureManager(ctx).spawn(params.tasks, { cwd: ctx.cwd, signal, cacheAffinitySeed: ctx.sessionManager.getSessionId(), sessionId: ctx.sessionManager.getSessionId() });
+				const runs = sessionExecution.spawn(params.tasks, { cwd: ctx.cwd, signal });
 				const details = { mode: "background" as const, runs };
 				return { content: [{ type: "text", text: `Accepted background runs. Continue working; results will arrive later.\n\n${formatRunReports(runs, false)}` }], details, structuredContent: details };
 			}

@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This is the finalized design for architecture candidate 1. It authorizes no implementation by itself. The planning baseline is the current worktree, including the earlier background-Subagent implementation, not the files at HEAD.
+This is the finalized design for architecture candidate 1, now implemented after separate user authorization. The user requested a prerequisite commit, implementation, and a second commit. The planning baseline is commit `48793cb`, including the earlier background-Subagent implementation. The baseline analysis and inventories below describe that commit, not the completed refactor. Implementation results appear at the end.
 
 Use the recommended decisions recorded here. No clarification or design-confirmation round remains open.
 
@@ -41,7 +41,7 @@ The source establishes the stale-context hazard independently of historical repo
 
 ### Independently checked baseline inventory
 
-These inventories were derived with source reads, `rg`, and Vitest's expanded JSON test report, not copied from earlier plan counts. Paths below are relative to `.pi/extensions/` unless stated otherwise. Numbers describe the current worktree only.
+These inventories were derived with source reads, `rg`, and Vitest's expanded JSON test report, not copied from earlier plan counts. Paths below are relative to `.pi/extensions/` unless stated otherwise. Numbers describe the historical planning baseline at `48793cb` only.
 
 | Production site and symbols | Count and behavior to preserve or move |
 | --- | --- |
@@ -637,7 +637,7 @@ pnpm typecheck
 
 Add any new adjacent Plan integration test to the appropriate existing suite. Run tests with injected memory stores or isolated temporary settings/Profile paths. Do not let default production stores write repository settings during tests.
 
-This audit ran the current baseline: `pnpm test:subagents` passed 19 files/296 cases; `pnpm test:shared` passed 41 files/502 cases; `pnpm test:plan` passed 13 files/188 cases, with one file/two cases skipped. A separate JSON-reported run of the 22 files inventoried above passed all 363 cases. These verify the current implementation, not the future refactor, races newly specified here, or an interactive terminal workflow. Report new results after implementation rather than reusing these counts.
+The planning audit ran the baseline later committed as `48793cb`: `pnpm test:subagents` passed 19 files/296 cases; `pnpm test:shared` passed 41 files/502 cases; `pnpm test:plan` passed 13 files/188 cases, with one file/two cases skipped. A separate JSON-reported run of the 22 files inventoried above passed all 363 cases. These verify the prerequisite implementation, not the completed refactor, races specified here, or an interactive terminal workflow. Report new results after implementation rather than reusing these counts.
 
 ## Risks and limits
 
@@ -670,3 +670,48 @@ The implementation is complete when:
 10. The test matrix passes with real pinned-SDK 0.87.0 TUI/RPC completion and shutdown coverage, plus real branch navigation coverage. Report installed CLI 1.0.0 smoke coverage separately; offline pinned-SDK tests are not evidence of an interactive CLI run.
 11. Documentation describes the implemented ownership, and no live settings/Profile or unrelated user changes were altered.
 12. The implementation report lists exact verification commands/results and states whether an interactive terminal smoke test was available.
+
+## Implementation results
+
+Implemented `session-execution.ts` and wired the Pi adapter, control tools and
+human commands to its restricted interface. Removed the standalone notification
+helper and duplicate shutdown registration. Existing execution, scheduler,
+retained-record, child-process, Profile-binding and Plan-policy production
+implementations remain unchanged from `48793cb`.
+
+Coverage includes 29 Session ownership cases, 11 real pinned-SDK cases, and four
+real-facade Plan integration cases. The ordered adapter harness awaits teardown
+for every fixture. Tests cover failed preparation, replacement races, cancellation
+and retirement timeouts, stale effects, message failures, shutdown snapshot
+retention and foreground budget compatibility.
+
+The independent review reported a missing temporary admission gate when a ready
+owner had not created its lazy manager. A new regression failed before the fix.
+Cancellation now gates and coalesces even in that case, without constructing a
+manager or scheduling a timer. The review provider stream ended before a terminal
+response event, so the independent review did not complete. The main agent
+checked the final source and test diff after the correction.
+
+Final verification, run from `.pi` unless stated otherwise:
+
+| Command | Result |
+| --- | --- |
+| `pnpm exec vitest run extensions/tools-subagents/session-execution.test.ts extensions/workflows-plan/subagent-integration.test.ts` | 2 files, 33 passed |
+| `pnpm test:subagents` | 19 files, 336 passed |
+| `pnpm test:shared` | 41 files, 512 passed |
+| `pnpm test:plan` | 14 passed files, 1 skipped file; 192 passed, 2 skipped |
+| `pnpm test:workflows` | 9 Vitest files, 127 passed; 21 Node tests passed |
+| `pnpm typecheck` | Passed |
+| `git diff --check`, from repository root | Passed |
+
+The broader suites total 1,188 passed tests and two skipped tests. The focused
+33-test run overlaps those suites and is not added to that total. Configuration
+hash checks confirm `.pi/pi-config.json` and `.pi/profiles/openai.json` retain the
+user's pre-existing edits. They are excluded from both requested commits. No
+live Settings edit or dependency change is part of the implementation.
+
+No interactive terminal smoke test was available or run. SDK `tui` tests exercise
+lifecycle and message behavior without a terminal, using pinned SDK 0.87.0. They
+do not verify the installed CLI 1.0.0's interactive workflow. The documented
+pre-callback navigation interval and unbounded sibling/Profile initialization
+remain host limitations, not guarantees supplied by this refactor.

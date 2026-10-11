@@ -6,12 +6,13 @@ import { agentResult } from "./test-harness.ts";
 describe("background control tools", () => {
 	it("lists summaries without output bodies and retrieves full structured terminal results", async () => {
 		const h = runHarness(); const tools = new Map<string, any>();
-		registerSubagentRunTools({ registerTool: (tool: any) => tools.set(tool.name, tool) } as any, () => h.manager);
+		registerSubagentRunTools({ registerTool: (tool: any) => tools.set(tool.name, tool) } as any, { list: h.manager.list, get: h.manager.get, wait: h.manager.wait, cancel: h.manager.cancel });
 		const [run] = h.spawn(); h.gates[0].resolve(agentResult({ output: "private-output-body" }));
 		await h.manager.wait([run.runId]);
 		const list = await tools.get("subagent_status").execute("", {});
 		expect(list.content[0].text).not.toContain("private-output-body");
 		expect(list.details.runs[0]).not.toHaveProperty("result");
+		expect(await tools.get("subagent_status").execute("", { runId: "" })).toEqual(list);
 		const get = await tools.get("subagent_status").execute("", { runId: run.runId });
 		expect(get.content[0].text).toContain("private-output-body"); expect(get.isError).toBe(false);
 		expect(get.structuredContent).toEqual(get.details);
@@ -19,7 +20,7 @@ describe("background control tools", () => {
 	});
 	it("returns wait results in caller order with child failure flags, but cancellation acknowledgement is successful", async () => {
 		const h = runHarness(); const tools = new Map<string, any>();
-		registerSubagentRunTools({ registerTool: (tool: any) => tools.set(tool.name, tool) } as any, () => h.manager);
+		registerSubagentRunTools({ registerTool: (tool: any) => tools.set(tool.name, tool) } as any, { list: h.manager.list, get: h.manager.get, wait: h.manager.wait, cancel: h.manager.cancel });
 		const [a, b] = h.spawn(2);
 		const wait = tools.get("subagent_wait").execute("", { runIds: [b.runId, a.runId] });
 		h.gates[0].reject(new Error("failed")); h.gates[1].resolve(agentResult());

@@ -310,9 +310,9 @@ tools-subagents/
 ├── child-event-ingestion.ts # Stdout framing, event state, usage, timing input, and terminal results
 ├── subagent-execution.ts    # Prepared execution, ordered results, and task-state snapshots
 ├── execution-scheduler.ts   # Shared FIFO child-process budget
-├── subagent-runs.ts         # Session-owned handles, waiting, and cancellation
-├── run-tools.ts             # Status, wait, and cancel tool adapters
-├── background-notifications.ts # Owned completion-message delivery
+├── session-execution.ts     # Session/branch ownership, admission, delivery, status, and shared registration
+├── subagent-runs.ts         # Retained records, waiting, per-run cancellation, and bounded disposal
+├── run-tools.ts             # Status, wait, and cancel tool adapters using restricted controls
 ├── progress-renderer.ts     # Tool call and progress presentation
 ├── model-commands.ts        # /subagents command and interactive configuration
 ├── formatting.ts            # Token, duration, preview, and width formatting
@@ -328,8 +328,9 @@ tools-subagents/
 
 In TUI and RPC modes, `subagent` now returns background run handles by default.
 Each task gets its own `runId`. Continue unrelated work after admission. Pi sends
-one model-visible `subagent-completion` follow-up per terminal run and starts a
-turn when the parent is idle. Children remain one-shot, with no follow-up input.
+one best-effort model-visible `subagent-completion` follow-up per terminal run and
+starts a turn when the parent is idle. Delivery failures do not discard results
+or retry the report. Children remain one-shot, with no follow-up input.
 
 ```json
 {"tasks":[{"agent":"explorer","task":"Objective: inspect the parser. Scope: src/parser. Allowed actions: read/search. Forbidden actions: edits. Required output: findings with paths. Stop conditions: identify the parser entry points."}]}
@@ -360,15 +361,61 @@ navigation cancel unfinished runs and do not reconnect children. Historical
 reports remain in the transcript. Compaction and ordinary turn completion do
 not cancel runs.
 
-All callers, including workflows and foreground tools, share the configured
-`maxConcurrency` process budget, default four. A service batch's explicit limit
-can lower but not raise that budget. Prepared launches retain resolved models,
-thinking levels, working directories, and cache-affinity IDs while queued.
+Background work, foreground tools, and workflows using the registered facade
+share one execution instance's configured `maxConcurrency` process budget,
+default four. A service batch's explicit limit can lower but not raise that
+budget. Direct exported helpers use a separate compatibility instance, not a
+global process budget. FIFO applies when requests reach the aggregate scheduler;
+locally queued batch siblings enter it only when a local slot opens. Prepared
+launches retain resolved models, thinking levels, working directories, and
+cache-affinity IDs while queued.
 
 Plan Mode entry awaits background cleanup and refuses entry if cleanup fails.
 It permits only agents whose complete tool lists contain known read-only tools.
 `default`, mutating tools, and unknown custom capabilities are blocked in both
 execution modes. `worker` and `judge` remain workflow-only.
+
+### Session ownership and cleanup
+
+`session-execution.ts` owns background admission, retained-registry replacement,
+completion eligibility, status refreshes, and the identity-safe shared facade.
+The Pi adapter supplies lifecycle events and concrete UI/message effects.
+Configuration and Profile selection stay in the Profile adapter; Plan capability
+policy stays in Plan Mode lifecycle.
+
+The shared facade is available during extension loading for sibling agent
+registration and awaited execution. Background submission rejects until Session
+preparation succeeds. Listing before readiness returns no runs; operations that
+require a run report no active Session. During retirement or after shutdown,
+controls reject closed admission rather than retrieving another branch's runs.
+`/subagents cancel` uses these same errors, including unavailable IDs when the
+active registry has never admitted a run.
+
+Branch callbacks revoke the old owner before awaiting its existing six-second
+registry drain. Replacement work cannot enter until cleanup succeeds. A failed
+retirement keeps admission closed; an explicit later start/branch can retry it
+before shutdown. Shutdown is terminal and repeated calls join the same operation.
+Eligible shutdown cancellation reports use `triggerTurn: false`. Plan cancellation
+instead temporarily gates admission, retains records and ordinary reporting,
+and releases its gate without undoing a concurrent retirement.
+
+SDK embedders must emit shutdown while contexts remain valid, then dispose:
+
+```ts
+await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+session.dispose();
+```
+
+`session.dispose()` alone does not run extension shutdown handlers. Subscribe to
+the runner's error listener: event emission reports handler failures rather than
+rejecting. The registry's six-second drain does not bound Profile initialization
+or other adapters' cleanup, and does not prove every OS process has terminated.
+
+The host commits a destination branch before dispatching `session_tree` and can
+await earlier handlers first. Ownership revocation protects effects after this
+extension receives its branch callback, not that earlier host-wide interval.
+Tests use the repository-pinned SDK 0.87.0; the installed CLI 1.0.0 and an
+interactive terminal smoke test are separate verification targets.
 
 POSIX children use isolated process groups for descendant cancellation. Windows
 termination is best effort and does not provide POSIX group guarantees. Child

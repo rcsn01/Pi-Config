@@ -45,3 +45,14 @@ describe("subagent service registry", () => {
 		expect(() => registerSubagentService(service("other-runner"))).toThrow(/already registered/);
 	});
 });
+describe("subagent service ID validation", () => {
+	it.each(["a", "0", "a-"])("accepts %s", (id) => {
+		const registered = service(id); registerSubagentService(registered);
+		expect(requireSubagentService()).toBe(registered);
+	});
+	it.each(["", "-a", "Tools", "tools_subagents", "a.b", "a b", "a\n"])("rejects invalid ID %j without replacing registration", (id) => {
+		const registered = service(); registerSubagentService(registered);
+		expect(() => registerSubagentService(service(id))).toThrow("Invalid subagent service id");
+		expect(requireSubagentService()).toBe(registered);
+	});
+});

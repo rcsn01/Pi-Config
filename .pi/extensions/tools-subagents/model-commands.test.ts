@@ -561,11 +561,25 @@ describe("human background run controls", () => {
 		const { runHarness } = await import("./background-test-harness.ts");
 		const { agentResult } = await import("./test-harness.ts");
 		const h = runHarness(); const [run] = h.spawn(); const config = memoryConfigStore(); const ctx = context();
-		const command = createSubagentsCommand({ config, registry: memoryRegistry(), getRuns: () => h.manager });
+		const command = createSubagentsCommand({ config, registry: memoryRegistry(), runs: { list: h.manager.list, cancel: h.manager.cancel } });
 		await command.handler("runs", ctx);
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(run.runId), "info");
 		await command.handler(`cancel ${run.runId}`, ctx);
 		expect(h.requests[0].signal.aborted).toBe(true); expect(config.updates).toEqual([]);
 		h.gates[0].resolve(agentResult()); await h.manager.wait([run.runId]);
+	});
+});
+
+describe("restricted command control diagnostics", () => {
+	it("preserves empty listing and no-active fallback when controls are omitted", async () => {
+		const command = createSubagentsCommand({ config: memoryConfigStore(), registry: memoryRegistry() }); const ctx = context();
+		await command.handler("runs", ctx); expect(ctx.ui.notify).toHaveBeenCalledWith("No retained background subagent runs.", "info");
+		await command.handler("cancel missing", ctx); expect(ctx.ui.notify).toHaveBeenCalledWith("No active background subagent runs.", "error");
+	});
+	it("uses the stable restricted control error rather than inspecting manager creation", async () => {
+		const command = createSubagentsCommand({ config: memoryConfigStore(), registry: memoryRegistry(), runs: {
+			list: () => [], cancel: () => { throw new Error("Subagent run missing is unavailable."); },
+		} }); const ctx = context();
+		await command.handler("cancel missing", ctx); expect(ctx.ui.notify).toHaveBeenCalledWith("Subagent run missing is unavailable.", "error");
 	});
 });

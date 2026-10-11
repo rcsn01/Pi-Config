@@ -13,11 +13,13 @@ import subagentsExtension, {
 	runSubagentsParallel,
 	unregisterAgent,
 } from "./index.ts";
-import { agent, agentResult, memoryConfigStore, memoryRegistry } from "./test-harness.ts";
+import { agent, agentResult, deferred, memoryConfigStore, memoryRegistry } from "./test-harness.ts";
 
 const roots: string[] = [];
+const cleanups: Array<() => Promise<void>> = [];
 
-afterEach(() => {
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -27,7 +29,7 @@ function extensionHarness(
 	executeChild = vi.fn(async (request: any) => agentResult({ agent: request.agent.name, task: request.task })),
 	options: { config?: any; settingsPath?: string; alignConfigPath?: boolean; injectConfig?: boolean } = {},
 ) {
-	const handlers = new Map<string, any>();
+	const handlers = new Map<string, any[]>();
 	const commands = new Map<string, any>();
 	const tools = new Map<string, any>();
 	const registrations: string[] = [];
@@ -40,7 +42,9 @@ function extensionHarness(
 	const pi = {
 		on: (event: string, handler: any) => {
 			registrations.push(`event:${event}`);
-			handlers.set(event, handler);
+			const list = handlers.get(event) ?? [];
+			list.push(handler); handlers.set(event, list);
+			return () => { const index = list.indexOf(handler); if (index >= 0) list.splice(index, 1); };
 		},
 		registerCommand: (name: string, command: any) => {
 			registrations.push(`command:${name}`);
@@ -72,8 +76,18 @@ function extensionHarness(
 		modelRegistry: { refresh: vi.fn(), getAvailable: vi.fn(() => []), find: vi.fn() },
 		scopedModels: [],
 	} as any;
+	const emit = async (event: string, payload: any = {}, context = ctx) => {
+		for (const handler of [...(handlers.get(event) ?? [])]) await handler(payload, context);
+	};
+	const errors = vi.fn();
+	const dispatch = async (event: string, payload: any = {}, context = ctx) => {
+		for (const handler of [...(handlers.get(event) ?? [])]) {
+			try { await handler(payload, context); } catch (error) { errors(error); }
+		}
+	};
+	cleanups.push(() => emit("session_shutdown", { reason: "quit" }));
 	return {
-		pi,
+		pi, emit, dispatch, errors,
 		handlers,
 		commands,
 		tools,
@@ -109,7 +123,7 @@ describe("subagent extension interfaces", () => {
 		writeFileSync(settingsPath, JSON.stringify({ subagents: { maxConcurrency: 0 } }));
 		const harness = extensionHarness(undefined, { settingsPath, injectConfig: false });
 
-		await expect(harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx))
+		await expect(harness.emit("session_start", { reason: "startup" }, harness.ctx))
 			.rejects.toThrow(/maxConcurrency/);
 	});
 
@@ -143,7 +157,6 @@ describe("subagent extension interfaces", () => {
 		expect(harness.registrations).toEqual([
 			"event:tool_result",
 			"event:session_start",
-			"event:session_shutdown",
 			"event:session_shutdown",
 			"event:session_tree",
 			"tool:subagent_status",
@@ -272,7 +285,7 @@ describe("subagent tool wiring", () => {
 			writeFileSync(join(root, ".pi", "pi-config.json"), JSON.stringify({ profile: "focused" }));
 			const harness = extensionHarness(undefined, { settingsPath });
 			harness.ctx.cwd = root;
-			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+			await harness.emit("session_start", { reason: "startup" }, harness.ctx);
 			expect(harness.config.configPath).toBe(join(profilesDirectoryFor(settingsPath), "focused.json"));
 		});
 
@@ -296,7 +309,7 @@ describe("subagent tool wiring", () => {
 			harness.ctx.cwd = root;
 			calls.length = 0;
 
-			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+			await harness.emit("session_start", { reason: "startup" }, harness.ctx);
 
 			expect(calls).toEqual([
 				`path:${join(profilesDirectoryFor(settingsPath), "focused.json")}`,
@@ -312,7 +325,7 @@ describe("subagent tool wiring", () => {
 			mkdirSync(join(root, "profiles"));
 			writeFileSync(settingsPath, JSON.stringify({}));
 			const harness = extensionHarness(undefined, { settingsPath });
-			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+			await harness.emit("session_start", { reason: "startup" }, harness.ctx);
 			expect(harness.config.configPath).toBe(settingsPath);
 		});
 
@@ -341,7 +354,7 @@ describe("subagent tool wiring", () => {
 			});
 			const harness = extensionHarness(executeChild, { settingsPath, injectConfig: false });
 			harness.ctx.cwd = root;
-			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+			await harness.emit("session_start", { reason: "startup" }, harness.ctx);
 			writeFileSync(focusedPath, JSON.stringify({ subagents: { maxConcurrency: 3 } }));
 
 			const execution = harness.tools.get("subagent").execute("call", {
@@ -367,6 +380,7 @@ describe("background extension routing and ownership", () => {
 		let resolve!: (value: any) => void;
 		const child = vi.fn(() => new Promise<any>((done) => { resolve = done; }));
 		const h = extensionHarness(child); h.ctx.mode = mode; h.ctx.cwd = process.cwd();
+		await h.emit("session_start", { reason: "startup" });
 		const updates = vi.fn();
 		const result = await h.tools.get("subagent").execute("id", { tasks: [{ agent: "explorer", task: "inspect" }] }, undefined, updates, h.ctx);
 		expect(result.details).toMatchObject({ mode: "background", runs: [{ status: "queued" }] });
@@ -374,7 +388,7 @@ describe("background extension routing and ownership", () => {
 		resolve(agentResult({ agent: "explorer", output: "done" }));
 		await h.tools.get("subagent_wait").execute("wait", { runIds: [result.details.runs[0].runId] }, undefined, undefined, h.ctx);
 		expect(h.pi.sendMessage).toHaveBeenCalledOnce(); expect(updates).not.toHaveBeenCalled();
-		await h.handlers.get("session_shutdown")({}, h.ctx);
+		await h.emit("session_shutdown", {}, h.ctx);
 	});
 	it.each(["print", "json"])("rejects explicit background requests in %s before launch", async (mode) => {
 		const h = extensionHarness(); h.ctx.mode = mode;
@@ -390,11 +404,14 @@ describe("background extension routing and ownership", () => {
 	});
 	it.each(["session_tree", "session_shutdown"])("revokes old delivery and waits for cancellation during %s", async (event) => {
 		let resolve!: (value: any) => void;
-		const child = vi.fn((request: any) => new Promise<any>((done) => { resolve = done; }));
+		const aborted = deferred();
+		const child = vi.fn((request: any) => new Promise<any>((done) => { resolve = done; request.signal.addEventListener("abort", () => aborted.resolve(), { once: true }); }));
 		const h = extensionHarness(child); h.ctx.mode = "rpc"; h.ctx.cwd = process.cwd();
+		await h.emit("session_start", { reason: "startup" });
 		const result = await h.tools.get("subagent").execute("id", { tasks: [{ agent: "explorer", task: "inspect" }] }, undefined, undefined, h.ctx);
 		let finished = false;
-		const cleanup = h.handlers.get(event)({}, h.ctx).then(() => { finished = true; });
+		const cleanup = h.emit(event, {}, h.ctx).then(() => { finished = true; });
+		await aborted.promise;
 		expect(child.mock.calls[0][0].signal.aborted).toBe(true); expect(finished).toBe(false);
 		resolve(agentResult()); await cleanup;
 		if (event === "session_tree") expect(h.pi.sendMessage).not.toHaveBeenCalled();
@@ -403,5 +420,59 @@ describe("background extension routing and ownership", () => {
 			await expect(h.tools.get("subagent_status").execute("id", { runId: result.details.runs[0].runId }, undefined, undefined, h.ctx)).rejects.toThrow(/unavailable/);
 		}
 		expect(h.ctx.ui.setStatus).toHaveBeenCalledWith("subagents", undefined);
+	});
+});
+
+
+describe("ordered lifecycle adaptation", () => {
+	it("registers one shutdown handler and removes the facade after failed preparation", async () => {
+		const config = memoryConfigStore(); config.migrateLegacy = async () => { throw new Error("migration failed"); };
+		const h = extensionHarness(undefined, { config });
+		expect(h.handlers.get("session_shutdown")).toHaveLength(1);
+		await expect(h.emit("session_start", { reason: "startup" })).rejects.toThrow("migration failed");
+		await h.emit("session_shutdown", { reason: "quit" });
+		expect(requireSubagentService).toThrow("unavailable");
+	});
+	it("dispatch reports a failed handler and still invokes later ordered handlers", async () => {
+		const h = extensionHarness(); const order: string[] = [];
+		h.pi.on("fixture", async () => { order.push("first"); throw new Error("handler failed"); });
+		const unsubscribe = h.pi.on("fixture", () => { order.push("second"); });
+		await h.dispatch("fixture");
+		expect(order).toEqual(["first", "second"]); expect(h.errors).toHaveBeenCalledWith(expect.objectContaining({ message: "handler failed" }));
+		unsubscribe(); expect(h.handlers.get("fixture")).toHaveLength(1);
+	});
+	it("shutdown during branch retirement stops replacement and unregisters", async () => {
+		let finish!: (value: any) => void;
+		const h = extensionHarness(vi.fn(() => new Promise<any>((resolve) => { finish = resolve; })));
+		h.ctx.cwd = process.cwd(); h.ctx.mode = "rpc"; await h.emit("session_start", { reason: "startup" });
+		await h.tools.get("subagent").execute("id", { tasks: [{ agent: "explorer", task: "inspect" }] }, undefined, undefined, h.ctx);
+		const branch = h.emit("session_tree"); const shutdown = h.emit("session_shutdown");
+		finish(agentResult()); await Promise.all([branch, shutdown]);
+		expect(requireSubagentService).toThrow("unavailable"); expect(h.pi.sendMessage).not.toHaveBeenCalled();
+		await expect(h.tools.get("subagent").execute("id", { tasks: [{ agent: "explorer", task: "again" }] }, undefined, undefined, h.ctx)).rejects.toThrow("admission is closed");
+	});
+});
+
+describe("Profile binding fallback and preparation ordering", () => {
+	it.each(["binding resolution", "path application"])("afterStop removes the loading facade when %s prevented initialization", async (failure) => {
+		const config = memoryConfigStore(); config.migrateLegacy = vi.fn(async () => false);
+		const h = extensionHarness(undefined, { config });
+		if (failure === "binding resolution") h.ctx.sessionManager.getBranch = () => { throw new Error("binding failed"); };
+		else config.setSettingsPath = () => { throw new Error("path failed"); };
+		await expect(h.emit("session_start", { reason: "startup" })).rejects.toThrow(/failed/);
+		expect(config.migrateLegacy).not.toHaveBeenCalled();
+		await h.emit("session_shutdown", { reason: "quit" });
+		expect(requireSubagentService).toThrow("unavailable"); expect(h.executeChild).not.toHaveBeenCalled();
+	});
+	it("actual Profile shutdown waits for deferred initialization before reaching the module", async () => {
+		const config = memoryConfigStore(); const migration = deferred(); const begun = deferred();
+		config.migrateLegacy = async () => { begun.resolve(); await migration.promise; return false; };
+		const h = extensionHarness(undefined, { config });
+		const startup = h.emit("session_start", { reason: "startup" }); await begun.promise;
+		let stopped = false;
+		const shutdown = h.emit("session_shutdown", { reason: "quit" }).then(() => { stopped = true; });
+		expect(stopped).toBe(false); expect(requireSubagentService().id).toBe("tools-subagents");
+		migration.resolve(); await Promise.all([startup, shutdown]);
+		expect(requireSubagentService).toThrow("unavailable"); expect(h.executeChild).not.toHaveBeenCalled();
 	});
 });
