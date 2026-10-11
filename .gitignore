@@ -16,6 +16,7 @@ yarn-error.log*
 .env.*.local
 
 # Pi
+.pi/pi-config.json
 .pi/plane.json
 .pi/settings.json
 .pi/worktrees/
