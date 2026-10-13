@@ -60,17 +60,34 @@ const REAL_OPTIONS: GuidelineSource = {
 
 /** Extract the guidelines region of a stock pi build. */
 function stockGuidelines(built: string): string {
-	const start = built.indexOf("Guidelines:");
-	const end = built.indexOf("\n\nPi documentation");
+	const marker = "<rules>\n";
+	const start = built.indexOf(marker);
+	const end = built.indexOf("\n</rules>", start);
 	expect(start).toBeGreaterThan(-1);
 	expect(end).toBeGreaterThan(start);
-	return built.slice(start, end);
+	return built.slice(start + marker.length, end);
 }
 
 describe.skipIf(!buildSystemPrompt)("parity with the runtime-installed pi", () => {
 	it("matches pi's stock guideline rendering byte for byte (golden parity)", () => {
 		const built = buildSystemPrompt!({ ...REAL_OPTIONS, cwd: "/tmp/probe" });
 		expect(buildGuidelines(REAL_OPTIONS)).toBe(stockGuidelines(built));
+	});
+
+	it("matches pi's per-tool guideline order and cross-source deduplication", () => {
+		const options: GuidelineSource = {
+			selectedTools: ["read", "bash"],
+			toolGuidelines: {
+				bash: [" Bash rule ", "Read rule"],
+				read: ["Read rule"],
+				write: ["Inactive tool rule"],
+			},
+			promptGuidelines: ["Read rule", "User rule"],
+		};
+		const built = buildSystemPrompt!({ ...options, cwd: "/tmp/probe" });
+		expect(buildGuidelines(options)).toBe(stockGuidelines(built));
+		expect(buildGuidelines(options)).toContain("- Read rule\n- Bash rule\n- User rule");
+		expect(buildGuidelines(options)).not.toContain("Inactive tool rule");
 	});
 
 	it("matches pi with no contributed guidelines", () => {
@@ -101,7 +118,7 @@ describe.skipIf(!buildSystemPrompt)("parity with the runtime-installed pi", () =
 
 	it("renders no tool list (tool discovery rides on payload schemas)", () => {
 		const rendered = buildGuidelines(REAL_OPTIONS);
-		expect(rendered.startsWith("Guidelines:\n")).toBe(true);
+		expect(rendered.startsWith("- Use bash for file operations like ls, rg, find\n")).toBe(true);
 		expect(rendered).not.toContain("Available tools:");
 		expect(rendered).not.toContain("In addition to the tools above");
 		expect(rendered).not.toContain("- read: ");
@@ -121,7 +138,7 @@ describe("buildGuidelines (self-contained)", () => {
 			],
 		};
 		const rendered = buildGuidelines(options);
-		const guidelineLines = rendered.slice("Guidelines:\n".length).split("\n");
+		const guidelineLines = rendered.split("\n");
 		expect(guidelineLines).toEqual([
 			"- Use read to examine files instead of cat or sed.",
 			"- Be concise in your responses",
@@ -136,16 +153,16 @@ describe("buildGuidelines (self-contained)", () => {
 });
 
 describe("insertGuidelines", () => {
-	const base = "PERSONA.\n\nPi documentation refs.\n\n<project_context>…</project_context>\nCurrent working directory: /tmp/probe\n";
+	const base = "PERSONA.\n\n<project_context>…</project_context>\n\n<cwd>\n/tmp/probe\n</cwd>";
 	const guidelines = buildGuidelines(REAL_OPTIONS);
 
-	it("inserts the section before the current working directory line", () => {
+	it("inserts the section before the cwd section", () => {
 		const result = insertGuidelines(base, guidelines);
 		const blockIndex = result.indexOf("<tool_guidelines>");
-		const cwdIndex = result.indexOf("Current working directory:");
+		const cwdIndex = result.indexOf("<cwd>");
 		expect(blockIndex).toBeGreaterThan(-1);
 		expect(cwdIndex).toBeGreaterThan(blockIndex);
-		expect(result).toContain("</tool_guidelines>\nCurrent working directory: /tmp/probe");
+		expect(result).toContain("</rules>\n</tool_guidelines>\n\n<cwd>\n/tmp/probe");
 	});
 
 	it("appends at the end when the cwd line is missing", () => {
@@ -162,10 +179,10 @@ describe("insertGuidelines", () => {
 	});
 
 	it("inserts before the last cwd marker so quoted context cannot hijack placement", () => {
-		const tricky = `PERSONA.\ninstructions saying\nCurrent working directory: /quoted/inside/context\nmore text\nCurrent working directory: /tmp/probe\n`;
+		const tricky = `PERSONA.\ninstructions saying\n<cwd>\n/quoted/inside/context\n</cwd>\nmore text\n\n<cwd>\n/tmp/probe\n</cwd>`;
 		const result = insertGuidelines(tricky, guidelines);
-		expect(result).toContain("</tool_guidelines>\nCurrent working directory: /tmp/probe");
-		expect(result).not.toContain("</tool_guidelines>\nCurrent working directory: /quoted/inside/context");
+		expect(result).toContain("</tool_guidelines>\n\n<cwd>\n/tmp/probe");
+		expect(result).not.toContain("</tool_guidelines>\n\n<cwd>\n/quoted/inside/context");
 	});
 
 	it("stripGuidelines removes an injected block entirely", () => {

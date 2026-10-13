@@ -81,7 +81,15 @@ export function registerSubagentRunTools(pi: ExtensionAPI, runs: SubagentRunCont
 		parameters: Type.Object({ runId: Type.Optional(Type.String()) }), outputSchema: RunDetailsSchema,
 		async execute(_id, params) {
 			if (params.runId) return runToolResult([runs.get(params.runId)]);
-			const summaries = runs.list().map(({ runId, agent, model, status, createdAt, finishedAt }) => ({ runId, agent: truncateHead(agent, { maxBytes: 64, maxLines: 1 }).content, model: truncateHead(model, { maxBytes: 64, maxLines: 1 }).content, status, createdAt, finishedAt }));
+			// structuredContent must be JSON: omit finishedAt when the run has not finished.
+			const summaries = runs.list().map(({ runId, agent, model, status, createdAt, finishedAt }) => ({
+				runId,
+				agent: truncateHead(agent, { maxBytes: 64, maxLines: 1 }).content,
+				model: truncateHead(model, { maxBytes: 64, maxLines: 1 }).content,
+				status,
+				createdAt,
+				...(finishedAt !== undefined ? { finishedAt } : {}),
+			}));
 			const details = { mode: "background" as const, runs: summaries };
 			return { content: [{ type: "text" as const, text: formatRunReports(summaries, false) }], details, structuredContent: details, isError: false };
 		}, renderResult,

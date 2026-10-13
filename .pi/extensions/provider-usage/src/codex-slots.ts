@@ -56,7 +56,7 @@ function slotLabel(slot: CodexCredentialSlotInfo): string {
 function emptySlotResult(): QuotaProbeResult {
 	return {
 		state: "auth-required",
-		message: "This Codex slot has no saved credential. Select it with `/codex use <name>` and run `/login openai-codex`.",
+		message: "This Codex slot has no saved credential. Select it with `/codex use <name>` and run `/login openai`.",
 	};
 }
 
@@ -68,13 +68,13 @@ function unavailableSlotResult(error: unknown): QuotaProbeResult {
 		if (error.code === "AUTH_REFRESH_FAILED") {
 			return {
 				state: "auth-required",
-				message: "This Codex credential could not be refreshed. Select the slot with `/codex use <name>` and run `/login openai-codex`.",
+				message: "This Codex credential could not be refreshed. Select the slot with `/codex use <name>` and run `/login openai`.",
 			};
 		}
 	}
 	return {
 		state: "auth-required",
-		message: "This Codex slot does not contain a usable credential. Select it with `/codex use <name>` and run `/login openai-codex`.",
+		message: "This Codex slot does not contain a usable credential. Select it with `/codex use <name>` and run `/login openai`.",
 	};
 }
 

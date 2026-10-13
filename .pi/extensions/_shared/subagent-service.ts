@@ -9,7 +9,9 @@ export interface AgentConfig {
 	filePath: string;
 }
 
-export interface AgentProgress {
+// Type aliases, not interfaces: snapshots flow into AgentToolResult.structuredContent,
+// which requires JsonObject assignability (interfaces lack the implicit index signature).
+export type AgentProgress = {
 	agent: string;
 	/**
 	 * Authoritative lifecycle and terminal outcome. `pending` and `running` are
@@ -26,9 +28,9 @@ export interface AgentProgress {
 	durationMs: number;
 	lastMessage: string;
 	error?: string;
-}
+};
 
-export interface SubagentTiming {
+export type SubagentTiming = {
 	totalMs: number;
 	startupMs?: number;
 	/** Provider request and model generation time. This is not a measure of hidden reasoning alone. */
@@ -41,9 +43,9 @@ export interface SubagentTiming {
 	repositoryOperations: number;
 	partial: boolean;
 	anomalyCount: number;
-}
+};
 
-export interface AgentResult {
+export type AgentResult = {
 	agent: string;
 	task: string;
 	output: string;
@@ -63,7 +65,7 @@ export interface AgentResult {
 	originalOutputBytes?: number;
 	/** Visual and programmatic diagnostics. Not appended to model-visible output. */
 	timing?: SubagentTiming;
-}
+};
 
 export type SubagentProgressEvent =
 	| { type: "started"; agent: string; task: string }

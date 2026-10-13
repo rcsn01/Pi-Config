@@ -3,9 +3,10 @@
 // Generated: 2026-08-27T03:56:29.046Z
 // Model count: 20
 
-import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { OllamaChatModelConfig } from "./thinking-levels.ts";
 
-export const GENERATED_MODELS: ProviderModelConfig[] = [
+// Ollama Cloud only serves chat models; the generated entries satisfy the chat variant.
+export const GENERATED_MODELS: OllamaChatModelConfig[] = [
   {
     id: "deepseek-v4-flash:0731",
     name: "deepseek-v4-flash:0731",

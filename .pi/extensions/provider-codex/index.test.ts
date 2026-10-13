@@ -122,8 +122,8 @@ describe("provider-codex command", () => {
 		expect(h.input).toHaveBeenCalledWith("New Codex credential slot name", "slot-name");
 		expect(h.waitForIdle).toHaveBeenCalledOnce();
 		expect(store.createAndSwitch).toHaveBeenCalledWith("personal");
-		expect(h.refresh).toHaveBeenCalledWith({ allowNetwork: false, providers: ["openai-codex"] });
-		expect(h.notify).toHaveBeenCalledWith(expect.stringContaining("/login openai-codex"), "info");
+		expect(h.refresh).toHaveBeenCalledWith({ allowNetwork: false, providers: ["openai"] });
+		expect(h.notify).toHaveBeenCalledWith(expect.stringContaining("/login openai"), "info");
 	});
 
 	it("uses an existing slot by name and does not wait when it is already active", async () => {

@@ -11,11 +11,11 @@ Each provider uses its existing local credential. Pi Codex request headers are e
 
 **Current ChatGPT login** is recognized through Pi's runtime authentication metadata for `openai`, regardless of the selected model. When this OAuth login exists, `/usage` and `/usage codex` show it instead of checking legacy slots or requesting `/login openai-codex`. The new login does not have a documented quota-read API in the sources reviewed. The output says that numeric quota is unavailable through this integration and links to [ChatGPT usage settings](https://chatgpt.com/settings/usage). `probe` does not send this API-scoped token to the legacy backend. See `.pi/docs/chatgpt-subscription-usage-research.md` for the primary-source findings.
 
-**Legacy Codex** uses Pi's `~/.pi/agent/auth.json` (or `$PI_CODING_AGENT_DIR/auth.json`) and the named slots managed by `provider-codex` when no current `openai` OAuth login is in use. `/usage codex` then resolves every saved slot with Pi's native `openai-codex` OAuth provider, including refresh and rotated-token writeback, without switching the active slot. Empty, invalid, expired, and failed slots remain visible with a safe per-slot message. For legacy slots only, select a slot and sign in with:
+**Codex slots** use Pi's `~/.pi/agent/auth.json` or `$PI_CODING_AGENT_DIR/auth.json`. The `provider-codex` extension now manages the `openai` credential with Pi's native Sign in with ChatGPT provider, including refresh and rotated-token writeback. When no current `openai` OAuth login is in use, `/usage codex` retains its slot-based quota fallback. The legacy quota endpoint is not a supported quota API for the new login. Empty, invalid, expired, and failed slots remain visible with a safe per-slot message. Select an empty slot and sign in with:
 
 ```text
 /codex use <name>
-/login openai-codex
+/login openai
 ```
 
 **Ollama** reads `~/.ollama/id_ed25519` (no environment override exists in the Ollama source), parses the unencrypted `openssh-key-v1` blob, and signs the challenge `GET,/api/usage?ts=<unix-seconds>` with `crypto.subtle`, sending `Authorization: Bearer <base64(ssh-ed25519 wire pubkey)>:<base64(signature)>` (a bare header is retried if Bearer is rejected). If the key is missing or rejected, sign in to the Ollama app (which creates the key) and link it at https://ollama.com/connect.
@@ -59,7 +59,7 @@ Weekly limit: [████████████░░░░░░░░] 58%
 Rate-limit reset credits: 1 available
 
 ChatGPT Codex · Slot: work
-This Codex credential could not be refreshed. Select the slot with `/codex use <name>` and run `/login openai-codex`.
+This Codex credential could not be refreshed. Select the slot with `/codex use <name>` and run `/login openai`.
 
 Ollama Cloud
 Session usage: [███░░░░░░░░░░░░░░░░░] 16% used · resets in 40m on 17 Aug

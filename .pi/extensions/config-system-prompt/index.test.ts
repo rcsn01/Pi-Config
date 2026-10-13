@@ -33,7 +33,7 @@ function createPi() {
 }
 
 const BASE_PROMPT =
-	"You are an executor coding agent.\n\nPi documentation refs.\nCurrent working directory: /tmp/probe\n";
+	"You are an executor coding agent.\n\n<cwd>\n/tmp/probe\n</cwd>";
 
 const OPTIONS = {
 	customPrompt: "You are an executor coding agent.",
@@ -58,10 +58,10 @@ describe("before_agent_start handler", () => {
 		const handler = loadHandler();
 		const result = handler({ systemPrompt: BASE_PROMPT, systemPromptOptions: OPTIONS });
 		expect(result).toBeDefined();
-		expect(result!.systemPrompt).toContain("<tool_guidelines>\nGuidelines:");
+		expect(result!.systemPrompt).toContain("<tool_guidelines>\n<rules>\n");
 		expect(result!.systemPrompt).toContain("- Use read to examine files instead of cat or sed.");
 		expect(result!.systemPrompt).toContain("- Use bash for file operations like ls, rg, find");
-		expect(result!.systemPrompt).toContain("</tool_guidelines>\nCurrent working directory: /tmp/probe");
+		expect(result!.systemPrompt).toContain("</rules>\n</tool_guidelines>\n\n<cwd>\n/tmp/probe\n</cwd>");
 		expect(result!.systemPrompt.startsWith(BASE_PROMPT.slice(0, 30))).toBe(true);
 	});
 

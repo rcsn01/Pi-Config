@@ -76,9 +76,9 @@ export function createSubscriptionUsageExtension(options: {
 	return function subscriptionUsageExtension(pi: ExtensionAPI): void {
 		const now = options.now ?? (() => new Date());
 		// The current login needs only runtime metadata. Do not open or initialize
-		// the legacy credential store unless a legacy action is actually requested.
+		// the credential slot store unless a slot action is actually requested.
 		let codex = options.codex;
-		const legacyCodex = () => codex ??= new CodexSlotUsageClient({ now });
+		const codexSlots = () => codex ??= new CodexSlotUsageClient({ now });
 		const probeOllama = options.probeOllama ?? probeUsage;
 		const inspectOllama = options.inspectOllama ?? inspectOllamaAuth;
 		let latestOllama: UsageSnapshot | undefined;
@@ -104,13 +104,13 @@ export function createSubscriptionUsageExtension(options: {
 			}
 			try {
 				if (action === "auth status") {
-					const inspection = legacyCodex().inspect();
+					const inspection = codexSlots().inspect();
 					return {
 						ok: inspection.slots.some((slot) => slot.hasCredential),
 						text: formatCodexAuthStatus(inspection),
 					};
 				}
-				const batch = await legacyCodex().query({
+				const batch = await codexSlots().query({
 					cache: action === "probe" ? "bypass" : action === "refresh" ? "refresh" : "prefer",
 					signal: ctx.signal,
 				});
@@ -148,7 +148,7 @@ export function createSubscriptionUsageExtension(options: {
 		};
 
 		pi.registerCommand("usage", {
-			description: "Show ChatGPT subscription status, legacy Codex quota, and configured Ollama usage",
+			description: "Show ChatGPT subscription status, Codex slot quota, and configured Ollama usage",
 			handler: async (rawArgs, ctx) => {
 				const { provider, action } = parseUsageArgs(rawArgs);
 				const normalized = action === "auth" ? "auth status" : action;

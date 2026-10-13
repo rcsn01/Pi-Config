@@ -170,6 +170,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event) => {
 		if (!fleetState.active) return;
+		// Only user runs carry prompt text; sendMessage-triggered runs do not.
+		if (event.messageType !== "user") return;
 		const prompt = event.prompt.trim();
 		if (prompt && !prompt.startsWith("/") && !isApprovalLike(prompt)) {
 			fleetState = {

@@ -21,9 +21,9 @@
   },
   "subagents": {
     "maxConcurrency": 4,
-    "defaultModel": "openai/gpt-6-luna",
+    "defaultModel": "openai/gpt-6.1-sol",
     "agentModels": {},
-    "defaultThinkingLevel": "max",
+    "defaultThinkingLevel": "low",
     "agentThinkingLevels": {},
     "defaultContextWindow": 256000,
     "agentContextWindows": {

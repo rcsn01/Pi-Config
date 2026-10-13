@@ -104,8 +104,8 @@ async function lifecycleHost(mode: "rpc" | "tui", before?: ExtensionFactory) {
 	const unsubscribe = session.subscribe((event) => { if (event.type === "message_end" && event.message.role === "custom" && event.message.customType === "subagent-completion") completions.push(event.message); });
 	await session.bindExtensions({ mode, onError: (error) => errors.push(error) });
 	const tool = session.extensionRunner.getToolDefinition("subagent")!;
-	const submit = (task = "inspect") => tool.execute("fixture", { tasks: [{ agent: "explorer", task }] }, undefined, undefined, session.extensionRunner.createContext());
-	const status = (runId: string) => session.extensionRunner.getToolDefinition("subagent_status")!.execute("status", { runId }, undefined, undefined, session.extensionRunner.createContext());
+	const submit = (task = "inspect") => tool.execute("fixture", { tasks: [{ agent: "explorer", task }] }, undefined, undefined, session.extensionRunner.createToolContext("fixture", undefined));
+	const status = (runId: string) => session.extensionRunner.getToolDefinition("subagent_status")!.execute("status", { runId }, undefined, undefined, session.extensionRunner.createToolContext("fixture", undefined));
 	const close = async () => {
 		const shutdown = session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		gates.forEach((gate, index) => {
@@ -162,7 +162,7 @@ describe("SDK lifecycle dispatch and navigation", () => {
 		const h = await lifecycleHost(mode);
 		try {
 			vi.useFakeTimers();
-			await h.submit(); const stale = h.session.extensionRunner.createContext();
+			await h.submit(); const stale = h.session.extensionRunner.createToolContext("fixture", undefined);
 			const shutdown = h.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 			await h.aborts[0].promise;
 			h.requests[0].onUpdate(agentResult().progress); h.gates[0].resolve(agentResult({ output: "partial shutdown report" }));

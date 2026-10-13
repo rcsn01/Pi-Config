@@ -29,7 +29,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { OllamaChatModelConfig } from "./thinking-levels.ts";
 
 export const OLLAMA_PROVIDER_ID = "ollama-cloud";
 export const OLLAMA_MODELS_BASE_URL = "https://ollama.com/v1";
@@ -68,7 +68,7 @@ function enqueue<T>(task: () => Promise<T>): Promise<T> {
 }
 
 /** Strip runtime-only fields pi derives when loading models.json. */
-function toModelDefinition(model: ProviderModelConfig): Record<string, unknown> {
+function toModelDefinition(model: OllamaChatModelConfig): Record<string, unknown> {
   return {
     id: model.id,
     ...(model.name ? { name: model.name } : {}),
@@ -100,7 +100,7 @@ function hasUsableEntry(doc: Record<string, unknown>): boolean {
  * every other document field and every unmanaged field of an existing entry.
  */
 export async function syncOllamaCatalogToModelsJson(
-  models: readonly ProviderModelConfig[],
+  models: readonly OllamaChatModelConfig[],
 ): Promise<SyncResult> {
   return upsertOllamaEntry(models, { overwriteExisting: true });
 }
@@ -112,13 +112,13 @@ export async function syncOllamaCatalogToModelsJson(
  * overwriting a newer synced catalog with stale data.
  */
 export async function ensureOllamaCatalogInModelsJson(
-  models: readonly ProviderModelConfig[],
+  models: readonly OllamaChatModelConfig[],
 ): Promise<SyncResult> {
   return upsertOllamaEntry(models, { overwriteExisting: false });
 }
 
 async function upsertOllamaEntry(
-  models: readonly ProviderModelConfig[],
+  models: readonly OllamaChatModelConfig[],
   options: { overwriteExisting: boolean },
 ): Promise<SyncResult> {
   // Serialize concurrent invocations (pi can trigger overlapping refreshes).
@@ -126,7 +126,7 @@ async function upsertOllamaEntry(
 }
 
 async function performUpsert(
-  models: readonly ProviderModelConfig[],
+  models: readonly OllamaChatModelConfig[],
   options: { overwriteExisting: boolean },
 ): Promise<SyncResult> {
   // An empty catalog would disable the provider for children; never write one.

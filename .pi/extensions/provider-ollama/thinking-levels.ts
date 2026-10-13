@@ -11,7 +11,10 @@
 
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
-export type ThinkingLevelMap = NonNullable<ProviderModelConfig["thinkingLevelMap"]>;
+/** Pi's registered-model union narrowed to the chat variant; Ollama Cloud only serves chat models. */
+export type OllamaChatModelConfig = Extract<ProviderModelConfig, { type?: "chat" }>;
+
+export type ThinkingLevelMap = NonNullable<OllamaChatModelConfig["thinkingLevelMap"]>;
 
 /** Fallback for thinking-capable models outside the mapped families. */
 export const DEFAULT: ThinkingLevelMap = {

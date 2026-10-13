@@ -53,7 +53,7 @@ describe("workflows-goal installed-host integration", () => {
 		});
 		modelRuntime.registerNativeProvider(faux.provider);
 		const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
-		let beforeAgentStartCalls = 0;
+		const beforeAgentStartTypes: string[] = [];
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir: cwd,
@@ -64,7 +64,7 @@ describe("workflows-goal installed-host integration", () => {
 			noThemes: true,
 			noContextFiles: true,
 			extensionFactories: [
-				(pi) => { pi.on("before_agent_start", () => { beforeAgentStartCalls += 1; }); },
+				(pi) => { pi.on("before_agent_start", (event) => { beforeAgentStartTypes.push(event.messageType); }); },
 				goalExtension,
 			],
 		});
@@ -89,7 +89,7 @@ describe("workflows-goal installed-host integration", () => {
 
 			expect(faux.state.callCount).toBe(2);
 			expect(events.filter((event) => event.type === "agent_start")).toHaveLength(2);
-			expect(beforeAgentStartCalls).toBe(1);
+			expect(beforeAgentStartTypes).toEqual(["user", "custom"]);
 			expect(JSON.stringify(modelContexts[1])).toContain("The persistent goal is still active");
 			expect(events).toContainEqual(expect.objectContaining({
 				type: "message_start",

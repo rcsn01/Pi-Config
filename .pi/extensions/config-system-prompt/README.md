@@ -1,8 +1,8 @@
 # config-system-prompt
 
-Restores the dynamic `Guidelines` system-prompt section that pi drops when
+Restores the dynamic `<rules>` system-prompt section that pi drops when
 a custom prompt (`SYSTEM.md`, `--system-prompt`) replaces the default build.
-The `Available tools` list is intentionally not restored — tool discovery
+The `<tools>` list is intentionally not restored. Tool discovery
 rides on the provider payload's function schemas, so re-listing tools in the
 prompt would duplicate them.
 
@@ -10,19 +10,19 @@ prompt would duplicate them.
 
 `buildSystemPrompt()` only renders those sections on its default path. With
 `customPrompt` set, the prompt becomes: custom text → `APPEND_SYSTEM.md` →
-`<project_context>` → skills → `Current working directory:` — no guidelines.
+`<project_context>` → skills → `<cwd>`, with no rules section.
 Guidelines are genuinely dynamic (per-tool bullets, tool-conditional rules),
 so they cannot be frozen into `SYSTEM.md` without going stale when active tools
 change through profiles or plan-mode swaps like `bash` → `plan_bash`.
 
 ## How
 
-`before_agent_start` runs each turn with `event.systemPromptOptions` — the
+`before_agent_start` runs each turn with `event.systemPromptOptions`, the
 same structured data pi used to build the prompt. When a custom prompt is
 present, the extension re-renders the guidelines from those options
 (mirroring pi's stock rendering byte for byte) and inserts them before the
-trailing `Current working directory:` line, wrapped in `<tool_guidelines>`
-sentinels. The chain resets to the base prompt every turn, so nothing
+trailing `<cwd>` section. The native `<rules>` tag is wrapped in
+`<tool_guidelines>` sentinels. The chain resets to the base prompt every turn, so nothing
 accumulates; the sentinels make the insert idempotent if the handler ever
 runs twice.
 

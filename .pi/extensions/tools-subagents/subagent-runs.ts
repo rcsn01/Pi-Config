@@ -6,7 +6,9 @@ import { createSubagentExecutionScheduler } from "./execution-scheduler.ts";
 import type { RunSubagentBatchOptions, SubagentExecution, SubagentExecutionTask } from "./subagent-execution.ts";
 
 export type SubagentRunStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
-export interface SubagentRunSnapshot {
+// A type alias, not an interface: snapshots flow into AgentToolResult.structuredContent,
+// which requires JsonObject assignability (interfaces lack the implicit index signature).
+export type SubagentRunSnapshot = {
 	runId: string;
 	sessionId: string;
 	agent: string;
@@ -22,7 +24,7 @@ export interface SubagentRunSnapshot {
 	progress?: AgentProgress;
 	result?: AgentResult;
 	error?: string;
-}
+};
 export const isTerminalRun = (run: SubagentRunSnapshot) =>
 	run.status === "completed" || run.status === "failed" || run.status === "cancelled";
 

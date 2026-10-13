@@ -12,7 +12,8 @@ export const QUOTA_ENDPOINT_URL = "https://chatgpt.com/backend-api/wham/usage";
  */
 export interface CodexQuotaRequestHeaders {
 	readonly Authorization: string;
-	readonly "chatgpt-account-id": string;
+	/** Legacy Codex backend identity; absent for Sign in with ChatGPT tokens. */
+	readonly "chatgpt-account-id"?: string;
 }
 
 function createCodexAdapter(headers: CodexQuotaRequestHeaders): ProviderProbeAdapter<QuotaSnapshot> {
@@ -38,7 +39,7 @@ function createCodexAdapter(headers: CodexQuotaRequestHeaders): ProviderProbeAda
 			endpointLabel: "ChatGPT",
 			unreachable: "Could not reach the ChatGPT usage endpoint.",
 			authRejected: (status) =>
-				`ChatGPT rejected the Codex credential (HTTP ${status}). Select the slot with \`/codex use <name>\` and run \`/login openai-codex\`.`,
+				`ChatGPT rejected the Codex credential (HTTP ${status}). Select the slot with \`/codex use <name>\` and run \`/login openai\`.`,
 		},
 	};
 }

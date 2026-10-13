@@ -7,7 +7,10 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { createModels, type Credential, type CredentialStore, type Provider } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
-export const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
+// The subscription credential managed by these slots is Pi's OpenAI provider
+// credential written by "Sign in with ChatGPT" (/login openai). Pi's native
+// openai-codex provider and login flow are legacy and no longer used here.
+export const OPENAI_PROVIDER_ID = "openai";
 export const STATE_PROVIDER_ID = "provider-codex/state";
 export const SLOT_PROVIDER_PREFIX = "provider-codex/slot/";
 
@@ -60,7 +63,8 @@ export interface CodexCredentialSlotInfo {
 export interface CodexCredentialRequestAuth {
 	readonly headers: Readonly<{
 		Authorization: string;
-		"chatgpt-account-id": string;
+		/** Legacy Codex backend identity, present only when the token carries the claim. */
+		"chatgpt-account-id"?: string;
 	}>;
 	readonly cacheIdentity: string;
 }
@@ -256,7 +260,7 @@ function slotMetadata(state: SlotState | undefined, slotId: string): SlotMetadat
 function slotCredentialProviderId(state: SlotState | undefined, slotId: string): string {
 	const effective = effectiveState(state);
 	const slot = slotMetadata(effective, slotId);
-	return slot.id === effective.activeSlotId ? OPENAI_CODEX_PROVIDER_ID : slotProviderId(slot.id);
+	return slot.id === effective.activeSlotId ? OPENAI_PROVIDER_ID : slotProviderId(slot.id);
 }
 
 function credentialForSlot(data: AuthDocument, state: SlotState | undefined, slotId: string): Credential | undefined {
@@ -271,33 +275,48 @@ function setCredentialForSlot(
 ): void {
 	const effective = effectiveState(state);
 	const slot = slotMetadata(effective, slotId);
-	const providerId = slot.id === effective.activeSlotId ? OPENAI_CODEX_PROVIDER_ID : slotProviderId(slot.id);
+	const providerId = slot.id === effective.activeSlotId ? OPENAI_PROVIDER_ID : slotProviderId(slot.id);
 	data[providerId] = credential;
-	if (providerId === OPENAI_CODEX_PROVIDER_ID) delete data[slotProviderId(slot.id)];
+	if (providerId === OPENAI_PROVIDER_ID) delete data[slotProviderId(slot.id)];
 }
 
 const JWT_CLAIM_PATH = "https://api.openai.com/auth";
+const JWT_SUBJECT_CLAIM = "sub";
 
-function accountIdFromAccessToken(accessToken: string): string | undefined {
+function jwtPayload(accessToken: string): Record<string, unknown> | undefined {
 	const payload = accessToken.split(".")[1];
 	if (!payload) return undefined;
 	try {
 		const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-		const auth = isRecord(decoded) ? decoded[JWT_CLAIM_PATH] : undefined;
-		const accountId = isRecord(auth) ? auth.chatgpt_account_id : undefined;
-		return typeof accountId === "string" && accountId.length > 0 ? accountId : undefined;
+		return isRecord(decoded) ? decoded : undefined;
 	} catch {
 		return undefined;
 	}
 }
 
-function cacheIdentityForAccount(accountId: string): string {
-	return createHash("sha256").update(accountId, "utf8").digest("hex");
+function claimFromAccessToken(accessToken: string, claim: string): string | undefined {
+	const value = jwtPayload(accessToken)?.[claim];
+	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function nativeCodexProvider(): Provider {
-	const provider = builtinProviders().find((entry) => entry.id === OPENAI_CODEX_PROVIDER_ID);
-	if (!provider) throw new CodexCredentialSlotError("AUTH_REFRESH_FAILED", "Pi's native Codex provider is unavailable.");
+function accountIdFromAccessToken(accessToken: string): string | undefined {
+	const auth = jwtPayload(accessToken)?.[JWT_CLAIM_PATH];
+	const accountId = isRecord(auth) ? auth.chatgpt_account_id : undefined;
+	return typeof accountId === "string" && accountId.length > 0 ? accountId : undefined;
+}
+
+/** Sign in with ChatGPT tokens carry an opaque auth claim; the subject is the stable identity. */
+function subjectFromAccessToken(accessToken: string): string | undefined {
+	return claimFromAccessToken(accessToken, JWT_SUBJECT_CLAIM);
+}
+
+function cacheIdentityFor(identity: string): string {
+	return createHash("sha256").update(identity, "utf8").digest("hex");
+}
+
+function nativeOpenAIProvider(): Provider {
+	const provider = builtinProviders().find((entry) => entry.id === OPENAI_PROVIDER_ID);
+	if (!provider) throw new CodexCredentialSlotError("AUTH_REFRESH_FAILED", "Pi's native OpenAI provider is unavailable.");
 	return provider;
 }
 
@@ -392,7 +411,7 @@ function inspectionFrom(data: AuthDocument, state: SlotState | undefined, raw: s
 	const slots = effectiveState.slots.map((slot): CodexCredentialSlotInfo => {
 		const isActive = slot.id === effectiveState.activeSlotId;
 		const hasCredential = isActive
-			? data[OPENAI_CODEX_PROVIDER_ID] !== undefined
+			? data[OPENAI_PROVIDER_ID] !== undefined
 			: data[slotProviderId(slot.id)] !== undefined;
 		return {
 			id: slot.id,
@@ -418,7 +437,7 @@ function assertMovableCredential(credential: Credential | undefined): asserts cr
 	if (credential !== undefined && credential.type !== "oauth") {
 		throw new CodexCredentialSlotError(
 			"NOT_OAUTH",
-			"The active openai-codex credential is not a valid OAuth credential.",
+			"The active OpenAI credential is not a valid OAuth credential.",
 		);
 	}
 }
@@ -476,7 +495,7 @@ export class CodexCredentialSlotStore {
 		this.authPath = resolve(normalized?.authPath ?? join(getAgentDir(), "auth.json"));
 		this.idSource = normalized?.idSource ?? randomUUID;
 		this.atomicWriter = normalized?.atomicWriter ?? writeAtomic;
-		this.provider = normalized?.provider ?? nativeCodexProvider();
+		this.provider = normalized?.provider ?? nativeOpenAIProvider();
 	}
 
 	inspect(): CodexCredentialSlotInspection {
@@ -485,7 +504,7 @@ export class CodexCredentialSlotStore {
 	}
 
 	/**
-	 * Resolves one logical slot through Pi's native Codex OAuth implementation.
+	 * Resolves one logical slot through Pi's native OpenAI OAuth implementation.
 	 * The callback is the only place where request headers are available; the
 	 * active slot is never changed by this operation.
 	 */
@@ -511,7 +530,7 @@ export class CodexCredentialSlotStore {
 		models.setProvider(this.provider);
 		let resolved: Awaited<ReturnType<typeof models.getAuth>>;
 		try {
-			resolved = await models.getAuth(OPENAI_CODEX_PROVIDER_ID, { signal: options.signal });
+			resolved = await models.getAuth(OPENAI_PROVIDER_ID, { signal: options.signal });
 		} catch (error) {
 			options.signal?.throwIfAborted();
 			if (error instanceof CodexCredentialSlotError) throw error;
@@ -523,8 +542,15 @@ export class CodexCredentialSlotStore {
 		options.signal?.throwIfAborted();
 
 		const accessToken = resolved?.auth.apiKey;
-		const accountId = typeof accessToken === "string" ? accountIdFromAccessToken(accessToken) : undefined;
-		if (!accessToken || !accountId) {
+		if (typeof accessToken !== "string" || accessToken.length === 0) {
+			throw new CodexCredentialSlotError(
+				"AUTH_UNAVAILABLE",
+				"Codex credential slot does not contain a usable OAuth credential.",
+			);
+		}
+		const accountId = accountIdFromAccessToken(accessToken);
+		const identity = accountId ?? subjectFromAccessToken(accessToken);
+		if (!identity) {
 			throw new CodexCredentialSlotError(
 				"AUTH_UNAVAILABLE",
 				"Codex credential slot does not contain a usable OAuth credential.",
@@ -532,11 +558,12 @@ export class CodexCredentialSlotStore {
 		}
 
 		const auth: CodexCredentialRequestAuth = {
-			headers: Object.freeze({
-				Authorization: `Bearer ${accessToken}`,
-				"chatgpt-account-id": accountId,
-			}),
-			cacheIdentity: cacheIdentityForAccount(accountId),
+			headers: Object.freeze(
+				accountId === undefined
+					? { Authorization: `Bearer ${accessToken}` }
+					: { Authorization: `Bearer ${accessToken}`, "chatgpt-account-id": accountId },
+			),
+			cacheIdentity: cacheIdentityFor(identity),
 		};
 		const result = await fn(auth);
 		options.signal?.throwIfAborted();
@@ -553,7 +580,7 @@ export class CodexCredentialSlotStore {
 		return {
 			read: async (providerId, options) => {
 				options?.signal?.throwIfAborted();
-				if (providerId !== OPENAI_CODEX_PROVIDER_ID) return undefined;
+				if (providerId !== OPENAI_PROVIDER_ID) return undefined;
 				const credential = this.readSlotCredential(slotId);
 				options?.signal?.throwIfAborted();
 				return credential ? structuredClone(credential) : undefined;
@@ -563,11 +590,11 @@ export class CodexCredentialSlotStore {
 				const credential = this.readSlotCredential(slotId);
 				options?.signal?.throwIfAborted();
 				return credential
-					? [{ providerId: OPENAI_CODEX_PROVIDER_ID, type: credential.type }]
+					? [{ providerId: OPENAI_PROVIDER_ID, type: credential.type }]
 					: [];
 			},
 			modify: async (providerId, fn, options) => {
-				if (providerId !== OPENAI_CODEX_PROVIDER_ID) {
+				if (providerId !== OPENAI_PROVIDER_ID) {
 					throw new CodexCredentialSlotError("INVALID_AUTH", "Codex usage requested an unknown provider.");
 				}
 				options?.signal?.throwIfAborted();
@@ -611,7 +638,7 @@ export class CodexCredentialSlotStore {
 				throw new CodexCredentialSlotError("SLOT_EXISTS", `Codex credential slot "${name}" already exists.`);
 			}
 
-			const canonical = snapshot.data[OPENAI_CODEX_PROVIDER_ID];
+			const canonical = snapshot.data[OPENAI_PROVIDER_ID];
 			assertMovableCredential(canonical);
 			const oldSlotProvider = slotProviderId(state.activeSlotId);
 			if (canonical !== undefined && snapshot.data[oldSlotProvider] !== undefined) {
@@ -624,7 +651,7 @@ export class CodexCredentialSlotStore {
 			const id = this.newSlotId(snapshot.data, state);
 			const data = copyDocument(snapshot.data);
 			if (canonical !== undefined) data[oldSlotProvider] = canonical;
-			delete data[OPENAI_CODEX_PROVIDER_ID];
+			delete data[OPENAI_PROVIDER_ID];
 			const nextState: SlotState = {
 				version: STATE_VERSION,
 				activeSlotId: id,
@@ -648,7 +675,7 @@ export class CodexCredentialSlotStore {
 			if (!target) throw new CodexCredentialSlotError("SLOT_NOT_FOUND", `Codex credential slot "${name}" does not exist.`);
 			if (target.id === state.activeSlotId) return { data: snapshot.data, changed: false };
 
-			const canonical = snapshot.data[OPENAI_CODEX_PROVIDER_ID];
+			const canonical = snapshot.data[OPENAI_PROVIDER_ID];
 			assertMovableCredential(canonical);
 			const targetProvider = slotProviderId(target.id);
 			const targetCredential = snapshot.data[targetProvider];
@@ -660,8 +687,8 @@ export class CodexCredentialSlotStore {
 			const oldSlotProvider = slotProviderId(state.activeSlotId);
 			if (canonical !== undefined) data[oldSlotProvider] = canonical;
 			else delete data[oldSlotProvider];
-			if (targetCredential !== undefined) data[OPENAI_CODEX_PROVIDER_ID] = targetCredential;
-			else delete data[OPENAI_CODEX_PROVIDER_ID];
+			if (targetCredential !== undefined) data[OPENAI_PROVIDER_ID] = targetCredential;
+			else delete data[OPENAI_PROVIDER_ID];
 			delete data[targetProvider];
 			data[STATE_PROVIDER_ID] = stateCredential({
 				version: STATE_VERSION,

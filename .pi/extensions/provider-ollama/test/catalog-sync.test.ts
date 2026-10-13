@@ -8,7 +8,7 @@ import {
   setModelsJsonPathForTesting,
   syncOllamaCatalogToModelsJson,
 } from "../catalog-sync.ts";
-import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { OllamaChatModelConfig } from "../thinking-levels.ts";
 
 // --- Helpers ---
 
@@ -23,7 +23,7 @@ afterEach(async () => {
   await rm(testDir, { recursive: true, force: true });
 });
 
-function makeModel(id: string, overrides: Partial<ProviderModelConfig> = {}): ProviderModelConfig {
+function makeModel(id: string, overrides: Partial<OllamaChatModelConfig> = {}): OllamaChatModelConfig {
   return {
     id,
     name: id,
@@ -34,7 +34,7 @@ function makeModel(id: string, overrides: Partial<ProviderModelConfig> = {}): Pr
     maxTokens: 32768,
     compat: { supportsDeveloperRole: false, thinkingFormat: "openai" },
     ...overrides,
-  } as ProviderModelConfig;
+  } as OllamaChatModelConfig;
 }
 
 async function readDoc(): Promise<Record<string, any>> {

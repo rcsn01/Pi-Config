@@ -1,12 +1,12 @@
 import type { ModelsPublication, RefreshModelsContext } from "@earendil-works/pi-ai";
-import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import {
   createOllamaCatalogPublication,
   type StaticCatalogAdapter,
 } from "../catalog-publication.ts";
+import type { OllamaChatModelConfig } from "../thinking-levels.ts";
 
-function model(id: string): ProviderModelConfig {
+function model(id: string): OllamaChatModelConfig {
   return {
     id,
     name: id,
@@ -15,10 +15,8 @@ function model(id: string): ProviderModelConfig {
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128000,
     maxTokens: 32768,
-    provider: "ollama-cloud",
     api: "openai-completions",
-    baseUrl: "https://ollama.com/v1",
-  } as ProviderModelConfig;
+  };
 }
 
 function adapters(nativeResult: boolean | Error = true) {
@@ -37,6 +35,7 @@ function adapters(nativeResult: boolean | Error = true) {
 
 type NativeCatalogModel = NonNullable<RefreshModelsContext["stored"]>["models"][number];
 
+/** Pi persists chat entries through the AnyModel union; cast through unknown like the real runtime. */
 function nativeModel(id: string): NativeCatalogModel {
   return model(id) as unknown as NativeCatalogModel;
 }
@@ -106,7 +105,7 @@ describe("Ollama catalog publication", () => {
       kind: "partial",
       failed: 2,
       stored: stored(baseline),
-      fallback: baseline,
+      fallback: [model("stored")],
     })).rejects.toThrow("Ollama Cloud catalog refresh incomplete: 2 model(s) failed");
 
     expect(deps.calls).toEqual(["native", "ensure"]);
@@ -125,7 +124,7 @@ describe("Ollama catalog publication", () => {
       kind: "partial",
       failed: 3,
       stored: stored(baseline),
-      fallback: baseline,
+      fallback: [model("stored")],
     })).rejects.toThrow("Ollama Cloud catalog refresh incomplete: 3 model(s) failed");
 
     expect(deps.calls).toEqual(["native", "ensure"]);
@@ -142,7 +141,7 @@ describe("Ollama catalog publication", () => {
       kind: "partial",
       failed: 1,
       stored: stored(baseline),
-      fallback: baseline,
+      fallback: [model("stored")],
     })).rejects.toThrow("catalog refresh incomplete");
 
     expect(deps.staticCatalog.ensure).not.toHaveBeenCalled();

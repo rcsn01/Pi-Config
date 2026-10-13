@@ -1,5 +1,6 @@
 import type { ModelsPublication, RefreshModelsContext } from "@earendil-works/pi-ai";
-import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import { isModelType } from "@earendil-works/pi-ai";
+import type { OllamaChatModelConfig } from "./thinking-levels.ts";
 import {
   ensureOllamaCatalogInModelsJson,
   syncOllamaCatalogToModelsJson,
@@ -8,23 +9,23 @@ import {
 type NativeCatalogModel = NonNullable<RefreshModelsContext["stored"]>["models"][number];
 
 export type OllamaCatalogPublicationOutcome =
-  | { kind: "bootstrap"; models: ProviderModelConfig[] }
+  | { kind: "bootstrap"; models: OllamaChatModelConfig[] }
   | { kind: "complete"; models: NativeCatalogModel[] }
   | {
       kind: "partial";
       failed: number;
       stored?: RefreshModelsContext["stored"];
-      fallback: ProviderModelConfig[];
+      fallback: OllamaChatModelConfig[];
     }
-  | { kind: "empty"; fallback: ProviderModelConfig[] };
+  | { kind: "empty"; fallback: OllamaChatModelConfig[] };
 
 export interface StaticCatalogAdapter {
-  ensure(models: readonly ProviderModelConfig[]): Promise<unknown>;
-  sync(models: readonly ProviderModelConfig[]): Promise<unknown>;
+  ensure(models: readonly OllamaChatModelConfig[]): Promise<unknown>;
+  sync(models: readonly OllamaChatModelConfig[]): Promise<unknown>;
 }
 
 export interface OllamaCatalogPublication {
-  apply(outcome: OllamaCatalogPublicationOutcome): Promise<ProviderModelConfig[]>;
+  apply(outcome: OllamaCatalogPublicationOutcome): Promise<OllamaChatModelConfig[]>;
 }
 
 interface CatalogPublicationAdapters {
@@ -76,7 +77,7 @@ export function createOllamaCatalogPublication(
   }
 
   return {
-    async apply(outcome): Promise<ProviderModelConfig[]> {
+    async apply(outcome): Promise<OllamaChatModelConfig[]> {
       if (outcome.kind === "empty") {
         return outcome.fallback;
       }
@@ -105,9 +106,11 @@ export function createOllamaCatalogPublication(
         "[pi-ollama-cloud] Catalog persist rejected (generation check failed or refresh superseded).",
       );
       if (nativeResult !== "rejected") {
-        await writeStaticQuietly(() => staticCatalog.sync(models));
+        // The static catalog serves this provider's chat-only entries; pi's native
+        // model union is narrowed with pi's own runtime check before the write.
+        await writeStaticQuietly(() => staticCatalog.sync(models.filter((model) => isModelType(model, "chat"))));
       }
-      return models;
+      return models.filter((model) => isModelType(model, "chat"));
     },
   };
 }

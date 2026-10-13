@@ -1,8 +1,7 @@
-import type { RefreshModelsContext } from "@earendil-works/pi-ai";
-import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import { isModelType, type RefreshModelsContext } from "@earendil-works/pi-ai";
 import { GENERATED_MODELS } from "./models.generated.ts";
 import { MODEL_PRICING, type ModelPrice } from "./pricing.generated.ts";
-import { resolve as resolveThinkingLevelMap } from "./thinking-levels.ts";
+import { resolve as resolveThinkingLevelMap, type OllamaChatModelConfig } from "./thinking-levels.ts";
 import { concurrentMap, fetchJsonWithTimeout, getContextLength } from "./utils.ts";
 import { createOllamaCatalogPublication } from "./catalog-publication.ts";
 
@@ -68,7 +67,7 @@ interface OllamaShowResponse {
   modified_at: string;
 }
 
-// --- Assembly: raw API data -> ProviderModelConfig[] ---
+// --- Assembly: raw API data -> chat model configs ---
 
 /**
  * Build an explicit OpenAICompletionsCompat for an Ollama Cloud model.
@@ -78,7 +77,7 @@ interface OllamaShowResponse {
  * pi type definition: https://github.com/earendil-works/pi/blob/b94482762321ed0b9f8f245be57c84d786a7105d/packages/ai/src/types.ts#L361-L400
  * pi compat resolution:  https://docs.ollama.com/api/openai-compatibility https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/types.ts#L365-L425
  */
-function buildCompat(): ProviderModelConfig["compat"] {
+function buildCompat(): NonNullable<OllamaChatModelConfig["compat"]> {
   return {
     // Ollama uses "system" role, not "developer" (ollama: docs.ollama.com/api/openai-compatibility, pi: types.ts#supportsDeveloperRole).
     supportsDeveloperRole: false,
@@ -117,7 +116,7 @@ function buildCompat(): ProviderModelConfig["compat"] {
   };
 }
 
-export function assembleModels(raw: Record<string, OllamaShowResponse>): ProviderModelConfig[] {
+export function assembleModels(raw: Record<string, OllamaShowResponse>): OllamaChatModelConfig[] {
   return Object.entries(raw)
     .filter(([, data]) => data.capabilities?.includes("tools"))
     .map(([id, data]) => ({
@@ -237,17 +236,20 @@ export async function refreshOllamaCloudModels(
  * That is a non-issue in practice because a credentialless user cannot run
  * models anyway.
  */
-export async function refreshOllamaCatalog(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
+export async function refreshOllamaCatalog(context: RefreshModelsContext): Promise<OllamaChatModelConfig[]> {
   // Persisted catalogs can outlive extension updates. Re-resolve their thinking
   // maps on every restore so a reload immediately picks up current family rules
   // instead of retaining stale choices until the network-refresh cooldown ends.
   // The stored list is readonly, so mapping also provides the mutable copy
   // required by the callback return type.
   const fallback = context.stored?.models.length
-    ? context.stored.models.map((model) => ({
-        ...model,
-        thinkingLevelMap: resolveThinkingLevelMap(model.id, model.reasoning ? ["thinking"] : []),
-      }))
+    ? context.stored.models
+        // Persisted catalogs are chat-only for this provider; guard the union anyway.
+        .filter((model) => isModelType(model, "chat"))
+        .map((model) => ({
+          ...model,
+          thinkingLevelMap: resolveThinkingLevelMap(model.id, model.reasoning ? ["thinking"] : []),
+        }))
     : GENERATED_MODELS;
   const publication = createOllamaCatalogPublication({ publishNative: context.publish });
 
@@ -320,7 +322,7 @@ export async function refreshOllamaCatalog(context: RefreshModelsContext): Promi
 
   // The store is typed to pi-ai's internal Model shape, so rehydrate the live
   // list with the provider identity fields. A Model is structurally assignable
-  // to ProviderModelConfig, so the same list is returned to pi (the composer
+  // to chat model configs, so the same list is returned to pi (the composer
   // overrides provider/api/baseUrl on the in-memory swap regardless).
   const persisted = models.map((model) => ({
     ...model,

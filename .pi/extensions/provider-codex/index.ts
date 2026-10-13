@@ -3,7 +3,7 @@ import { pickGuiOption } from "../_shared/gui-option-list.ts";
 import {
 	CodexCredentialSlotError,
 	CodexCredentialSlotStore,
-	OPENAI_CODEX_PROVIDER_ID,
+	OPENAI_PROVIDER_ID,
 	type CodexCredentialSlotInfo,
 	type CodexCredentialSlotInspection,
 	type CodexCredentialSlotMutation,
@@ -53,9 +53,9 @@ async function refreshRuntime(ctx: ExtensionCommandContext): Promise<void> {
 	try {
 		const refresh = await ctx.modelRegistry.refresh({
 			allowNetwork: false,
-			providers: [OPENAI_CODEX_PROVIDER_ID],
+			providers: [OPENAI_PROVIDER_ID],
 		});
-		if (refresh.aborted || refresh.errors.get(OPENAI_CODEX_PROVIDER_ID)) {
+		if (refresh.aborted || refresh.errors.get(OPENAI_PROVIDER_ID)) {
 			ctx.ui.notify(
 				"The Codex credential changed, but Pi could not refresh its local authentication view.",
 				"warning",
@@ -86,7 +86,7 @@ function notifyMutation(ctx: ExtensionCommandContext, result: CodexCredentialSlo
 	const name = active?.name ?? result.activeSlotName;
 	const message = `${verb} Codex slot "${name}".`;
 	if (active && !active.hasCredential) {
-		ctx.ui.notify(`${message}\nRun /login openai-codex to sign in to this empty slot.`, "info");
+		ctx.ui.notify(`${message}\nRun /login openai to sign in to this empty slot.`, "info");
 	} else {
 		ctx.ui.notify(message, "info");
 	}

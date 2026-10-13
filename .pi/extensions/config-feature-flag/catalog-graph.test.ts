@@ -41,10 +41,10 @@ describe("import-derived extension dependencies", () => {
 		for (const contract of REQUIRED_SERVICE_CONTRACTS) {
 			const modulePath = path.join(repositoryRoot, ".pi", "extensions", ...contract.module.split("/"));
 			const moduleSource = fs.readFileSync(modulePath, "utf8");
-			const providerSource = fs.readFileSync(
-				path.join(repositoryRoot, ".pi", "extensions", contract.provider, "index.ts"),
-				"utf8",
-			);
+			const providerSource = discoverExtensionSources(repositoryRoot)
+				.filter((source) => source.extensionId === contract.provider)
+				.map((source) => source.contents)
+				.join("\n");
 			expect(moduleSource).toMatch(new RegExp(`export\\s+function\\s+${contract.exportName}\\b`));
 			expect(providerSource).toMatch(/\bregisterSubagentService\b/);
 		}

@@ -7,7 +7,7 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
 	CodexCredentialSlotError,
 	CodexCredentialSlotStore,
-	OPENAI_CODEX_PROVIDER_ID,
+	OPENAI_PROVIDER_ID,
 	SLOT_PROVIDER_PREFIX,
 	STATE_PROVIDER_ID,
 } from "./credential-slots.ts";
@@ -62,8 +62,8 @@ function stateOf(path: string): { version: number; activeSlotId: string; slots: 
 
 function replaceCanonical(path: string, credential: unknown): void {
 	const auth = readAuth(path);
-	if (credential === undefined) delete auth[OPENAI_CODEX_PROVIDER_ID];
-	else auth[OPENAI_CODEX_PROVIDER_ID] = credential;
+	if (credential === undefined) delete auth[OPENAI_PROVIDER_ID];
+	else auth[OPENAI_PROVIDER_ID] = credential;
 	writeFileSync(path, `${JSON.stringify(auth, null, 2)}\n`);
 }
 
@@ -76,7 +76,7 @@ function fakeCodexProvider(
 	refresh: (credential: any, signal: AbortSignal) => Promise<any> = async (credential) => credential,
 ): any {
 	return {
-		id: OPENAI_CODEX_PROVIDER_ID,
+		id: OPENAI_PROVIDER_ID,
 		name: "Test Codex",
 		auth: {
 			oauth: {
@@ -99,7 +99,7 @@ function fakeCodexProvider(
 describe("CodexCredentialSlotStore", () => {
 	it("inspects an existing canonical credential without creating extension state", () => {
 		const unrelated = { type: "api_key", env: { OTHER: "keep-me" } };
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: ACCOUNT_A, unrelated });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: ACCOUNT_A, unrelated });
 		const before = readFileSync(path, "utf8");
 		const store = new CodexCredentialSlotStore({ authPath: path, idSource: () => UUID_ONE });
 
@@ -114,7 +114,7 @@ describe("CodexCredentialSlotStore", () => {
 
 	it("creates an empty slot, checks out the canonical credential, and switches back", async () => {
 		const path = authFile({
-			[OPENAI_CODEX_PROVIDER_ID]: ACCOUNT_A,
+			[OPENAI_PROVIDER_ID]: ACCOUNT_A,
 			otherProvider: { type: "api_key", key: "unrelated" },
 		});
 		const store = new CodexCredentialSlotStore({ authPath: path, idSource: () => UUID_ONE });
@@ -123,7 +123,7 @@ describe("CodexCredentialSlotStore", () => {
 		let auth = readAuth(path);
 		expect(created.activeSlotName).toBe("work");
 		expect(created.created).toBe("work");
-		expect(auth[OPENAI_CODEX_PROVIDER_ID]).toBeUndefined();
+		expect(auth[OPENAI_PROVIDER_ID]).toBeUndefined();
 		expect(auth[`${SLOT_PROVIDER_PREFIX}default`]).toEqual(ACCOUNT_A);
 		expect(auth.otherProvider).toEqual({ type: "api_key", key: "unrelated" });
 		expect(stateOf(path)).toEqual({
@@ -144,20 +144,20 @@ describe("CodexCredentialSlotStore", () => {
 		const switched = await store.switchTo("DEFAULT");
 		auth = readAuth(path);
 		expect(switched.activeSlotName).toBe("default");
-		expect(auth[OPENAI_CODEX_PROVIDER_ID]).toEqual(ACCOUNT_A);
+		expect(auth[OPENAI_PROVIDER_ID]).toEqual(ACCOUNT_A);
 		expect(auth[`${SLOT_PROVIDER_PREFIX}${UUID_ONE}`]).toEqual(ACCOUNT_B);
 		expect(auth[`${SLOT_PROVIDER_PREFIX}default`]).toBeUndefined();
 
 		const back = await store.switchTo("work");
 		auth = readAuth(path);
 		expect(back.activeSlotName).toBe("work");
-		expect(auth[OPENAI_CODEX_PROVIDER_ID]).toEqual(ACCOUNT_B);
+		expect(auth[OPENAI_PROVIDER_ID]).toEqual(ACCOUNT_B);
 		expect(auth[`${SLOT_PROVIDER_PREFIX}${UUID_ONE}`]).toBeUndefined();
 		expect(auth[`${SLOT_PROVIDER_PREFIX}default`]).toEqual(ACCOUNT_A);
 	});
 
 	it("keeps an active slot empty after logout and carries refreshed credentials on the next switch", async () => {
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: ACCOUNT_A });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: ACCOUNT_A });
 		const store = new CodexCredentialSlotStore({ authPath: path, idSource: () => UUID_ONE });
 		await store.createAndSwitch("work");
 		replaceCanonical(path, ACCOUNT_B);
@@ -169,7 +169,7 @@ describe("CodexCredentialSlotStore", () => {
 		await store.switchTo("default");
 
 		const auth = readAuth(path);
-		expect(auth[OPENAI_CODEX_PROVIDER_ID]).toEqual(ACCOUNT_A);
+		expect(auth[OPENAI_PROVIDER_ID]).toEqual(ACCOUNT_A);
 		expect(auth[`${SLOT_PROVIDER_PREFIX}${UUID_ONE}`]).toEqual(ACCOUNT_B_REFRESHED);
 		expect(store.inspect().slots.find((slot) => slot.name === "work")).toMatchObject({ status: "saved", hasCredential: true });
 
@@ -178,7 +178,7 @@ describe("CodexCredentialSlotStore", () => {
 		replaceCanonical(path, undefined);
 		await store.switchTo("default");
 		expect(readAuth(path)[`${SLOT_PROVIDER_PREFIX}${UUID_ONE}`]).toBeUndefined();
-		expect(readAuth(path)[OPENAI_CODEX_PROVIDER_ID]).toEqual(ACCOUNT_A);
+		expect(readAuth(path)[OPENAI_PROVIDER_ID]).toEqual(ACCOUNT_A);
 	});
 
 	it("rejects malformed documents and invalid credentials without changing the file", async () => {
@@ -189,7 +189,7 @@ describe("CodexCredentialSlotStore", () => {
 		expect(readFileSync(malformed, "utf8")).toBe(malformedBefore);
 
 		const invalidCredential = authFile({
-			[OPENAI_CODEX_PROVIDER_ID]: { type: "oauth", access: "secret", refresh: "secret", expires: "not-a-number" },
+			[OPENAI_PROVIDER_ID]: { type: "oauth", access: "secret", refresh: "secret", expires: "not-a-number" },
 		});
 		const invalidBefore = readFileSync(invalidCredential, "utf8");
 		await expect(new CodexCredentialSlotStore(invalidCredential).createAndSwitch("work")).rejects.toMatchObject({ code: "INVALID_AUTH" });
@@ -207,7 +207,7 @@ describe("CodexCredentialSlotStore", () => {
 	});
 
 	it("leaves the previous auth document intact when the atomic write fails", async () => {
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: ACCOUNT_A, unrelated: { type: "api_key", key: "preserve" } });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: ACCOUNT_A, unrelated: { type: "api_key", key: "preserve" } });
 		const before = readFileSync(path, "utf8");
 		const atomicWriter = vi.fn(async () => {
 			throw new Error("simulated write failure");
@@ -220,13 +220,13 @@ describe("CodexCredentialSlotStore", () => {
 	});
 
 	it("does not move an API-key canonical entry or overwrite an orphaned slot", async () => {
-		const apiKey = authFile({ [OPENAI_CODEX_PROVIDER_ID]: { type: "api_key", key: "not-oauth" } });
+		const apiKey = authFile({ [OPENAI_PROVIDER_ID]: { type: "api_key", key: "not-oauth" } });
 		const apiBefore = readFileSync(apiKey, "utf8");
 		await expect(new CodexCredentialSlotStore(apiKey).createAndSwitch("work")).rejects.toMatchObject({ code: "NOT_OAUTH" });
 		expect(readFileSync(apiKey, "utf8")).toBe(apiBefore);
 
 		const orphan = authFile({
-			[OPENAI_CODEX_PROVIDER_ID]: ACCOUNT_A,
+			[OPENAI_PROVIDER_ID]: ACCOUNT_A,
 			[`${SLOT_PROVIDER_PREFIX}default`]: ACCOUNT_B,
 		});
 		const orphanBefore = readFileSync(orphan, "utf8");
@@ -235,7 +235,7 @@ describe("CodexCredentialSlotStore", () => {
 	});
 
 	it("removes only an inactive slot with an expected current revision", async () => {
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: ACCOUNT_A });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: ACCOUNT_A });
 		const store = new CodexCredentialSlotStore({ authPath: path, idSource: () => UUID_ONE });
 		await store.createAndSwitch("work");
 		replaceCanonical(path, ACCOUNT_B);
@@ -245,7 +245,7 @@ describe("CodexCredentialSlotStore", () => {
 		await expect(store.remove("default", listed.revision)).rejects.toMatchObject({ code: "DEFAULT_SLOT" });
 		await expect(store.remove("work", listed.revision)).resolves.toMatchObject({ removed: "work", changed: true });
 		expect(stateOf(path).slots).toEqual([{ id: "default", name: "default" }]);
-		expect(readAuth(path)[OPENAI_CODEX_PROVIDER_ID]).toEqual(ACCOUNT_A);
+		expect(readAuth(path)[OPENAI_PROVIDER_ID]).toEqual(ACCOUNT_A);
 
 		const stale = store.inspect().revision;
 		replaceCanonical(path, ACCOUNT_B);
@@ -253,7 +253,7 @@ describe("CodexCredentialSlotStore", () => {
 	});
 
 	it("validates names, blocks active removal, and leaves failed mutations intact", async () => {
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: ACCOUNT_A });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: ACCOUNT_A });
 		const store = new CodexCredentialSlotStore({ authPath: path, idSource: () => UUID_ONE });
 		await expect(store.createAndSwitch("../escape")).rejects.toMatchObject({ code: "INVALID_SLOT_NAME" });
 		await store.createAndSwitch("work");
@@ -275,19 +275,19 @@ describe("CodexCredentialSlotStore", () => {
 	});
 
 	it("is resolved by ModelRuntime after a switch without reloading the session", async () => {
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: ACCOUNT_A });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: ACCOUNT_A });
 		const runtime = await ModelRuntime.create({ authPath: path, modelsPath: null, refreshOnCreate: false });
 		const store = new CodexCredentialSlotStore({ authPath: path, idSource: () => UUID_ONE });
 
-		expect((await runtime.getAuth(OPENAI_CODEX_PROVIDER_ID))?.auth.apiKey).toBe(ACCOUNT_A.access);
+		expect((await runtime.getAuth(OPENAI_PROVIDER_ID))?.auth.apiKey).toBe(ACCOUNT_A.access);
 		await store.createAndSwitch("work");
-		expect(await runtime.getAuth(OPENAI_CODEX_PROVIDER_ID)).toBeUndefined();
+		expect(await runtime.getAuth(OPENAI_PROVIDER_ID)).toBeUndefined();
 		await store.switchTo("default");
-		expect((await runtime.getAuth(OPENAI_CODEX_PROVIDER_ID))?.auth.apiKey).toBe(ACCOUNT_A.access);
+		expect((await runtime.getAuth(OPENAI_PROVIDER_ID))?.auth.apiKey).toBe(ACCOUNT_A.access);
 	});
 
 	it("serializes concurrent stores without losing slots or unrelated credentials", async () => {
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: ACCOUNT_A, unrelated: { type: "api_key", key: "preserve" } });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: ACCOUNT_A, unrelated: { type: "api_key", key: "preserve" } });
 		const first = new CodexCredentialSlotStore({ authPath: path, idSource: () => UUID_ONE });
 		const second = new CodexCredentialSlotStore({ authPath: path, idSource: () => UUID_TWO });
 
@@ -304,7 +304,7 @@ describe("CodexCredentialSlotStore", () => {
 
 	it("exposes safe errors without including credential values", async () => {
 		const secret = "access-token-that-must-not-escape";
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: { ...ACCOUNT_A, access: secret } });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: { ...ACCOUNT_A, access: secret } });
 		writeFileSync(path, "[]");
 		try {
 			await new CodexCredentialSlotStore(path).createAndSwitch("work");
@@ -316,7 +316,7 @@ describe("CodexCredentialSlotStore", () => {
 
 	it("exposes request headers only inside a callback for a fresh active slot", async () => {
 		const access = jwtAccess("account-a");
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: { ...ACCOUNT_A, access } });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: { ...ACCOUNT_A, access } });
 		const store = new CodexCredentialSlotStore({ authPath: path });
 		const before = readFileSync(path, "utf8");
 
@@ -331,12 +331,31 @@ describe("CodexCredentialSlotStore", () => {
 		expect(readAuth(path)[`${SLOT_PROVIDER_PREFIX}default`]).toBeUndefined();
 	});
 
+	it("resolves a Sign in with ChatGPT credential without an account header", async () => {
+		const payload = Buffer.from(JSON.stringify({
+			sub: "user-123",
+			"https://api.openai.com/auth": { per_user_salt: "opaque" },
+		})).toString("base64url");
+		const access = `header.${payload}.signature`;
+		const path = authFile({ [OPENAI_PROVIDER_ID]: { ...ACCOUNT_A, access } });
+		const store = new CodexCredentialSlotStore({ authPath: path, provider: fakeCodexProvider() });
+		const before = readFileSync(path, "utf8");
+
+		const identity = await store.withRequestAuth("default", async (auth) => {
+			expect(auth.headers).toEqual({ Authorization: `Bearer ${access}` });
+			return auth.cacheIdentity;
+		});
+
+		expect(identity).toBe(createHash("sha256").update("user-123").digest("hex"));
+		expect(readFileSync(path, "utf8")).toBe(before);
+	});
+
 	it("refreshes an expired active slot through Pi OAuth and persists only the refreshed credential", async () => {
 		const access = jwtAccess("account-a", "old");
 		const refreshedAccess = jwtAccess("account-a", "refreshed");
 		const refreshed = { ...ACCOUNT_A, access: refreshedAccess, refresh: "refresh-a-new", expires: Date.now() + 60 * 60 * 1000 };
 		const refresh = vi.fn(async () => refreshed);
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: { ...ACCOUNT_A, access, expires: Date.now() - 1 } });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: { ...ACCOUNT_A, access, expires: Date.now() - 1 } });
 		const store = new CodexCredentialSlotStore({ authPath: path, provider: fakeCodexProvider(refresh) });
 
 		await store.withRequestAuth("default", async (auth) => {
@@ -344,12 +363,12 @@ describe("CodexCredentialSlotStore", () => {
 		});
 
 		expect(refresh).toHaveBeenCalledOnce();
-		expect(readAuth(path)[OPENAI_CODEX_PROVIDER_ID]).toEqual(refreshed);
+		expect(readAuth(path)[OPENAI_PROVIDER_ID]).toEqual(refreshed);
 	});
 
 	it("resolves a fresh inactive slot without changing the active slot", async () => {
 		const access = jwtAccess("account-b", "fresh");
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: { ...ACCOUNT_A, access: jwtAccess("account-a") } });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: { ...ACCOUNT_A, access: jwtAccess("account-a") } });
 		const store = new CodexCredentialSlotStore({ authPath: path, idSource: () => UUID_ONE, provider: fakeCodexProvider() });
 		await store.createAndSwitch("work");
 		replaceCanonical(path, { ...ACCOUNT_B, access, expires: Date.now() + 60 * 60 * 1000 });
@@ -370,20 +389,20 @@ describe("CodexCredentialSlotStore", () => {
 		const refreshedAccess = jwtAccess("account-b", "refreshed");
 		const refreshed = { ...ACCOUNT_B, access: refreshedAccess, refresh: "refresh-b-new", expires: Date.now() + 60 * 60 * 1000 };
 		const refresh = vi.fn(async () => refreshed);
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: { ...ACCOUNT_A, access: jwtAccess("account-a") } });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: { ...ACCOUNT_A, access: jwtAccess("account-a") } });
 		const store = new CodexCredentialSlotStore({ authPath: path, idSource: () => UUID_ONE, provider: fakeCodexProvider(refresh) });
 		await store.createAndSwitch("work");
 		replaceCanonical(path, { ...ACCOUNT_B, access, expires: Date.now() - 1 });
 		await store.switchTo("default");
 		const work = store.inspect().slots.find((slot) => slot.name === "work")!;
-		const beforeActive = readAuth(path)[OPENAI_CODEX_PROVIDER_ID];
+		const beforeActive = readAuth(path)[OPENAI_PROVIDER_ID];
 
 		await store.withRequestAuth(work.id, async (auth) => {
 			expect(auth.headers.Authorization).toBe(`Bearer ${refreshedAccess}`);
 		});
 
 		expect(refresh).toHaveBeenCalledOnce();
-		expect(readAuth(path)[OPENAI_CODEX_PROVIDER_ID]).toEqual(beforeActive);
+		expect(readAuth(path)[OPENAI_PROVIDER_ID]).toEqual(beforeActive);
 		expect(readAuth(path)[`${SLOT_PROVIDER_PREFIX}${work.id}`]).toEqual(refreshed);
 		expect(store.inspect().activeSlotName).toBe("default");
 	});
@@ -400,7 +419,7 @@ describe("CodexCredentialSlotStore", () => {
 			await Promise.race([refreshGate, new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))]);
 			return refreshed;
 		});
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: { ...ACCOUNT_A, access: jwtAccess("account-a") } });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: { ...ACCOUNT_A, access: jwtAccess("account-a") } });
 		const store = new CodexCredentialSlotStore({ authPath: path, idSource: () => UUID_ONE, provider: fakeCodexProvider(refresh) });
 		await store.createAndSwitch("work");
 		replaceCanonical(path, { ...ACCOUNT_B, access: jwtAccess("account-b", "old"), expires: Date.now() - 1 });
@@ -416,12 +435,12 @@ describe("CodexCredentialSlotStore", () => {
 
 		const auth = readAuth(path);
 		expect(stateOf(path).activeSlotId).toBe(work.id);
-		expect(auth[OPENAI_CODEX_PROVIDER_ID]).toEqual(refreshed);
+		expect(auth[OPENAI_PROVIDER_ID]).toEqual(refreshed);
 		expect(auth[`${SLOT_PROVIDER_PREFIX}${work.id}`]).toBeUndefined();
 	});
 
 	it("keeps empty, invalid, and failed credentials visible as safe auth errors", async () => {
-		const path = authFile({ [OPENAI_CODEX_PROVIDER_ID]: { ...ACCOUNT_A, access: "not-a-jwt" } });
+		const path = authFile({ [OPENAI_PROVIDER_ID]: { ...ACCOUNT_A, access: "not-a-jwt" } });
 		const store = new CodexCredentialSlotStore({ authPath: path, provider: fakeCodexProvider() });
 		await expect(store.withRequestAuth("default", async () => undefined)).rejects.toMatchObject({ code: "AUTH_UNAVAILABLE" });
 
@@ -431,7 +450,7 @@ describe("CodexCredentialSlotStore", () => {
 
 		const secret = "refresh-secret-that-must-not-escape";
 		const failedPath = authFile({
-			[OPENAI_CODEX_PROVIDER_ID]: { ...ACCOUNT_A, access: jwtAccess("account-a"), expires: Date.now() - 1 },
+			[OPENAI_PROVIDER_ID]: { ...ACCOUNT_A, access: jwtAccess("account-a"), expires: Date.now() - 1 },
 		});
 		const failedStore = new CodexCredentialSlotStore({
 			authPath: failedPath,
@@ -461,7 +480,7 @@ describe("CodexCredentialSlotStore", () => {
 			return ACCOUNT_A;
 		});
 		const path = authFile({
-			[OPENAI_CODEX_PROVIDER_ID]: { ...ACCOUNT_A, access: jwtAccess("account-a"), expires: Date.now() - 1 },
+			[OPENAI_PROVIDER_ID]: { ...ACCOUNT_A, access: jwtAccess("account-a"), expires: Date.now() - 1 },
 		});
 		const store = new CodexCredentialSlotStore({ authPath: path, provider: fakeCodexProvider(refresh) });
 		const controller = new AbortController();
