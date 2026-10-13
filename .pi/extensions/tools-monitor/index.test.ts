@@ -19,7 +19,8 @@ function harness(mode: "tui" | "print" = "tui") {
 	const statuses: Array<string | undefined> = [];
 	const ui = { setStatus: (key: string, text: string | undefined) => { if (key === MONITOR_STATUS_ID) statuses.push(text); }, notify: () => {} };
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "monitor-test-"));
-	const ctx = { cwd, mode, hasUI: mode === "tui", ui };
+	let busy = false;
+	const ctx = { cwd, mode, hasUI: mode === "tui", ui, isIdle: () => !busy };
 	createMonitorExtension({ flushMs: 30, pollMs: 20 })({
 		on: (name: string, handler: any) => handlers.set(name, handler),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
@@ -32,6 +33,8 @@ function harness(mode: "tui" | "print" = "tui") {
 		cwd,
 		sent,
 		statuses,
+		setBusy: (value: boolean) => { busy = value; },
+		settle: (entries: unknown[] = []) => handlers.get("agent_before_settle")?.({ type: "agent_before_settle", entries, continue: false }, ctx) as any,
 		start: (params: Record<string, unknown>) => tools.get("monitor_start").execute("call", params, undefined, undefined, ctx),
 		status: (params: Record<string, unknown> = {}) => tools.get("monitor_status").execute("call", params, undefined, undefined, ctx),
 		stop: (id: string) => tools.get("monitor_stop").execute("call", { id }, undefined, undefined, ctx),
@@ -132,6 +135,99 @@ describe("command monitors", () => {
 		await h.shutdown();
 		await new Promise((resolve) => setTimeout(resolve, 800));
 		expect(fs.existsSync(marker)).toBe(false);
+		expect(h.sent).toEqual([]);
+	});
+});
+
+describe("completion acknowledgement", () => {
+	it.each([0, 3])("suppresses a queued exit %i completion read through status", async (code) => {
+		const h = setup();
+		h.setBusy(true);
+		await h.start({ command: `echo result; exit ${code}` });
+		await waitFor(() => h.statuses.length > 0 && h.statuses.at(-1) === undefined);
+		const status = await h.status({ id: "m1" });
+		expect(status.details.monitors[0].finish).toEqual({ kind: "exited", code });
+		expect(status.content[0].text).toContain(`"code":${code}`);
+		expect(h.settle()).toBeUndefined();
+		expect(h.sent).toEqual([]);
+	});
+
+	it("delivers an unread completion once at settlement", async () => {
+		const h = setup();
+		h.setBusy(true);
+		await h.start({ command: "echo result; exit 3" });
+		await waitFor(() => h.statuses.length > 0 && h.statuses.at(-1) === undefined);
+		const delivery = h.settle();
+		expect(delivery.continue).toBe(true);
+		expect(delivery.entries).toHaveLength(1);
+		expect(delivery.entries[0]).toMatchObject({ type: "custom_message", customType: MONITOR_MESSAGE_TYPE });
+		expect(delivery.entries[0].content).toContain("exited with code 3");
+		expect(h.sent).toEqual([]);
+		expect(h.settle()).toBeUndefined();
+	});
+
+	it("does not acknowledge completion when status only reads progress", async () => {
+		const h = setup();
+		h.setBusy(true);
+		const log = path.join(h.cwd, "progress.log");
+		fs.writeFileSync(log, "step 1\n");
+		await h.start({ log_path: log, from_start: true, include: "^step", done: "^done" });
+		await waitFor(() => h.statuses.some((text) => text?.includes("step 1")));
+		expect((await h.status()).details.monitors[0].state).toBe("running");
+		fs.appendFileSync(log, "done\n");
+		await waitFor(() => h.statuses.at(-1) === undefined);
+		expect(h.settle().entries[0].content).toContain("completion line seen");
+	});
+
+	it("acknowledges every finished result in an all-monitor status read", async () => {
+		const h = setup();
+		h.setBusy(true);
+		await h.start({ command: "true" });
+		await h.start({ command: "exit 3" });
+		await waitFor(() => h.statuses.at(-1) === undefined);
+		expect((await h.status()).details.monitors.map((s: any) => s.state)).toEqual(["finished", "finished"]);
+		expect(h.settle()).toBeUndefined();
+		expect(h.sent).toEqual([]);
+	});
+
+	it("leaves other monitors unread when status selects one", async () => {
+		const h = setup();
+		h.setBusy(true);
+		await h.start({ command: "true" });
+		await h.start({ command: "exit 3" });
+		await waitFor(() => h.statuses.at(-1) === undefined);
+		await h.status({ id: "m1", tail_lines: 0 });
+		const existing = { type: "custom", customType: "other-extension", data: {} };
+		const delivery = h.settle([existing]);
+		expect(delivery.entries).toHaveLength(2);
+		expect(delivery.entries[0]).toEqual(existing);
+		expect(delivery.entries[1].details.id).toBe("m2");
+		expect(h.sent).toEqual([]);
+	});
+
+	it("still sends running alerts while completion is deferred", async () => {
+		const h = setup();
+		h.setBusy(true);
+		const log = path.join(h.cwd, "alerts.log");
+		fs.writeFileSync(log, "");
+		await h.start({ log_path: log, done: "^done" });
+		fs.appendFileSync(log, "Error: boom\n");
+		await waitFor(() => h.sent.length === 1);
+		expect(h.sent[0].message.details.snapshot.state).toBe("running");
+		fs.appendFileSync(log, "done\n");
+		await waitFor(() => h.statuses.at(-1) === undefined);
+		await h.status();
+		expect(h.settle()).toBeUndefined();
+		expect(h.sent).toHaveLength(1);
+	});
+
+	it("discards pending completions on shutdown", async () => {
+		const h = setup();
+		h.setBusy(true);
+		await h.start({ command: "true" });
+		await waitFor(() => h.statuses.length > 0 && h.statuses.at(-1) === undefined);
+		await h.shutdown();
+		expect(h.settle()).toBeUndefined();
 		expect(h.sent).toEqual([]);
 	});
 });

@@ -84,6 +84,7 @@ function formatSnapshot(snapshot: MonitorSnapshot, now: number): string {
 	const lines = [
 		`${snapshot.id} [${snapshot.state}] ${snapshot.label} — ${snapshot.source}, ${Math.round((end - snapshot.startedAt) / 1000)}s, alerts ${snapshot.alertCount}`,
 	];
+	if (snapshot.finish) lines.push(`  finish: ${JSON.stringify(snapshot.finish)}`);
 	if (snapshot.latest) lines.push(`  latest: ${snapshot.latest}`);
 	if (snapshot.tail.length > 0) lines.push(`  recent output:\n${snapshot.tail.map((line) => `    ${line}`).join("\n")}`);
 	return lines.join("\n");
@@ -99,6 +100,9 @@ function cardState(severity: MonitorReport["severity"]): TranscriptCardState {
 export function createMonitorExtension(timing: Partial<MonitorTiming> = {}) {
 	return function monitorExtension(pi: ExtensionAPI): void {
 		const monitors = new Map<string, Monitor>();
+		const pendingCompletions = new Map<string, MonitorReport>();
+		const acknowledgedCompletions = new Set<string>();
+		let context: ExtensionContext | undefined;
 		let nextId = 1;
 		let ui: ExtensionContext["ui"] | undefined;
 
@@ -117,6 +121,12 @@ export function createMonitorExtension(timing: Partial<MonitorTiming> = {}) {
 
 		const host = {
 			publish(report: MonitorReport) {
+				// Pi's follow-up queue cannot retract messages. Keep busy-session
+				// completions here so status reads can acknowledge them before delivery.
+				if (report.snapshot.state === "finished" && context && !context.isIdle()) {
+					pendingCompletions.set(report.id, report);
+					return;
+				}
 				pi.sendMessage(
 					{ customType: MONITOR_MESSAGE_TYPE, content: report.content, display: true, details: report },
 					{ triggerTurn: report.wake, deliverAs: "followUp" },
@@ -138,11 +148,30 @@ export function createMonitorExtension(timing: Partial<MonitorTiming> = {}) {
 		};
 
 		pi.on("session_start", (_event, ctx) => {
+			context = ctx;
 			ui = ctx.hasUI ? ctx.ui : undefined;
+		});
+		pi.on("agent_before_settle", (event) => {
+			const unread = [...pendingCompletions.values()].filter((report) => !acknowledgedCompletions.has(report.id));
+			pendingCompletions.clear();
+			if (unread.length === 0) return;
+			return {
+				entries: [...event.entries, ...unread.map((report) => ({
+					type: "custom_message" as const,
+					customType: MONITOR_MESSAGE_TYPE,
+					content: report.content,
+					display: true,
+					details: report,
+				}))],
+				continue: event.continue || unread.some((report) => report.wake),
+			};
 		});
 		pi.on("session_shutdown", async () => {
 			await stopAll();
 			monitors.clear();
+			pendingCompletions.clear();
+			acknowledgedCompletions.clear();
+			context = undefined;
 			ui = undefined;
 		});
 
@@ -218,13 +247,16 @@ export function createMonitorExtension(timing: Partial<MonitorTiming> = {}) {
 		pi.registerTool({
 			name: "monitor_status",
 			label: "Monitor Status",
-			description: "Show latest progress and recent output for one or all monitors started with monitor_start.",
+			description: "Show latest progress and recent output for one or all monitors started with monitor_start. Reading a finished result acknowledges it and suppresses its pending completion notification.",
 			promptSnippet: "Check background monitors",
 			parameters: StatusParams,
 			async execute(_toolCallId, params) {
 				const tail = Math.max(0, Math.min(100, Math.floor(params.tail_lines ?? 10)));
 				const selected = params.id ? [find(params.id)] : [...monitors.values()];
 				const snapshots = selected.map((monitor) => monitor.snapshot(tail));
+				for (const snapshot of snapshots) {
+					if (snapshot.state === "finished") acknowledgedCompletions.add(snapshot.id);
+				}
 				const now = Date.now();
 				return {
 					content: [{ type: "text", text: snapshots.length === 0 ? "No monitors." : snapshots.map((s) => formatSnapshot(s, now)).join("\n\n") }],
