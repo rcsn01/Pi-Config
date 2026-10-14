@@ -4,7 +4,7 @@
       "normal": {
         "provider": "openai",
         "modelId": "gpt-6.1-sol",
-        "thinkingLevel": "medium",
+        "thinkingLevel": "low",
         "contextWindow": 272000
       },
       "plan": {
