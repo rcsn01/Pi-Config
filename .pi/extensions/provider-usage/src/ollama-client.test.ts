@@ -35,7 +35,7 @@ function successfulFetch() {
 }
 
 describe("Ollama usage request contract", () => {
-	it("fetches /api/usage?ts=<unix-seconds> with a Bearer pubkey:signature header", async () => {
+	it("fetches /api/balance?ts=<unix-seconds> with a Bearer pubkey:signature header", async () => {
 		const now = new Date("2026-08-17T12:00:00.000Z");
 		const expectedTs = String(Math.floor(now.getTime() / 1000));
 		const fetchImpl = successfulFetch();
@@ -53,6 +53,9 @@ describe("Ollama usage request contract", () => {
 		const [pubkeyB64, signatureB64] = signature.split(":");
 		expect(pubkeyB64).toBe(fixture.publicKeyWireB64);
 		expect(signatureB64).toMatch(/^[A-Za-z0-9+/]+=*$/);
+		const verifier = await crypto.subtle.importKey("raw", fixture.publicKey, "Ed25519", false, ["verify"]);
+		expect(await crypto.subtle.verify("Ed25519", verifier, Buffer.from(signatureB64!, "base64"),
+			new TextEncoder().encode(`GET,/api/balance?ts=${expectedTs}`))).toBe(true);
 		expect(headers.get("User-Agent")).toMatch(/^ollama\/v\d+\.\d+\.\d+/);
 		expect(JSON.stringify(result)).not.toContain("SECRET_MODEL");
 	});

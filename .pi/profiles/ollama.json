@@ -3,9 +3,9 @@
     "profiles": {
       "normal": {
         "provider": "ollama-cloud",
-        "modelId": "glm-5.3-flash",
+        "modelId": "glm-5.3",
         "thinkingLevel": "max",
-        "contextWindow": 262144
+        "contextWindow": 393216
       },
       "plan": {
         "provider": "ollama-cloud",
@@ -35,7 +35,7 @@
     }
   },
   "advisor": {
-    "enabled": true,
+    "enabled": false,
     "model": "ollama-cloud/glm-5.3",
     "thinkingLevel": "max",
     "maxTokens": 32768

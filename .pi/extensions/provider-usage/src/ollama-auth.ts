@@ -156,10 +156,10 @@ export interface SignedAuthorization {
 	publicKey: Uint8Array<ArrayBuffer>;
 }
 
-// Signs the challenge `GET,/api/usage?ts=<ts>` with the Ed25519 key, matching
+// Signs the challenge `GET,<path>?ts=<ts>` with the Ed25519 key, matching
 // the Ollama app's doSelfSigned pattern (app/ui/ui.go). Returns undefined if
 // the PEM is not a parseable Ed25519 key or signing is unavailable.
-export async function buildAuthorization(pem: string, ts: string): Promise<SignedAuthorization | undefined> {
+export async function buildAuthorization(pem: string, ts: string, path = "/api/usage"): Promise<SignedAuthorization | undefined> {
 	const parsed = parseOpenSshEd25519Key(pem);
 	if (!parsed) return undefined;
 	try {
@@ -170,7 +170,7 @@ export async function buildAuthorization(pem: string, ts: string): Promise<Signe
 		// verifying it matches the seed (the same consistency check Go's
 		// ssh.ParsePrivateKey performs).
 		const key = await crypto.subtle.importKey("pkcs8", seedToPkcs8(parsed.seed), { name: "Ed25519" }, false, ["sign"]);
-		const challenge = new TextEncoder().encode(`GET,/api/usage?ts=${ts}`);
+		const challenge = new TextEncoder().encode(`GET,${path}?ts=${ts}`);
 		const signed = await crypto.subtle.sign("Ed25519", key, challenge);
 		const signature = new Uint8Array(signed);
 		const verifier = await crypto.subtle.importKey("raw", parsed.publicKey, { name: "Ed25519" }, false, ["verify"]);

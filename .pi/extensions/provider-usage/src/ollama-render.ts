@@ -3,16 +3,17 @@ import { planHeader, usageRow } from "./card.ts";
 import { resetsInText } from "./countdown.ts";
 import type { UsageSnapshot } from "./ollama-types.ts";
 
-// The /api/usage contract exposes no reset timestamps, so the reset instants
-// mirror the web UI's observed window alignment instead:
+// /api/balance provides exact reset timestamps, used directly below.
+// Older /api/usage quota snapshots lack timestamps, so their fallback instants
+// mirror the web UI's observed window alignment:
 // - Session windows reset on the full hour (observed: the settings page
 //   showed "resets in 2h 15m" mid-window).
 // - Weekly windows reset at the API's own week boundary: the 4-week activity
 //   period starts at `activity.period.starting_at` (Monday 00:00 UTC in
 //   practice) and boundaries repeat every 7 days from that instant. When the
 //   anchor is missing, the local Monday 00:00 rule is used as a fallback.
-// Both are to be revisited if the API ever exposes real timestamps; an
-// explicit `resets_in` (proposal shape) wins when present.
+// These fallbacks apply only without an exact `resetsAt`; an explicit
+// `resets_in` (proposal shape) also takes precedence over computed boundaries.
 export function sessionResetAt(now = new Date()): Date {
 	const nextHour = new Date(now);
 	nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
@@ -47,14 +48,14 @@ export function weeklyResetsIn(now = new Date(), weekStartsAt?: string): string 
 export function formatUsageText(snapshot: UsageSnapshot, now = new Date()): string {
 	const lines = [planHeader("Ollama Cloud", snapshot.plan, isStale(snapshot.fetchedAt, now))];
 	if (snapshot.session) {
-		lines.push(usageRow("Session usage", snapshot.session.usedPercent, snapshot.session.resetsIn
-			? `resets in ${snapshot.session.resetsIn}`
-			: sessionResetsIn(now)));
+		lines.push(usageRow("Session usage", snapshot.session.usedPercent, snapshot.session.resetsAt
+			? resetsInText(new Date(snapshot.session.resetsAt), now)
+			: snapshot.session.resetsIn ? `resets in ${snapshot.session.resetsIn}` : sessionResetsIn(now)));
 	}
 	if (snapshot.weekly) {
-		lines.push(usageRow("Weekly usage", snapshot.weekly.usedPercent, snapshot.weekly.resetsIn
-			? `resets in ${snapshot.weekly.resetsIn}`
-			: weeklyResetsIn(now, snapshot.weekStartsAt)));
+		lines.push(usageRow("Weekly usage", snapshot.weekly.usedPercent, snapshot.weekly.resetsAt
+			? resetsInText(new Date(snapshot.weekly.resetsAt), now)
+			: snapshot.weekly.resetsIn ? `resets in ${snapshot.weekly.resetsIn}` : weeklyResetsIn(now, snapshot.weekStartsAt)));
 	}
 	return lines.join("\n");
 }

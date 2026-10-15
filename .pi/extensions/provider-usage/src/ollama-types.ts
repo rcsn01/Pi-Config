@@ -22,6 +22,7 @@ export type OllamaAuthInspection =
 export interface UsageWindow {
 	usedPercent: number;
 	resetsIn?: string;
+	resetsAt?: string;
 }
 
 export interface UsageSnapshot {

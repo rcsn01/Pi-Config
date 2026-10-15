@@ -26,8 +26,6 @@ yarn-error.log*
 .pi/workflow-approvals/
 .pi/extensions/config-skill/update-skill/
 .pi/extensions/orca-*.ts
-.pi/profiles/*.json
-!.pi/profiles/default.json
 
 # IDE
 .vscode/

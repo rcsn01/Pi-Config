@@ -38,12 +38,24 @@ function limitsWindowOf(value: unknown): UsageWindow | undefined {
 	return { usedPercent };
 }
 
+// /api/balance reports percentage remaining and an exact UTC reset instant.
+function balanceWindowOf(value: unknown): UsageWindow | undefined {
+	const source = record(value);
+	if (!source) return undefined;
+	const remaining = source.remaining_percent;
+	const reset = typeof source.resets_at === "string" ? Date.parse(source.resets_at) : Number.NaN;
+	if (typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < 0 || remaining > 100
+		|| !Number.isFinite(reset)) return undefined;
+	return { usedPercent: 100 - remaining, resetsAt: new Date(reset).toISOString() };
+}
+
 export function normalizeUsage(payload: unknown, fetchedAt: string): UsageSnapshot | undefined {
 	const root = record(payload);
 	if (!root) return undefined;
 	const limits = record(root.limits);
-	const session = windowOf(root.session_usage) ?? limitsWindowOf(limits?.session);
-	const weekly = windowOf(root.weekly_usage) ?? limitsWindowOf(limits?.weekly);
+	const included = record(root.included);
+	const session = balanceWindowOf(included?.session) ?? windowOf(root.session_usage) ?? limitsWindowOf(limits?.session);
+	const weekly = balanceWindowOf(included?.weekly) ?? windowOf(root.weekly_usage) ?? limitsWindowOf(limits?.weekly);
 	if (!session && !weekly) return undefined;
 	const plan = typeof root.plan === "string" && root.plan.trim() ? root.plan.trim() : undefined;
 	// The activity period start is the API's own week boundary (Monday 00:00
