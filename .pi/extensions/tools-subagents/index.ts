@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { resolve } from "node:path";
 import { createSubagentSessionExecution, type SubagentSessionHost } from "./session-execution.ts";
 import { registerStructuredTool, registerSubagentRunTools, RunDetailsSchema, formatRunReports } from "./run-tools.ts";
+import { backgroundNotifications } from "../_shared/background-notifications.ts";
 import { declareStatus } from "../_shared/status-registry.ts";
 import { Type } from "typebox";
 import { registerToolErrorHandler } from "../_shared/tool-result-ui.ts";
@@ -93,15 +94,17 @@ export function createSubagentsExtension(dependencies: SubagentsExtensionDepende
 		const childExecution = dependencies.childExecution ?? createSubagentChildExecution();
 		const execution = createSubagentExecution({ registry, config: configStore, childExecution });
 		const invocationAdapter = createSubagentInvocationAdapter({ batch: execution });
+		const notifications = backgroundNotifications(pi);
 		const sessionExecution = createSubagentSessionExecution({ execution, registry, childExecution });
 		function sessionHost(ctx: ExtensionContext): SubagentSessionHost {
 			return {
 				sessionId: ctx.sessionManager.getSessionId(),
 				getSessionId: () => ctx.sessionManager.getSessionId(),
 				setStatus: (status) => ctx.ui.setStatus("subagents", status),
-				publishCompletion: (run, options) => pi.sendMessage({
-					customType: "subagent-completion", content: formatRunReports([run]), display: true, details: run,
-				}, { deliverAs: "followUp", triggerTurn: options.triggerTurn }),
+				publishCompletion: (run, options) => notifications.publish({
+					source: "subagent", runId: run.runId, timestamp: Date.now(),
+					customType: "subagent-completion", content: formatRunReports([run]), details: run, wake: options.triggerTurn,
+				}, ctx),
 			};
 		}
 		const profileInitialization = registerSessionProfileBinding(

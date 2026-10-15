@@ -377,6 +377,15 @@ extension.
 
 ## Background monitors
 
+- **Background notification delivery** — `_shared/background-notifications.ts`
+  coordinates monitor and subagent updates through the shared extension event bus.
+  Busy-session updates remain in one FIFO queue until `agent_before_settle`, which
+  atomically drains them into one custom message and requests one continuation.
+  Each item retains source, run ID, timestamp, content, and original details.
+  Idle arrivals deliver immediately with no batching timer. Explicit monitor
+  completion acknowledgements are checked at drain time; earlier alerts remain.
+  Runtime shutdown and branch replacement clear pending updates.
+
 - **Monitor** — a session-scoped watcher in `tools-monitor` over a command it runs or a log file it follows (optionally tied to a pid). Lines are classed as alert, done, or progress; progress only updates the status line, while batched alert/done reports and the final report (end reason plus output tail) are follow-up messages that wake the agent. Monitors end on exit, pid exit, a log done line, stop, or hard expiry, and owned commands die with the session. Policy permissions classify `monitor_start` as bash (command) or read (log path).
 
 ## Ollama Cloud catalog

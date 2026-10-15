@@ -69,6 +69,7 @@ function extensionHarness(
 	})(pi as any);
 	const ctx = {
 		cwd: "/workspace",
+		isIdle: () => true,
 		model: { provider: "anthropic", id: "main" },
 		sessionManager: { getSessionId: () => "main-session-123", getBranch: () => [] },
 		mode: "print",
@@ -156,6 +157,9 @@ describe("subagent extension interfaces", () => {
 		const harness = extensionHarness();
 		expect(harness.registrations).toEqual([
 			"event:tool_result",
+			"event:agent_before_settle",
+			"event:session_tree",
+			"event:session_shutdown",
 			"event:session_start",
 			"event:session_shutdown",
 			"event:session_tree",
@@ -425,10 +429,10 @@ describe("background extension routing and ownership", () => {
 
 
 describe("ordered lifecycle adaptation", () => {
-	it("registers one shutdown handler and removes the facade after failed preparation", async () => {
+	it("registers queue cleanup and execution shutdown and removes the facade after failed preparation", async () => {
 		const config = memoryConfigStore(); config.migrateLegacy = async () => { throw new Error("migration failed"); };
 		const h = extensionHarness(undefined, { config });
-		expect(h.handlers.get("session_shutdown")).toHaveLength(1);
+		expect(h.handlers.get("session_shutdown")).toHaveLength(2);
 		await expect(h.emit("session_start", { reason: "startup" })).rejects.toThrow("migration failed");
 		await h.emit("session_shutdown", { reason: "quit" });
 		expect(requireSubagentService).toThrow("unavailable");

@@ -23,6 +23,7 @@
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { backgroundNotifications } from "../_shared/background-notifications.ts";
 import { declareStatus } from "../_shared/status-registry.ts";
 import { renderTranscriptCard, normalizeTranscriptContent, type TranscriptCardState } from "../_shared/transcript-card.ts";
 import {
@@ -100,7 +101,7 @@ function cardState(severity: MonitorReport["severity"]): TranscriptCardState {
 export function createMonitorExtension(timing: Partial<MonitorTiming> = {}) {
 	return function monitorExtension(pi: ExtensionAPI): void {
 		const monitors = new Map<string, Monitor>();
-		const pendingCompletions = new Map<string, MonitorReport>();
+		const notifications = backgroundNotifications(pi);
 		const acknowledgedCompletions = new Set<string>();
 		let context: ExtensionContext | undefined;
 		let nextId = 1;
@@ -121,16 +122,11 @@ export function createMonitorExtension(timing: Partial<MonitorTiming> = {}) {
 
 		const host = {
 			publish(report: MonitorReport) {
-				// Pi's follow-up queue cannot retract messages. Keep busy-session
-				// completions here so status reads can acknowledge them before delivery.
-				if (report.snapshot.state === "finished" && context && !context.isIdle()) {
-					pendingCompletions.set(report.id, report);
-					return;
-				}
-				pi.sendMessage(
-					{ customType: MONITOR_MESSAGE_TYPE, content: report.content, display: true, details: report },
-					{ triggerTurn: report.wake, deliverAs: "followUp" },
-				);
+				if (!context) return;
+				notifications.publish({
+					source: "monitor", runId: report.id, timestamp: Date.now(),
+					customType: MONITOR_MESSAGE_TYPE, content: report.content, details: report, wake: report.wake,
+				}, context, () => report.snapshot.state === "finished" && acknowledgedCompletions.has(report.id));
 			},
 			statusChanged: refreshStatus,
 		};
@@ -151,25 +147,9 @@ export function createMonitorExtension(timing: Partial<MonitorTiming> = {}) {
 			context = ctx;
 			ui = ctx.hasUI ? ctx.ui : undefined;
 		});
-		pi.on("agent_before_settle", (event) => {
-			const unread = [...pendingCompletions.values()].filter((report) => !acknowledgedCompletions.has(report.id));
-			pendingCompletions.clear();
-			if (unread.length === 0) return;
-			return {
-				entries: [...event.entries, ...unread.map((report) => ({
-					type: "custom_message" as const,
-					customType: MONITOR_MESSAGE_TYPE,
-					content: report.content,
-					display: true,
-					details: report,
-				}))],
-				continue: event.continue || unread.some((report) => report.wake),
-			};
-		});
 		pi.on("session_shutdown", async () => {
 			await stopAll();
 			monitors.clear();
-			pendingCompletions.clear();
 			acknowledgedCompletions.clear();
 			context = undefined;
 			ui = undefined;

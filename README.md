@@ -126,3 +126,11 @@ results as follow-up messages. Use `background: false` for awaited execution,
 remain foreground-only. Handles expire on runtime or branch replacement. See
 [the subagent guide](.pi/extensions/tools-subagents/README.md#background-runs)
 for limits, cancellation, and Plan Mode restrictions.
+
+Monitor and subagent notifications share a pending queue while the agent is busy.
+At settlement, all pending notifications are delivered in one message, preserving
+source, run ID, timestamp, content, and arrival order. The agent sees the whole
+batch before responding. Idle arrivals wake the agent immediately; delivery does
+not wait for other jobs or use a batching timer. Explicitly reading a finished
+monitor through `monitor_status` still acknowledges its pending completion, but
+not earlier alerts. Pending updates belong to the current runtime and branch.

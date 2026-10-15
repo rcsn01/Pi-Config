@@ -2,6 +2,7 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall, InMemoryCredentialSto
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { createSubagentsExtension } from "./index.ts";
+import { backgroundNotifications } from "../_shared/background-notifications.ts";
 import { requireSubagentService } from "../_shared/subagent-service.ts";
 import { createSubagentChildEventIngestion } from "./child-event-ingestion.ts";
 import { agent, agentResult, deferred, memoryConfigStore, memoryRegistry } from "./test-harness.ts";
@@ -12,10 +13,10 @@ describe("background subagents pinned-SDK host integration", () => {
 		const cwd = process.cwd();
 		const faux = fauxProvider({ provider: "subagents-offline", models: [{ id: "parent", contextWindow: 100000, maxTokens: 4000 }] });
 		const parentWorking = deferred(); const finishParent = deferred();
-		const childGates = [deferred(), deferred()];
+		const childGates = [deferred(), deferred(), deferred()];
 		const contexts: unknown[] = [];
 		faux.setResponses([
-			fauxAssistantMessage(fauxToolCall("subagent", { tasks: [{ agent: "explorer", task: "first" }, { agent: "explorer", task: "second" }] }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("subagent", { tasks: [{ agent: "explorer", task: "first" }, { agent: "explorer", task: "second" }, { agent: "explorer", task: "third" }] }), { stopReason: "toolUse" }),
 			async (context) => { contexts.push(context); parentWorking.resolve(); await finishParent.promise; return fauxAssistantMessage("I continued unrelated work."); },
 			(context) => { contexts.push(context); return fauxAssistantMessage("Received first result."); },
 			(context) => { contexts.push(context); return fauxAssistantMessage("Received idle result."); },
@@ -25,7 +26,7 @@ describe("background subagents pinned-SDK host integration", () => {
 		const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
 		let nextChild = 0;
 		const extension = createSubagentsExtension({
-			registry: memoryRegistry([agent({ name: "explorer" })]), config: memoryConfigStore({ maxConcurrency: 2 }),
+			registry: memoryRegistry([agent({ name: "explorer" })]), config: memoryConfigStore({ maxConcurrency: 3 }),
 			childExecution: {
 				inspectTools: () => [],
 				async execute(request) {
@@ -38,7 +39,15 @@ describe("background subagents pinned-SDK host integration", () => {
 				},
 			},
 		});
-		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, extensionFactories: [extension] });
+		let publishMonitor!: () => void;
+		const monitorFixture: ExtensionFactory = (pi) => {
+			const notifications = backgroundNotifications(pi);
+			pi.on("session_start", (_event, ctx) => {
+				publishMonitor = () => notifications.publish({ source: "monitor", runId: "m1", timestamp: Date.now(),
+					customType: "monitor-event", content: "Verification passed", details: {}, wake: true }, ctx);
+			});
+		};
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, extensionFactories: [monitorFixture, extension] });
 		await resourceLoader.reload();
 		const { session } = await createAgentSession({ cwd, agentDir: cwd, modelRuntime, model: faux.getModel("parent"), settingsManager, resourceLoader, sessionManager: SessionManager.inMemory(cwd), tools: ["subagent", "subagent_status", "subagent_wait", "subagent_cancel"] });
 		const events: any[] = []; const errors: unknown[] = []; const unsubscribe = session.subscribe((event) => events.push(event));
@@ -47,17 +56,29 @@ describe("background subagents pinned-SDK host integration", () => {
 			const prompt = session.prompt("Delegate and continue working.");
 			await parentWorking.promise;
 			expect(JSON.stringify(contexts[0])).toContain("Accepted background runs");
-			expect(nextChild).toBe(2);
+			expect(nextChild).toBe(3);
 			childGates[0].resolve();
-			await vi.waitFor(() => expect(session.agent.peekQueuedMessages()).toHaveLength(1));
+			childGates[1].resolve();
+			const status = session.extensionRunner.getToolDefinition("subagent_status")!;
+			await vi.waitFor(async () => {
+				const result = await status.execute("status", {}, undefined, undefined, session.extensionRunner.createToolContext("status", undefined));
+				expect((result.details as any).runs.filter((run: any) => run.status === "completed")).toHaveLength(2);
+			});
+			publishMonitor();
+			expect(session.agent.peekQueuedMessages()).toHaveLength(0);
 			expect(faux.state.callCount).toBe(2);
 			finishParent.resolve(); await prompt; await session.waitForIdle();
 			expect(faux.state.callCount).toBe(3);
 			expect(JSON.stringify(contexts[1])).toContain("Child report 0");
-			childGates[1].resolve();
+			expect(JSON.stringify(contexts[1])).toContain("Child report 1");
+			expect(JSON.stringify(contexts[1])).toContain("Verification passed");
+			childGates[2].resolve();
 			await vi.waitFor(() => expect(faux.state.callCount).toBe(4)); await session.waitForIdle();
-			expect(JSON.stringify(contexts[2])).toContain("Child report 1");
-			expect(events.filter((e) => e.type === "message_end" && e.message?.customType === "subagent-completion")).toHaveLength(2);
+			expect(JSON.stringify(contexts[2])).toContain("Child report 2");
+			const batches = session.sessionManager.getBranch().filter((entry) => entry.type === "custom_message" && entry.customType === "background-notifications");
+			expect(batches).toHaveLength(1);
+			expect((batches[0] as any).details.notifications).toHaveLength(3);
+			expect(events.filter((e) => e.type === "message_end" && e.message?.customType === "subagent-completion")).toHaveLength(1);
 		} finally {
 			finishParent.resolve();
 			try { await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); }
@@ -145,16 +166,21 @@ describe("SDK lifecycle dispatch and navigation", () => {
 			expect(h.requests[0].signal.aborted).toBe(false); expect(h.errors).toEqual([]);
 		} finally { await h.close(); }
 	});
-	it("documents the actual destination-commit interval before an earlier tree handler releases Subagent dispatch", async () => {
+	it("does not deliver an old run into the destination while an earlier tree handler blocks dispatch", async () => {
 		const entered = deferred(); const release = deferred();
 		const h = await lifecycleHost("rpc", (pi) => { pi.on("session_tree", async () => { entered.resolve(); await release.promise; }); });
 		try {
 			await h.submit(); const navigation = h.session.navigateTree(h.destination, { summarize: false });
 			await entered.promise; expect(h.sessionManager.getLeafId()).toBe(h.destination); expect(h.requests[0].signal.aborted).toBe(false);
 			h.gates[0].resolve(agentResult({ output: "pre-callback report" }));
-			await vi.waitFor(() => expect(h.completions).toHaveLength(1));
-			expect(h.completions[0].content).toContain("pre-callback report");
+			await vi.waitFor(async () => {
+				const tool = h.session.extensionRunner.getToolDefinition("subagent_status")!;
+				const result = await tool.execute("all", {}, undefined, undefined, h.session.extensionRunner.createToolContext("all", undefined));
+				expect((result.details as any).runs[0].status).toBe("completed");
+			});
+			expect(h.completions).toEqual([]);
 			release.resolve(); expect((await navigation).cancelled).toBe(false);
+			expect(h.completions).toEqual([]);
 			expect(h.errors).toEqual([]);
 		} finally { release.resolve(); await h.close(); }
 	});

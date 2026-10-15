@@ -13,7 +13,12 @@ interface Sent {
 
 function harness(mode: "tui" | "print" = "tui") {
 	const tools = new Map<string, any>();
-	const handlers = new Map<string, (event: any, ctx: any) => unknown>();
+	const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
+	const emit = (name: string, event: any) => {
+		let result: any;
+		for (const handler of handlers.get(name) ?? []) result = handler(event, ctx) ?? result;
+		return result;
+	};
 	const commands = new Map<string, any>();
 	const sent: Sent[] = [];
 	const statuses: Array<string | undefined> = [];
@@ -22,23 +27,23 @@ function harness(mode: "tui" | "print" = "tui") {
 	let busy = false;
 	const ctx = { cwd, mode, hasUI: mode === "tui", ui, isIdle: () => !busy };
 	createMonitorExtension({ flushMs: 30, pollMs: 20 })({
-		on: (name: string, handler: any) => handlers.set(name, handler),
+		on: (name: string, handler: any) => handlers.set(name, [...(handlers.get(name) ?? []), handler]),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		registerCommand: (name: string, command: any) => commands.set(name, command),
 		registerMessageRenderer: () => {},
 		sendMessage: (message: any, options: any) => sent.push({ message, options }),
 	} as any);
-	handlers.get("session_start")?.({ type: "session_start" }, ctx);
+	emit("session_start", { type: "session_start" });
 	return {
 		cwd,
 		sent,
 		statuses,
 		setBusy: (value: boolean) => { busy = value; },
-		settle: (entries: unknown[] = []) => handlers.get("agent_before_settle")?.({ type: "agent_before_settle", entries, continue: false }, ctx) as any,
+		settle: (entries: unknown[] = []) => emit("agent_before_settle", { type: "agent_before_settle", entries, continue: false }),
 		start: (params: Record<string, unknown>) => tools.get("monitor_start").execute("call", params, undefined, undefined, ctx),
 		status: (params: Record<string, unknown> = {}) => tools.get("monitor_status").execute("call", params, undefined, undefined, ctx),
 		stop: (id: string) => tools.get("monitor_stop").execute("call", { id }, undefined, undefined, ctx),
-		shutdown: () => handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx),
+		shutdown: () => emit("session_shutdown", { type: "session_shutdown" }),
 	};
 }
 
@@ -205,20 +210,22 @@ describe("completion acknowledgement", () => {
 		expect(h.sent).toEqual([]);
 	});
 
-	it("still sends running alerts while completion is deferred", async () => {
+	it("retains running alerts when a later completion is explicitly acknowledged", async () => {
 		const h = setup();
 		h.setBusy(true);
 		const log = path.join(h.cwd, "alerts.log");
 		fs.writeFileSync(log, "");
 		await h.start({ log_path: log, done: "^done" });
 		fs.appendFileSync(log, "Error: boom\n");
-		await waitFor(() => h.sent.length === 1);
-		expect(h.sent[0].message.details.snapshot.state).toBe("running");
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(h.sent).toEqual([]);
 		fs.appendFileSync(log, "done\n");
 		await waitFor(() => h.statuses.at(-1) === undefined);
 		await h.status();
-		expect(h.settle()).toBeUndefined();
-		expect(h.sent).toHaveLength(1);
+		const delivery = h.settle();
+		expect(delivery.entries).toHaveLength(1);
+		expect(delivery.entries[0].details.snapshot.state).toBe("running");
+		expect(h.sent).toEqual([]);
 	});
 
 	it("discards pending completions on shutdown", async () => {
