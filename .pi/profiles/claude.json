@@ -1,0 +1,49 @@
+{
+  "uiModelSelector": {
+    "profiles": {
+      "normal": {
+        "provider": "anthropic",
+        "modelId": "claude-opus-5-5",
+        "thinkingLevel": "medium",
+        "contextWindow": 500000
+      },
+      "plan": {
+        "provider": "anthropic",
+        "modelId": "claude-opus-5-5",
+        "thinkingLevel": "xhigh",
+        "contextWindow": 250000
+      }
+    }
+  },
+  "compaction": {
+    "enabled": false,
+    "keepRecentTokens": 20000
+  },
+  "subagents": {
+    "maxConcurrency": 4,
+    "defaultModel": "anthropic/claude-opus-5-5",
+    "agentModels": {},
+    "defaultThinkingLevel": "low",
+    "agentThinkingLevels": {},
+    "defaultContextWindow": 256000,
+    "agentContextWindows": {
+      "default": 256000,
+      "explorer": 256000,
+      "worker": 256000,
+      "researcher": 256000,
+      "judge": 256000
+    }
+  },
+  "advisor": {
+    "enabled": false,
+    "model": "openai-codex/gpt-6-astra",
+    "thinkingLevel": "low",
+    "maxTokens": 32768
+  },
+  "guardian": {
+    "provider": "anthropic",
+    "modelId": "claude-sonnet-5-5",
+    "thinkingLevel": "high",
+    "contextWindow": 250000
+  }
+}
