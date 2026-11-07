@@ -1,10 +1,9 @@
 /**
  * Monitor Extension
  *
- * Watches long-running work (builds, test suites, migrations) in the
- * background and reports only what matters: failure signs, a completion line,
- * and the end of the process with the last lines of output. Progress lines
- * update the status line without waking the agent.
+ * Runs background commands only when useful work can overlap, reporting once
+ * on exit. Log watches stop on success or failure by default; ongoing alert
+ * notifications require explicit continuous mode. Progress stays in the UI.
  *
  * Tools:
  *   monitor_start   - run a command, or follow a log file (optionally tied to a pid)
@@ -61,10 +60,13 @@ const StartParams = Type.Object({
 		description: "Regex for progress lines. Shown in the status line and kept as latest progress; never wakes you.",
 	})),
 	alert: Type.Optional(Type.String({
-		description: `Regex for failure signs that are reported to you. Default: ${DEFAULT_ALERT}. Empty string disables alerts.`,
+		description: `Regex for failure signs. Commands retain matches until exit; log watches stop on the first match unless continuous. Default: ${DEFAULT_ALERT}. Empty string disables matching.`,
 	})),
 	done: Type.Optional(Type.String({
-		description: "Regex for the completion line (e.g. '^wrote '). Reported to you; ends a log_path monitor.",
+		description: "Regex for a success condition (e.g. '^wrote '). Ends a log_path watch, including continuous watches. Does not end a command monitor.",
+	})),
+	continuous: Type.Optional(Type.Boolean({
+		description: "With log_path only: keep watching after alerts and send batched notifications. Default false. Use true only when the user explicitly requests ongoing monitoring. Still ends on done, pid exit, or expiry.",
 	})),
 	timeout_minutes: Type.Optional(Type.Number({
 		description: `Hard expiry; the monitor ends (and kills its command) after this. Default ${DEFAULT_TIMEOUT_MINUTES}, max ${MAX_TIMEOUT_MINUTES}.`,
@@ -126,7 +128,8 @@ export function createMonitorExtension(timing: Partial<MonitorTiming> = {}) {
 				notifications.publish({
 					source: "monitor", runId: report.id, timestamp: Date.now(),
 					customType: MONITOR_MESSAGE_TYPE, content: report.content, details: report, wake: report.wake,
-				}, context, () => report.snapshot.state === "finished" && acknowledgedCompletions.has(report.id));
+				}, context, () => monitors.get(report.id)?.snapshot(0).finish?.kind === "stopped"
+					|| (report.snapshot.state === "finished" && acknowledgedCompletions.has(report.id)));
 			},
 			statusChanged: refreshStatus,
 		};
@@ -170,12 +173,13 @@ export function createMonitorExtension(timing: Partial<MonitorTiming> = {}) {
 			name: "monitor_start",
 			label: "Monitor",
 			description:
-				"Watch long-running work (builds, test suites, migrations) in the background instead of blocking or polling. "
-				+ "Give either `command` (run and watched by the monitor) or `log_path` (follow a file written by work started elsewhere, optionally with `pid`). "
-				+ "Returns immediately. Alert lines, the done line, and the final result (exit, last output lines) arrive later as follow-up messages that wake you; "
-				+ "progress lines only update the status line, read them with monitor_status. Always keep failure patterns in `alert` so a crash is not mistaken for silence. "
-				+ "Commands are killed when the monitor stops, expires, or the session ends; for work that must outlive the session, start it with nohup writing to a log and follow that log.",
-			promptSnippet: "Watch long-running builds/logs in the background",
+				"Prefer bash when you need a command's result before proceeding. Use monitor_start only when you can name useful independent work to do while it runs, or the user explicitly requests ongoing monitoring. "
+				+ "Give exactly one of command or log_path. Returns immediately. Commands notify once on exit or expiry, not on intermediate output. "
+				+ "Log watches stop on the first alert or done match, pid exit, or expiry; provide done or pid, or explicitly opt into continuous: true. Keep failure patterns in alert so silence is not mistaken for success. "
+				+ "Continuous log watching sends intermediate alerts and is only for user-requested ongoing observation. Progress only updates the UI. "
+				+ "Do not repeatedly poll monitor_status; completion arrives automatically. Before your final answer, collect required results and stop unnecessary watches. Leave ongoing watches only when the user requested them and say what remains active. "
+				+ "Stopping, expiry, or session shutdown kills owned commands, but never an external log writer. For a persistent dev server, start it separately and use a one-shot log readiness watch.",
+			promptSnippet: "Background commands only for useful overlap; one-shot log conditions by default",
 			parameters: StartParams,
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				if (ctx.mode === "print" || ctx.mode === "json") {
@@ -205,6 +209,7 @@ export function createMonitorExtension(timing: Partial<MonitorTiming> = {}) {
 					include: params.include,
 					alert: params.alert,
 					done: params.done,
+					continuous: params.continuous,
 					timeoutMinutes: params.timeout_minutes,
 				}, host, timing);
 				await monitor.start();
@@ -217,7 +222,8 @@ export function createMonitorExtension(timing: Partial<MonitorTiming> = {}) {
 					content: [{
 						type: "text",
 						text: `Monitor ${id} started (${snapshot.source}). Expires in ${params.timeout_minutes ?? DEFAULT_TIMEOUT_MINUTES} min. `
-							+ "Alerts and the final result will arrive as follow-up messages; continue with other work or end your turn.",
+							+ (params.continuous ? "Continuous alerts and a final result will arrive automatically." : "One terminal result will arrive automatically.")
+							+ " Continue independent work; collect required results and stop unnecessary watches before your final answer.",
 					}],
 					details: snapshot,
 				};
@@ -255,6 +261,7 @@ export function createMonitorExtension(timing: Partial<MonitorTiming> = {}) {
 				const monitor = find(params.id);
 				const wasRunning = monitor.running;
 				await monitor.stop();
+				acknowledgedCompletions.add(monitor.id);
 				refreshStatus();
 				const snapshot = monitor.snapshot(10);
 				return {

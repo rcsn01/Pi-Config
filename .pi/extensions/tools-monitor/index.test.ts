@@ -68,7 +68,7 @@ afterEach(async () => {
 });
 
 describe("command monitors", () => {
-	it("keeps progress in the status line and reports alerts and the exit with output tail", async () => {
+	it("keeps progress in the UI and reports command alerts only at exit", async () => {
 		const h = setup();
 		const result = await h.start({
 			command: "echo 'Jira: 1/3'; echo 'Jira: 2/3'; sleep 0.1; echo 'Error: boom' >&2; sleep 0.1; echo 'wrote out.json'",
@@ -81,12 +81,12 @@ describe("command monitors", () => {
 		expect(h.statuses).toContain("⏱ build: Jira: 2/3");
 		expect(h.statuses.at(-1)).toBeUndefined();
 
-		const [alert, final] = h.sent;
-		expect(h.sent).toHaveLength(2);
-		expect(alert.message.customType).toBe(MONITOR_MESSAGE_TYPE);
-		expect(alert.message.content).toContain("ALERT: Error: boom");
-		expect(alert.message.content).toContain("Latest progress: Jira: 2/3");
-		expect(alert.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
+		const [final] = h.sent;
+		expect(h.sent).toHaveLength(1);
+		expect(final.message.customType).toBe(MONITOR_MESSAGE_TYPE);
+		expect(final.message.content).toContain("Error: boom");
+		expect(final.message.details.snapshot.latest).toBe("Jira: 2/3");
+		expect(final.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
 		expect(final.message.content).toContain("command exited successfully (code 0)");
 		expect(final.message.content).toContain("wrote out.json");
 		expect(final.message.details.severity).toBe("alert");
@@ -122,15 +122,13 @@ describe("command monitors", () => {
 		expect(h.sent).toEqual([]);
 	});
 
-	it("caps alert reports and summarizes the rest at the end", async () => {
+	it("reports a noisy command only once", async () => {
 		const h = setup();
 		await h.start({ command: "for i in $(seq 1 40); do echo \"Error $i\"; sleep 0.04; done" });
 		await waitFor(() => finalReport(h.sent) !== undefined, 10_000);
-		const alertReports = h.sent.filter((entry) => entry.message.details.snapshot.state === "running");
-		expect(alertReports.length).toBeLessThanOrEqual(5);
+		expect(h.sent).toHaveLength(1);
 		const final = finalReport(h.sent)!;
 		expect(final.message.content).toContain("Alerts: 40");
-		expect(final.message.content).toMatch(/\(\d+ not reported individually\)/);
 	});
 
 	it("kills running commands on session shutdown", async () => {
@@ -215,7 +213,7 @@ describe("completion acknowledgement", () => {
 		h.setBusy(true);
 		const log = path.join(h.cwd, "alerts.log");
 		fs.writeFileSync(log, "");
-		await h.start({ log_path: log, done: "^done" });
+		await h.start({ log_path: log, done: "^done", continuous: true });
 		fs.appendFileSync(log, "Error: boom\n");
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		expect(h.sent).toEqual([]);
@@ -226,6 +224,28 @@ describe("completion acknowledgement", () => {
 		expect(delivery.entries).toHaveLength(1);
 		expect(delivery.entries[0].details.snapshot.state).toBe("running");
 		expect(h.sent).toEqual([]);
+	});
+
+	it("discards queued continuous alerts when the watch is stopped", async () => {
+		const h = setup();
+		h.setBusy(true);
+		const log = path.join(h.cwd, "stopped.log");
+		fs.writeFileSync(log, "");
+		await h.start({ log_path: log, continuous: true });
+		fs.appendFileSync(log, "Error: no longer relevant\n");
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		await h.stop("m1");
+		expect(h.settle()).toBeUndefined();
+		expect(h.sent).toEqual([]);
+	});
+
+	it("acknowledges a finished result returned by stop", async () => {
+		const h = setup();
+		h.setBusy(true);
+		await h.start({ command: "true" });
+		await waitFor(() => h.statuses.length > 0 && h.statuses.at(-1) === undefined);
+		expect((await h.stop("m1")).content[0].text).toContain("Already finished");
+		expect(h.settle()).toBeUndefined();
 	});
 
 	it("discards pending completions on shutdown", async () => {
@@ -240,6 +260,42 @@ describe("completion acknowledgement", () => {
 });
 
 describe("log monitors", () => {
+	it("ends on the first failure without waiting for the success marker", async () => {
+		const h = setup();
+		const log = path.join(h.cwd, "failure.log");
+		fs.writeFileSync(log, "");
+		await h.start({ log_path: log, done: "^ready", include: "^step" });
+		fs.appendFileSync(log, "step 1\nError: crashed\nready\n");
+		await waitFor(() => finalReport(h.sent) !== undefined);
+		expect(h.sent).toHaveLength(1);
+		expect(finalReport(h.sent)!.message.details).toMatchObject({
+			severity: "failure",
+			snapshot: { finish: { kind: "alert", line: "Error: crashed" } },
+		});
+		fs.appendFileSync(log, "Error: later\n");
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(h.sent).toHaveLength(1);
+	});
+
+	it("caps continuous alerts, keeps watching, and stops on done", async () => {
+		const h = setup();
+		const log = path.join(h.cwd, "continuous.log");
+		fs.writeFileSync(log, "");
+		await h.start({ log_path: log, continuous: true, done: "^done" });
+		for (let i = 0; i < 8; i++) {
+			fs.appendFileSync(log, `Error: ${i}\n`);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		expect(h.sent).toHaveLength(5);
+		expect(finalReport(h.sent)).toBeUndefined();
+		fs.appendFileSync(log, "done\n");
+		await waitFor(() => finalReport(h.sent) !== undefined);
+		expect(h.sent).toHaveLength(6);
+		expect(finalReport(h.sent)!.message.details.snapshot).toMatchObject({
+			alertCount: 8, suppressedAlerts: 3, finish: { kind: "done" },
+		});
+	});
+
 	it("follows only new lines and ends on the done line", async () => {
 		const h = setup();
 		const log = path.join(h.cwd, "build.log");
@@ -253,7 +309,8 @@ describe("log monitors", () => {
 		expect(h.sent).toHaveLength(1);
 		const final = h.sent[0].message;
 		expect(final.content).toContain("completion line seen");
-		expect(final.content).toContain("DONE: wrote dashboard.html");
+		expect(final.details.snapshot.tail).toContain("wrote dashboard.html");
+		expect(final.content).not.toContain("Last ");
 		expect(final.content).not.toContain("old failure");
 		expect(final.details.severity).toBe("success");
 	});
@@ -261,7 +318,7 @@ describe("log monitors", () => {
 	it("reads a log that appears after the monitor starts, and restarts after truncation", async () => {
 		const h = setup();
 		const log = path.join(h.cwd, "later.log");
-		await h.start({ log_path: log, include: "step" });
+		await h.start({ log_path: log, include: "step", continuous: true });
 		fs.writeFileSync(log, "step 1 of a long first run\n");
 		await waitFor(() => h.statuses.some((text) => text?.includes("step 1 of a long first run")));
 		fs.writeFileSync(log, "step 2\n");
@@ -273,7 +330,7 @@ describe("log monitors", () => {
 		const log = path.join(h.cwd, "pid.log");
 		fs.writeFileSync(log, "");
 		const child = spawn("bash", ["-c", `sleep 0.2; echo 'Traceback (most recent call last)' >> ${log}`]);
-		await h.start({ log_path: log, pid: child.pid });
+		await h.start({ log_path: log, pid: child.pid, continuous: true });
 		await waitFor(() => finalReport(h.sent) !== undefined);
 		const final = finalReport(h.sent)!.message;
 		expect(final.content).toContain(`watched process ${child.pid} exited`);
@@ -287,6 +344,41 @@ describe("log monitors", () => {
 });
 
 describe("validation and status", () => {
+	it("requires a bounded log watch unless continuous monitoring is explicit", async () => {
+		const h = setup();
+		await expect(h.start({ log_path: "x.log" })).rejects.toThrow("requires done, pid, or continuous: true");
+		await expect(h.start({ log_path: "x.log", done: "" })).rejects.toThrow("requires done, pid, or continuous: true");
+		await expect(h.start({ command: "true", continuous: true })).rejects.toThrow("continuous only applies with log_path");
+	});
+
+	it("keeps successful completion compact and retains output on demand", async () => {
+		const h = setup();
+		await h.start({ command: "echo useful-result", done: ".*", label: "build" });
+		await waitFor(() => finalReport(h.sent) !== undefined);
+		expect(h.sent).toHaveLength(1);
+		expect(finalReport(h.sent)!.message.content).not.toContain("useful-result");
+		expect((await h.status({ id: "m1" })).content[0].text).toContain("useful-result");
+	});
+
+	it("retains an early command alert even when it falls outside the final excerpt", async () => {
+		const h = setup();
+		await h.start({ command: "echo 'Error: early'; for i in $(seq 1 20); do echo noise; done", label: "build" });
+		await waitFor(() => finalReport(h.sent) !== undefined);
+		expect(h.sent).toHaveLength(1);
+		expect(finalReport(h.sent)!.message.content).toContain("Last alert: Error: early");
+	});
+
+	it("does not wake on command alerts or done markers before exit", async () => {
+		const h = setup();
+		await h.start({ command: "echo Error: early; echo ready; sleep 0.5; echo finished", done: "^ready" });
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(h.sent).toEqual([]);
+		expect((await h.status({ id: "m1" })).details.monitors[0].state).toBe("running");
+		await waitFor(() => finalReport(h.sent) !== undefined);
+		expect(h.sent).toHaveLength(1);
+		expect(finalReport(h.sent)!.message.content).toContain("finished");
+	});
+
 	it("requires exactly one source and valid regexes", async () => {
 		const h = setup();
 		await expect(h.start({})).rejects.toThrow("exactly one of command or log_path");

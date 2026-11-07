@@ -1,15 +1,11 @@
 /**
  * Monitor core: watches a long-running command or a growing log file, keeps
- * only the lines worth knowing about, and reports them as batched events.
+ * only the lines worth knowing about, and reports one terminal result by default.
+ * Commands wait for exit; log watches end on the first alert or done match.
+ * Only explicitly continuous log watches publish intermediate alert batches.
+ * Progress updates stay in the status line; every line enters a bounded tail.
  *
- * Line classes, checked in order:
- *   alert    - failure signs; reported and wakes the agent
- *   done     - completion line; reported and wakes the agent (ends log monitors)
- *   progress - shown in the status line and kept as `latest`; never wakes the agent
- * Every line goes into a bounded tail that the final report quotes.
- *
- * A monitor ends when its command exits, its watched pid exits, a log monitor
- * sees a done line, it is stopped, or its hard expiry fires. Pi wiring stays in
+ * A monitor also ends when its watched pid exits, it is stopped, or it expires. Pi wiring stays in
  * index.ts; this module only needs a `publish` callback and a status callback.
  */
 
@@ -22,7 +18,7 @@ export const DEFAULT_TIMEOUT_MINUTES = 30;
 export const MAX_TIMEOUT_MINUTES = 240;
 
 const TAIL_LINES = 200;
-const FINAL_TAIL_LINES = 15;
+const FINAL_TAIL_LINES = 5;
 const MAX_LINE_CHARS = 500;
 const MAX_LINE_BYTES = 64 * 1024;
 const LINES_PER_REPORT = 10;
@@ -39,6 +35,7 @@ export interface MonitorSpec {
 	include?: string;
 	alert?: string;
 	done?: string;
+	continuous?: boolean;
 	timeoutMinutes?: number;
 }
 
@@ -46,6 +43,7 @@ export type FinishReason =
 	| { kind: "exited"; code: number | null }
 	| { kind: "pid-exited"; pid: number }
 	| { kind: "done" }
+	| { kind: "alert"; line: string }
 	| { kind: "expired"; minutes: number }
 	| { kind: "stopped" }
 	| { kind: "spawn-error"; message: string }
@@ -124,6 +122,7 @@ function describeFinish(reason: FinishReason, source: MonitorSource): string {
 		case "exited": return reason.code === 0 ? "command exited successfully (code 0)" : `command exited with code ${reason.code ?? "unknown (signal)"}`;
 		case "pid-exited": return `watched process ${reason.pid} exited (exit code unknown)`;
 		case "done": return "completion line seen";
+		case "alert": return `failure line seen: ${reason.line}`;
 		case "expired": return `monitor expired after ${reason.minutes} minutes${source.kind === "command" ? "; the command was killed" : ""}`;
 		case "stopped": return "monitor stopped";
 		case "spawn-error": return `command could not start: ${reason.message}`;
@@ -138,6 +137,7 @@ export class Monitor {
 	private readonly include?: RegExp;
 	private readonly alert?: RegExp;
 	private readonly done?: RegExp;
+	private readonly continuous: boolean;
 	private readonly timeoutMinutes: number;
 	private readonly host: MonitorHost;
 	private readonly timing: MonitorTiming;
@@ -145,7 +145,8 @@ export class Monitor {
 	private readonly startedAt: number;
 	private readonly tail: string[] = [];
 	private latest?: string;
-	private pending: Array<{ kind: "alert" | "done"; line: string }> = [];
+	private lastAlert?: string;
+	private pending: string[] = [];
 	private flushTimer?: NodeJS.Timeout;
 	private expiryTimer?: NodeJS.Timeout;
 	private pollTimer?: NodeJS.Timeout;
@@ -165,6 +166,13 @@ export class Monitor {
 		this.include = compile("include", spec.include);
 		this.alert = compile("alert", spec.alert ?? DEFAULT_ALERT);
 		this.done = compile("done", spec.done);
+		this.continuous = spec.continuous ?? false;
+		if (this.source.kind === "command" && spec.continuous !== undefined) {
+			throw new Error("continuous only applies with log_path.");
+		}
+		if (this.source.kind === "log" && !this.done && this.source.pid === undefined && !this.continuous) {
+			throw new Error("A log watch requires done, pid, or continuous: true for explicitly requested ongoing monitoring.");
+		}
 		const minutes = spec.timeoutMinutes ?? DEFAULT_TIMEOUT_MINUTES;
 		if (!(minutes > 0) || minutes > MAX_TIMEOUT_MINUTES) {
 			throw new Error(`timeout_minutes must be between 0 and ${MAX_TIMEOUT_MINUTES}.`);
@@ -236,13 +244,18 @@ export class Monitor {
 
 		if (this.alert?.test(line)) {
 			this.alertCount++;
+			this.lastAlert = line;
+			if (this.source.kind === "command") return;
+			if (!this.continuous) {
+				this.finish({ kind: "alert", line });
+				return;
+			}
 			if (this.alertReports >= MAX_ALERT_REPORTS) {
 				this.suppressedAlerts++;
 				return;
 			}
-			this.queue({ kind: "alert", line });
+			this.queue(line);
 		} else if (this.done?.test(line)) {
-			this.queue({ kind: "done", line });
 			if (this.source.kind === "log") this.finish({ kind: "done" });
 		} else if (this.include?.test(line)) {
 			this.latest = line;
@@ -250,8 +263,8 @@ export class Monitor {
 		}
 	}
 
-	private queue(event: { kind: "alert" | "done"; line: string }): void {
-		this.pending.push(event);
+	private queue(line: string): void {
+		this.pending.push(line);
 		this.flushTimer ??= setTimeout(() => this.flush(), this.timing.flushMs);
 	}
 
@@ -261,11 +274,10 @@ export class Monitor {
 		if (this.pending.length === 0 || !this.running) return;
 		const events = this.pending;
 		this.pending = [];
-		const alerts = events.filter((event) => event.kind === "alert");
-		if (alerts.length > 0) this.alertReports++;
-		const shown = events.slice(0, LINES_PER_REPORT).map((event) => `${event.kind === "alert" ? "ALERT" : "DONE"}: ${event.line}`);
+		this.alertReports++;
+		const shown = events.slice(0, LINES_PER_REPORT).map((line) => `ALERT: ${line}`);
 		const more = events.length - shown.length;
-		const budget = alerts.length > 0 && this.alertReports >= MAX_ALERT_REPORTS
+		const budget = this.alertReports >= MAX_ALERT_REPORTS
 			? "\n(Alert report limit reached; further alerts are counted and summarized when the monitor ends.)"
 			: "";
 		this.host.publish({
@@ -273,7 +285,7 @@ export class Monitor {
 			label: this.label,
 			content: `Monitor ${this.id} (${this.label}):\n${shown.join("\n")}${more > 0 ? `\n… ${more} more` : ""}${this.progressLine()}${budget}`,
 			wake: true,
-			severity: alerts.length > 0 ? "alert" : "success",
+			severity: "alert",
 			snapshot: this.snapshot(0),
 		});
 	}
@@ -286,10 +298,9 @@ export class Monitor {
 
 	private finish(reason: FinishReason): void {
 		if (!this.running) return;
-		// Queued lines go into the final report instead of a separate one.
+		// The final result replaces any unflushed alert batch.
 		if (this.flushTimer) clearTimeout(this.flushTimer);
 		this.flushTimer = undefined;
-		const unreported = this.pending;
 		this.pending = [];
 		this.finishReason = reason;
 		this.finishedAt = this.now();
@@ -299,19 +310,20 @@ export class Monitor {
 		this.host.statusChanged();
 		if (reason.kind === "stopped") return;
 
-		const failed = reason.kind === "spawn-error" || reason.kind === "read-error" || reason.kind === "expired"
+		const failed = reason.kind === "alert" || reason.kind === "spawn-error" || reason.kind === "read-error" || reason.kind === "expired"
 			|| (reason.kind === "exited" && reason.code !== 0);
 		const seconds = Math.round((this.finishedAt - this.startedAt) / 1000);
 		const tail = this.tail.slice(-FINAL_TAIL_LINES);
 		const lines = [
 			`Monitor ${this.id} (${this.label}) ended: ${describeFinish(reason, this.source)} after ${seconds}s.`,
-			`Alerts: ${this.alertCount}${this.suppressedAlerts > 0 ? ` (${this.suppressedAlerts} not reported individually)` : ""}.`,
 		];
-		if (unreported.length > 0) {
-			lines.push(...unreported.slice(0, LINES_PER_REPORT).map((event) => `${event.kind === "alert" ? "ALERT" : "DONE"}: ${event.line}`));
+		if (failed || this.alertCount > 0) {
+			lines.push(`Alerts: ${this.alertCount}${this.suppressedAlerts > 0 ? ` (${this.suppressedAlerts} not reported individually)` : ""}.`);
+			if (this.lastAlert && !tail.includes(this.lastAlert) && reason.kind !== "alert") {
+				lines.push(`Last alert: ${this.lastAlert}`);
+			}
+			lines.push(tail.length > 0 ? `Last ${tail.length} lines:\n${tail.join("\n")}` : "No output captured.");
 		}
-		if (this.latest) lines.push(`Latest progress: ${this.latest}`);
-		lines.push(tail.length > 0 ? `Last ${tail.length} lines:\n${tail.join("\n")}` : "No output captured.");
 		this.host.publish({
 			id: this.id,
 			label: this.label,

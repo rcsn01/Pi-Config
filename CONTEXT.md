@@ -386,7 +386,7 @@ extension.
   completion acknowledgements are checked at drain time; earlier alerts remain.
   Runtime shutdown and branch replacement clear pending updates.
 
-- **Monitor** — a session-scoped watcher in `tools-monitor` over a command it runs or a log file it follows (optionally tied to a pid). Lines are classed as alert, done, or progress; progress only updates the status line, while batched alert/done reports and the final report (end reason plus output tail) are follow-up messages that wake the agent. Monitors end on exit, pid exit, a log done line, stop, or hard expiry, and owned commands die with the session. Policy permissions classify `monitor_start` as bash (command) or read (log path).
+- **Monitor** is a session-scoped watcher in `tools-monitor`. Prefer bash unless useful independent work can overlap. Commands notify once on exit or expiry; intermediate alerts are retained, not delivered. Log watches require `done`, a pid, or explicit `continuous: true`. By default the first alert or done match ends a log watch; continuous mode batches alerts and still ends on done, pid exit, stop, or expiry. Continuous watching is for user-requested ongoing observation only. Progress stays in the status line. Successful results are compact; failures and alerts include a short excerpt, with retained output available through `monitor_status`. Stopping a watch suppresses its queued alerts; reading a finished result through status or stop acknowledges its queued completion. Collect required results and stop unnecessary watches before the final answer. Owned commands die on stop, expiry, or session shutdown; external log writers are never killed. Policy permissions classify `monitor_start` as bash (command) or read (log path).
 
 ## Ollama Cloud catalog
 

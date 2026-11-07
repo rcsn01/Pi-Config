@@ -127,10 +127,22 @@ remain foreground-only. Handles expire on runtime or branch replacement. See
 [the subagent guide](.pi/extensions/tools-subagents/README.md#background-runs)
 for limits, cancellation, and Plan Mode restrictions.
 
+Use `bash` when the next step needs a command's result. Use `monitor_start`
+only when useful independent work can overlap, or the user requests ongoing
+observation. Command monitors report once on exit or expiry, not on intermediate
+alerts. Log watches require `done`, a `pid`, or explicit `continuous: true`.
+They stop on the first failure or success match by default. Continuous mode
+keeps watching after alerts and is only for user-requested ongoing monitoring;
+it still ends on `done`, PID exit, or expiry. Progress stays in the UI.
+Successful reports are compact; `monitor_status` retrieves retained output.
+Collect required results and stop unnecessary watches before the final answer.
+Stopping a command monitor kills its command; stopping a log watch leaves its
+writer alone and suppresses queued alerts.
+
 Monitor and subagent notifications share a pending queue while the agent is busy.
 At settlement, all pending notifications are delivered in one message, preserving
 source, run ID, timestamp, content, and arrival order. The agent sees the whole
 batch before responding. Idle arrivals wake the agent immediately; delivery does
 not wait for other jobs or use a batching timer. Explicitly reading a finished
-monitor through `monitor_status` still acknowledges its pending completion, but
-not earlier alerts. Pending updates belong to the current runtime and branch.
+monitor through `monitor_status` or `monitor_stop` acknowledges its pending
+completion, but not earlier alerts from a completed continuous watch. Pending updates belong to the current runtime and branch.
